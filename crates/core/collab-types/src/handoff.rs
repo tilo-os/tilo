@@ -9,15 +9,9 @@
 //! - [`HandoffRequest::Checkpoint`]: make everything the window shows
 //!   durable now, so the shell reads the document as the person left it
 //!   rather than as its writer last got round to saving it.
-//! - [`HandoffRequest::Retire`]: the window has reopened in its new
-//!   workspace. Stamp the document it showed retired, as one change of its
-//!   own that travels to everyone holding it over its normal route, make
-//!   that durable, and say which heads it had before the stamp — everything
-//!   up to there is what still has to come along.
 //!
-//! An instance also reports on its own when a document it shows arrives
-//! retired from somewhere else ([`HandoffReport::Retired`]), so its desktop
-//! can tell the person who moved it where.
+//! The record itself moves by the workspace store's own `move` action, which
+//! the shell invokes once what the window shows is durable.
 //!
 //! A native owner view ([`HandoffRequest::OwnerView`]) is session-local
 //! owner-view control. Documents retain their normal CRDT routes; these
@@ -27,20 +21,6 @@ use automerge::ChangeHash;
 
 /// Upper bound on one encoded message; anything larger is not a handoff.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
-
-/// Where a moved document went and who moved it, as its retirement records.
-/// Anyone who can read the old document learns only these ids; whether they
-/// can see the destination is for their own desktop to say.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Successor {
-    /// The workspace the document now lives in.
-    pub workspace: String,
-    /// Its id there.
-    pub document: String,
-    /// The person who moved it.
-    pub by: String,
-}
 
 /// What a native owner shows of one instance, for the same person's other
 /// window to present read-only.
@@ -98,12 +78,9 @@ pub enum HandoffRequest {
     Checkpoint { token: u64 },
     /// Read-only presentation on this exact authenticated native route.
     OwnerView { view: OwnerView },
-    /// The window moved to `successor`: stamp what it showed retired, make
-    /// that durable, then answer with the heads from before the stamp.
-    Retire { token: u64, successor: Successor },
 }
 
-/// One instance answering a handoff request, or reporting a retirement.
+/// A window's app answering a handoff request.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "report", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoffReport {
@@ -118,16 +95,14 @@ pub enum HandoffReport {
         schema: u16,
         metadata: Vec<u8>,
     },
-    /// The step could not be done; nothing was retired.
+    /// The step could not be done.
     Failed { token: u64, reason: String },
-    /// A document this instance shows arrived retired: moved elsewhere.
-    Retired { successor: Successor },
 }
 
 impl HandoffRequest {
     pub fn token(&self) -> u64 {
         match self {
-            Self::Checkpoint { token } | Self::Retire { token, .. } => *token,
+            Self::Checkpoint { token } => *token,
             Self::OwnerView { view } => view.counter,
         }
     }
@@ -146,8 +121,7 @@ impl HandoffRequest {
         match &request {
             Self::OwnerView { view } if view.valid() => Some(request),
             Self::OwnerView { .. } => None,
-            _ if bytes.len() <= MAX_MESSAGE_BYTES => Some(request),
-            _ => None,
+            Self::Checkpoint { .. } => (bytes.len() <= MAX_MESSAGE_BYTES).then_some(request),
         }
     }
 }
@@ -187,10 +161,7 @@ impl HandoffReport {
     pub fn heads(&self) -> Option<Vec<ChangeHash>> {
         match self {
             Self::Done { heads, .. } => heads.iter().map(|head| head.parse().ok()).collect(),
-            Self::Failed { .. }
-            | Self::Retired { .. }
-            | Self::OwnerTakeover { .. }
-            | Self::OwnerSubscribe { .. } => None,
+            Self::Failed { .. } | Self::OwnerTakeover { .. } | Self::OwnerSubscribe { .. } => None,
         }
     }
 }
@@ -205,20 +176,8 @@ mod tests {
 
         phase handoff_messages_round_trip_and_refuse_anything_else;
         {
-            let successor = Successor {
-                workspace: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
-                document: "uuid:5b0e".into(),
-                by: "ada".into(),
-            };
-            for request in [
-                HandoffRequest::Checkpoint { token: 7 },
-                HandoffRequest::Retire {
-                    token: 8,
-                    successor: successor.clone(),
-                },
-            ] {
-                assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
-            }
+            let request = HandoffRequest::Checkpoint { token: 7 };
+            assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
             let mut doc = automerge::AutoCommit::new();
             let _ = automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "a", 1);
             doc.commit();
@@ -226,8 +185,11 @@ mod tests {
             let done = HandoffReport::done(8, &heads);
             let decoded = HandoffReport::decode(&done.encode()).unwrap();
             assert_eq!(decoded.heads(), Some(heads));
-            let retired = HandoffReport::Retired { successor };
-            assert_eq!(HandoffReport::decode(&retired.encode()), Some(retired));
+            let failed = HandoffReport::Failed {
+                token: 8,
+                reason: "the record is not here".into(),
+            };
+            assert_eq!(HandoffReport::decode(&failed.encode()), Some(failed));
             assert_eq!(HandoffRequest::decode(b"{\"step\":\"format_disk\"}"), None);
             assert_eq!(
                 HandoffRequest::decode(&vec![b' '; MAX_MESSAGE_BYTES + 1]),

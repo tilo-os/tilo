@@ -13,8 +13,12 @@
 //!
 //! Build fixtures before [`largest`]; frees of allocations made outside the
 //! measurement fail it.
+//!
+//! [`held`] answers what the whole process holds allocated now, on every thread: what a test
+//! that runs in its own process (as nextest runs each) reads to bound what an operation keeps.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[derive(Clone, Copy, Default, Debug)]
 struct Trace {
     live: usize,
@@ -27,7 +31,12 @@ thread_local! {
 }
 /// The metering allocator; install it as the test binary's `#[global_allocator]`.
 pub struct Meter;
+/// The bytes the process holds allocated through [`Meter`], on every thread.
+static HELD: AtomicUsize = AtomicUsize::new(0);
+/// Whether [`Meter`] is the allocator: a binary without it would read nothing held.
+static INSTALLED: AtomicBool = AtomicBool::new(false);
 fn allocated(bytes: usize) {
+    HELD.fetch_add(bytes, Ordering::Relaxed);
     let _ = TRACE.try_with(|state| {
         if let Some(mut trace) = state.get() {
             trace.live = trace.live.saturating_add(bytes);
@@ -38,6 +47,7 @@ fn allocated(bytes: usize) {
     });
 }
 fn released(bytes: usize) {
+    HELD.fetch_sub(bytes, Ordering::Relaxed);
     let _ = TRACE.try_with(|state| {
         if let Some(mut trace) = state.get() {
             if let Some(live) = trace.live.checked_sub(bytes) {
@@ -55,6 +65,7 @@ unsafe impl GlobalAlloc for Meter {
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
             allocated(layout.size());
+            INSTALLED.store(true, Ordering::Relaxed);
         }
         pointer
     }
@@ -116,4 +127,14 @@ pub fn largest<T>(operation: impl FnOnce() -> T) -> (T, usize) {
 pub fn peak<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     let (value, trace) = measure(operation);
     (value, trace.peak)
+}
+/// The bytes the whole process holds allocated now, on every thread. Requires [`Meter`] as the
+/// global allocator; a test reads it alone in its process, as nextest runs each test.
+pub fn held() -> usize {
+    drop(std::hint::black_box(Box::new(0_u8)));
+    assert!(
+        INSTALLED.load(Ordering::Relaxed),
+        "install tilo_test_env::allocation::Meter as the #[global_allocator]"
+    );
+    HELD.load(Ordering::Relaxed)
 }

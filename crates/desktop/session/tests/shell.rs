@@ -1814,6 +1814,47 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     });
 }
 
+/// Someone in a call wears the arc sweeping round their face on their row, where the bar's faces
+/// wear it too: the face is not the one a person out of a call wears.
+#[test]
+fn a_face_in_a_call_wears_the_sweeping_ring_on_its_row() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    let mut mia = someone_here(1, "Mia Clayton", None, "");
+    mia.activity = Some("Editing the release plan".to_owned());
+    set_the_people(&session, vec![mia.clone()]);
+    open_who_is_here(&mut session);
+    until(&mut session, |session| {
+        session.shell_control("Follow Mia Clayton").is_some()
+    });
+    let row = people_place(&session, "Mia Clayton");
+    let quiet = keep(&mut session, "shell-people-row-not-in-call");
+    // The same person, in a voice channel: their row says the call and their face wears the ring.
+    mia.call = Some(
+        collab_types::presence::CallPresence {
+            channel: "c_voice".to_owned(),
+            name: "voice".to_owned(),
+            bridge: None,
+        }
+        .encode(),
+    );
+    set_the_people(&session, vec![mia]);
+    until(&mut session, |session| says(session, "In voice"));
+    let calling = keep(&mut session, "shell-people-row-in-call");
+    assert_eq!(
+        people_place(&session, "Mia Clayton"),
+        row,
+        "the row stands where it did: only its face changed"
+    );
+    let face = (row.0, row.1, row.0 + 56.0, row.1 + 48.0);
+    let (inside, _) = changed_in(&quiet, &calling, face);
+    assert!(
+        inside > 40,
+        "the face in a call wears its arc: {inside} pixels of it changed"
+    );
+}
+
 /// A line their device read off their steps wears the sparkles on the row: the words are
 /// software's, never shown as if the person had said them.
 #[test]

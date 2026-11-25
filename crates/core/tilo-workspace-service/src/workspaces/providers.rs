@@ -464,6 +464,7 @@ impl Providers {
         // the call names: a workspace's own `app.<app>#open` is the open of an app this device
         // places.
         let registered = registered
+            .or_else(|| moves(&self.0.provided.read_recover(), &request.target).cloned())
             .or_else(|| self.published(&request.target, Reach::ThisDevice))
             .or_else(|| self.get(provider))?;
         Some(registered.answers.invoke(caller, request))
@@ -588,6 +589,19 @@ impl Providers {
     ) -> Option<Pending<Result<(), ActionCallError>>> {
         Some(self.taker(id)?.cancel(caller, id))
     }
+}
+
+/// The provider moving the record `target` names to another workspace, when `target` is a move:
+/// any app's record moves through the store of the workspace that keeps it, as the caller's write
+/// on both sides, whichever app it is of.
+fn moves<'a>(
+    served: &'a BTreeMap<Arc<str>, Registered>,
+    target: &RemoteActionTarget,
+) -> Option<&'a Registered> {
+    (target.address.action == tilo_resource_store::MOVE_VERB
+        && tilo_actions::remote::is_resource_provider(&target.provider))
+    .then(|| served.get(tilo_actions::remote::RESOURCE_PROVIDER))
+    .flatten()
 }
 
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`

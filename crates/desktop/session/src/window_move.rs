@@ -1,12 +1,13 @@
 //! Carrying a window the person moves to another workspace.
 //! A workspace is the sandbox the window's app runs in: its grants, services,
 //! authority and records. None of that follows a tab, so what crosses is the tab
-//! and, with it, the record the window shows: the app starts again in the
-//! destination under its grants, on a copy of that record kept in the destination
-//! ([`crate::window_transfer`]), and the instance left behind closes once the new
-//! window is up. A move into or out of a workspace other people are in is asked
-//! about first; one that cannot be made puts the tab back where it was and says
-//! why. Nothing in a move waits on the workspaces' store on the session's own thread.
+//! and, with it, the record the window shows: the workspaces' store moves that
+//! record into the destination ([`crate::window_transfer`]), the app starts again
+//! there under its grants, on the record, and the window left behind closes once
+//! the new window is up. A move into or out of a workspace other people are in is
+//! asked about first; one that cannot be made puts the tab back where it was, with
+//! the record where it was, and says why. Nothing in a move waits on the workspaces'
+//! store on the session's own thread.
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -14,13 +15,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ChangeHash};
-use collab_types::handoff::{HandoffReport, HandoffRequest, Successor};
+use collab_types::handoff::{HandoffReport, HandoffRequest};
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
 use ui::resource::DocumentId;
-use ui::resource::transfer::{Origin, Retirement};
 
 use crate::Shared;
 use crate::apps::launch_of;
@@ -29,7 +28,7 @@ use crate::device_workspaces::DeviceWorkspaces;
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
 use crate::window_follow::WindowFollow;
-use crate::window_transfer::{self, Arrived, Fault, Merged, Profile};
+use crate::window_transfer::{self, Fault, Profile};
 
 /// The action a move's notice offers: carry the window into its destination.
 const CARRY: &str = "window-move-carry";
@@ -37,7 +36,8 @@ const CARRY: &str = "window-move-carry";
 /// The action a move's notice offers: leave the window where it is.
 const STAY: &str = "window-move-stay";
 
-/// How long a window's app may take to make what it shows durable before it is read.
+/// How long a window's app may take to make what it shows durable. A move whose app did not say
+/// it did in that time is not made: what the person typed last could be left behind.
 const CHECKPOINT: Duration = Duration::from_secs(3);
 
 /// How long the app started where the tab went may take to open a window there.
@@ -60,12 +60,6 @@ fn opening_period() -> Duration {
         }
     }
 }
-
-/// How long a window's app may take to say its record moved.
-const RETIRING: Duration = Duration::from_secs(3);
-
-/// How long what the app the tab left wrote last may take to reach the workspace.
-const RELEASING: Duration = Duration::from_secs(10);
 
 /// A move the person was asked about, waiting for their answer.
 struct Asked {
@@ -91,15 +85,15 @@ struct Asked {
 struct Travelling {
     /// Its id where the window showed it.
     id: DocumentId,
-    /// Where the workspaces' records are read and written.
+    /// Where the window's saved presentation is read and kept.
     workspaces: DeviceWorkspaces,
+    /// The device's daemon, which runs the store's move as the person.
+    daemon: tilo_session_client::daemon_documents::DaemonShell,
     /// The app's records where the window showed it, and where it is carried to.
     source: Profile,
     destination: Profile,
-    /// What it became there, once it arrived.
-    arrived: Option<Arrived>,
-    /// The heads its app gave before it stamped the record retired: what the move brings along.
-    retired_at: Option<Vec<ChangeHash>>,
+    /// Its id where it went, once the store moved it there.
+    moved: Option<DocumentId>,
 }
 
 /// A move under way.
@@ -123,24 +117,10 @@ struct Crossing {
 enum Phase {
     /// The window's app was asked to make what it shows durable.
     Checkpointing { token: u64, since: Instant },
-    /// The record is being read where it was, and kept where the tab went.
-    Importing(Receiver<Result<Arrived, Fault>>),
+    /// The workspaces' store is moving the record to where the tab went.
+    Moving(Receiver<Result<DocumentId, Fault>>),
     /// The tab waits for the window of the app started in the destination.
     Opening { since: Instant },
-    /// The window's app was asked to stamp its record retired, naming the record that arrived.
-    Retiring { token: u64, since: Instant },
-    /// What the app the tab left wrote last is on its way to the workspace.
-    Releasing {
-        /// The heads its app gave with the retirement: the record as it was before the stamp, which
-        /// a retired record cannot be read as it stands.
-        until: Option<Vec<ChangeHash>>,
-        since: Instant,
-        poll: Option<Receiver<Result<Option<AutoCommit>, Fault>>>,
-    },
-    /// What the app the tab left wrote last is being merged into the record.
-    Catching {
-        answers: Receiver<Result<Merged, Fault>>,
-    },
     /// Nothing is waited for: the step that left it here is done.
     Finished,
 }
@@ -200,7 +180,7 @@ impl Moves {
         }
         let moving = std::mem::take(&mut *self.crossing.borrow_mut());
         for one in moving {
-            self.step(shared, compositor, handoff, one);
+            self.step(shared, compositor, one);
         }
         // An answer is taken up by the pass that asked for it.
         self.notes.borrow_mut().clear();
@@ -371,7 +351,7 @@ impl Moves {
         };
         crossing.record = Some(record);
         if matches!(asked_for, Phase::Finished) {
-            self.import(shared, crossing);
+            self.carry_record(shared, crossing);
         } else {
             self.waiting(crossing, asked_for);
         }
@@ -384,8 +364,8 @@ impl Moves {
         DocumentId::parse(&id).filter(|id| !id.is_package_primary())
     }
 
-    /// The record `id` the window shows, read and written where it is kept: where the window shows
-    /// it, and in the workspace the tab went to. `None` while the session holds no workspaces.
+    /// The record `id` the window shows, as the move takes it from where the window shows it to
+    /// the workspace the tab went to. `None` while the session holds no workspaces.
     fn record(
         shared: &Shared,
         crossing: &Crossing,
@@ -397,61 +377,66 @@ impl Moves {
         Some(Travelling {
             id,
             workspaces,
+            daemon: shared.daemon.clone(),
             source: Profile::of(&home, from_id, &crossing.app),
             destination: Profile::of(&home, &crossing.to_id, &crossing.app),
-            arrived: None,
-            retired_at: None,
+            moved: None,
         })
     }
 
     /// Take one step of one move, and put it back in flight when it waits for something.
-    fn step(
-        &self,
-        shared: &Shared,
-        compositor: &mut Compositor,
-        handoff: Option<&WindowFollow>,
-        mut crossing: Crossing,
-    ) {
+    fn step(&self, shared: &Shared, compositor: &mut Compositor, mut crossing: Crossing) {
         match std::mem::replace(&mut crossing.phase, Phase::Finished) {
             Phase::Checkpointing { token, since } => {
                 self.checkpointing(shared, crossing, token, since);
             }
-            Phase::Importing(answers) => self.importing(shared, crossing, answers),
-            Phase::Opening { since } => {
-                self.opening(shared, compositor, handoff, crossing, since);
-            }
-            Phase::Retiring { token, since } => {
-                self.retiring(shared, compositor, crossing, token, since);
-            }
-            Phase::Releasing { until, since, poll } => {
-                self.releasing(shared, crossing, until, since, poll);
-            }
-            Phase::Catching { answers } => self.catching(shared, crossing, answers),
+            Phase::Moving(answers) => self.moving(shared, crossing, answers),
+            Phase::Opening { since } => self.opening(shared, compositor, crossing, since),
             Phase::Finished => {}
         }
     }
 
-    /// What the window's app wrote: either way what the workspace holds is what is read.
+    /// What the window's app answered: the record moves once the workspace holds everything the
+    /// window wrote, and stays where it is when the app could not say so.
     fn checkpointing(&self, shared: &Shared, crossing: Crossing, token: u64, since: Instant) {
-        if self.claim(&crossing, token).is_some() || since.elapsed() >= CHECKPOINT {
-            self.import(shared, crossing);
-        } else {
-            self.waiting(crossing, Phase::Checkpointing { token, since });
+        match self.claim(&crossing, token) {
+            Some(HandoffReport::Done { .. }) => self.carry_record(shared, crossing),
+            Some(HandoffReport::Failed { reason, .. }) => {
+                tracing::warn!(app = %crossing.app, %reason, "the window's app did not save what it shows");
+                self.give_up(shared, &crossing, &t("window-move-reason-unsaved"));
+            }
+            None if since.elapsed() >= CHECKPOINT => {
+                self.give_up(shared, &crossing, &t("window-move-reason-unsaved"));
+            }
+            None => self.waiting(crossing, Phase::Checkpointing { token, since }),
         }
     }
 
-    /// What reading the record where it was, and keeping it where the tab went, came to.
-    fn importing(
+    /// The step the move of `tab` asked of its window's app and waits on, while it waits.
+    #[cfg(test)]
+    fn checkpoint_asked(&self, tab: TabId) -> Option<u64> {
+        self.crossing
+            .borrow()
+            .iter()
+            .find(|crossing| crossing.tab == tab)
+            .and_then(|crossing| match crossing.phase {
+                Phase::Checkpointing { token, .. } => Some(token),
+                _ => None,
+            })
+    }
+
+    /// What moving the record to where the tab went came to.
+    fn moving(
         &self,
         shared: &Shared,
         mut crossing: Crossing,
-        answers: Receiver<Result<Arrived, Fault>>,
+        answers: Receiver<Result<DocumentId, Fault>>,
     ) {
         match answers.try_recv() {
-            Err(TryRecvError::Empty) => self.waiting(crossing, Phase::Importing(answers)),
-            Ok(Ok(arrived)) => {
+            Err(TryRecvError::Empty) => self.waiting(crossing, Phase::Moving(answers)),
+            Ok(Ok(moved)) => {
                 if let Some(record) = crossing.record.as_mut() {
-                    record.arrived = Some(arrived);
+                    record.moved = Some(moved);
                 }
                 self.start(shared, crossing);
             }
@@ -462,154 +447,36 @@ impl Moves {
         }
     }
 
-    /// Whether the window the app was started for came where the tab waits.
+    /// Whether the window the app was started for came where the tab waits: once it did, the
+    /// window the tab left closes.
     fn opening(
         &self,
         shared: &Shared,
         compositor: &mut Compositor,
-        handoff: Option<&WindowFollow>,
         crossing: Crossing,
         since: Instant,
     ) {
         match landed(shared, crossing.tab, crossing.window) {
-            Landed::Came => self.retire(shared, compositor, handoff, crossing),
+            Landed::Came => compositor.close_window(crossing.window),
             Landed::Waiting if since.elapsed() < self.opening => {
                 self.waiting(crossing, Phase::Opening { since });
             }
             Landed::Waiting => {
                 self.give_up(shared, &crossing, &t("window-move-reason-no-window"));
             }
-            // The tab went while its app started: nothing of the move is left to keep.
-            Landed::Gone => Self::closed(&crossing),
+            // The tab went while its app started: the record is where the person put it.
+            Landed::Gone => {}
         }
     }
 
-    /// Whether the app the tab left said its record moved, and what it said.
-    fn retiring(
-        &self,
-        shared: &Shared,
-        compositor: &mut Compositor,
-        mut crossing: Crossing,
-        token: u64,
-        since: Instant,
-    ) {
-        let Some(report) = self.claim(&crossing, token) else {
-            if since.elapsed() < RETIRING {
-                self.waiting(crossing, Phase::Retiring { token, since });
-            } else {
-                tracing::warn!(
-                    app = %crossing.app,
-                    "an app did not say its record moved: it is read as it stands"
-                );
-                self.release(shared, compositor, crossing);
-            }
-            return;
-        };
-        if let Some(record) = crossing.record.as_mut() {
-            record.retired_at = report.heads().filter(|heads| !heads.is_empty());
-        }
-        if let HandoffReport::Failed { reason: why, .. } = &report {
-            tracing::warn!(%why, app = %crossing.app, "an app could not say its record moved");
-        }
-        self.release(shared, compositor, crossing);
-    }
-
-    /// Whether what the app the tab left wrote last reached the workspace.
-    fn releasing(
-        &self,
-        shared: &Shared,
-        crossing: Crossing,
-        until: Option<Vec<ChangeHash>>,
-        since: Instant,
-        poll: Option<Receiver<Result<Option<AutoCommit>, Fault>>>,
-    ) {
-        let Some(answers) = poll else {
-            if since.elapsed() >= RELEASING {
-                tracing::warn!(
-                    app = %crossing.app,
-                    "what an app wrote last did not reach the workspace: the window moved without it"
-                );
-                Self::done(shared, &crossing);
-                return;
-            }
-            match Self::poll_release(&crossing, until.clone()) {
-                Some(poll) => {
-                    self.waiting(
-                        crossing,
-                        Phase::Releasing {
-                            until,
-                            since,
-                            poll: Some(poll),
-                        },
-                    );
-                }
-                None => self.give_up(shared, &crossing, &t("window-move-reason-storage")),
-            }
-            return;
-        };
-        match answers.try_recv() {
-            Err(TryRecvError::Empty) => {
-                self.waiting(
-                    crossing,
-                    Phase::Releasing {
-                        until,
-                        since,
-                        poll: Some(answers),
-                    },
-                );
-            }
-            Ok(Ok(Some(source))) => match Self::merge(&crossing, &source) {
-                Some(answers) => self.waiting(crossing, Phase::Catching { answers }),
-                None => self.give_up(shared, &crossing, &t("window-move-reason-storage")),
-            },
-            // It has not reached the workspace yet: ask again.
-            Ok(Ok(None)) => self.waiting(
-                crossing,
-                Phase::Releasing {
-                    until,
-                    since,
-                    poll: None,
-                },
-            ),
-            Ok(Err(fault)) => self.give_up(shared, &crossing, &reason(&fault)),
-            Err(TryRecvError::Disconnected) => {
-                self.give_up(shared, &crossing, &t("window-move-reason-storage"));
-            }
-        }
-    }
-
-    /// What merging the app's last changes into the record came to.
-    fn catching(
-        &self,
-        shared: &Shared,
-        crossing: Crossing,
-        answers: Receiver<Result<Merged, Fault>>,
-    ) {
-        match answers.try_recv() {
-            Err(TryRecvError::Empty) => self.waiting(crossing, Phase::Catching { answers }),
-            Ok(Ok(Merged::Written(changes))) => {
-                tracing::info!(
-                    changes,
-                    app = %crossing.app,
-                    "what the moved window's app wrote last arrived"
-                );
-                Self::done(shared, &crossing);
-            }
-            Ok(Ok(Merged::Nothing)) => Self::done(shared, &crossing),
-            Ok(Err(fault)) => self.give_up(shared, &crossing, &reason(&fault)),
-            Err(TryRecvError::Disconnected) => {
-                self.give_up(shared, &crossing, &t("window-move-reason-storage"));
-            }
-        }
-    }
-
-    /// Read the record where the window shows it, and keep it in the workspace the tab went to.
-    fn import(&self, shared: &Shared, crossing: Crossing) {
+    /// Move the record the window shows to the workspace the tab went to.
+    fn carry_record(&self, shared: &Shared, crossing: Crossing) {
         let Some(record) = crossing.record.as_ref() else {
             self.start(shared, crossing);
             return;
         };
-        let (workspaces, source, destination, id, instance) = (
+        let (daemon, workspaces, source, destination, id, tab) = (
+            record.daemon.clone(),
             record.workspaces.clone(),
             record.source.clone(),
             record.destination.clone(),
@@ -617,12 +484,12 @@ impl Moves {
             crossing.tab,
         );
         let Some(answers) = window_transfer::off_loop(move || {
-            window_transfer::take(&workspaces, &source, &destination, &id, instance)
+            window_transfer::carry(&daemon, &workspaces, (&source, &destination), &id, tab)
         }) else {
             self.give_up(shared, &crossing, &t("window-move-reason-storage"));
             return;
         };
-        self.waiting(crossing, Phase::Importing(answers));
+        self.waiting(crossing, Phase::Moving(answers));
     }
 
     /// Start the window's app in the workspace the person carried the tab to, on the record that
@@ -631,10 +498,10 @@ impl Moves {
         let on = crossing
             .record
             .as_ref()
-            .and_then(|record| record.arrived.as_ref())
-            .map(|arrived| Launch::Record {
+            .and_then(|record| record.moved.as_ref())
+            .map(|moved| Launch::Record {
                 app: crossing.app.clone(),
-                record: arrived.target.id.as_str().to_owned(),
+                record: moved.as_str().to_owned(),
                 visitor: false,
             });
         let launch = on.unwrap_or_else(|| Launch::Package {
@@ -664,164 +531,36 @@ impl Moves {
         self.waiting(crossing, Phase::Opening { since });
     }
 
-    /// The new window is up: the window the tab left is asked to stamp its record retired, and then
-    /// closes.
-    fn retire(
-        &self,
-        shared: &Shared,
-        compositor: &mut Compositor,
-        handoff: Option<&WindowFollow>,
-        crossing: Crossing,
-    ) {
-        let Some(target) = crossing
-            .record
-            .as_ref()
-            .and_then(|record| record.arrived.as_ref())
-            .map(|arrived| arrived.target.id.as_str().to_owned())
-        else {
-            // Nothing travelled: the window left shows what its workspace keeps for it.
-            compositor.close_window(crossing.window);
-            Self::done(shared, &crossing);
+    /// The record the move took to where the tab went goes back where it was, as the person: the
+    /// window the tab goes back to shows it there.
+    fn bring_back(crossing: &Crossing) {
+        let Some(record) = crossing.record.as_ref() else {
             return;
         };
-        let Some(handoff) = handoff else {
-            self.release(shared, compositor, crossing);
+        let Some(moved) = record.moved.clone() else {
             return;
         };
-        let token = self.next_token();
-        handoff.request_handoff(
-            &crossing.from_id,
-            &crossing.app,
-            crossing.tab,
-            HandoffRequest::Retire {
-                token,
-                successor: Successor {
-                    workspace: crossing.to_id.clone(),
-                    document: target,
-                    by: shared.person.clone(),
-                },
-            },
-        );
-        let since = Instant::now();
-        self.waiting(crossing, Phase::Retiring { token, since });
-    }
-
-    /// The window the tab left is closed: read what its app wrote last, for a merge into the
-    /// record where it arrived.
-    fn release(&self, shared: &Shared, compositor: &mut Compositor, crossing: Crossing) {
-        compositor.close_window(crossing.window);
-        let until = crossing
-            .record
-            .as_ref()
-            .and_then(|record| record.retired_at.clone());
-        match Self::poll_release(&crossing, until.clone()) {
-            Some(poll) => {
-                let since = Instant::now();
-                self.waiting(
-                    crossing,
-                    Phase::Releasing {
-                        until,
-                        since,
-                        poll: Some(poll),
-                    },
-                );
-            }
-            None => self.give_up(shared, &crossing, &t("window-move-reason-storage")),
-        }
-    }
-
-    /// Ask what the workspace holds of the record the tab left, and whether what its app wrote
-    /// last is there.
-    fn poll_release(
-        crossing: &Crossing,
-        until: Option<Vec<ChangeHash>>,
-    ) -> Option<Receiver<Result<Option<AutoCommit>, Fault>>> {
-        let record = crossing.record.as_ref()?;
-        let arrived = record.arrived.as_ref()?;
-        let (workspaces, source, origin) = (
-            record.workspaces.clone(),
+        let (daemon, source, destination, id) = (
+            record.daemon.clone(),
             record.source.clone(),
-            arrived.origin.clone(),
+            record.destination.clone(),
+            record.id.clone(),
         );
-        window_transfer::off_loop(move || {
-            window_transfer::released(&workspaces, &source, &origin, until.as_deref())
-        })
-    }
-
-    /// Merge what the app the tab left wrote last into the record where it arrived.
-    fn merge(crossing: &Crossing, source: &AutoCommit) -> Option<Receiver<Result<Merged, Fault>>> {
-        let record = crossing.record.as_ref()?;
-        let (workspaces, destination) = (record.workspaces.clone(), record.destination.clone());
-        let target = record.arrived.as_ref()?.target.clone();
-        let source = source.clone();
-        window_transfer::off_loop(move || {
-            window_transfer::merge(&workspaces, &destination, &target, &source)
-        })
-    }
-
-    /// The move is done: the record it left says where it went, wherever its app did not.
-    fn done(shared: &Shared, crossing: &Crossing) {
-        let Some(record) = crossing.record.as_ref() else {
-            return;
-        };
-        let Some(arrived) = record.arrived.as_ref() else {
-            return;
-        };
-        let (workspaces, source) = (record.workspaces.clone(), record.source.clone());
-        let origin = arrived.origin.clone();
-        let successor = Successor {
-            workspace: crossing.to_id.clone(),
-            document: arrived.target.id.as_str().to_owned(),
-            by: shared.person.clone(),
-        };
-        if let Err(error) = window_transfer::off_loop_detached(move || {
-            if let Err(fault) = window_transfer::retire(
-                &workspaces,
-                &source,
-                &origin,
-                &Retirement::Moved(Some(successor)),
-            ) {
-                tracing::warn!(?fault, "a moved record could not say where it went");
-            }
-        }) {
-            tracing::warn!(%error, "a moved record could not say where it went");
-        }
-    }
-
-    /// The tab went while its record was on its way: the copy it made where it arrived is retired
-    /// as one nothing opened.
-    fn closed(crossing: &Crossing) {
-        let Some(record) = crossing.record.as_ref() else {
-            return;
-        };
-        let Some(arrived) = record.arrived.as_ref() else {
-            return;
-        };
-        let (workspaces, destination) = (record.workspaces.clone(), record.destination.clone());
-        // The copy is a record of the destination with its own id there; the one it was read from
-        // exists only where the window was.
-        let copy = Origin::Record(arrived.target.clone());
         if let Err(error) = window_transfer::off_loop_detached(move || {
             if let Err(fault) =
-                window_transfer::retire(&workspaces, &destination, &copy, &Retirement::Abandoned)
+                window_transfer::move_record(&daemon, &destination, &source, &moved, &id)
             {
-                tracing::warn!(
-                    ?fault,
-                    "a record copied into a workspace was left unretired"
-                );
+                tracing::warn!(?fault, "a record stayed where a failed move took it");
             }
         }) {
-            tracing::warn!(
-                %error,
-                "a record copied into a workspace was left unretired"
-            );
+            tracing::warn!(%error, "a record stayed where a failed move took it");
         }
     }
 
-    /// The move cannot be made: the copy is retired as one nothing opened, the tab goes back where
-    /// it was, and the person is told why.
+    /// The move cannot be made: the record goes back where it was, the tab goes back too, and the
+    /// person is told why.
     fn give_up(&self, shared: &Shared, crossing: &Crossing, why: &str) {
-        Self::closed(crossing);
+        Self::bring_back(crossing);
         Self::put_back(shared, crossing.tab, crossing.from, &crossing.app);
         if crossing.record.is_some() {
             self.record_failed(
@@ -916,13 +655,17 @@ impl Moves {
 
 impl crate::Session {
     /// Carry out the person's answers and carries since the last pass: asked first
-    /// where other people are involved, then the record goes along, the app runs there,
+    /// where other people are involved, then the record moves along, the app runs there,
     /// and the window it left closes once the app has one there.
     pub(crate) fn follow_window_moves(&mut self) {
+        // The window's app is asked through the device's dispatch, as the person, on the shell's
+        // link.
         let handoff = self
-            .app_wire
-            .as_ref()
-            .and_then(crate::app_wire::AppWire::follow_dispatcher);
+            .shared
+            .daemon
+            .link()
+            .ok()
+            .map(|link| crate::window_follow::WindowFollow::new(Arc::new(link.dispatch())));
         self.shared
             .moves
             .follow(&self.shared, &mut self.compositor, handoff.as_ref());
@@ -953,16 +696,12 @@ fn landed(shared: &Shared, tab: TabId, window: u64) -> Landed {
 /// Why a step of a move failed, as the person is told it.
 fn reason(fault: &Fault) -> String {
     match fault {
-        Fault::Transfer(error) => {
+        Fault::Refused(error) => {
             tracing::warn!(%error, "a record could not be moved");
             t("window-move-reason-record")
         }
         Fault::Profile(error) => {
             tracing::warn!(%error, "a window's app profile could not be read");
-            t("window-move-reason-storage")
-        }
-        Fault::Workspace(error) => {
-            tracing::warn!(%error, "the workspaces did not keep a moved record");
             t("window-move-reason-storage")
         }
     }
@@ -1057,17 +796,14 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use automerge::ReadDoc as _;
-    use automerge::transaction::Transactable as _;
     use tilo_action_policy::Role;
     use tilo_broker_core::route::CrdtRoute;
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
+    use tilo_resource_store::wire::{Command, Edit, Reply};
     use tilo_session_core::desktop::state::banners::Banners as _;
     use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
-    use ui::resource::transfer::retirement;
-    use ui::resource::{DocumentCheckout, ResourceOwners, ResourceType};
 
     use crate::apps::Apps;
     use crate::{AppActions, Options, Session};
@@ -1080,6 +816,21 @@ mod tests {
     /// The kind of record the app keeps a window of: a note of its own.
     const NOTE: &str = "probe.note";
 
+    /// What the app's package declares of its records: the note, and the verb that writes one.
+    const DECLARED: &str = r#"format = 2
+
+[[resources]]
+kind = "probe.note"
+label = "Note"
+version = 1
+fields = [
+  { path = "body", type = "text" },
+]
+verbs = [
+  { id = "write", label = "Write", kind = "undoable" },
+]
+"#;
+
     /// The display every headless session here draws on.
     const WIDTH: i32 = 1280;
     /// See [`WIDTH`].
@@ -1090,7 +841,9 @@ mod tests {
         let mut workspace = Workspace::new(WorkspaceId::new(), "Studio");
         workspace.policy.set_owner(owner.to_owned());
         for member in members {
-            workspace.policy.add_member((*member).to_owned(), Role::Editor);
+            workspace
+                .policy
+                .add_member((*member).to_owned(), Role::Editor);
         }
         workspace
     }
@@ -1123,14 +876,12 @@ mod tests {
         );
     }
 
-    /// A shell with a session on it, and the window of [`PROBE`] in a tab of the workspace in front,
-    /// showing `record` .
+    /// A shell with a session on it, and the window of [`PROBE`] in a tab of the workspace in front.
     struct Shell {
         _home: tilo_test_env::TestHome,
-        /// The workspace service of this device, holding both workspaces.
-        _device: crate::daemon_fixture::TestDaemon,
-        /// The workspaces' records as the session reaches them.
-        held: DeviceWorkspaces,
+        /// The device's daemon, holding both workspaces on a real workspace service: the
+        /// session's shell link, where the move runs as whoever the session is of.
+        device: crate::daemon_fixture::TestDaemon,
         /// Where each start is written down.
         started: PathBuf,
         /// What each start was handed.
@@ -1145,7 +896,7 @@ mod tests {
     }
 
     impl Shell {
-        /// A shell of two workspaces whose window shows a record of its own.
+        /// A shell of two workspaces of the person's own.
         fn new() -> Self {
             let mut home = tilo_test_env::TestHome::new().expect("a home");
             let started = home.home().join("started");
@@ -1162,6 +913,15 @@ mod tests {
                 ),
             )
             .expect("a launcher");
+            // The workspace in front and the one behind it, as the shell below shows them, kept by
+            // the device's daemon, whose store knows the app's records as its package declares them.
+            let (from, to) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
+            let (from_id, to_id) = (from.to_string(), to.to_string());
+            let device = crate::daemon_fixture::TestDaemon::writing(&[&from_id, &to_id]);
+            device
+                .workspaces()
+                .declare_package_surface(PROBE, DECLARED.as_bytes());
+            let link = device.shell_link();
             let state = home.state().to_path_buf();
             let mut environment = tilo_app_launch::SessionEnvironment::from_process();
             environment.wayland_socket = Some(home.runtime().join("wayland-7"));
@@ -1177,6 +937,7 @@ mod tests {
                     apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
                     launch: Some(Rc::clone(&apps)),
                     state: Some(state),
+                    shell_link: Some(link),
                     ..Options::default()
                 },
                 &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -1184,29 +945,14 @@ mod tests {
             .expect("a session");
             // The shell this device shows, as a session that came back to one puts it in front.
             session.handle().replace_tree(two_workspaces());
-            let (from, to, to_id) = session
-                .handle()
-                .read(|tree| {
-                    let front = tree.active_workspace()?.id().to_string();
-                    let away = tree
-                        .workspaces
-                        .iter()
-                        .find(|held| held.id() != WorkspaceId::from_u128(1))?;
-                    Some((front, away.id(), away.id().to_string()))
-                })
-                .expect("a workspace in front and one behind it");
-            // This device holds both workspaces, as the session's start hands it its workspace
-            // service.
-            let device = crate::daemon_fixture::TestDaemon::holding(&[&from, &to_id]);
             *session.shared.device_workspaces.borrow_mut() = Some(device.device_workspaces());
-            let held = device.device_workspaces();
             // The app's window, as the compositor would map it.
             apps.start(
                 &Launch::Package {
                     app: PROBE.into(),
                     open: None,
                 },
-                &apps.workspace_named(&from),
+                &apps.workspace_named(&from_id),
             )
             .expect("the shell starts the app");
             wait(&mut session, "the app is started", |_| {
@@ -1225,66 +971,208 @@ mod tests {
             });
             Self {
                 _home: home,
-                _device: device,
-                held,
+                device,
                 started,
                 arguments,
                 session,
-                from,
+                from: from_id,
                 to,
                 to_id,
                 tab,
             }
         }
 
-        /// The record the window shows: one the app wrote in the workspace it is in.
-        fn showing(&self, body: &str) -> DocumentCheckout {
-            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new(NOTE));
-            let records = ResourceOwners::writing(self.held.port())
-                .open(PROBE, &self.from)
-                .expect("the app's records of its workspace");
-            records
-                .create_resource(&checkout)
-                .expect("the record the window shows");
-            records
-                .with(&checkout.id, |doc| {
-                    doc.put(automerge::ROOT, "body", body)
-                        .expect("the note's body");
-                })
-                .expect("the record is open");
-            records.flush().expect("the workspace takes the record");
+        /// The record the window shows: a note the app wrote in the workspace it is in.
+        fn showing(&self, body: &str) -> DocumentId {
+            let id = DocumentId::minted();
+            let stamp = tilo_resource_store::Stamp {
+                verb: "write".to_owned(),
+                invocation: uuid::Uuid::new_v4().to_string(),
+                ..tilo_resource_store::Stamp::default()
+            };
+            let written = self.command(
+                &self.from,
+                Command::Batch(vec![
+                    Command::Put {
+                        kind: NOTE.to_owned(),
+                        id: id.as_str().to_owned(),
+                        resource: tilo_resource_store::Resource {
+                            readers: collab_types::EVERY_MEMBER.to_owned(),
+                            parent: None,
+                            order: None,
+                            fields: std::collections::BTreeMap::new(),
+                        },
+                        stamp: stamp.clone(),
+                    },
+                    Command::Edit {
+                        kind: NOTE.to_owned(),
+                        id: id.as_str().to_owned(),
+                        edits: vec![Edit::Splice {
+                            field: "body".to_owned(),
+                            at: 0,
+                            delete: 0,
+                            insert: body.to_owned(),
+                        }],
+                        stamp,
+                    },
+                ]),
+            );
+            assert!(
+                matches!(written, Ok(Reply::Written)),
+                "the workspace keeps the note: {written:?}"
+            );
             // The session notes what a window shows as its app holds it: this one holds the record
             // it was launched on.
             self.session.shared.notes.read(
                 &[(
                     self.tab,
-                    CrdtRoute::record(PROBE, self.from.clone(), checkout.id.as_str()),
+                    CrdtRoute::record(PROBE, self.from.clone(), id.as_str()),
                 )],
                 &|_| Some(PROBE.to_owned()),
                 &[self.tab].into_iter().collect(),
             );
-            checkout
+            id
+        }
+
+        /// `command` as the app's store answers it in `workspace`, for the device's own person.
+        fn command(&self, workspace: &str, command: Command) -> Result<Reply, String> {
+            command_in(self.device.workspaces(), workspace, command)
+        }
+
+        /// What the note `id` of `workspace` holds; `None` while the workspace holds no such note.
+        fn note(&self, workspace: &str, id: &DocumentId) -> Option<String> {
+            note_in(self.device.workspaces(), workspace, id)
+        }
+
+        /// The notes of `workspace`, by id.
+        fn notes(&self, workspace: &str) -> Vec<String> {
+            self.device
+                .workspaces()
+                .stored_records(workspace)
+                .expect("the device keeps the workspace")
+                .into_iter()
+                .filter(|(app, _)| app == PROBE)
+                .map(|(_, id)| id)
+                .collect()
         }
 
         /// The person moves the window to the workspace behind.
         fn carry(&mut self) {
+            let token = self.carry_asking();
+            self.saved(token);
+        }
+
+        /// The person moves the window to the workspace behind, and the move asks the window's
+        /// app to make what it shows durable: the step it asked, which it waits on.
+        fn carry_asking(&mut self) -> u64 {
             self.session
                 .handle()
                 .choose_window_menu(self.tab, &move_to_workspace_id(self.to), None)
                 .expect("the person moves the window");
+            let tab = self.tab;
+            wait(
+                &mut self.session,
+                "the move asks the app to save",
+                |session| session.shared.moves.checkpoint_asked(tab),
+            )
+        }
+
+        /// The window's app answers with `report`, as its own route reports it to the device.
+        fn answer(&mut self, report: &HandoffReport) {
+            use tilo_broker_core::steps::ContinuationServices as _;
+            self.session
+                .shared
+                .notes
+                .handoff(
+                    WorkspaceId::from_u128(1),
+                    PROBE.to_owned(),
+                    self.tab,
+                    report.encode(),
+                )
+                .expect("the session takes the app's answer");
             self.session
                 .step(Duration::from_millis(1))
                 .expect("a frame");
         }
 
+        /// The window's app wrote everything it shows to the workspace, and says so.
+        fn saved(&mut self, token: u64) {
+            self.answer(&HandoffReport::done(token, &[]));
+        }
+
+        /// What the person typed last in the note `id`, `typed` at its end, as the window's app
+        /// writes it to the workspace when it saves.
+        fn typed(&self, id: &DocumentId, typed: &str) {
+            let held = self.note(&self.from, id).expect("the note is here");
+            let written = self.command(
+                &self.from,
+                Command::Edit {
+                    kind: NOTE.to_owned(),
+                    id: id.as_str().to_owned(),
+                    edits: vec![Edit::Splice {
+                        field: "body".to_owned(),
+                        at: held.chars().count(),
+                        delete: 0,
+                        insert: typed.to_owned(),
+                    }],
+                    stamp: tilo_resource_store::Stamp {
+                        verb: "write".to_owned(),
+                        invocation: uuid::Uuid::new_v4().to_string(),
+                        ..tilo_resource_store::Stamp::default()
+                    },
+                },
+            );
+            assert!(
+                matches!(written, Ok(Reply::Written)),
+                "the workspace keeps what was typed: {written:?}"
+            );
+        }
+
+        /// `workspace` answers what the person does there with `answer`, as its owners granted.
+        fn grant(&self, workspace: &str, answer: tilo_action_policy::Answer) {
+            use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
+            let person = hex::encode(self.device.certificate().user_public_key);
+            let workspaces = self.device.workspaces().clone();
+            let workspace = workspace.to_owned();
+            tilo_rt::app()
+                .block_on(async move {
+                    tilo_workspace_service::workspaces::fixtures::record_grants(
+                        &workspaces,
+                        &workspace,
+                        &[Grant::new(
+                            "mover",
+                            Grantee::person(person.clone()),
+                            TreePath::workspace(&workspace),
+                            KindSet::READ_UNDOABLE,
+                            answer,
+                            Grantee::person(person),
+                        )],
+                    )
+                    .await;
+                })
+                .expect("the runtime runs");
+        }
+
         /// Wait for the app the move starts where the window went, and what it was handed: the
         /// workspace, and the record it opens.
         fn arrived(&mut self) -> (String, DocumentId) {
-            wait(
+            let told = wait(
                 &mut self.session,
                 "the app runs where the window went",
-                |_| (starts(&self.started) == 2).then_some(()),
+                |session| {
+                    if starts(&self.started) == 2 {
+                        return Some(None);
+                    }
+                    session
+                        .notifications()
+                        .feed()
+                        .banners
+                        .into_iter()
+                        .find(|banner| banner.notification.title.contains("Probe"))
+                        .map(|banner| Some(banner.notification.body))
+                },
             );
+            assert_eq!(told, None, "the move is made, not put back");
             assert_eq!(
                 handed(&self.arguments, "--workspace-id"),
                 self.to_id,
@@ -1315,47 +1203,66 @@ mod tests {
             );
         }
 
-        /// What the record `id` holds in `workspace` .
-        fn stored(&self, workspace: &str, id: &DocumentId) -> Option<automerge::AutoCommit> {
-            stored_at(&self.held, workspace, id)
-        }
-
-        /// The app of the tab writes once more where the window was.
-        fn edit(&self, id: &DocumentId, body: &str) {
-            let records = ResourceOwners::writing(self.held.port())
-                .open(PROBE, &self.from)
-                .expect("the app's records of its workspace");
-            records.open_resource(&DocumentCheckout::new(id.clone(), ResourceType::new(NOTE)));
-            records
-                .with(id, |doc| {
-                    doc.put(automerge::ROOT, "body", body)
-                        .expect("the note's body");
-                })
-                .expect("the record is open");
-            records.flush().expect("the workspace takes the change");
+        /// What the person is told about the app's window, once they are: its body.
+        fn told(&mut self) -> String {
+            wait(&mut self.session, "the person is told", |session| {
+                session
+                    .notifications()
+                    .feed()
+                    .banners
+                    .into_iter()
+                    .find(|banner| banner.notification.title.contains("Probe"))
+                    .map(|banner| banner.notification.body)
+            })
         }
     }
 
-    /// The note a record holds.
-    fn body(doc: &automerge::AutoCommit) -> Option<String> {
-        match doc.get(automerge::ROOT, "body") {
-            Ok(Some((automerge::Value::Scalar(value), _))) => value.as_str().map(str::to_owned),
-            _ => None,
-        }
+    /// `command` as the app's store in `workspace` of `workspaces` answers it, for the device's
+    /// own person.
+    fn command_in(
+        workspaces: &tilo_workspace_service::workspaces::Workspaces,
+        workspace: &str,
+        command: Command,
+    ) -> Result<Reply, String> {
+        tilo_rt::app()
+            .block_on(workspaces.own_resource_command(workspace, PROBE, command, Vec::new()))
+            .expect("the runtime runs")
     }
 
-    /// What the record `id` of `workspace` holds as the workspace keeps it; `None` while it holds
-    /// none.
-    fn stored_at(
-        held: &DeviceWorkspaces,
+    /// What the note `id` of `workspace` holds; `None` while the workspace holds no such note.
+    fn note_in(
+        workspaces: &tilo_workspace_service::workspaces::Workspaces,
         workspace: &str,
         id: &DocumentId,
-    ) -> Option<automerge::AutoCommit> {
-        let data_home = launcher::appdir::host_data_home().expect("a data home");
-        crate::window_transfer::Profile::of(&data_home, workspace, PROBE)
-            .read(held.port().as_ref(), id.route())
-            .ok()
-            .flatten()
+    ) -> Option<String> {
+        let found = command_in(
+            workspaces,
+            workspace,
+            Command::Get {
+                kind: NOTE.to_owned(),
+                id: id.as_str().to_owned(),
+            },
+        );
+        if !matches!(found, Ok(Reply::Resource(Some(_)))) {
+            return None;
+        }
+        match command_in(
+            workspaces,
+            workspace,
+            Command::Content {
+                kind: NOTE.to_owned(),
+                id: id.as_str().to_owned(),
+            },
+        ) {
+            Ok(Reply::Content(Some(content))) => Some(
+                content
+                    .get("body")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
+            other => panic!("the note's content reads: {other:?}"),
+        }
     }
 
     /// The shell the person is at: the workspace in front, with a strip the app's window takes, and
@@ -1530,9 +1437,10 @@ mod tests {
         }
     }
 
-    /// A window the person moves to another workspace takes the record it shows along: it is kept
-    /// where it went, under an id of its own there, what the window's app wrote before it closed is
-    /// merged in, and the record it left says where it went.
+    /// A window the person moves to another workspace takes the record it shows along: the
+    /// workspace it went to holds the record, under an id of its own there, with what the person
+    /// wrote in it; the app runs there on it, its window takes the tab, and the workspace it left
+    /// holds it no more.
     #[test]
     fn a_moved_window_takes_the_record_it_shows_to_the_workspace_it_moves_to() {
         let _settled = ui::motion::testing::settled();
@@ -1541,42 +1449,19 @@ mod tests {
         shell.carry();
         let (_, arrived) = shell.arrived();
         assert_ne!(
-            arrived.as_str(),
-            showing.id.as_str(),
+            arrived, showing,
             "the record arrives under an id of the workspace it went to"
         );
-        // The app it left writes once more before its window closes.
-        shell.edit(&showing.id, "first draft, last words");
         shell.land();
-        let successor = Successor {
-            workspace: shell.to_id.clone(),
-            document: arrived.as_str().to_owned(),
-            by: shell.session.shared.person.clone(),
-        };
-        let held = shell.held.clone();
-        let from = shell.from.clone();
-        let left = wait(
-            &mut shell.session,
-            "the record it left says where it went",
-            |_| stored_at(&held, &from, &showing.id).and_then(|doc| retirement(&doc)),
+        assert_eq!(
+            shell.note(&shell.to_id, &arrived).as_deref(),
+            Some("first draft"),
+            "the record is kept where it went, holding what the person wrote"
         );
         assert_eq!(
-            left,
-            Retirement::Moved(Some(successor)),
-            "the record it left names where it went and who moved it"
-        );
-        let kept = shell
-            .stored(&shell.to_id, &arrived)
-            .expect("the record is kept where it went");
-        assert_eq!(
-            body(&kept).as_deref(),
-            Some("first draft, last words"),
-            "what the app wrote before it closed came along"
-        );
-        assert_eq!(
-            ui::resource::transfer::provenance(&kept),
-            vec![showing.id.clone()],
-            "and the record it arrived from is its provenance"
+            shell.note(&shell.from, &showing),
+            None,
+            "the workspace it left holds it no more"
         );
         assert_eq!(
             workspace_of(&shell.session, shell.tab),
@@ -1586,10 +1471,10 @@ mod tests {
     }
 
     /// An app that opens no window where the person put its tab: the tab goes back where it was,
-    /// still showing the window it had, the copy the move made where it arrived is retired as one
-    /// nothing opened, the record it left lives on, and the person is told why.
+    /// still showing the window it had, the record goes back to the workspace it left, holding
+    /// what it said, nothing of it stays where the tab went, and the person is told why.
     #[test]
-    fn a_move_whose_app_opens_no_window_puts_the_tab_back() {
+    fn a_move_whose_app_opens_no_window_puts_the_tab_and_its_record_back() {
         // The move gives up on the window a moment from now, rather than after production's half
         // minute: what the person is told and what the tab does are the same, sooner.
         const GIVING_UP: Duration = Duration::from_millis(300);
@@ -1599,26 +1484,10 @@ mod tests {
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         shell.carry();
-        let (_, arrived) = shell.arrived();
+        let _ = shell.arrived();
         // The app starts and runs, but never opens a window there.
-        let said = wait_maybe(
-            &mut shell.session,
-            GIVING_UP.saturating_add(tilo_test_env::hang_bound()),
-            |session| {
-                session
-                    .notifications()
-                    .feed()
-                    .banners
-                    .into_iter()
-                    .find(|banner| banner.notification.title.contains("Probe"))
-            },
-        )
-        .expect("the person is told the record could not go");
-        assert!(
-            !said.notification.body.trim().is_empty(),
-            "and why: {:?}",
-            said.notification.body
-        );
+        let said = shell.told();
+        assert!(!said.trim().is_empty(), "and why: {said:?}");
         assert_eq!(
             workspace_of(&shell.session, shell.tab),
             Some(WorkspaceId::from_u128(1)),
@@ -1632,46 +1501,179 @@ mod tests {
             }),
             "still showing the window it had"
         );
-        let held = shell.held.clone();
-        let to_id = shell.to_id.clone();
-        let retired = wait(&mut shell.session, "the copy it made is retired", |_| {
-            stored_at(&held, &to_id, &arrived).and_then(|doc| retirement(&doc))
-        });
-        assert_eq!(
-            retired,
-            Retirement::Abandoned,
-            "the copy is retired as one nothing opened"
+        let (workspaces, from) = (shell.device.workspaces().clone(), shell.from.clone());
+        let back = wait(
+            &mut shell.session,
+            "the record is back where it was",
+            |_| note_in(&workspaces, &from, &showing),
         );
-        let left = shell
-            .stored(&shell.from, &showing.id)
-            .expect("the record it showed lives on");
-        assert_eq!(
-            retirement(&left),
-            None,
-            "the record it left still belongs where it is"
+        assert_eq!(back, "first draft", "saying what it said");
+        assert!(
+            shell.notes(&shell.to_id).is_empty(),
+            "nothing of it stays where the tab went"
         );
-        assert_eq!(body(&left).as_deref(), Some("first draft"));
     }
 
-    /// [`wait`] with a bound of its own: a step of the product is timed out before the move
-    /// answers.
-    #[track_caller]
-    fn wait_maybe<T>(
-        session: &mut Session,
-        within: Duration,
-        mut asked: impl FnMut(&Session) -> Option<T>,
-    ) -> Option<T> {
-        let deadline = std::time::Instant::now()
-            .checked_add(within)
-            .expect("a test deadline");
-        loop {
-            if let Some(answer) = asked(session) {
-                return Some(answer);
-            }
-            if std::time::Instant::now() >= deadline {
-                return None;
-            }
-            session.step(Duration::from_millis(1)).expect("a frame");
+    /// What the person typed just before moving the window is in the record where it went: the
+    /// move waits until the window's app saved what it shows, and nothing moves before.
+    #[test]
+    fn an_edit_made_just_before_a_move_arrives_where_the_window_went() {
+        let _settled = ui::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        let token = shell.carry_asking();
+        for _ in 0..5 {
+            shell
+                .session
+                .step(Duration::from_millis(1))
+                .expect("a frame");
         }
+        assert_eq!(
+            shell.note(&shell.from, &showing).as_deref(),
+            Some("first draft"),
+            "nothing moves before the app saved"
+        );
+        shell.typed(&showing, ", and the last word");
+        shell.saved(token);
+        let (_, arrived) = shell.arrived();
+        shell.land();
+        assert_eq!(
+            shell.note(&shell.to_id, &arrived).as_deref(),
+            Some("first draft, and the last word"),
+            "the record arrives with everything the person typed"
+        );
+        assert_eq!(shell.note(&shell.from, &showing), None);
+    }
+
+    /// A window whose app cannot save what it shows stays where it is with its record, and the
+    /// person is told: moving it would leave what they typed last behind.
+    #[test]
+    fn a_move_whose_app_cannot_save_leaves_everything_where_it_was() {
+        let _settled = ui::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        let token = shell.carry_asking();
+        shell.answer(&HandoffReport::Failed {
+            token,
+            reason: "the disk is full".to_owned(),
+        });
+        refused(&mut shell, &showing, "window-move-reason-unsaved");
+    }
+
+    /// A move into a workspace where the person may not write the app's records is refused: the
+    /// tab stays where it was with the window it had, the record stays in the workspace it is in,
+    /// saying what it said, nothing of it is written where the tab was going, and the person is
+    /// told.
+    #[test]
+    fn a_move_into_a_workspace_the_person_may_not_write_leaves_everything_where_it_was() {
+        let _settled = ui::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.grant(&shell.from.clone(), tilo_action_policy::Answer::Allow);
+        shell.grant(&shell.to_id.clone(), tilo_action_policy::Answer::Deny);
+        shell.carry();
+        refused(&mut shell, &showing, "window-move-reason-record");
+    }
+
+    /// A move out of a workspace where the person may not remove the app's records is refused
+    /// alike, though they may write them where the tab was going.
+    #[test]
+    fn a_move_out_of_a_workspace_the_person_may_not_remove_from_leaves_everything_where_it_was() {
+        let _settled = ui::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.grant(&shell.from.clone(), tilo_action_policy::Answer::Deny);
+        shell.grant(&shell.to_id.clone(), tilo_action_policy::Answer::Allow);
+        shell.carry();
+        refused(&mut shell, &showing, "window-move-reason-record");
+    }
+
+    /// The move `shell` made of the window showing `showing` was not made, and the person was told
+    /// `why` (a message key); nothing of it was done in either workspace.
+    #[track_caller]
+    fn refused(shell: &mut Shell, showing: &DocumentId, why: &str) {
+        let said = shell.told();
+        assert!(said.contains(&t(why)), "the person is told why: {said:?}");
+        assert_eq!(
+            starts(&shell.started),
+            1,
+            "no app starts where the tab was going"
+        );
+        assert_eq!(
+            workspace_of(&shell.session, shell.tab),
+            Some(WorkspaceId::from_u128(1)),
+            "the tab is where it was"
+        );
+        assert_eq!(
+            tile_of(&shell.session, shell.tab),
+            Some(TileContent::Foreign {
+                surface_id: 11,
+                app_id: PROBE.into()
+            }),
+            "showing the window it had"
+        );
+        assert_eq!(
+            shell.note(&shell.from, showing).as_deref(),
+            Some("first draft"),
+            "the record is where it was, saying what it said"
+        );
+        assert!(
+            shell.notes(&shell.to_id).is_empty(),
+            "nothing of it is written where the tab was going"
+        );
+    }
+
+    /// A move of a record someone removed while its window was open, which the workspace keeps
+    /// no more and so cannot move: the tab stays where it was with the window it had, nothing is
+    /// written where the tab was going, and the person is told.
+    #[test]
+    fn a_move_of_a_record_removed_meanwhile_leaves_the_tab_where_it_was() {
+        let _settled = ui::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        let removed = shell.command(
+            &shell.from,
+            Command::Remove {
+                kind: NOTE.to_owned(),
+                id: showing.as_str().to_owned(),
+                stamp: tilo_resource_store::Stamp {
+                    verb: "write".to_owned(),
+                    invocation: uuid::Uuid::new_v4().to_string(),
+                    ..tilo_resource_store::Stamp::default()
+                },
+            },
+        );
+        assert!(
+            matches!(removed, Ok(Reply::Written)),
+            "someone removes the note: {removed:?}"
+        );
+        shell.carry();
+        let said = shell.told();
+        assert!(
+            said.contains(&t("window-move-reason-record")),
+            "the person is told the record could not be moved: {said:?}"
+        );
+        assert_eq!(
+            starts(&shell.started),
+            1,
+            "no app starts where the tab was going"
+        );
+        assert_eq!(
+            workspace_of(&shell.session, shell.tab),
+            Some(WorkspaceId::from_u128(1)),
+            "the tab is where it was"
+        );
+        assert_eq!(
+            tile_of(&shell.session, shell.tab),
+            Some(TileContent::Foreign {
+                surface_id: 11,
+                app_id: PROBE.into()
+            }),
+            "showing the window it had"
+        );
+        assert!(
+            shell.notes(&shell.to_id).is_empty(),
+            "nothing of it is written where the tab was going"
+        );
     }
 }

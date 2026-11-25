@@ -152,12 +152,10 @@ impl TestDaemon {
     pub(crate) fn writing(workspaces: &[&str]) -> Self {
         let daemon = Self::holding(workspaces);
         let service = daemon.workspaces().clone();
-        service.set_member_device(Arc::new(
-            tilo_workspace_service::workspaces::MemberDevice {
-                cert: daemon.cert.clone(),
-                signer: Arc::new(daemon.key.clone()),
-            },
-        ));
+        service.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+            cert: daemon.cert.clone(),
+            signer: Arc::new(daemon.key.clone()),
+        }));
         for workspace in workspaces {
             let route = tilo_peer_state::document_frame::DocumentRoute {
                 app_id: crate::references::REFERENCES_APP.into(),

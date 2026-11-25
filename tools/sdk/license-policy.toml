@@ -241,7 +241,7 @@ toolkit_reaches = [
     "tilo-wake",                        # crates/platform/tilo-wake
     # A theme's painter set runs on the machine code the device's daemon compiled for it, which
     # the toolkit deserializes with wasmtime's runtime; MIT, no Tilo crate of its own.
-    "tilo-wasm-aot",                    # crates/core/tilo-wasm-aot
+    "tilo-wasm-aot",                    # crates/platform/tilo-wasm-aot
     "tilo-wasm-host",                   # crates/core/tilo-wasm-host
     "tilo-webview",                     # crates/engines/tilo-webview
     "tilo-wgpu",                        # vendor/wgpu

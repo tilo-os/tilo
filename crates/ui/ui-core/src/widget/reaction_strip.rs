@@ -29,6 +29,8 @@ pub enum StripHit {
     Toggle(String),
     /// The add button, at `anchor`: open the emoji picker there.
     Add { anchor: Rect },
+    /// The face of a member who reacted, on a pill that shows faces: who they are.
+    Person(MemberId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +107,8 @@ pub struct StripLayout {
     minimum_target: f64,
     /// How the faces of who reacted stand at the end of each pill, when they show.
     faces: Option<FaceStack>,
+    /// How far the faces end before a pill's trailing edge.
+    face_pad: f64,
 }
 
 /// How wide `emoji` is drawn in a pill: a square for a picture or a
@@ -243,6 +247,7 @@ pub fn layout(
         can_react,
         minimum_target: 0.0,
         faces: metrics.faces,
+        face_pad: metrics.pad_x,
     }
 }
 
@@ -315,8 +320,19 @@ impl StripLayout {
     /// What is at `point`: the control whose face holds it, else the one
     /// whose grown target does. A pill of someone who may not react is not a
     /// control.
+    ///
+    /// A member's face on a pill is theirs, whoever looks: choosing it says who they are, so it is
+    /// a control even where the person may not react, and its own face alone, never grown, so the
+    /// pill under it stays the pill.
     #[must_use]
     pub fn hit(&self, point: Point) -> Option<StripHit> {
+        if let Some((_, who)) = self
+            .member_faces()
+            .into_iter()
+            .find(|(face, _)| face.contains(point))
+        {
+            return Some(StripHit::Person(who));
+        }
         if !self.can_react {
             return None;
         }
@@ -340,6 +356,35 @@ impl StripLayout {
             .collect()
     }
 
+    /// Where each member's face stands on the pills that show faces, and who they are: the
+    /// faces a pill shows before the badge counting the rest, the members' ahead of the names
+    /// given elsewhere, which carry no member.
+    #[must_use]
+    pub fn member_faces(&self) -> Vec<(Rect, MemberId)> {
+        let Some(stack) = self.faces else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for pill in &self.pills {
+            let (shown, more) = stack.group(pill.reactors.len() + pill.relayed.len());
+            let slots = stack.slots(
+                (pill.rect.x1 - self.face_pad, pill.rect.center().y),
+                shown,
+                more,
+            );
+            found.extend(
+                slots
+                    .into_iter()
+                    .zip(&pill.reactors)
+                    .map(|(face, reactor)| (face, reactor.by.clone())),
+            );
+        }
+        found
+    }
+
+    /// The controls the keyboard steps through, where each is pressed, for a person who may
+    /// react: the pills, the add button, then the members' faces. Someone who may not react
+    /// steps through none of them; they choose a face with the pointer or assistive technology.
     #[must_use]
     pub fn targets(&self) -> Vec<(Rect, StripHit)> {
         if !self.can_react {
@@ -348,6 +393,11 @@ impl StripLayout {
         self.faces()
             .into_iter()
             .map(|(face, hit)| (self.target(face), hit))
+            .chain(
+                self.member_faces()
+                    .into_iter()
+                    .map(|(face, who)| (face, StripHit::Person(who))),
+            )
             .collect()
     }
 
@@ -613,7 +663,20 @@ impl ReactionStrip {
 
     #[must_use]
     pub fn accessibility(&self) -> Vec<AccessNode> {
-        self.layout.accessibility()
+        let mut nodes = self.layout.accessibility();
+        // Each member's face is a button naming them: choosing it says who they are.
+        nodes.extend(self.layout.member_faces().into_iter().map(|(face, who)| {
+            let name = self
+                .people
+                .get(&who)
+                .map_or_else(|| who.id().to_owned(), |person| person.name.clone());
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_bounds(face)
+                .with_hashed_key(("reaction-person", who.id()))
+                .with_state(AccessState::new().focusable(true))
+        }));
+        nodes
     }
 
     #[must_use]
@@ -678,6 +741,15 @@ impl ReactionStrip {
             if matches!(focus, Some(StripHit::Add { .. })) {
                 paint_ring(ctx, add);
             }
+        }
+        if let Some(StripHit::Person(focused)) = focus
+            && let Some((face, _)) = self
+                .layout
+                .member_faces()
+                .into_iter()
+                .find(|(_, who)| who == focused)
+        {
+            paint_ring(ctx, face.inflate(Face::REACH, Face::REACH));
         }
     }
 }

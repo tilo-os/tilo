@@ -92,13 +92,6 @@ pub enum LineSource {
     Observed,
 }
 
-/// Direction of a transient attachment relative to one roster row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RosterFollowRelationship {
-    Follows(String),
-    FollowedBy(String),
-}
-
 /// Say on each follower's row whom they follow, from `pairs` of `(follower, followed)` roster ids: "Following Ada", or "Following you" when they follow this person (`own_id`).
 pub fn note_following(rows: &mut [RosterRow], pairs: &[(String, String)], own_id: Option<&str>) {
     for (follower, followed) in pairs {
@@ -158,6 +151,14 @@ pub fn joined_line(row: &RosterRow) -> Option<String> {
     row.joined_line.clone()
 }
 
+/// The roster's header line: who is here besides this person, counted as the list is — the others,
+/// never this person, who is the "you" of the words ("2 here" over one row reads as someone
+/// missing).
+#[must_use]
+pub fn here_line(others: usize) -> String {
+    t_args("people-panel-here-count", &[("count", others.into())])
+}
+
 /// Whether the line under someone's name is software's words about them (a model's, or the host's reading of what they did), not theirs: it carries the automatic mark.
 #[must_use]
 pub fn says_automatically(row: &RosterRow) -> bool {
@@ -165,4 +166,18 @@ pub fn says_automatically(row: &RosterRow) -> bool {
         && row.status.as_ref().is_some_and(|status| {
             status.source != LineSource::Written && !status.text.trim().is_empty()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::here_line;
+
+    /// The header counts who the list shows, besides this person.
+    #[test]
+    fn the_header_counts_the_people_listed() {
+        ui::i18n::I18nManager::init("en-US");
+        assert_eq!(here_line(0), "Just you");
+        assert_eq!(here_line(1), "You and 1 other");
+        assert_eq!(here_line(3), "You and 3 others");
+    }
 }

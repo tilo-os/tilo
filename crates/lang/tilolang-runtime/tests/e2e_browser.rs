@@ -468,10 +468,11 @@ mod cases {
         );
     }
 
-    /// A download that failed says why in the job's words, and Retry starts a new job that the
-    /// download keeps.
+    /// A download that failed says why in the job's words. Retry asks the page what a request
+    /// for the address carries now, so the retry is as signed in as the page; the window's call
+    /// that follows starts a new job, which the download keeps.
     #[test]
-    fn a_failed_download_says_why_and_a_retry_is_a_new_job() {
+    fn a_failed_download_says_why_and_a_retry_is_a_new_job_as_signed_in_as_the_page() {
         let b = Browser::new();
         b.page(
             "download",
@@ -489,9 +490,25 @@ mod cases {
         );
         let retry = button_key(&view, "Retry");
         view.fire(&retry, "press").unwrap();
+        assert_eq!(b.page.ops(), ["download_again"], "the page is asked again");
+        assert_eq!(b.page.last()["url"], "https://example.org/files/map.pdf");
+        assert_eq!(b.page.last()["job"], "browser-1");
+        assert_eq!(
+            b.device.started.borrow().len(),
+            1,
+            "nothing starts before the page answers"
+        );
+
+        // The window's call once the page answered: the job it ended as, and a fresh handle.
+        let again = [
+            ("url", Value::text("https://example.org/files/map.pdf")),
+            ("request", Value::text("5e6f")),
+            ("again", Value::text("browser-1")),
+        ];
+        b.page("download", &again);
         let started = b.device.started.borrow().clone();
         assert_eq!(started.len(), 2, "a retry starts the download again");
-        assert_eq!(started[1].1["url"], "https://example.org/files/map.pdf");
+        assert_eq!(started[1].1["request"], "5e6f", "signed in, as the page is");
         let downloads = b.rt.project(&b.read(&b.root, "downloads"));
         assert_eq!(
             downloads["items"][0]["fields"]["job"].as_str(),
@@ -499,6 +516,66 @@ mod cases {
             "the download keeps its new job"
         );
         assert_eq!(downloads["items"].as_array().map(Vec::len), Some(1));
+
+        // A second answer for the same retry starts nothing more.
+        b.page("download", &again);
+        assert_eq!(b.device.started.borrow().len(), 2);
+        let downloads = b.rt.project(&b.read(&b.root, "downloads"));
+        assert_eq!(downloads["items"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// A download an extension started is the page engine's to save, and the one list shows it
+    /// with the Browser's own: how far it came, then Open and Show in Files where it was saved.
+    #[test]
+    fn an_extensions_download_is_in_the_one_list_with_its_progress() {
+        let b = Browser::new();
+        let seen = |state: &str, received: i64, path: &str| {
+            vec![
+                ("id", Value::Int(4)),
+                ("state", Value::text(state)),
+                ("name", Value::text("kept.bin")),
+                ("url", Value::text("https://example.org/kept.bin")),
+                ("path", Value::text(path)),
+                ("received", Value::Int(received)),
+                ("total", Value::Int(8192)),
+                ("error", Value::text("")),
+            ]
+        };
+        b.page("note_extension_download", &seen("progress", 2048, ""));
+        let view = b.page_view();
+        assert_eq!(row_secondary(&view, "kept.bin"), "2.0 KB of 8.1 KB");
+        assert_eq!(of_kind(view.tree(), "ui.ProgressBar").len(), 1);
+        assert!(
+            plain_button(&view, "Cancel").is_none(),
+            "the extension that started it is the one that stops it"
+        );
+
+        b.page(
+            "note_extension_download",
+            &seen("complete", 8192, "/home/ada/Downloads/kept.bin"),
+        );
+        let view = b.page_view();
+        assert_eq!(
+            row_secondary(&view, "kept.bin"),
+            "Saved to /home/ada/Downloads/kept.bin"
+        );
+        let downloads = b.rt.project(&b.read(&b.root, "downloads"));
+        assert_eq!(
+            downloads["items"].as_array().map(Vec::len),
+            Some(1),
+            "one download, however often it moved"
+        );
+        let open = button_key(&view, "Open");
+        view.fire(&open, "press").unwrap();
+        assert_eq!(
+            b.files.opened.borrow().as_slice(),
+            ["/home/ada/Downloads/kept.bin"]
+        );
+        assert!(plain_button(&view, "Show in Files").is_some());
+        assert!(
+            b.device.started.borrow().is_empty(),
+            "the Browser fetches nothing of it"
+        );
     }
 
     /// A finished download offers Open and Show in Files, at the path its job saved it to.

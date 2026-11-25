@@ -451,8 +451,6 @@ d-vbu6ayw5 = Bild
     .w-saved-media = Gespeicherte Medien
     .w-remove = { $label } entfernen
     .w-pigment = Pigment
-    .w-versions = Versionen
-    .w-clear-the-comparison = Den Vergleich löschen
     .w-gradient = Verlauf
     .w-linear-into-the-paint = Linear, in die Farbe
     .w-radial-from-the-centre = Radial, aus der Mitte
@@ -2004,6 +2002,12 @@ d-5xl54bdv = Versionen vergleichen
 
 d-5xl54bdv-change = Änderung
 
+d-zlbwseve = Mit einer Version vergleichen
+    .doc = Vergleicht das Bild mit seiner Version an der Stelle `place` der Zeitleiste, die älteste bei `0.0`.
+    .did = verglich Versionen
+
+d-zlbwseve-place = Stelle
+
 d-pnnlowuw = Den Vergleich löschen
     .doc = Nimmt den Versionsvergleich von der Fläche.
     .did = löschte einen Vergleich
@@ -2323,3 +2327,8 @@ d-x75ur66o = Bildbereich
     .w-black-and-white = Schwarzweiß
     .w-un-invert = Invertierung aufheben
     .w-invert = Invertieren
+
+d-7ycx6t2x = Versionszeitleiste
+    .w-versions = Versionen
+    .w-versions-of = Versionen von { $title }
+    .w-back-to-now = Zurück zu jetzt

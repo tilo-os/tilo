@@ -20,8 +20,8 @@ pub trait ContinuationServices: Send + Sync {
         app: &str,
         instance: u64,
     ) -> Result<(), String>;
-    /// One application instance answering a handoff request, or reporting that the document it
-    /// shows arrived retired. `message` is an encoded `collab_types::handoff::HandoffReport`.
+    /// One window's app answering a handoff request. `message` is an encoded
+    /// `collab_types::handoff::HandoffReport`.
     fn handoff(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,

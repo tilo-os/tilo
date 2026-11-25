@@ -775,12 +775,18 @@ pub fn device_daemon(home: tilo_test_env::TestHome, name: Option<&str>) -> Devic
     // This computer's person is founded by its daemon, as the first set-up on a machine founds
     // them: their root stays with this account, their certificate names this device, and their
     // services start once it does.
-    tilo_api::daemon::DaemonPlace::at(&sockets, profile.path())
-        .found(&tilo_api::daemon::Founding {
+    let founded = tilo_api::daemon::DaemonPlace::at(&sockets, profile.path()).found(
+        &tilo_api::daemon::Founding {
             name: name.map(str::to_owned),
             ..tilo_api::daemon::Founding::default()
-        })
-        .expect("this computer's person is founded");
+        },
+    );
+    if let Err(error) = founded {
+        // A daemon that ended while founding took its endpoint with it, so the refusal only
+        // says nothing answers: what it stopped with says why.
+        let stopped = daemon.stop();
+        panic!("this computer's person is founded: {error}; the daemon stopped: {stopped:?}");
+    }
     let person = match daemon.person(within) {
         Ok(person) => person,
         Err(error) => {

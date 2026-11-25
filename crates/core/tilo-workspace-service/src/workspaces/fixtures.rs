@@ -1265,11 +1265,11 @@ pub async fn membership_log_alone(
 }
 
 /// The runs a test's broker was asked to start, each of which ran to its end at once.
-#[cfg(feature = "apps")]
+#[cfg(feature = "agents")]
 #[derive(Default)]
 pub struct Started(pub Mutex<Vec<crate::apps::triggers::Firing>>);
 
-#[cfg(feature = "apps")]
+#[cfg(feature = "agents")]
 impl crate::apps::triggers::StartRun for Started {
     fn start(
         &self,

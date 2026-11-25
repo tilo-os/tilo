@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
         );
         let export = json!({"event":"download", "id":1, "state":"progress",
         "path":"", "name":"export.csv", "url":format!("data:text/csv,{}", "a".repeat(20_000)),
-        "retryable":true, "received":0.0, "total":20_000.0, "error":""});
+        "retryable":true, "extension":false, "received":0.0, "total":20_000.0, "error":""});
         assert!(validate_event(&export).is_ok());
         assert!(matches!(
             decode_event(&export),
@@ -312,7 +312,7 @@ tilo_test_env::scenario! {
         assert!(validate_event(&json!({"event":"download","id":1,"state":"invented"})).is_err());
         let update = json!({
             "event":"download","id":9,"state":"failed","path":"","name":"archive.zip",
-            "url":"https://downloads.test/archive.zip","retryable":true,"received":128.0,"total":1024.0,
+            "url":"https://downloads.test/archive.zip","retryable":true,"extension":true,"received":128.0,"total":1024.0,
             "error":"connection reset"
         });
         assert!(validate_event(&update).is_ok());
@@ -328,6 +328,7 @@ tilo_test_env::scenario! {
                 received: 128,
                 total: 1024,
                 error: "connection reset".into(),
+                extension: true,
             })
         );
         assert_eq!(
@@ -344,7 +345,7 @@ tilo_test_env::scenario! {
         let request = json!({
             "event":"download_request","tab":2,"id":9,"url":"https://downloads.test/archive.zip",
             "name":"archive.zip","referrer":"https://downloads.test/","cookies":"session=abc",
-            "user_agent":"Chromium"
+            "user_agent":"Chromium","again":false
         });
         assert!(validate_event(&request).is_ok());
         assert_eq!(
@@ -356,8 +357,21 @@ tilo_test_env::scenario! {
                 referrer: "https://downloads.test/".into(),
                 cookies: "session=abc".into(),
                 user_agent: "Chromium".into(),
+                again: false,
             })
         );
+        assert_eq!(
+            encode_command(WebViewCommand::RequestDownload {
+                id: 3,
+                uri: "https://downloads.test/archive.zip".into(),
+            }),
+            Some(json!({"op":"download_request","id":3,"url":"https://downloads.test/archive.zip"})),
+            "a retried download asks its tab again for what its request carries"
+        );
+        assert!(!command_within_limits(&WebViewCommand::RequestDownload {
+            id: 3,
+            uri: "file:///etc/passwd".into(),
+        }));
         let mut untabbed = request.clone();
         untabbed.as_object_mut().unwrap().remove("tab");
         assert!(
@@ -474,6 +488,7 @@ tilo_test_env::scenario! {
             received,
             total: 1000,
             error: String::new(),
+            extension: false,
         };
         for received in 0..1000 {
             queue_download_event(&queue, update(1, "progress", received));
@@ -516,7 +531,7 @@ tilo_test_env::scenario! {
     {
         let base = json!({"event":"download", "id":1, "state":"progress",
         "path":"", "name":"fixture", "url":"https://example.test/file",
-        "retryable":true, "received":12.0, "total":100.0, "error":""});
+        "retryable":true, "extension":false, "received":12.0, "total":100.0, "error":""});
         assert!(validate_event(&base).is_ok());
         assert!(matches!(
             decode_event(&base),

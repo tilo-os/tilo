@@ -12,8 +12,6 @@ use tilo_actions::{
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{ObjType, ROOT, ReadDoc};
 use tilo_app::prelude::*;
-use tilo_app::resource::DocumentId;
-use tilo_app::resource::transfer::Origin;
 use tilo_app_test_host::TestApp;
 use tilo_automerge::ReadTyped as _;
 use tilo_resource::{ActionDecl, Doc, Invoke, ModelError};
@@ -288,7 +286,7 @@ tilo_test_env::scenario! {
         assert_eq!(ids, ["local", "remote"]);
     }
 
-    phase collaboration_and_history_survive_a_move_into_another_workspace;
+    phase a_members_action_is_history_where_it_merges;
     {
         let mut app = TestApp::<JobApp>::new().unwrap();
         app.invoke(create("local")).unwrap();
@@ -314,56 +312,6 @@ tilo_test_env::scenario! {
             summaries.iter().any(|summary| summary.contains("Create")),
             "a member's action is history: {summaries:?}"
         );
-
-        let source = app.read_document(Clone::clone);
-        let carried: Vec<_> = tilo_resource::history::versions(&mut source.clone())
-            .into_iter()
-            .map(|version| version.hash)
-            .collect();
-        assert!(!carried.is_empty());
-        let origin = tilo_app::resource::identity(&source).expect("record identity");
-        let from = tilo_app::resource::workspace_scope(&source).expect("workspace scope");
-        let target = DocumentId::minted();
-        let mut arrived = tilo_app::resource::transfer::rehome(
-            &source,
-            &Origin::Record(origin.clone()),
-            &from,
-            "governed-workspace",
-            &target,
-        )
-        .expect("a resource document moves with its history");
-
-        let mut arrived_ids = Job::read(&arrived).unwrap();
-        arrived_ids.sort();
-        assert_eq!(arrived_ids, ["local".to_string(), "remote".to_string()]);
-        assert_eq!(
-            tilo_app::resource::former_identities(&arrived),
-            vec![origin.id]
-        );
-        assert!(
-            arrived.get(ROOT, "tilo:records").unwrap().is_none(),
-            "a document listing other records cannot join a workspace"
-        );
-        let (_, meta) = arrived.get(ROOT, "tilo:record").unwrap().expect("meta");
-        let foreign: Vec<_> = arrived
-            .keys(&meta)
-            .filter(|key| !IMPORTABLE_META.contains(&key.as_str()))
-            .collect();
-        assert!(
-            foreign.is_empty(),
-            "meta keys a governed import would refuse: {foreign:?}"
-        );
-        let arrived_hashes: Vec<_> = tilo_resource::history::versions(&mut arrived)
-            .into_iter()
-            .map(|version| version.hash)
-            .collect();
-        for hash in &carried {
-            assert!(
-                arrived_hashes.contains(hash),
-                "the move dropped a change from the resource history"
-            );
-        }
-        assert!(arrived_hashes.len() > carried.len());
     }
 }
 
@@ -374,15 +322,3 @@ fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
         .map(|context| reader.sentence(context))
         .collect()
 }
-
-/// What #1300's `validate_import` allows in a record's meta map. A resource
-/// document that grows any other key cannot be carried into a governed workspace.
-const IMPORTABLE_META: &[&str] = &[
-    "id",
-    "kind",
-    "home",
-    "workspace",
-    "formerly",
-    "refs",
-    "blobs",
-];

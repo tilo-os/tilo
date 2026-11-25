@@ -1306,7 +1306,7 @@ mod cases {
                 text_of(&g.rt.read(&photo, "edited").unwrap()),
                 "the viewer draws the edit"
             );
-            let before = g.control(&page, "ui.Button", "label", "Before");
+            let before = Gallery::control(&page, "ui.Button", "label", "Before");
             page.press(&before).unwrap();
             page.poll_patches().unwrap();
             assert_eq!(
@@ -1315,7 +1315,7 @@ mod cases {
                 "before shows the photograph as it came"
             );
             assert!(
-                g.texts(&page).iter().any(|text| text == "Before the edits"),
+                Gallery::texts(&page).iter().any(|text| text == "Before the edits"),
                 "the window says which it shows"
             );
             // Putting it back leaves the photograph as it came, and nothing edited.
@@ -1334,10 +1334,10 @@ mod cases {
             ));
             let mut page = g.open("library", vec![Value::resource(&g.lib)]);
             // The person starts an album, names it, and chooses the photo in the library.
-            let new_album = g.control(&page, "ui.Button", "label", "New album");
+            let new_album = Gallery::control(&page, "ui.Button", "label", "New album");
             page.press(&new_album).unwrap();
             page.poll_patches().unwrap();
-            let name = g.control(&page, "ui.TextInput", "placeholder", "Album name");
+            let name = Gallery::control(&page, "ui.TextInput", "placeholder", "Album name");
             page.edit(&name, &Value::text("Harbour days")).unwrap();
             let card = of_kind(page.tree(), "ui.MediaCard")
                 .into_iter()
@@ -1347,7 +1347,7 @@ mod cases {
                 .clone();
             page.fire(&card, "activate").unwrap();
             page.poll_patches().unwrap();
-            let save = g.control(&page, "ui.Button", "label", "Save album");
+            let save = Gallery::control(&page, "ui.Button", "label", "Save album");
             page.press(&save).unwrap();
             page.poll_patches().unwrap();
             let albums = g.records("albums");
@@ -1355,7 +1355,7 @@ mod cases {
             assert_eq!(g.rt.read(&albums[0], "name").unwrap(), Value::text("Harbour days"));
             assert_eq!(g.ids_of(&albums[0], "photos"), vec![harbour.id_string()]);
             assert!(
-                !g.texts(&page).iter().any(|t| t == "Choose the photos for this album."),
+                !Gallery::texts(&page).iter().any(|t| t == "Choose the photos for this album."),
                 "saving closes the draft:\n{}",
                 dump(page.tree())
             );
@@ -1406,7 +1406,7 @@ mod cases {
             )
             .unwrap();
             let page = g.open("analysis_page", vec![Value::resource(&g.lib)]);
-            let texts = g.texts(&page);
+            let texts = Gallery::texts(&page);
             assert!(texts.iter().any(|t| t == "Finished"), "{texts:?}");
             assert!(texts.iter().any(|t| t == "3 of 3 finished, 1 failed"), "{texts:?}");
             let properties: Vec<(String, String)> = of_kind(page.tree(), "ui.Property")
@@ -1434,7 +1434,7 @@ mod cases {
             );
             // Retrying asks the device to read only the pictures that failed.
             let mut page = page;
-            let retry = g.control(&page, "ui.Button", "label", "Retry failed photos");
+            let retry = Gallery::control(&page, "ui.Button", "label", "Retry failed photos");
             page.press(&retry).unwrap();
             assert_eq!(g.vision.asked.borrow().as_slice(), ["retry"]);
         }
@@ -1466,9 +1466,9 @@ mod cases {
                 vec![Value::resource(&g.lib), Value::resource(&photo)],
             );
             assert!(
-                g.texts(&details).iter().any(|t| t == "A dog beside a bicycle"),
+                Gallery::texts(&details).iter().any(|t| t == "A dog beside a bicycle"),
                 "the details say what it shows: {:?}",
-                g.texts(&details)
+                Gallery::texts(&details)
             );
             let chips: Vec<String> = of_kind(details.tree(), "ui.Chip")
                 .into_iter()

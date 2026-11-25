@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
-use tilo_tiles::{Area, Tiles};
+use tilo_tiles::{Area, AreaBounds, Tiles};
 use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, State};
 
 /// The app whose engine this is: the one that asks these ops, and no other.
@@ -261,12 +261,14 @@ impl Provider for Maps {
         let area = Area::new(
             ask.id,
             ask.name,
-            ask.north,
-            ask.south,
-            ask.east,
-            ask.west,
-            ask.least_zoom,
-            ask.most_zoom,
+            AreaBounds {
+                north: ask.north,
+                south: ask.south,
+                east: ask.east,
+                west: ask.west,
+                least_zoom: ask.least_zoom,
+                most_zoom: ask.most_zoom,
+            },
             ask.basemap,
         );
         self.begin(job, area, moved)

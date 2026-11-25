@@ -5,7 +5,7 @@
 
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::component::{Described, Event, Fired, Intent, Value};
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::widget::{Stage, StagePinProps, StageProps, Widget};
 use tilo_ui::{
     Intents, State, Theme, accesskit, collaboration, font_catalog, synthetic_input, text_selection,
@@ -31,7 +31,7 @@ fn fitted() -> (f64, f64, f64) {
 
 /// A stage holding one text box of `markdown`, as a slide holds one, with the queue its parts
 /// report to.
-fn slide_box(markdown: &str) -> (FrameHarness, Intents<Fired>) {
+fn slide_box(markdown: &str) -> (Driver, Intents<Fired>) {
     let queue = Intents::default();
     let stage = Stage::from_props(
         "stage",
@@ -56,7 +56,7 @@ fn slide_box(markdown: &str) -> (FrameHarness, Intents<Fired>) {
             ..StageProps::default()
         },
     );
-    let host = FrameHarness::new_with_controlled_inputs(
+    let host = Driver::new_with_controlled_inputs(
         State::new(),
         Box::new(stage),
         DEVICE,
@@ -68,7 +68,7 @@ fn slide_box(markdown: &str) -> (FrameHarness, Intents<Fired>) {
 }
 
 /// The box's editor, the widget the stage places on its page.
-fn editor(host: &mut FrameHarness) -> &mut BlockEditor {
+fn editor(host: &mut Driver) -> &mut BlockEditor {
     use tilo_ui::component::PartViews;
     host.root_widget_mut()
         .as_any_mut()
@@ -91,14 +91,14 @@ fn in_the_words() -> (f64, f64) {
 }
 
 /// Click in the box's words, as a person does to start typing there.
-fn click_in(host: &mut FrameHarness) {
+fn click_in(host: &mut Driver) {
     let (x, y) = in_the_words();
     host.click_at(x, y);
 }
 
 /// What the person has selected in the box: a range across blocks, or else the words the line
 /// under the caret selected within itself — both are selections the person sees.
-fn selected_words(host: &mut FrameHarness) -> Option<String> {
+fn selected_words(host: &mut Driver) -> Option<String> {
     let editor = editor(host);
     if let Some(text) = editor.selected_text() {
         return Some(text);
@@ -249,7 +249,7 @@ fn a_slide_box_formats_the_words_a_person_selected_with_the_chord() {
 }
 
 /// A slide stage holding `count` text boxes on the page, each a line of its own.
-fn deck(count: i64) -> (FrameHarness, Intents<Fired>) {
+fn deck(count: i64) -> (Driver, Intents<Fired>) {
     let queue = Intents::default();
     let pins = (0..count)
         .map(|index| StagePinProps {
@@ -280,7 +280,7 @@ fn deck(count: i64) -> (FrameHarness, Intents<Fired>) {
             ..StageProps::default()
         },
     );
-    let host = FrameHarness::new(State::new(), Box::new(stage), DEVICE);
+    let host = Driver::new(State::new(), Box::new(stage), DEVICE);
     (host, queue)
 }
 

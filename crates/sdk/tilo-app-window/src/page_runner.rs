@@ -41,9 +41,7 @@ pub fn engine_of(page: &Page) -> SharedEngine {
 /// second `ui.WebView`, and its one session reads that engine's events.
 #[must_use]
 pub fn panel_engine(page: &Page) -> Option<SharedEngine> {
-    page.borrow()
-        .as_ref()
-        .and_then(PageSession::panel_engine)
+    page.borrow().as_ref().and_then(PageSession::panel_engine)
 }
 
 /// The workspace's vault, which keeps the page's logins, asked on this window's own connection
@@ -122,7 +120,11 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             let session = held
                 .as_mut()
                 .ok_or_else(|| "this window has no page".to_owned())?;
-            let addressed = extension.map(|id| tilo_page_engine::Addressed { id, name, text: rest });
+            let addressed = extension.map(|id| tilo_page_engine::Addressed {
+                id,
+                name,
+                text: rest,
+            });
             session.address_typed(&text, addressed.as_ref());
             Ok(Asked::Answered(codec::accepted()))
         }
@@ -140,6 +142,15 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
                 return Ok(Asked::Answered(codec::accepted()));
             };
             session.address_left();
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        codec::Ask::DownloadAgain { url, job } => {
+            let _ = engine_of(page);
+            let mut held = page.borrow_mut();
+            let session = held
+                .as_mut()
+                .ok_or_else(|| "this window has no page".to_owned())?;
+            session.download_again(&url, &job);
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::PanelClose => {

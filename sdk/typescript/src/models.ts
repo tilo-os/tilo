@@ -564,6 +564,9 @@ export interface StreamEvent {
   sentence: string | null;
   /** Who made the change. */
   by: string | null;
+  /** The action the change was made by (`ban`, `new_channel`), as its author stamped it; null
+   * for a change that names none. Its arguments never travel here. */
+  verb: string | null;
   /** The records a change wrote: each with its `path`, and its `app`,
    * `record` and `item` where the change names them. */
   resources: Record<string, unknown>[];

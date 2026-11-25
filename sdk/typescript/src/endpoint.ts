@@ -541,6 +541,7 @@ function eventOf(kind: string | null, data: unknown, cursor: string | null = nul
     change: textOf(raw.change),
     sentence: textOf(raw.sentence),
     by: textOf(raw.by),
+    verb: textOf(raw.verb),
     resources: Array.isArray(raw.resources)
       ? raw.resources.filter(
           (resource): resource is Record<string, unknown> =>

@@ -99,7 +99,7 @@ wasmtime = { version = "50.0.0", optional = true, default-features = false, feat
 ] }
 # The daemon's ahead-of-time compiled modules: the engine configuration both sides share, and
 # the sealed artifact this runtime checks and deserializes.
-tilo-wasm-aot = { version = "0.1.0", path = "../../core/tilo-wasm-aot", optional = true }
+tilo-wasm-aot = { version = "0.1.0", path = "../../platform/tilo-wasm-aot", optional = true }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
@@ -116,7 +116,7 @@ compile = ["wasmtime", "wasmtime/cranelift", "wasmtime/winch", "tilo-wasm-aot/co
 # the crate is not published, and Cargo leaves a versionless dev-dependency out of the package.
 tilo-db = { path = "../../engines/tilo-db" }
 # The compiler the tests use to produce the artifacts a device's daemon would.
-tilo-wasm-aot = { path = "../../core/tilo-wasm-aot", features = ["compile"] }
+tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
 tempfile.workspace = true
 # A scenario's cases are the phases of one test (`scenario!`).
 tilo-test-env = { path = "../../../tools/test-env" }

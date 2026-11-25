@@ -30,7 +30,7 @@ view traditional_desktop(a: Layout, lists: Bool) {
     let front = front_place(a)
     ui.Map(name: "Desktop", ground: true, fill) {
         for s in a.strips {
-            if s.placed and not s.leaving {
+            if s.placed {
                 for p in places_of(a, s.key) {
                     if p.key != front {
                         desktop_frame(a, s, p, false, lists)
@@ -39,7 +39,7 @@ view traditional_desktop(a: Layout, lists: Bool) {
             }
         }
         for s in a.strips {
-            if s.placed and not s.leaving {
+            if s.placed {
                 for p in places_of(a, s.key) {
                     if p.key == front {
                         desktop_frame(a, s, p, true, lists)
@@ -69,8 +69,15 @@ view desktop_frame(a: Layout, s: LayoutStrip, p: LayoutPlace, focused: Bool, lis
         y: s.canvas_y,
         width: if s.canvas_width > 0 { s.canvas_width } else { 720 },
         height: if s.canvas_height > 0 { s.canvas_height } else { 480 },
+        leaving: s.leaving,
     ) {
-        frame_classic(a, p, focused, lists)
+        // A window whose place just left stays at its spot and plays its departure; a window that
+        // stands is its frame as this desktop draws it.
+        if s.leaving {
+            leaving_place(s, p)
+        } else {
+            frame_classic(a, p, focused, lists)
+        }
     }
 }
 

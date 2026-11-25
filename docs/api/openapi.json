@@ -53907,19 +53907,21 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.maps.OfflineArea.$create.Arguments": {
+      "tl.so.tilo.maps.KeptArea.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.maps.OfflineArea.edit-text.Arguments": {
+      "tl.so.tilo.maps.KeptArea.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "name"
+              "name",
+              "key",
+              "job"
             ],
             "type": "string"
           },
@@ -53932,7 +53934,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.maps.OfflineArea.edit-flag.Arguments": {
+      "tl.so.tilo.maps.KeptArea.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -53940,6 +53942,222 @@
             "enum": [
               "stopped"
             ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.KeptAreas.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.maps.KeptAreas.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.KeptAreas.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.SaveAreaAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.maps.SaveAreaAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "id",
+              "name",
+              "basemap"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.SaveAreaAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.ForgetAreaAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.maps.ForgetAreaAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "id"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.ForgetAreaAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.SaveStarted.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.maps.SaveStarted.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "job"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.SaveStarted.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.Saving.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.maps.Saving.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.Saving.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
             "type": "string"
           },
           "value": {
@@ -54168,15 +54386,12 @@
         "properties": {
           "direction": {
             "type": "number"
-          },
-          "zoom": {
-            "type": "number"
           }
         },
         "required": [
           "direction"
         ],
-        "description": "Zooms the map a level in or out."
+        "description": "Zooms the map a level in or out: a level of imagery is the camera's zoom doubled or halved."
       },
       "tl.so.tilo.maps.Atlas.set_mode.Arguments": {
         "type": "object",
@@ -54370,6 +54585,12 @@
         "required": [],
         "description": "Shows the next route directions offered for the same journey."
       },
+      "tl.so.tilo.maps.Atlas.fit_map.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows everything the map holds: the route it draws, or every place it knows."
+      },
       "tl.so.tilo.maps.Atlas.clear_route.Arguments": {
         "type": "object",
         "properties": {},
@@ -54483,6 +54704,18 @@
       "tl.so.tilo.maps.Atlas.download_view.Arguments": {
         "type": "object",
         "properties": {
+          "north": {
+            "type": "number"
+          },
+          "south": {
+            "type": "number"
+          },
+          "east": {
+            "type": "number"
+          },
+          "west": {
+            "type": "number"
+          },
           "least_zoom": {
             "type": "integer"
           },
@@ -54491,7 +54724,7 @@
           }
         },
         "required": [],
-        "description": "Saves what the map shows for offline use: its box and the zoom levels whose tiles it keeps."
+        "description": "Saves what the map shows for offline use: the box on screen and the zoom levels whose tiles it\nkeeps. A caller names the box itself where it has one (a press, an agent): without one it is\nthe place the map is centred on."
       },
       "tl.so.tilo.maps.Atlas.download_place.Arguments": {
         "type": "object",
@@ -54509,26 +54742,134 @@
         "required": [
           "query"
         ],
-        "description": "Saves the area `query` names for offline use, with the zoom levels whose tiles it keeps."
+        "description": "Saves the area around the place `query` names for offline use, with the zoom levels whose tiles\nit keeps."
       },
-      "tl.so.tilo.maps.Atlas.note_saved.Arguments": {
+      "tl.so.tilo.maps.Atlas.keep_area.Arguments": {
         "type": "object",
         "properties": {
           "area": {
-            "type": "string"
-          },
-          "at": {
-            "items": {
-              "type": "integer"
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
             },
-            "type": "array"
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.maps.KeptArea",
+            "type": "object"
+          }
+        },
+        "required": [
+          "area"
+        ],
+        "description": "Keeps `area` on this device, replacing an area of the same footprint or name, and starts its\ndownload."
+      },
+      "tl.so.tilo.maps.Atlas.save_area.Arguments": {
+        "type": "object",
+        "properties": {
+          "area": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.maps.KeptArea",
+            "type": "object"
+          }
+        },
+        "required": [
+          "area"
+        ],
+        "description": "Starts keeping `area`'s tiles, as a job whose record says how far it has come. A tile already\nkept is not fetched again, so this also continues a stopped area."
+      },
+      "tl.so.tilo.maps.Atlas.area_saved.Arguments": {
+        "type": "object",
+        "properties": {
+          "area": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.maps.KeptArea",
+            "type": "object"
+          },
+          "outcome": {
+            "type": "string"
           }
         },
         "required": [
           "area",
-          "at"
+          "outcome"
         ],
-        "description": "Says how far saving an area has come, as the map reports it."
+        "description": "What an area's download ended with: what it kept, or that the person stopped it."
       },
       "tl.so.tilo.maps.Atlas.stop_offline_area.Arguments": {
         "type": "object",
@@ -54564,7 +54905,7 @@
         "required": [
           "area"
         ],
-        "description": "Takes an area this device saved away."
+        "description": "Takes an area this device saved away, and the tiles of it no other kept area needs."
       },
       "tl.so.tilo.maps.Atlas.clear_offline_areas.Arguments": {
         "type": "object",
@@ -54583,6 +54924,49 @@
           "link"
         ],
         "description": "Opens a `geo:` link: its search (`geo:0,0?q=cafe`), else its point (`geo:52.52,13.40`)."
+      },
+      "tl.so.tilo.maps.Scale.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.maps.Scale.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "label"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.maps.Scale.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.maps.Places.$create.Arguments": {
         "type": "object",
@@ -113379,21 +113763,111 @@
     },
     {
       "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.OfflineArea",
+      "resource": "tl.so.tilo.maps.KeptArea",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.OfflineArea.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.maps.KeptArea.$create.Arguments"
     },
     {
       "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.OfflineArea",
+      "resource": "tl.so.tilo.maps.KeptArea",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.OfflineArea.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.maps.KeptArea.edit-text.Arguments"
     },
     {
       "app": "so.tilo.maps",
-      "resource": "tl.so.tilo.maps.OfflineArea",
+      "resource": "tl.so.tilo.maps.KeptArea",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.OfflineArea.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.maps.KeptArea.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.KeptAreas",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.KeptAreas.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.KeptAreas",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.KeptAreas.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.KeptAreas",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.KeptAreas.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.SaveAreaAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveAreaAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.SaveAreaAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveAreaAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.SaveAreaAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveAreaAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.ForgetAreaAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.ForgetAreaAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.ForgetAreaAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.ForgetAreaAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.ForgetAreaAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.ForgetAreaAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.SaveStarted",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveStarted.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.SaveStarted",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveStarted.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.SaveStarted",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.SaveStarted.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Saving",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Saving.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Saving",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Saving.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Saving",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Saving.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -113518,6 +113992,12 @@
     {
       "app": "so.tilo.maps",
       "resource": "tl.so.tilo.maps.Atlas",
+      "action": "fit_map",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.fit_map.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Atlas",
       "action": "clear_route",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.clear_route.Arguments"
     },
@@ -113584,8 +114064,20 @@
     {
       "app": "so.tilo.maps",
       "resource": "tl.so.tilo.maps.Atlas",
-      "action": "note_saved",
-      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.note_saved.Arguments"
+      "action": "keep_area",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.keep_area.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Atlas",
+      "action": "save_area",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.save_area.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Atlas",
+      "action": "area_saved",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.area_saved.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -113616,6 +114108,24 @@
       "resource": "tl.so.tilo.maps.Atlas",
       "action": "open_link",
       "arguments": "#/components/schemas/tl.so.tilo.maps.Atlas.open_link.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Scale",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Scale.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Scale",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Scale.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "tl.so.tilo.maps.Scale",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.maps.Scale.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.maps",

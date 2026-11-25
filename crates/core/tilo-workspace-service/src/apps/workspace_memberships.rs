@@ -282,6 +282,25 @@ impl AppBrokerState {
         .map_err(super::Refusal::into_call_error)
     }
 
+    /// Whether a surface published on this device offers `address` as its workspace's
+    /// governance: an action [`Self::start_governance_action`] makes where the workspace's
+    /// governance is published. Every other action the governance tree publishes — its agents',
+    /// its servers', its content's — is the service registered here, which holds the workspace.
+    pub(super) fn a_surface_offers(&self, address: &tilo_actions::ActionAddress) -> bool {
+        let Some(workspace) = address
+            .resource
+            .strip_prefix(&format!(
+                "{}:",
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_KIND
+            ))
+            .filter(|workspace| !workspace.is_empty())
+        else {
+            return false;
+        };
+        self.governance_surface(workspace, &address.resource, &address.action)
+            .is_some()
+    }
+
     /// The published surface of `workspace`'s governance offering `action` on
     /// `resource`, with the action it publishes: one surface, so a change goes
     /// to the one place that makes it.

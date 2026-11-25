@@ -26,6 +26,7 @@ fn a_described_strip_reports_the_emoji_its_pill_toggles() {
             relayed: Vec::new(),
             can_react: None,
             toggle: Event::View(Intent::new(&toggles, "reactions", "toggle")),
+            person: Event::default(),
         },
     );
     let mut frame = crate::app::driver::Driver::new_with_theme(
@@ -185,4 +186,40 @@ fn a_pill_shows_the_face_of_each_person_who_reacted_in_their_colour() {
         painted(wearing(1), orange) > 20,
         "in another colour, her face wears it"
     );
+}
+
+/// A face among the reactions is chosen as any control is, from the keyboard too, and the strip
+/// says whose it is: the person the view gave it, for the view to open their card.
+#[test]
+fn choosing_a_face_on_a_described_strip_reports_who_reacted() {
+    let _settled = crate::motion::testing::settled();
+    let chosen: crate::Intents<Fired> = crate::Intents::default();
+    let strip = ReactionStripWidget::from_props(
+        "reactions",
+        ReactionsProps {
+            emoji: vec!["👍".into()],
+            by: vec![vec![person("u_mia", "Mia"), person("u_leo", "Leo")]],
+            person: Event::View(Intent::new(&chosen, "reactions", "person")),
+            ..ReactionsProps::default()
+        },
+    );
+    let mut frame = crate::headless::FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(strip),
+        (420, 80),
+        Theme::light(),
+    );
+    // The pill, the add button, then each face in the order they reacted.
+    frame.key("Tab");
+    frame.key("ArrowRight");
+    frame.key("ArrowRight");
+    frame.key("ArrowRight");
+    frame.key("Enter");
+    let fired = chosen.take();
+    assert_eq!(fired.len(), 1, "one face chosen");
+    let Some(Value::Actor { identity, name, .. }) = &fired[0].value else {
+        panic!("the strip says who: {:?}", fired[0].value);
+    };
+    assert_eq!(name, "Leo");
+    assert_eq!(*identity, person("u_leo", "Leo").identity);
 }

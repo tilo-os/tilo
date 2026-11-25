@@ -2,7 +2,6 @@
 //! asked record, listed to the person it asks and to nobody else, and their approve of the
 //! record carries it out once; their decline ends it with nothing done.
 
-
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::{self, Asked, AskedStore, Offer, Resolve};
 use tilo_actions::remote::{
@@ -481,8 +480,8 @@ fn forged(answer: &Result<InvocationReceipt, ActionCallError>) -> bool {
 /// Where the rules ask a person first, making the call is not their answer, in the vault and in
 /// Mail alike: their own call waits in its asked record, and only their approve of that record
 /// runs it, once. The approve answers that one call: written into the call by its caller, sent
-/// again once it ran, or moved onto another call, it is refused whole where the call comes in;
-/// and their agent answers nothing for them.
+/// again with another invocation once it ran, or moved onto another call, it is refused whole
+/// where the call comes in; and their agent answers nothing for them.
 #[tokio::test]
 async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation() {
     let dir = tempfile::tempdir().unwrap();
@@ -525,7 +524,10 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
     let (kept_at, listed_at) = (record_of(&adding), record_of(&listing));
     let hers = waiting(&store, &workspace_id.to_string(), &as_ada);
     assert_eq!(hers.len(), 2, "{hers:?}");
-    assert_eq!(logins_unasked(&store, &service, workspace_id, her).await, before);
+    assert_eq!(
+        logins_unasked(&store, &service, workspace_id, her).await,
+        before
+    );
 
     // An approve she writes into a call herself is none: refused whole, the record still waits.
     let written = invoked(
@@ -538,7 +540,14 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
     assert!(forged(&written), "{written:?}");
     // Her agent answers nothing for her.
     let agent = as_ada.clone().delegated_to(AGENT);
-    let by_agent = resolve(&service, workspace_id, (&ada, &agent), &kept_at, Offer::Approve).await;
+    let by_agent = resolve(
+        &service,
+        workspace_id,
+        (&ada, &agent),
+        &kept_at,
+        Offer::Approve,
+    )
+    .await;
     assert!(by_agent.is_err(), "{by_agent:?}");
 
     // Her approve runs the login's call, once.
@@ -546,15 +555,40 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
         .await
         .unwrap();
     let kept = ended(&service, workspace_id, her, adding.invocation).await;
-    assert!(matches!(kept, InvocationUpdate::Succeeded { .. }), "{kept:?}");
-    assert_eq!(logins_unasked(&store, &service, workspace_id, her).await, before + 1);
+    assert!(
+        matches!(kept, InvocationUpdate::Succeeded { .. }),
+        "{kept:?}"
+    );
+    assert_eq!(
+        logins_unasked(&store, &service, workspace_id, her).await,
+        before + 1
+    );
 
-    // The approve answered that call alone: sent again, or on another call, it is refused.
-    let again = invoked(
+    // The approve answered that call alone. The same invocation sent again answers what it came
+    // to and runs nothing again; the call sent again as another invocation, or another call, is
+    // refused.
+    let resent = invoked(
         &service,
         workspace_id,
         her,
         carrying_approve(adding.clone(), &kept_at),
+    )
+    .await;
+    assert!(
+        matches!(&resent, Ok(receipt) if receipt.invocation == adding.invocation),
+        "resent: {resent:?}"
+    );
+    let again = invoked(
+        &service,
+        workspace_id,
+        her,
+        carrying_approve(
+            InvokeRequest {
+                invocation: InvocationId::new(),
+                ..adding.clone()
+            },
+            &kept_at,
+        ),
     )
     .await;
     assert!(forged(&again), "replayed: {again:?}");
@@ -574,14 +608,20 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
     )
     .await;
     assert!(forged(&onto_mail), "moved onto Mail's call: {onto_mail:?}");
-    assert_eq!(logins_unasked(&store, &service, workspace_id, her).await, before + 1);
+    assert_eq!(
+        logins_unasked(&store, &service, workspace_id, her).await,
+        before + 1
+    );
 
     // Mail's call runs on her approve of its own record.
     resolve(&service, workspace_id, her, &listed_at, Offer::Approve)
         .await
         .unwrap();
     let listed = ended(&service, workspace_id, her, listing.invocation).await;
-    assert!(matches!(listed, InvocationUpdate::Succeeded { .. }), "{listed:?}");
+    assert!(
+        matches!(listed, InvocationUpdate::Succeeded { .. }),
+        "{listed:?}"
+    );
     let left = waiting(&store, &workspace_id.to_string(), &as_ada);
     assert!(left.is_empty(), "{left:?}");
     server.shutdown().await;

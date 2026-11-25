@@ -1,42 +1,16 @@
 //! An instance's side of moving its window to another workspace
 //! ([`crate::collaboration::handoff`]): making what it shows durable when
-//! asked, stamping it retired when the window has reopened elsewhere, and
-//! noticing when a document it shows arrives retired from someone else.
+//! asked, so the record the workspace's store moves holds what the person
+//! left in it.
 //!
 //! "What it shows" is the primary document: the record a component is bound
-//! to, else the App's own document. A retirement stamped here is an ordinary
-//! change to that document, published over its normal route, so everyone
-//! holding the record learns it moved.
+//! to, else the App's own document.
 
 use super::App;
 use crate::collaboration::CollabRequest;
-use crate::collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
-use crate::resource::transfer::{self, Retirement};
+use crate::collaboration::handoff::{HandoffReport, HandoffRequest};
 
 impl App {
-    /// Run `f` on the document this window shows.
-    fn with_primary_document<R>(
-        &mut self,
-        f: impl FnOnce(&mut automerge::AutoCommit) -> R,
-    ) -> Result<R, String> {
-        if !self.prepare_primary_document()? {
-            return Ok(f(&mut self.state.doc));
-        }
-        let sync = self
-            .actions
-            .bound_document_sync
-            .as_mut()
-            .ok_or("primary record is unavailable")?;
-        let _scope = sync.binding.enter().map_err(|error| format!("{error:?}"))?;
-        sync.binding
-            .records
-            .with_action_state(&sync.binding.checkout.id, |doc, _, actions| {
-                actions.commit_for_save(doc);
-                f(doc)
-            })
-            .map_err(|error| error.to_string())
-    }
-
     /// Make the document this window shows durable now, without closing
     /// anything.
     fn checkpoint_primary_document(&mut self) -> Result<(), String> {
@@ -66,68 +40,8 @@ impl App {
                 Ok(()) => HandoffReport::done(token, &[]),
                 Err(reason) => HandoffReport::Failed { token, reason },
             },
-            HandoffRequest::Retire { token, successor } => {
-                self.retire_primary_document(token, successor)
-            }
         };
         self.report_handoff(&report);
-    }
-
-    fn retire_primary_document(&mut self, token: u64, successor: Successor) -> HandoffReport {
-        let why = Retirement::Moved(Some(successor));
-        let stamped = self.with_primary_document(|doc| {
-            let before = doc.get_heads();
-            transfer::stamp_retired(doc, &why).map(|()| before)
-        });
-        let before = match stamped {
-            Ok(Ok(before)) => before,
-            Ok(Err(error)) => {
-                return HandoffReport::Failed {
-                    token,
-                    reason: error.to_string(),
-                };
-            }
-            Err(reason) => return HandoffReport::Failed { token, reason },
-        };
-        // This window moved on; it neither edits nor re-reports its own stamp.
-        self.continuation.retired = true;
-        self.stop_editing_retired_document();
-        self.broadcast_doc_delta();
-        self.publish_owned_documents();
-        match self.checkpoint_primary_document() {
-            Ok(()) => HandoffReport::done(token, &before),
-            Err(reason) => HandoffReport::Failed { token, reason },
-        }
-    }
-
-    /// After a document change arrived: if what this window shows was moved
-    /// to another workspace by someone, stop editing it and tell the shell,
-    /// which knows whether the person can see where it went.
-    pub(super) fn observe_primary_retirement(&mut self) {
-        if self.continuation.retired {
-            return;
-        }
-        let Ok(Some(retirement)) = self.with_primary_document(|doc| transfer::retirement(doc))
-        else {
-            return;
-        };
-        self.continuation.retired = true;
-        self.stop_editing_retired_document();
-        if let Retirement::Moved(Some(successor)) = retirement {
-            self.report_handoff(&HandoffReport::Retired { successor });
-        }
-    }
-
-    /// A retired document is history: whoever holds it may still read it,
-    /// nobody edits it here any more.
-    fn stop_editing_retired_document(&mut self) {
-        let viewer = crate::permissions::PermissionContext::read_only;
-        if let Some(sync) = self.actions.bound_document_sync.as_ref() {
-            let read_only = viewer(&sync.binding.permissions.borrow());
-            sync.binding.permissions.set(read_only);
-        }
-        let read_only = viewer(&self.permission_ctx);
-        self.set_permission_ctx(read_only);
     }
 
     pub(super) fn report_handoff(&mut self, report: &HandoffReport) -> bool {
@@ -148,7 +62,6 @@ mod tests {
     use super::*;
     use crate::collaboration::{CollabEvent, CollaborationManager, PeerTransport, RouteSpec};
     use crate::state::State;
-    use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -229,83 +142,14 @@ mod tests {
             .collect()
     }
 
-    fn successor() -> Successor {
-        Successor {
-            workspace: "3f2b1c00-0000-4000-8000-0000000000f1".into(),
-            document: "uuid:arrived".into(),
-            by: "ada".into(),
-        }
-    }
-
+    /// What the window shows is made durable when the shell asks, and the app says so on
+    /// its own route.
     #[test]
     #[serial_test::serial(process_env)]
-    fn an_instance_checkpoints_then_stamps_its_document_retired_over_its_route() {
+    fn an_app_checkpoints_what_it_shows_when_asked() {
         let (mut app, requests) = instance();
         app.apply_handoff(HandoffRequest::Checkpoint { token: 1 });
         assert_eq!(reports(&requests), [HandoffReport::done(1, &[])]);
-        requests.borrow_mut().clear();
-
-        let before = app.state.doc.get_heads();
-        app.apply_handoff(HandoffRequest::Retire {
-            token: 2,
-            successor: successor(),
-        });
-        assert_eq!(reports(&requests), [HandoffReport::done(2, &before)]);
-        assert_eq!(
-            transfer::retirement(&app.state.doc),
-            Some(Retirement::Moved(Some(successor())))
-        );
-        assert!(
-            requests
-                .borrow()
-                .iter()
-                .any(|request| matches!(request, CollabRequest::Document { .. })),
-            "the stamp goes out over the document's own route"
-        );
-        assert_eq!(
-            app.permission_ctx.role(),
-            Some(crate::permissions::Role::Viewer),
-            "the window that moved on no longer edits"
-        );
-        app.observe_primary_retirement();
-        assert!(
-            !reports(&requests)
-                .iter()
-                .any(|report| matches!(report, HandoffReport::Retired { .. })),
-            "its own stamp is not news to it"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn a_retirement_arriving_from_elsewhere_stops_editing_and_is_reported_once() {
-        let (mut app, requests) = instance();
-        let mut moved = app.state.doc.fork();
-        transfer::stamp_retired(&mut moved, &Retirement::Moved(Some(successor()))).unwrap();
-        app.state
-            .load_incremental(&moved.save_incremental())
-            .unwrap();
-        assert_eq!(
-            app.state
-                .doc
-                .get(automerge::ROOT, "body")
-                .unwrap()
-                .map(|(v, _)| v.to_string()),
-            Some("\"draft\"".into()),
-            "the content stays readable"
-        );
-        app.observe_primary_retirement();
-        app.observe_primary_retirement();
-        assert_eq!(
-            reports(&requests),
-            [HandoffReport::Retired {
-                successor: successor()
-            }]
-        );
-        assert_eq!(
-            app.permission_ctx.role(),
-            Some(crate::permissions::Role::Viewer)
-        );
     }
 }
 

@@ -1878,7 +1878,6 @@ impl AppBrokerState {
         self.action_invoke_with_origin(caller, own_peer, launch, None, request)
     }
 
-
     /// [`Self::action_invoke`] for a caller whose original invocation ownership
     /// the broker holds (an admitted local connection): an application
     /// action it starts carries that ownership to the application, so a scoped
@@ -1999,11 +1998,16 @@ impl AppBrokerState {
             );
         }
         // A provider registered on this device: the host's own steps, and what its embedder
-        // registered, which another device's call reaches through the same registry. A
-        // workspace's governance is the one exception: its call goes where the workspace's
-        // governance is published ([`Self::start_governance_action`]), on whichever device holds
-        // it, as the registration here answers only the workspaces this device holds.
-        if request.target.provider != tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+        // registered, which another device's call reaches through the same registry. An action a
+        // surface published here offers as its workspace's governance is the one exception: it
+        // goes where the workspace's governance is published
+        // ([`Self::start_governance_action`]), on whichever device holds it. Every other action
+        // of a workspace's governance — its agents' actions among them — is the service
+        // registered here, which answers the workspaces it holds.
+        let answered_where_published = request.target.provider
+            == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            && self.a_surface_offers(&request.target.address);
+        if !answered_where_published
             && let Some(registered) = self.registered(&request.target.provider)
         {
             return self.invoke_registered(caller, origin, &registered, request);

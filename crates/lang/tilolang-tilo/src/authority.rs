@@ -233,6 +233,12 @@ impl Authority for TiloAuthority {
             .contains(&(app.to_owned(), host.to_ascii_lowercase()))
     }
 
+    /// The decision on the invoker's own call, with no code between them and the action: what
+    /// their grants and the workspace's say alone.
+    fn asks_first(&self, invoker: &Actor, action: &ActionInfo) -> bool {
+        self.decide(invoker, &[], action) == Decision::Ask
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one decision read in order: the node acted on, the person and their delegation, \

@@ -1414,3 +1414,17 @@ control-hint-move = Drag to move
 control-hint-resize = Drag to resize
 control-hint-pan = Scroll sideways
 control-hint-pan-touch = Swipe left or right
+
+## A brush preview (ui::widget::StrokePreview): the mark a brush, its size and a pigment will paint.
+
+stroke-preview-name = Brush preview
+stroke-preview-round = Round brush
+stroke-preview-pen = Pen
+stroke-preview-pencil = Pencil
+stroke-preview-marker = Marker
+stroke-preview-airbrush = Airbrush
+stroke-preview-charcoal = Charcoal
+stroke-preview-calligraphy = Calligraphy pen
+stroke-preview-eraser = Eraser
+stroke-preview-pixel = Pixel brush
+stroke-preview-pixel-eraser = Pixel eraser

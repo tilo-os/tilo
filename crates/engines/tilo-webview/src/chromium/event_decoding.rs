@@ -358,6 +358,7 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && text("referrer")
                 && text("cookies")
                 && text("user_agent")
+                && value["again"].is_boolean()
         }
         "download" => {
             valid_id(value)
@@ -365,6 +366,7 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && text("name")
                 && text("url")
                 && value["retryable"].is_boolean()
+                && value["extension"].is_boolean()
                 && text("error")
                 && matches!(
                     value["state"].as_str(),

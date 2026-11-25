@@ -816,18 +816,19 @@ fn without_hex(key: Text) -> Text {
 ///
 /// A report carries a recording of what happened where one was kept (Capture's last half minute,
 /// or any recording the person chose): it rides on the message as its file, and the report's row
-/// offers to replay it.
+/// offers to replay it. What else it carries (a picture of the window it is about) rides after it.
 action report_problem(
     all: Conversations,
     body: RichText,
     recording: Option<File> = .none,
+    attachments: List<File> = [],
 ) -> Message (icon: .flag, label: "Report a problem", did: "reported a problem") {
     require not body.is_empty() "Say what went wrong first"
     require recording_shown(recording) "A recording is a video"
     send(
         all.channels.insert(TextChannel(name: "feedback"), key: "feedback"),
         body,
-        attachments: if let r = recording { [r] } else { [] },
+        attachments: [if let r = recording { [r] } else { [] }, attachments].flat_map(x -> x),
     )
 }
 
@@ -2515,17 +2516,23 @@ view channel_members(c: TextChannel) {
 /// the system's card of them, with what Chat does with someone: writing to them, reporting them,
 /// and, for a moderator, banning them. A card of the person at the window offers none of these.
 view about_person(who: Actor) {
-    let all = root Conversations
     ui.PopoverButton("About {who.name()}", icon: .user, icon_only: true) {
-        std.person_card(who) {
-            if who != invoker {
-                ui.Button("Message", icon: .message_circle, size: .small) {
-                    on press: message_person(all, who)
-                }
-                button(report_person(all, who))
-                if moderates(invoker) {
-                    button(ban(all, who))
-                }
+        person_card_of(who)
+    }
+}
+
+/// The card of `who` with what Chat does with someone: what a person's popover holds wherever
+/// they were chosen, an author's button or a face among a message's reactions.
+view person_card_of(who: Actor) {
+    let all = root Conversations
+    std.person_card(who) {
+        if who != invoker {
+            ui.Button("Message", icon: .message_circle, size: .small) {
+                on press: message_person(all, who)
+            }
+            button(report_person(all, who))
+            if moderates(invoker) {
+                button(ban(all, who))
             }
         }
     }
@@ -3109,6 +3116,8 @@ view message(
     editing: State<Option<Message>>,
     revised: State<RichText>,
 ) {
+    // Whose card is open from a face among the reactions.
+    state card: Option<Actor> = .none
     if let r = m.reply_to {
         std.quote(r)
     }
@@ -3214,6 +3223,15 @@ view message(
             relayed: m.relayed_reactions.map(r -> "{r.emoji}\t{r.by}"),
         ) {
             on toggle(e): react(m, e)
+            on person(who): set(card, who)
+        }
+        // Choosing a face among the reactions opens that person's card beside them, the card
+        // their author's button opens.
+        if let who = card {
+            ui.Popover(label: "About {who.name()}", open: true) {
+                on dismiss: set(card, .none)
+                person_card_of(who)
+            }
         }
     }
     if let t = m.thread {

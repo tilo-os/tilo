@@ -279,8 +279,8 @@ class Client;
 // own process for the Browser's download to fetch the file with.
 class DownloadRequest final : public CefCookieVisitor {
  public:
-  DownloadRequest(int tab,int id,std::string url,std::string name,std::string referrer)
-      :tab_(tab),id_(id),url_(std::move(url)),name_(std::move(name)),referrer_(std::move(referrer)) {}
+  DownloadRequest(int tab,int id,std::string url,std::string name,std::string referrer,bool again)
+      :tab_(tab),id_(id),url_(std::move(url)),name_(std::move(name)),referrer_(std::move(referrer)),again_(again) {}
   ~DownloadRequest() override;
   bool Visit(const CefCookie& cookie,int,int,bool&) override {
     if(!cookies_.empty())cookies_+="; ";
@@ -288,14 +288,17 @@ class DownloadRequest final : public CefCookieVisitor {
     return true;
   }
  private:
-  int tab_,id_;std::string url_,name_,referrer_,cookies_;
+  int tab_,id_;std::string url_,name_,referrer_,cookies_;bool again_;
   IMPLEMENT_REFCOUNTING(DownloadRequest);
 };
+// Hands tab `tab`'s window what a request for `url` carries from it: the cookies its site set
+// and the page it is on. `again` for a download the person retries, which the window numbered `id`.
+void HandOver(int tab,int id,const std::string& url,const std::string& name,bool again);
 // Told once every cookie was visited, or at once when the jar holds none for the address.
 DownloadRequest::~DownloadRequest() {
   auto d=CefDictionaryValue::Create();d->SetInt("tab",tab_);d->SetInt("id",id_);
   d->SetString("url",url_);d->SetString("name",name_);d->SetString("referrer",referrer_);
-  d->SetString("cookies",cookies_);d->SetString("user_agent","");Event("download_request",d);
+  d->SetString("cookies",cookies_);d->SetString("user_agent","");d->SetBool("again",again_);Event("download_request",d);
 }
 class FaviconDownload final : public CefDownloadImageCallback {
  public:
@@ -2478,6 +2481,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   }
   // The Browser's own extension, which tells which tab a page is.
   if(op=="extension_identity") {if(extension_tabs)extension_tabs->SetIdentity(d->GetString("id"));return;}
+  // A download the person retries: what a request for its address carries from this tab now.
+  if(op=="download_request") {HandOver(id,d->GetInt("id"),d->GetString("url").ToString(),"",true);return;}
   if(op=="download_start") {
     auto found=clients.find(id);
     if(downloads->Accepting() && found!=clients.end() && found->second->accepts_downloads())
@@ -2636,19 +2641,20 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       [](int id){auto found=clients.find(id);return found!=clients.end()?found->second->HoldWaitMs():int64_t{0};},note_hold);
     // A saved download goes to the tab's window with its site's cookies; a tab that closed
     // meanwhile has no window to take it.
-    downloads->SetFetch([](int owner,int id,const std::string& url,const std::string& name){
-      auto found=clients.find(owner);if(found==clients.end() || !found->second->browser_)return;
-      auto browser=found->second->browser_;
-      CefRefPtr<DownloadRequest> request=new DownloadRequest(owner,id,url,name,browser->GetMainFrame()->GetURL().ToString());
-      auto jar=browser->GetHost()->GetRequestContext()->GetCookieManager(nullptr);
-      // A jar that cannot be read hands the download over without cookies, as it releases the visitor.
-      if(jar)jar->VisitUrlCookies(url,true,request);
-    });
+    downloads->SetFetch([](int owner,int id,const std::string& url,const std::string& name){HandOver(owner,id,url,name,false);});
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
 };
 CefRefPtr<Client> ClientOf(int tab) {auto found=clients.find(tab);return found==clients.end()?nullptr:found->second;}
+void HandOver(int tab,int id,const std::string& url,const std::string& name,bool again) {
+  auto client=ClientOf(tab);if(!client || !client->browser_)return;
+  auto browser=client->browser_;
+  CefRefPtr<DownloadRequest> request=new DownloadRequest(tab,id,url,name,browser->GetMainFrame()->GetURL().ToString(),again);
+  auto jar=browser->GetHost()->GetRequestContext()->GetCookieManager(nullptr);
+  // A jar that cannot be read hands the download over without cookies, as it releases the visitor.
+  if(jar)jar->VisitUrlCookies(url,true,request);
+}
 // The Browser's answer to a read of the system clipboard, or nothing when it
 // had none or did not answer in time.
 void ClipboardAnswer(int request,std::optional<std::string> text) {
@@ -2782,7 +2788,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return true;
   }
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
-  if(op=="download_start") {
+  if(op=="download_start" || op=="download_request") {
+    if(op=="download_request" && (!type("id",VTYPE_INT) || d->GetInt("id")<=0))return false;
     if(!type("url",VTYPE_STRING))return false;
     CefURLParts parts;
     if(!CefParseURL(d->GetString("url"),parts))return false;

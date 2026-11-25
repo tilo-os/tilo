@@ -332,19 +332,8 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
 view leaving_window(a: Layout, s: LayoutStrip) {
     let placed = places_of(a, s.key)
     let shown = placed.find(p -> p.key == s.active) ?? placed.first()
-    ui.WindowFrame(
-        name: window_name(shown),
-        glyph: window_glyph(shown),
-        leaving: true,
-        control: s.control,
-        fill,
-    ) {
-        body: {
-            // The place's own view, still, while the frame goes: the window is whole as it leaves.
-            if let p = shown {
-                place_content(p)
-            }
-        }
+    if let p = shown {
+        leaving_place(s, p)
     }
 }
 

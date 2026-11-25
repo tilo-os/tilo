@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::mem::MaybeUninit;
 
 use super::wasmtime_host as shared;
-use tilo_wasm_host::{Failure, ImportPolicy};
+use tilo_wasm_host::Failure;
+#[cfg(feature = "compile")]
+use tilo_wasm_host::ImportPolicy;
 use wasmtime::{
     Caller, Func, FuncType, Instance, Linker, Memory, Module, ResourceLimiter, Store, ValRaw,
     ValType,

@@ -103,9 +103,28 @@ class Request(unittest.TestCase):
         self.assertEqual(handed["name"], "lifetime.txt")
         self.assertIn("session=abc", handed["cookies"], "HttpOnly cookies go with the download")
         self.assertEqual(handed["referrer"], self.origin + "/signed-in")
+        self.assertFalse(handed["again"], "the page offered it")
         self.ended(host, prompt["id"])
         host.settle(1)
         self.assertEqual(list(Path(self.downloads.name).rglob("*")), [], "the engine saved nothing")
+
+    def test_a_retried_download_is_handed_the_sites_cookies_again(self):
+        host = self.host()
+        host.send(op="create_tab", tab=2)
+        host.until(lambda event: event["event"] == "tab_ready" and event.get("tab") == 2)
+        host.send(op="navigate", tab=2, url=self.origin + "/signed-in")
+        host.until(lambda event: event["event"] == "loaded" and event.get("tab") == 2)
+
+        host.send(op="download_request", tab=2, id=7, url=self.origin + "/file?case=retried")
+        handed = host.until(lambda event: event["event"] == "download_request")
+        self.assertEqual((handed["tab"], handed["id"], handed["again"]), (2, 7, True))
+        self.assertEqual(handed["url"], self.origin + "/file?case=retried")
+        self.assertIn("session=abc", handed["cookies"], "a retry is as signed in as the page")
+        self.assertEqual(handed["referrer"], self.origin + "/signed-in")
+        self.assertFalse(
+            any(event.get("event") == "download_prompt" for event in host.seen),
+            "nothing is fetched and nobody is asked: the Browser's job fetches it",
+        )
 
     def test_a_download_turned_down_is_handed_to_nobody(self):
         host = self.host()

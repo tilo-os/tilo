@@ -1033,6 +1033,18 @@ impl WebViewEngine for TestEngine {
                     suggested_filename: "download.bin".into(),
                 });
             }
+            // What a page's request for the address carries: a test site's session cookie.
+            WebViewCommand::RequestDownload { id, uri } => {
+                inner.events.push(WebViewEvent::DownloadRequest {
+                    id,
+                    url: uri,
+                    name: String::new(),
+                    referrer: String::new(),
+                    cookies: "session=test".into(),
+                    user_agent: String::new(),
+                    again: true,
+                });
+            }
             WebViewCommand::SetDownloadDestination { id, path } => {
                 if std::path::Path::new(&path).is_absolute()
                     && inner.downloads.remove(&id).is_some()

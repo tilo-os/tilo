@@ -1280,6 +1280,15 @@ impl Task {
                 }
             }
         }
+        // A removal this device's person made is said again on each link as it opens: one issued
+        // before the workspace's link was up is not lost to the order its links dial in.
+        if !self.config.revocations.is_empty()
+            && let Some(link) = self.links.get(&workspace_id)
+        {
+            let _ = link
+                .sync
+                .send(identity_hello(&self.config.cert, &self.config.revocations));
+        }
         if self.joined(workspace_id) {
             self.reports.change(|status| {
                 status.workspaces.insert(workspace_id, true);

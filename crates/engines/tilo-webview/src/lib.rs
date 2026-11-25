@@ -1026,6 +1026,12 @@ pub enum WebViewCommand {
     StartDownload {
         uri: String,
     },
+    /// What a request for `uri` would carry from this tab, asked again for a download the person
+    /// retries: it comes as [`WebViewEvent::DownloadRequest`] with `again`, numbered `id`.
+    RequestDownload {
+        id: u32,
+        uri: String,
+    },
     SetDownloadDestination {
         id: String,
         path: String,
@@ -1223,6 +1229,9 @@ pub enum WebViewEvent {
         referrer: String,
         cookies: String,
         user_agent: String,
+        /// Asked again by [`WebViewCommand::RequestDownload`], numbered `id` by its asker,
+        /// rather than a download the page offered.
+        again: bool,
     },
     DownloadUpdated {
         id: u32,
@@ -1234,6 +1243,8 @@ pub enum WebViewEvent {
         received: u64,
         total: u64,
         error: String,
+        /// An extension started it (`chrome.downloads`) and follows it: the engine saves it.
+        extension: bool,
     },
     DownloadRuntime {
         admitted: u32,

@@ -1381,3 +1381,17 @@ control-hint-move = Zum Verschieben ziehen
 control-hint-resize = Größe per Ziehen ändern
 control-hint-pan = Seitwärts scrollen
 control-hint-pan-touch = Links oder rechts wischen
+
+## A brush preview (ui::widget::StrokePreview): the mark a brush, its size and a pigment will paint.
+
+stroke-preview-name = Pinselvorschau
+stroke-preview-round = Rundpinsel
+stroke-preview-pen = Füller
+stroke-preview-pencil = Bleistift
+stroke-preview-marker = Marker
+stroke-preview-airbrush = Spritzpistole
+stroke-preview-charcoal = Kohle
+stroke-preview-calligraphy = Kalligrafiefeder
+stroke-preview-eraser = Radierer
+stroke-preview-pixel = Pixelpinsel
+stroke-preview-pixel-eraser = Pixelradierer

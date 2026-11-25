@@ -405,6 +405,11 @@ mod tests {
             workspace: "ws".to_owned(),
             row: "r1".to_owned(),
             width: 500,
+            placed: true,
+            canvas_x: 120,
+            canvas_y: 80,
+            canvas_width: 480,
+            canvas_height: 300,
             active: format!("{key}:front"),
             ..LayoutStripReading::default()
         }
@@ -484,6 +489,12 @@ mod tests {
                 .find(|place| place.key == "s1:front")
                 .expect("its place stays while it leaves");
             assert!(left.leaving, "and the place is leaving too");
+            assert!(
+                (closed.strips[0].canvas_x, closed.strips[0].canvas_y) == (120, 80)
+                    && (closed.strips[0].canvas_width, closed.strips[0].canvas_height) == (480, 300),
+                "at the last spot the layout kept for it, as the canvas and the traditional                  desktop draw it: {:?}",
+                closed.strips[0]
+            );
             assert!(closed.strips.iter().any(|strip| strip.key == "s2" && !strip.leaving));
         }
 

@@ -1070,6 +1070,12 @@ mod tests {
         assert!(row.follower, "they follow this person");
         assert!(!row.agent && !row.me);
         assert_ne!(row.in_app, "so.tilo.notes", "the app's name, never its id");
+        let (red, green, blue) = collab_types::presence::identity_rgb(workspace.members[0].colour);
+        assert_eq!(
+            row.colour,
+            format!("{red:02x}{green:02x}{blue:02x}"),
+            "the colour the member row wears, as every surface draws them"
+        );
     }
 
     /// An agent's row says the window it works in, not what a person's does.
@@ -1109,6 +1115,12 @@ mod tests {
         workspace.place_presence(here);
         let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
         assert!(row.bot && row.agent, "a bot is software, tagged Bot");
+        let (red, green, blue) = collab_types::presence::identity_rgb(workspace.members[0].colour);
+        assert_eq!(
+            row.colour,
+            format!("{red:02x}{green:02x}{blue:02x}"),
+            "software wears the colour its member row stores, which the bar and History share"
+        );
 
         let mut workspace = Workspace::new(WorkspaceId::from_u128(4), "Studio");
         let ada = MemberId::person("ada");

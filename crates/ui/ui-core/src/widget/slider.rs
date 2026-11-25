@@ -125,6 +125,9 @@ pub struct Slider {
     range: (f64, f64),
     /// Values snap to `range.0 + k * step`.
     step: Option<f64>,
+    /// The values the slider stops at, in order, marked along the track: a value snaps to the
+    /// nearest, and a key moves to the next. Empty for a slider with no stops of its own.
+    stops: Vec<f64>,
     /// How the value is spoken; a percentage of a `0..1` range otherwise.
     value_text: Option<ValueText>,
     binding: Option<BoxedBinding<f64>>,
@@ -213,6 +216,7 @@ impl Slider {
             value: 0.5,
             range: (0.0, 1.0),
             step: None,
+            stops: Vec::new(),
             value_text: None,
             binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
@@ -331,6 +335,29 @@ impl Slider {
         self
     }
 
+    /// The values the slider stops at, each marked along the track (versions along a history,
+    /// chapters along a recording): a drag lands on the nearest, and the arrow keys go from one
+    /// to the next. Values outside the range are left out.
+    #[must_use]
+    pub fn stops(mut self, stops: impl IntoIterator<Item = f64>) -> Self {
+        let (min, max) = self.range;
+        let mut stops: Vec<f64> = stops
+            .into_iter()
+            .filter(|stop| stop.is_finite() && (min..=max).contains(stop))
+            .collect();
+        stops.sort_by(f64::total_cmp);
+        stops.dedup();
+        self.stops = stops;
+        self.value = self.constrain(self.value);
+        self
+    }
+
+    /// The values it stops at, as [`Self::stops`] took them.
+    #[must_use]
+    pub fn stop_values(&self) -> &[f64] {
+        &self.stops
+    }
+
     #[must_use]
     pub fn bounds(&self) -> (f64, f64) {
         self.range
@@ -383,6 +410,9 @@ impl Slider {
             return min;
         }
         let value = value.clamp(min, max);
+        if let Some(nearest) = self.nearest_stop(value) {
+            return nearest;
+        }
         match self.step {
             Some(step) => {
                 crate::num::snap_decimal(min + ((value - min) / step).round() * step, &[min, step])
@@ -390,6 +420,33 @@ impl Slider {
             }
             None => value,
         }
+    }
+
+    /// The stop nearest `value`, when the slider has stops.
+    fn nearest_stop(&self, value: f64) -> Option<f64> {
+        self.stops
+            .iter()
+            .copied()
+            .min_by(|a, b| (a - value).abs().total_cmp(&(b - value).abs()))
+    }
+
+    /// Where moving the value by `by` takes it: on a slider with stops, at least to the next
+    /// stop that way, so a key never stays where it was.
+    fn moved_by(&self, by: f64) -> f64 {
+        let target = self.constrain(self.value + by);
+        if self.stops.is_empty() || target.to_bits() != self.value.to_bits() {
+            return target;
+        }
+        let next = if by > 0.0 {
+            self.stops.iter().copied().find(|stop| *stop > self.value)
+        } else {
+            self.stops
+                .iter()
+                .rev()
+                .copied()
+                .find(|stop| *stop < self.value)
+        };
+        next.unwrap_or(target)
     }
 
     /// The value as a share of the range, `0..=1`.
@@ -638,10 +695,14 @@ impl Slider {
             return false;
         }
         let target = match &key.logical_key {
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => self.value + self.arrow_step(),
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => self.value - self.arrow_step(),
-            Key::Named(NamedKey::PageUp) => self.value + self.page_step(),
-            Key::Named(NamedKey::PageDown) => self.value - self.page_step(),
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
+                self.moved_by(self.arrow_step())
+            }
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
+                self.moved_by(-self.arrow_step())
+            }
+            Key::Named(NamedKey::PageUp) => self.moved_by(self.page_step()),
+            Key::Named(NamedKey::PageDown) => self.moved_by(-self.page_step()),
             Key::Named(NamedKey::Home) => self.range.0,
             Key::Named(NamedKey::End) => self.range.1,
             _ => return false,
@@ -918,6 +979,45 @@ impl Slider {
     }
 }
 
+/// A slider's stops (`fractions` of its range, `0..=1`), as dots along the track: those the
+/// knob has passed cut out of the fill, the rest dim on the bare track, so a history reads as
+/// moments along it.
+pub fn paint_stops(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    face: &SliderFace,
+    fractions: &[f64],
+) {
+    let track = face.track_rect();
+    let passed = theme.tokens.colors.surfaces.raised;
+    let ahead = theme.tokens.colors.text_tertiary;
+    let y = track.center().y;
+    let radius = track.height() / 4.0;
+    // Stops closer than a dot apart read as one: a long history stays a row of dots, not a bar.
+    let mut last: Option<f64> = None;
+    for fraction in fractions {
+        let fraction = fraction.clamp(0.0, 1.0);
+        let x = track.x0 + fraction * track.width();
+        if last.is_some_and(|last| x - last < radius * 4.0) {
+            continue;
+        }
+        last = Some(x);
+        let colour = if fraction <= face.value {
+            passed
+        } else {
+            ahead
+        };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colour,
+            None,
+            &Circle::new(Point::new(x, y), radius),
+        );
+    }
+}
+
 /// The value a held knob would land on, `label`, on a chip above the knob, kept over the
 /// slider's own span so it never leaves the control it reads.
 pub fn paint_held_readout(
@@ -1157,16 +1257,18 @@ impl Widget for Slider {
             focused: self.is_focused,
             disabled: !self.effectively_enabled(),
         });
-        Slider::paint(
-            scene,
-            transform,
-            theme,
-            &SliderFace::new(self.track_rect(), self.thumb.get(now))
-                .hovered(shown.hovered)
-                .dragging(shown.pressed)
-                .focused(shown.focused)
-                .disabled(shown.disabled),
-        );
+        let face = SliderFace::new(self.track_rect(), self.thumb.get(now))
+            .hovered(shown.hovered)
+            .dragging(shown.pressed)
+            .focused(shown.focused)
+            .disabled(shown.disabled);
+        Slider::paint(scene, transform, theme, &face);
+        if !self.stops.is_empty() {
+            let (min, max) = self.range;
+            let span = (max - min).max(f64::EPSILON);
+            let fractions: Vec<f64> = self.stops.iter().map(|stop| (stop - min) / span).collect();
+            paint_stops(scene, transform, theme, &face, &fractions);
+        }
         crate::widget::draw_over(
             self,
             &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
@@ -1341,11 +1443,11 @@ impl Widget for Slider {
         let step = self.arrow_step() * 5.0;
         match action {
             Action::Increment => {
-                let target = self.constrain(self.value + step);
+                let target = self.moved_by(step);
                 self.commit_value(target, state.doc(), path)
             }
             Action::Decrement => {
-                let target = self.constrain(self.value - step);
+                let target = self.moved_by(-step);
                 self.commit_value(target, state.doc(), path)
             }
             Action::SetValue(v) => {
@@ -1882,6 +1984,42 @@ mod tests {
                 hit.x0 < 20.0 && hit.height() >= 32.0,
                 "the knob overhangs: {hit:?}"
             );
+        }
+
+        phase a_slider_with_stops_lands_on_them_and_keys_go_from_one_to_the_next;
+        // The versions of a history along a track, unevenly spaced: a drag or a value lands on
+        // the nearest, a key goes on to the next one even when it is far past an arrow's step,
+        // and the ends of the track hold.
+        {
+            let mut slider = Slider::new("versions", "")
+                .range(0.0, 100.0)
+                .stops([0.0, 2.0, 3.0, 90.0, 140.0]);
+            assert_eq!(slider.stop_values(), [0.0, 2.0, 3.0, 90.0], "only those in range");
+            slider.set_value(40.0);
+            assert!((slider.value() - 3.0).abs() < 1e-9, "the nearest stop");
+            assert!((slider.at_fraction(0.8) - 90.0).abs() < 1e-9, "a drag lands on one");
+            slider.set_focus(true);
+            let doc = AutoCommit::new();
+            let key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
+                let ev =
+                    crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+                slider.handle_key(&ev, &doc, &automerge::ROOT)
+            };
+            assert!(key(&mut slider, NamedKey::ArrowRight));
+            assert!((slider.value() - 90.0).abs() < 1e-9, "on to the next, however far");
+            assert!(key(&mut slider, NamedKey::ArrowLeft));
+            assert!((slider.value() - 3.0).abs() < 1e-9);
+            assert!(key(&mut slider, NamedKey::ArrowLeft));
+            assert!((slider.value() - 2.0).abs() < 1e-9, "and back one at a time");
+            assert!(key(&mut slider, NamedKey::Home));
+            assert!(key(&mut slider, NamedKey::ArrowLeft));
+            assert!(slider.value().abs() < 1e-9, "the first stop holds");
+
+            let theme = Theme::light();
+            let mut scene = Scene::new();
+            let face = SliderFace::new(Rect::new(0.0, 0.0, 200.0, 24.0), 0.5);
+            paint_stops(&mut scene, Affine::IDENTITY, &theme, &face, &[0.0, 0.25, 0.9]);
+            assert!(!scene.encoding().is_empty(), "the stops are drawn");
         }
 
         phase a_change_of_props_keeps_the_hand_on_the_knob;

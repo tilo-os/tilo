@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.maps@27de0bbfd18de719";
+export const SURFACE = "so.tilo.maps@3b157155ce17ed68";
 
 /** What a place is: the marker's ink, the card's glyph, and the OpenStreetMap class it maps from. One of "landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other". */
 export type Category = "landmark" | "cafe" | "restaurant" | "bar" | "museum" | "park" | "transit" | "hotel" | "shop" | "hospital" | "other";
@@ -96,7 +96,6 @@ export interface LocateArgs {
 /** The arguments of `zoom_map`. */
 export interface ZoomMapArgs {
   direction: number;
-  zoom?: number;
 }
 
 /** The arguments of `set_mode`. */
@@ -132,6 +131,10 @@ export interface AcceptRouteArgs {
 /** The arguments of `another_route`. */
 export interface AnotherRouteArgs {
   at?: number;
+}
+
+/** The arguments of `fit_map`. */
+export interface FitMapArgs {
 }
 
 /** The arguments of `clear_route`. */
@@ -177,6 +180,10 @@ export interface ToggleTrafficArgs {
 
 /** The arguments of `download_view`. */
 export interface DownloadViewArgs {
+  north?: number;
+  south?: number;
+  east?: number;
+  west?: number;
   least_zoom?: number;
   most_zoom?: number;
 }
@@ -188,10 +195,20 @@ export interface DownloadPlaceArgs {
   most_zoom?: number;
 }
 
-/** The arguments of `note_saved`. */
-export interface NoteSavedArgs {
-  area: string;
-  at: number[];
+/** The arguments of `keep_area`. */
+export interface KeepAreaArgs {
+  area: KeptArea;
+}
+
+/** The arguments of `save_area`. */
+export interface SaveAreaArgs {
+  area: KeptArea;
+}
+
+/** The arguments of `area_saved`. */
+export interface AreaSavedArgs {
+  area: KeptArea;
+  outcome: string;
 }
 
 /** The arguments of `stop_offline_area`. */
@@ -403,27 +420,110 @@ export function recent(ws: tilo.Workspace, path: string): Recent {
   return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
 }
 
-/** OfflineArea — `tl.so.tilo.maps.OfflineArea`. */
-export interface OfflineArea extends tilo.Resource {
-  q2xakaa7: string;  // name
-  "4ntlybip": number;  // north
-  "2oacylth": number;  // south
-  mvzekw5x: number;  // east
-  j2r3s5ch: number;  // west
-  mmthjc2s: number;  // least_zoom
-  cmuxwz44: number;  // most_zoom
-  "3mucu3ea": number;  // tiles
-  ueltqy2u: number;  // done
-  "2as5emqc": boolean;  // stopped
+/** KeptArea — `tl.so.tilo.maps.KeptArea`. */
+export interface KeptArea extends tilo.Resource {
+  ibpdrk45: string;  // name
+  ukxlhhqi: string;  // key
+  mxxu653h: number;  // north
+  qniubcbe: number;  // south
+  yaeyddn2: number;  // east
+  z3kr346y: number;  // west
+  wygwldfb: number;  // least_zoom
+  "3fo6bsu2": number;  // most_zoom
+  "2gfef4uc": number;  // tiles
+  ukhwybsm: number;  // done
+  x6eit2xc: boolean;  // stopped
+  "7s2dgers": string;  // job
 }
 
-/** The actions `OfflineArea` reaches before it is read: `ws` calls them without a
+/** The actions `KeptArea` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const OFFLINEAREA_ACTIONS = [] as const;
+export const KEPTAREA_ACTIONS = [] as const;
 
-/** The `tl.so.tilo.maps.OfflineArea` kind at `path`. */
-export function offlineArea(ws: tilo.Workspace, path: string): OfflineArea {
-  return resourceProxy(ws, path, SURFACE, OFFLINEAREA_ACTIONS) as unknown as OfflineArea;
+/** The `tl.so.tilo.maps.KeptArea` kind at `path`. */
+export function keptArea(ws: tilo.Workspace, path: string): KeptArea {
+  return resourceProxy(ws, path, SURFACE, KEPTAREA_ACTIONS) as unknown as KeptArea;
+}
+
+/** KeptAreas — `tl.so.tilo.maps.KeptAreas`. */
+export interface KeptAreas extends tilo.Resource {
+  id2odelq: Array<tilo.Entry<KeptArea>>;  // kept
+}
+
+/** The actions `KeptAreas` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const KEPTAREAS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.maps.KeptAreas` kind at `path`. */
+export function keptAreas(ws: tilo.Workspace, path: string): KeptAreas {
+  return resourceProxy(ws, path, SURFACE, KEPTAREAS_ACTIONS) as unknown as KeptAreas;
+}
+
+/** SaveAreaAsk — `tl.so.tilo.maps.SaveAreaAsk`. */
+export interface SaveAreaAsk extends tilo.Resource {
+  uebjyxpv: string;  // id
+  bomeo3ju: string;  // name
+  "3p6krsqd": number;  // north
+  qa5rfbrz: number;  // south
+  kn7knr7e: number;  // east
+  tgv5i2z6: number;  // west
+  u4sjgx7w: number;  // least_zoom
+  xqoyoobw: number;  // most_zoom
+  z3a4l3gz: string;  // basemap
+}
+
+/** The actions `SaveAreaAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SAVEAREAASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.maps.SaveAreaAsk` kind at `path`. */
+export function saveAreaAsk(ws: tilo.Workspace, path: string): SaveAreaAsk {
+  return resourceProxy(ws, path, SURFACE, SAVEAREAASK_ACTIONS) as unknown as SaveAreaAsk;
+}
+
+/** ForgetAreaAsk — `tl.so.tilo.maps.ForgetAreaAsk`. */
+export interface ForgetAreaAsk extends tilo.Resource {
+  atq5mwsp: string;  // id
+}
+
+/** The actions `ForgetAreaAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FORGETAREAASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.maps.ForgetAreaAsk` kind at `path`. */
+export function forgetAreaAsk(ws: tilo.Workspace, path: string): ForgetAreaAsk {
+  return resourceProxy(ws, path, SURFACE, FORGETAREAASK_ACTIONS) as unknown as ForgetAreaAsk;
+}
+
+/** SaveStarted — `tl.so.tilo.maps.SaveStarted`. */
+export interface SaveStarted extends tilo.Resource {
+  kix2eeda: string;  // job
+}
+
+/** The actions `SaveStarted` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SAVESTARTED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.maps.SaveStarted` kind at `path`. */
+export function saveStarted(ws: tilo.Workspace, path: string): SaveStarted {
+  return resourceProxy(ws, path, SURFACE, SAVESTARTED_ACTIONS) as unknown as SaveStarted;
+}
+
+/** Saving — `tl.so.tilo.maps.Saving`. */
+export interface Saving extends tilo.Resource {
+  sbuvlugc: string;  // state
+  krb5phdh: number;  // saved
+  j6wtgiqo: number;  // total
+  nsfzbnns: string;  // error
+}
+
+/** The actions `Saving` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SAVING_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.maps.Saving` kind at `path`. */
+export function saving(ws: tilo.Workspace, path: string): Saving {
+  return resourceProxy(ws, path, SURFACE, SAVING_ACTIONS) as unknown as Saving;
 }
 
 /** Atlas — `tl.so.tilo.maps.Atlas`. */
@@ -444,7 +544,6 @@ export interface Atlas extends tilo.Resource {
   "4azkiaic": number;  // centre_zoom
   qobzxkm4: boolean;  // traffic
   d54rah5t: boolean;  // navigating
-  c6himdmu: Array<tilo.Entry<OfflineArea>>;  // offline
   /** Marks every place a search found as no longer found, and forgets the ones nobody kept. */
   forget_found(): Promise<void>;
   /** Runs `forget_found` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -498,10 +597,9 @@ export interface Atlas extends tilo.Resource {
   locate(): Promise<void>;
   /** Runs `locate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   locateMany(items: LocateArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Zooms the map a level in or out. */
+  /** Zooms the map a level in or out: a level of imagery is the camera's zoom doubled or halved. */
   zoom_map(args: {
     direction: number;
-    zoom?: number;
   }): Promise<void>;
   /** Runs `zoom_map` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   zoom_mapMany(items: ZoomMapArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -546,6 +644,10 @@ export interface Atlas extends tilo.Resource {
   }): Promise<void>;
   /** Runs `another_route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   another_routeMany(items: AnotherRouteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows everything the map holds: the route it draws, or every place it knows. */
+  fit_map(): Promise<void>;
+  /** Runs `fit_map` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  fit_mapMany(items: FitMapArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Takes the route away. */
   clear_route(): Promise<void>;
   /** Runs `clear_route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -591,14 +693,18 @@ export interface Atlas extends tilo.Resource {
   }): Promise<void>;
   /** Runs `toggle_traffic` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   toggle_trafficMany(items: ToggleTrafficArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Saves what the map shows for offline use: its box and the zoom levels whose tiles it keeps. */
+  /** Saves what the map shows for offline use: the box on screen and the zoom levels whose tiles it keeps. A caller names the box itself where it has one (a press, an agent): without one it is the place the map is centred on. */
   download_view(args?: {
+    north?: number;
+    south?: number;
+    east?: number;
+    west?: number;
     least_zoom?: number;
     most_zoom?: number;
   }): Promise<void>;
   /** Runs `download_view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   download_viewMany(items: DownloadViewArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Saves the area `query` names for offline use, with the zoom levels whose tiles it keeps. */
+  /** Saves the area around the place `query` names for offline use, with the zoom levels whose tiles it keeps. */
   download_place(args: {
     query: string;
     least_zoom?: number;
@@ -606,13 +712,25 @@ export interface Atlas extends tilo.Resource {
   }): Promise<void>;
   /** Runs `download_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   download_placeMany(items: DownloadPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Says how far saving an area has come, as the map reports it. */
-  note_saved(args: {
-    area: string;
-    at: number[];
+  /** Keeps `area` on this device, replacing an area of the same footprint or name, and starts its download. */
+  keep_area(args: {
+    area: KeptArea;
   }): Promise<void>;
-  /** Runs `note_saved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  note_savedMany(items: NoteSavedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `keep_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_areaMany(items: KeepAreaArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts keeping `area`'s tiles, as a job whose record says how far it has come. A tile already kept is not fetched again, so this also continues a stopped area. */
+  save_area(args: {
+    area: KeptArea;
+  }): Promise<void>;
+  /** Runs `save_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  save_areaMany(items: SaveAreaArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** What an area's download ended with: what it kept, or that the person stopped it. */
+  area_saved(args: {
+    area: KeptArea;
+    outcome: string;
+  }): Promise<void>;
+  /** Runs `area_saved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  area_savedMany(items: AreaSavedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Stops an area's download: the tiles kept so far stay available offline. */
   stop_offline_area(args: {
     area: string;
@@ -625,7 +743,7 @@ export interface Atlas extends tilo.Resource {
   }): Promise<void>;
   /** Runs `continue_offline_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   continue_offline_areaMany(items: ContinueOfflineAreaArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Takes an area this device saved away. */
+  /** Takes an area this device saved away, and the tiles of it no other kept area needs. */
   delete_offline_area(args: {
     area: string;
   }): Promise<void>;
@@ -643,11 +761,26 @@ export interface Atlas extends tilo.Resource {
 
 /** The actions `Atlas` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ATLAS_ACTIONS = ["forget_found", "forget_foundMany", "remember", "rememberMany", "take_in", "take_inMany", "accept_places", "accept_placesMany", "search", "searchMany", "clear_search", "clear_searchMany", "clear_recents", "clear_recentsMany", "open_place", "open_placeMany", "show_point", "show_pointMany", "locate", "locateMany", "zoom_map", "zoom_mapMany", "set_mode", "set_modeMany", "set_transit_time", "set_transit_timeMany", "directions", "directionsMany", "plan_transit", "plan_transitMany", "accept_route", "accept_routeMany", "another_route", "another_routeMany", "clear_route", "clear_routeMany", "accept_transit", "accept_transitMany", "another_journey", "another_journeyMany", "clear_transit", "clear_transitMany", "start_navigation", "start_navigationMany", "end_navigation", "end_navigationMany", "find_nearby", "find_nearbyMany", "open_poi", "open_poiMany", "toggle_traffic", "toggle_trafficMany", "download_view", "download_viewMany", "download_place", "download_placeMany", "note_saved", "note_savedMany", "stop_offline_area", "stop_offline_areaMany", "continue_offline_area", "continue_offline_areaMany", "delete_offline_area", "delete_offline_areaMany", "clear_offline_areas", "clear_offline_areasMany", "open_link"] as const;
+export const ATLAS_ACTIONS = ["forget_found", "forget_foundMany", "remember", "rememberMany", "take_in", "take_inMany", "accept_places", "accept_placesMany", "search", "searchMany", "clear_search", "clear_searchMany", "clear_recents", "clear_recentsMany", "open_place", "open_placeMany", "show_point", "show_pointMany", "locate", "locateMany", "zoom_map", "zoom_mapMany", "set_mode", "set_modeMany", "set_transit_time", "set_transit_timeMany", "directions", "directionsMany", "plan_transit", "plan_transitMany", "accept_route", "accept_routeMany", "another_route", "another_routeMany", "fit_map", "fit_mapMany", "clear_route", "clear_routeMany", "accept_transit", "accept_transitMany", "another_journey", "another_journeyMany", "clear_transit", "clear_transitMany", "start_navigation", "start_navigationMany", "end_navigation", "end_navigationMany", "find_nearby", "find_nearbyMany", "open_poi", "open_poiMany", "toggle_traffic", "toggle_trafficMany", "download_view", "download_viewMany", "download_place", "download_placeMany", "keep_area", "keep_areaMany", "save_area", "save_areaMany", "area_saved", "area_savedMany", "stop_offline_area", "stop_offline_areaMany", "continue_offline_area", "continue_offline_areaMany", "delete_offline_area", "delete_offline_areaMany", "clear_offline_areas", "clear_offline_areasMany", "open_link"] as const;
 
 /** The `tl.so.tilo.maps.Atlas` kind at `path`. */
 export function atlas(ws: tilo.Workspace, path: string): Atlas {
   return resourceProxy(ws, path, SURFACE, ATLAS_ACTIONS) as unknown as Atlas;
+}
+
+/** Scale — `tl.so.tilo.maps.Scale`. */
+export interface Scale extends tilo.Resource {
+  izgrst56: string;  // label
+  o2aq6igf: number;  // pixels
+}
+
+/** The actions `Scale` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SCALE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.maps.Scale` kind at `path`. */
+export function scale(ws: tilo.Workspace, path: string): Scale {
+  return resourceProxy(ws, path, SURFACE, SCALE_ACTIONS) as unknown as Scale;
 }
 
 /** Places — `tl.so.tilo.maps.Places`. */

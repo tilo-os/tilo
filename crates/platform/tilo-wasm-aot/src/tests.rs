@@ -37,7 +37,11 @@ fn the_cache_names_an_entry_by_its_module_and_engine() {
     let wasm = module();
     let name = cache.name(&wasm);
     assert!(name.starts_with(&format!("{}-", blake3::hash(&wasm).to_hex())));
-    assert!(name.ends_with(".cwasm"));
+    assert!(
+        std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|extension| extension == "cwasm")
+    );
     // The engine's part of the name is the one wasmtime checks: two engines of one
     // configuration agree, and the entry is read back from disk by the second.
     let again = Cache::at(dir.path()).unwrap();

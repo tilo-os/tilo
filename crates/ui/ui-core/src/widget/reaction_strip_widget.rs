@@ -47,6 +47,8 @@ pub struct ReactionStripWidget {
     toggles: Vec<ReactionToggle>,
     add_request: Option<Rect>,
     on_toggle: Option<Box<dyn FnMut(ReactionToggle)>>,
+    /// Someone's face was chosen: who they are.
+    on_person: Option<Box<dyn FnMut(&MemberId)>>,
     /// The emoji picker the add button opens, unless the host opens its own.
     picker: Option<crate::widget::Popover<crate::widget::EmojiPicker>>,
     action: Option<ActionEmitter<ReactionToggle>>,
@@ -77,6 +79,7 @@ impl ReactionStripWidget {
             toggles: Vec::new(),
             add_request: None,
             on_toggle: None,
+            on_person: None,
             picker: Some(
                 crate::widget::Popover::with_content(crate::widget::EmojiPicker::new())
                     .with_label(crate::i18n::widget_format("emoji-chooser-title", &[])),
@@ -112,6 +115,17 @@ impl ReactionStripWidget {
     pub(crate) fn set_people(&mut self, people: HashMap<MemberId, crate::component::Person>) {
         self.strip.set_people(people);
         self.dirty = true;
+    }
+
+    /// What choosing a member's face does: it says who they are.
+    #[must_use]
+    pub fn on_person(mut self, chosen: impl FnMut(&MemberId) + 'static) -> Self {
+        self.on_person = Some(Box::new(chosen));
+        self
+    }
+
+    pub(crate) fn set_on_person(&mut self, chosen: impl FnMut(&MemberId) + 'static) {
+        self.on_person = Some(Box::new(chosen));
     }
 
     pub(crate) fn set_on_toggle(&mut self, toggle: impl FnMut(ReactionToggle) + 'static) {
@@ -225,6 +239,11 @@ impl ReactionStripWidget {
     fn activate(&mut self, hit: StripHit) {
         match hit {
             StripHit::Toggle(emoji) => self.toggle(&emoji),
+            StripHit::Person(who) => {
+                if let Some(chosen) = &mut self.on_person {
+                    chosen(&who);
+                }
+            }
             StripHit::Add { anchor } => {
                 self.add_request = Some(anchor);
                 if let Some(picker) = &mut self.picker {
@@ -548,15 +567,22 @@ impl Widget for ReactionStripWidget {
         let Some(key) = key_path.first() else {
             return false;
         };
-        let hit = self
-            .strip
-            .laid_out()
+        let laid = self.strip.laid_out();
+        let faces = laid
+            .member_faces()
+            .into_iter()
+            .map(|(_, who)| StripHit::Person(who));
+        let hit = laid
             .targets()
             .into_iter()
             .map(|(_, hit)| hit)
+            .chain(faces)
             .find(|hit| match hit {
                 StripHit::Toggle(emoji) => crate::a11y::hash_key(&("reaction", emoji)) == *key,
                 StripHit::Add { .. } => crate::a11y::hash_key(&"reaction-add") == *key,
+                StripHit::Person(who) => {
+                    crate::a11y::hash_key(&("reaction-person", who.id())) == *key
+                }
             });
         match hit {
             Some(hit) => {

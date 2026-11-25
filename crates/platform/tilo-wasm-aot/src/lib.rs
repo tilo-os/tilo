@@ -19,9 +19,10 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+#[cfg(feature = "compile")]
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::PoisonError;
+#[cfg(feature = "compile")]
+use std::sync::{Mutex, PoisonError};
 
 /// The one engine configuration every runtime compiles or deserializes with.
 ///
@@ -59,6 +60,7 @@ pub fn runtime_engine() -> Result<wasmtime::Engine, String> {
 }
 
 /// How many modules may compile at once, to the extent the device's cores allow.
+#[cfg(feature = "compile")]
 const CONCURRENT: usize = 32;
 
 /// A valid module with nothing in it, which the cache compiles to warm the compiler.
@@ -71,11 +73,14 @@ pub const MAGIC: &[u8; 8] = b"tlaot001";
 /// The length of one digest in an entry.
 pub const DIGEST: usize = 32;
 
+/// The bytes before the serialized module: the magic and the two digests.
+const HEADER: usize = MAGIC.len() + 2 * DIGEST;
+
 /// An entry the daemon wrote: the module's digest, a digest of the serialized module, and the
 /// serialized module.
 #[must_use]
 pub fn seal(module: &[u8], serialized: &[u8]) -> Vec<u8> {
-    let mut entry = Vec::with_capacity(MAGIC.len() + 2 * DIGEST + serialized.len());
+    let mut entry = Vec::with_capacity(HEADER.saturating_add(serialized.len()));
     entry.extend_from_slice(MAGIC);
     entry.extend_from_slice(blake3::hash(module).as_bytes());
     entry.extend_from_slice(blake3::hash(serialized).as_bytes());
@@ -190,10 +195,16 @@ impl Cache {
     }
 
     /// The stripe a module's compile takes: modules that share it compile one at a time.
-    fn stripe(&self, module: &[u8]) -> &Mutex<()> {
-        let digest = blake3::hash(module);
-        let at = usize::from(digest.as_bytes()[0]) % self.compiling.len();
-        &self.compiling[at]
+    fn stripe(&self, module: &[u8]) -> Option<&Mutex<()>> {
+        let first = blake3::hash(module)
+            .as_bytes()
+            .first()
+            .copied()
+            .unwrap_or(0);
+        let at = usize::from(first)
+            .checked_rem(self.compiling.len())
+            .unwrap_or(0);
+        self.compiling.get(at)
     }
 
     /// The compiled entry for `module`: from the cache when it holds one, else compiled now.
@@ -213,8 +224,7 @@ impl Cache {
         // the entry the first wrote.
         let _turn = self
             .stripe(module)
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+            .map(|stripe| stripe.lock().unwrap_or_else(PoisonError::into_inner));
         if let Ok(bytes) = std::fs::read(&path)
             && open_for(&bytes, module).is_ok()
         {
@@ -247,10 +257,11 @@ impl Cache {
             return parts.iter().map(|part| self.ensure(part)).collect();
         }
         std::thread::scope(|scope| {
-            let waiting: Vec<_> = parts
-                .iter()
-                .map(|part| scope.spawn(move || self.ensure(part)))
-                .collect();
+            // Every compile starts before the first is joined, so they run at once.
+            let mut waiting = Vec::with_capacity(parts.len());
+            for part in parts {
+                waiting.push(scope.spawn(move || self.ensure(part)));
+            }
             waiting
                 .into_iter()
                 .map(|spawned| {

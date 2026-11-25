@@ -334,8 +334,9 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     lay_out_and_draw(&mut widget, 600.0, &theme);
     let laid = widget.strip().laid_out().clone();
     assert!(widget.get_rect().height() >= laid.height());
-    let first = laid.pills()[0].rect.center();
-    let second = laid.pills()[1].rect.center();
+    // A pill is pressed on its emoji: the faces at its end are the reactors' own.
+    let first = laid.pills()[0].glyph.center();
+    let second = laid.pills()[1].glyph.center();
     click(&mut widget, first);
     click(&mut widget, second);
     assert_eq!(
@@ -486,4 +487,52 @@ fn a_pill_counts_what_was_given_elsewhere_and_names_those_who_gave_it() {
         said.contains("Ada") && said.contains("Bo") && said.contains("Cy"),
         "{said}"
     );
+}
+
+/// Choosing a reactor's face says who they are: the face is theirs, apart from the pill it ends,
+/// which still toggles the reaction, and it is theirs to choose for someone who may not react too.
+#[test]
+fn choosing_a_reactors_face_says_who_they_are_and_the_pill_still_toggles() {
+    let theme = Theme::dark();
+    let chosen = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let toggled = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (seen, pressed) = (Rc::clone(&chosen), Rc::clone(&toggled));
+    let mut widget = ReactionStripWidget::new(
+        vec![group("👍", &["ada", "bo"])],
+        Some(tilo_actions::MemberId::person("me")),
+    )
+    .with_names(names)
+    .on_person(move |who| seen.borrow_mut().push(who.id().to_owned()))
+    .on_toggle(move |toggle| pressed.borrow_mut().push(toggle.emoji));
+    lay_out_and_draw(&mut widget, 600.0, &theme);
+    let laid = widget.strip().laid_out().clone();
+    let faces = laid.member_faces();
+    assert_eq!(
+        faces.iter().map(|(_, who)| who.id()).collect::<Vec<_>>(),
+        ["ada", "bo"],
+        "each member's face, in the order they reacted"
+    );
+    let pill = laid.pills()[0].rect;
+    for (face, _) in &faces {
+        assert!(pill.contains(face.center()), "a face stands on its pill");
+    }
+    click(&mut widget, faces[1].0.center());
+    assert_eq!(*chosen.borrow(), ["bo"], "the face chosen is Bo's");
+    assert!(
+        toggled.borrow().is_empty(),
+        "choosing a face reacts with nothing"
+    );
+    click(&mut widget, laid.pills()[0].glyph.center());
+    assert_eq!(*toggled.borrow(), ["👍"], "the pill's emoji still toggles");
+
+    // Someone who may not react still chooses who reacted.
+    let watching = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = Rc::clone(&watching);
+    let mut widget = ReactionStripWidget::new(vec![group("👍", &["ada"])], None)
+        .can_react(false)
+        .on_person(move |who| seen.borrow_mut().push(who.id().to_owned()));
+    lay_out_and_draw(&mut widget, 600.0, &theme);
+    let face = widget.strip().laid_out().member_faces()[0].0;
+    click(&mut widget, face.center());
+    assert_eq!(*watching.borrow(), ["ada"]);
 }

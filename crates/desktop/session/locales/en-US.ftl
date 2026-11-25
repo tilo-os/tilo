@@ -417,6 +417,7 @@ window-move-failed-body = The window stayed in { $workspace }.
 window-move-record-failed-title = { $app } could not take what it shows to { $workspace }
 window-move-record-failed-body = The window stayed in { $workspace }: { $reason }.
 window-move-reason-record = its record cannot be moved to that workspace
+window-move-reason-unsaved = the app did not save what it shows
 window-move-reason-storage = this computer could not keep it there
 window-move-reason-no-window = the app opened no window there
 window-move-reason-no-start = the app did not start there

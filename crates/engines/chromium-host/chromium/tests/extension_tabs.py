@@ -2173,6 +2173,8 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(worker(f'chrome.downloads.resume({download})'), {'value': None})
         done = first(lambda e: e['event'] == 'download' and e['id'] == download and e['state'] != 'progress')
         self.assertEqual(done['state'], 'complete', done)
+        # The engine saves it and says whose it is, for the Browser's list to show it too.
+        self.assertTrue(done['extension'], done)
         self.assertEqual(Path(done['path']).name, 'kept.bin')
         self.assertEqual(Path(done['path']).read_bytes(), DOWNLOAD)
         found = worker("chrome.downloads.search({filenameRegex: 'kept'})")['value']

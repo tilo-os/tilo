@@ -92,7 +92,11 @@ impl Tiering {
         for entry in std::fs::read_dir(dir).ok()? {
             let path = entry.ok()?.path();
             let name = path.file_name()?.to_str()?;
-            if !name.starts_with(&prefix) || !name.ends_with(".cwasm") {
+            if !name.starts_with(&prefix)
+                || path
+                    .extension()
+                    .is_none_or(|extension| extension != "cwasm")
+            {
                 continue;
             }
             let Ok(entry) = std::fs::read(&path) else {

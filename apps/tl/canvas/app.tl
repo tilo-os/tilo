@@ -1907,6 +1907,95 @@ action compare_versions(a: Artwork, change: Text) -> Option<Text> uses image (
     }
 }
 
+/// Whether a version of the artwork only showed it (a look drawn, a comparison laid over it)
+/// rather than changed its work: the timeline leaves those out.
+fn shown_only(kind: Text, fields: List<Text>) -> Bool {
+    kind == "changed"
+        and fields.len() > 0
+        and fields.all(
+            f -> f == "look"
+                or f == "comparison"
+                or f == "notice"
+                or f == "version_note"
+                or f == "version_overlay"
+                or f == "version_region",
+        )
+}
+
+/// The places `0.0` to `n - 1` in order: one stop on a timeline for each of `n` versions.
+fn places(n: Int) -> List<Float> {
+    if n <= 0 {
+        []
+    } else if n == 1 {
+        [0.0]
+    } else {
+        let half = n / 2
+        places(half) + places(n - half).map(x -> x + half.to_float())
+    }
+}
+
+/// Compares the artwork with its version at `place` on the timeline, the oldest at `0.0`. At
+/// the newest the comparison is taken away, as the artwork stands as it is.
+action compare_at(a: Artwork, place: Float) -> Option<Text> uses image (
+    icon: .history,
+    label: "Compare with a version",
+    did: "compared versions",
+) {
+    let versions = history(a).filter(v -> not shown_only(v.kind, v.fields)).sort_by(v -> v.at)
+    let at = place.round()
+    if at < versions.len() - 1 {
+        if let v = versions.at(at) {
+            return compare_versions(a, change_of(v))
+        }
+    }
+    clear_comparison(a)
+    return .none
+}
+
+/// The artwork's versions along a track, oldest at the left: dragging the knob along it
+/// compares the artwork with the version it reaches, and what changed since is laid over the
+/// surface. The knob rests on the newest, the artwork as it stands. The track is read when the
+/// person asks for it: an artwork of ten thousand marks has as many versions, and opening it
+/// reads none of them.
+view version_timeline(a: Artwork) {
+    state shown: Bool = false
+    state at: Float = -1.0
+    if not shown {
+        row(gap: .related, align: .center) {
+            ui.Button("Versions", icon: .history) {
+                on press: set(shown, true)
+            }
+        }
+    } else {
+        let versions = history(a).filter(v -> not shown_only(v.kind, v.fields)).sort_by(v -> v.at)
+        let newest = (versions.len() - 1).max(0).to_float()
+        let on = if at < 0.0 or at > newest { newest } else { at }
+        row(gap: .related, align: .center) {
+            ui.Text("Versions", role: .caption, secondary: true)
+            ui.Slider(
+                value: on,
+                label: "Versions of {a.title}",
+                min: 0.0,
+                max: newest,
+                step: 1.0,
+                stops: places(versions.len()),
+                fill,
+            ) {
+                on change(t): set(at, t).then(compare_at(a, t))
+            }
+            if let seen = versions.at(on.round()) {
+                ui.Text("{seen.what} · {seen.who} · {seen.at}", role: .caption, secondary: true)
+            }
+            ui.Button("Back to now", icon: .x) {
+                on press: set(at, -1.0).then(set(shown, false)).then(clear_comparison(a))
+            }
+        }
+        if a.version_note != "" {
+            ui.Text(a.version_note, role: .caption, secondary: true)
+        }
+    }
+}
+
 /// Takes the version comparison away from the surface.
 action clear_comparison(a: Artwork) (label: "Clear the comparison", did: "cleared a comparison") {
     a.version_overlay = ""
@@ -3331,6 +3420,7 @@ view artwork(a: Artwork) {
                         .then(set(pan_y, pan_y + (delta.at(1) ?? 0.0)))
                 }
                 well(a, tool, brush, size, colour, chosen, pan_x, pan_y, zoom)
+                version_timeline(a)
             }
         }
     }
@@ -3685,7 +3775,8 @@ view well(
                 }
             }
         }
-        ui.Text(paint_brush(tool, brush), role: .caption, secondary: true)
+        // What the next stroke lays down: the brush, its size and the paint, drawn as they change.
+        ui.StrokePreview(paint_brush(tool, brush), size: size, colour: colour)
         ui.Slider(bind: size, label: "Size", min: 1.0, max: 128.0, fill)
         ui.ColorPicker(bind: colour, swatches: inks(), columns: 7, label: "Paint")
         if let layer = chosen {
@@ -3724,16 +3815,6 @@ view well(
             }
             ui.MenuItem("SVG") {
                 on choose: file.save(export_svg(a), name: "Artwork.svg")
-            }
-        }
-        ui.MenuButton("Versions", icon: .history) {
-            for v in history(a).sort_by(v -> v.at, desc).take(8) {
-                ui.MenuItem("{v.at} — {v.what}") {
-                    on choose: compare_versions(a, change_of(v))
-                }
-            }
-            ui.MenuItem("Clear the comparison") {
-                on choose: clear_comparison(a)
             }
         }
         if let shape = last_shape(a) {
@@ -3785,9 +3866,6 @@ view well(
         }
         if a.comparison != "" {
             ui.ImageViewer(a.comparison, alt: "The artwork against its reference", aspect: 1.5)
-        }
-        if a.version_note != "" {
-            ui.Text(a.version_note, role: .caption, secondary: true)
         }
         ui.Text("{zoomed_said(zoom)}", role: .caption, secondary: true)
         ui.Button("Fit the view", icon: .maximize, icon_only: true) {

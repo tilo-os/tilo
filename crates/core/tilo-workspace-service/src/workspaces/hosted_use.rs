@@ -198,6 +198,21 @@ pub fn agent_policy_allows(
     decision.grant().is_some() && decision.answer != Answer::Deny
 }
 
+/// Whether its person narrowed the agent `agent` in `policy`: an answer they gave it stands
+/// there ([`tilo_action_policy::agent_answers::is_answer`]). It then takes only what those
+/// answers name, and is never asked for what they do not. A grant kept for one use of theirs
+/// (the "Always" of a vault item's leave) is no answer and narrows nothing.
+#[must_use]
+pub(crate) fn answers_narrow(policy: &WorkspacePolicy, agent: &str) -> bool {
+    let named = Grantee::agent(agent.to_owned());
+    let now = Context::at_time(tilo_clock::wall());
+    policy.grants.iter().any(|grant| {
+        grant.grantee == named
+            && grant.is_live(&now)
+            && tilo_action_policy::agent_answers::is_answer(grant)
+    })
+}
+
 /// Whether the workspace's policy allows `agent` `target` in `workspace` for sure: an answer
 /// naming that very action with an Allow. A page operation, which changes what a page said, is
 /// carried only where its person allowed it, and nothing less stands for that.

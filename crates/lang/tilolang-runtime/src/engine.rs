@@ -565,7 +565,7 @@ pub fn adopt_precompiled(module: &[u8], entry: &[u8]) -> Result<ModuleHash, Stri
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(hash.clone(), serialized);
-        return Ok(hash);
+        Ok(hash)
     }
     #[cfg(not(all(feature = "wasmtime", not(target_arch = "wasm32"))))]
     {
@@ -607,6 +607,7 @@ pub fn compiled_from(dir: PathBuf) {
 }
 
 /// The directory the device's compiled modules are read from, if this process was given one.
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 fn compiled_dir() -> Option<PathBuf> {
     COMPILED_DIR
         .lock()

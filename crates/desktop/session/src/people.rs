@@ -1341,7 +1341,8 @@ impl Panel {
                     &sync.here().borrow().faces(),
                     &tiles,
                     &mut self.chats.borrow_mut(),
-                    env.presence.unwrap_or(&ui::presence::PresenceCtx::default()),
+                    env.presence
+                        .unwrap_or(&ui::presence::PresenceCtx::default()),
                     ui::time::now(),
                     Self::presence_ms(),
                     theme.motion(),
@@ -1581,18 +1582,6 @@ impl Panel {
         shown.card_open = None;
         let pinned = shown.pinned.is_some() && !shown.sheet();
         let sheet = shown.sheet();
-        let own_id = self
-            .sync
-            .as_ref()
-            .map_or_else(String::new, |sync| sync.publisher().to_string());
-        let following = self.sync.as_ref().map_or_else(Vec::new, |sync| {
-            let target = sync.own().following.unwrap_or_default();
-            if target.is_empty() {
-                Vec::new()
-            } else {
-                vec![(own_id, target)]
-            }
-        });
         let followed = self.sync.as_ref().and_then(|sync| sync.own().following);
         let expanded = shown.expanded.clone();
         let workspace = shown.workspace.clone();
@@ -1626,7 +1615,6 @@ impl Panel {
             panel,
             screens: &screens,
             followed_id: followed.as_deref(),
-            following_pairs: &following,
             expanded_id: expanded.as_deref(),
             waved: &waved,
             waved_until,

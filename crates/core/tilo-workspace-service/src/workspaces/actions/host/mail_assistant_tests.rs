@@ -241,23 +241,6 @@ pub(super) fn lunch() -> Value {
     }})
 }
 
-/// `caller` begins the message to Bo over `page` and asks for it to be
-/// sent.
-async fn send_lunch(
-    page: &(impl ActionProvider + Sync),
-    caller: &Caller,
-) -> Result<Value, ActionCallError> {
-    let begun: StartedSend =
-        read(asked_of(page, caller, person_accounts::BEGIN_SEND, lunch()).await);
-    asked_of(
-        page,
-        caller,
-        person_accounts::SEND,
-        json!({"send": begun.send}),
-    )
-    .await
-}
-
 /// `caller` lists and fetches the workspace's one account over `page`.
 async fn reads_the_account_kept(page: &(impl ActionProvider + Sync), caller: &Caller, who: &str) {
     let listed: MailAccounts = read(asked_of(page, caller, person_accounts::LIST, json!({})).await);
@@ -380,11 +363,11 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
 
 /// Sending still asks. A message the person's assistant would send waits for its person,
 /// showing them who it goes to and what it says; nothing leaves until they approve it, and
-/// then it leaves once. The person sending their own message is asked nothing.
+/// then it leaves once. The person's own message is asked of them as well, where the workspace
+/// asks them before what leaves it.
 #[tokio::test]
 async fn a_message_the_assistant_would_send_waits_for_its_person() {
     let setup = Setup::new().await;
-    let page = setup.page();
     let agent = setup.agent(ASSISTANT);
 
     let begun: StartedSend = read(
@@ -419,9 +402,15 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
     let sent = "send ada@example.test to bo@example.test: Lunch";
     assert_eq!(setup.servers.asked(), [sent]);
 
-    send_lunch(&page, &setup.ada())
-        .await
-        .expect("her own message asks her nothing");
+    // Her own message is asked of her too, where the workspace asks an editor before what leaves
+    // it: making the call is not her yes, her approve of its record is, and it leaves once.
+    let ada = setup.ada();
+    let hers: StartedSend = read(setup.ask(&ada, person_accounts::BEGIN_SEND, lunch()).await);
+    let (sending, _) = setup
+        .asks(&ada, person_accounts::SEND, json!({"send": hers.send}))
+        .await;
+    assert_eq!(setup.servers.asked(), [sent], "nothing left before her yes");
+    setup.approve(&ada, &sending).await.unwrap();
     assert_eq!(setup.servers.asked(), [sent, sent]);
 }
 

@@ -274,9 +274,11 @@ tilo_test_env::scenario! {
             );
             assert!(service.calls.lock().unwrap().is_empty());
 
-            // An earlier approval can answer Ask, but cannot override a new Deny.
+            // An earlier approval can answer Ask, but cannot override a new Deny; a confirmation
+            // the caller wrote itself answers neither.
             for confirmation in [issued_before_change, Confirmation::Confirmed] {
-                if matches!(confirmation, Confirmation::Confirmed) {
+                let written = matches!(confirmation, Confirmation::Confirmed);
+                if written {
                     request.invocation = tilo_actions::InvocationId::new();
                 }
                 request.confirmation = Some(confirmation);
@@ -286,6 +288,14 @@ tilo_test_env::scenario! {
                         Err(ActionCallError::NotPermitted)
                     );
                     assert!(service.calls.lock().unwrap().is_empty());
+                } else if written {
+                    assert!(
+                        matches!(
+                            invoke(&state, &person, &request),
+                            Err(ActionCallError::ConfirmationRequired(_))
+                        ),
+                        "a confirmation the person's call writes itself is none"
+                    );
                 } else {
                     invoke(&state, &person, &request).unwrap();
                 }
@@ -293,7 +303,7 @@ tilo_test_env::scenario! {
             if answer == Answer::Ask {
                 assert_eq!(
                     *service.calls.lock().unwrap(),
-                    vec![serde_json::json!({"confirm": true}); 2]
+                    vec![serde_json::json!({"confirm": true})]
                 );
             }
         }

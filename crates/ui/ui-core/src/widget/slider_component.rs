@@ -19,6 +19,9 @@ pub struct SliderProps {
     pub max: Option<f64>,
     /// Values snap to multiples of this from the minimum; the arrow keys move one step.
     pub step: Option<f64>,
+    /// The values it stops at, marked along the track: a drag lands on the nearest, the arrow
+    /// keys go from one to the next (the versions along a history).
+    pub stops: Vec<f64>,
     /// Show the value in words beside the track: "72%".
     pub shows_value: bool,
     /// Whether it can be moved now.
@@ -36,6 +39,7 @@ impl Default for SliderProps {
             min: None,
             max: None,
             step: None,
+            stops: Vec::new(),
             shows_value: false,
             enabled: true,
             change: Event::None,
@@ -53,6 +57,7 @@ impl Described for Slider {
             min,
             max,
             step,
+            stops,
             shows_value,
             enabled,
             change,
@@ -78,17 +83,23 @@ impl Described for Slider {
         if let Some(step) = step {
             slider = slider.step(step);
         }
+        if !stops.is_empty() {
+            slider = slider.stops(stops);
+        }
         if shows_value {
             slider = slider.shows_value();
         }
         slider
     }
 
-    /// Its value and whether it can be moved change in place; another range or step is built
-    /// again.
+    /// Its value and whether it can be moved change in place; another range, step or stops is
+    /// built again.
     fn set_props(&mut self, props: SliderProps) -> bool {
         let range = (props.min.unwrap_or(0.0), props.max.unwrap_or(1.0));
-        if range != self.bounds() || props.step != self.step_size() {
+        if range != self.bounds()
+            || props.step != self.step_size()
+            || props.stops != self.stop_values()
+        {
             return false;
         }
         self.set_enabled(props.enabled);

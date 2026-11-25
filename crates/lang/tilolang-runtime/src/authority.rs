@@ -48,6 +48,15 @@ pub trait Authority {
     /// invoker and the action. It is empty for a call made straight by an actor.
     fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision;
 
+    /// Whether a rule asks `invoker` first before `action` runs: one of their own, or the
+    /// workspace's for them, apart from what the code that led there may do. A person's own
+    /// press answers what its code asks (they pressed it); only such a rule waits for their yes
+    /// on the system's confirm. A runtime without a platform has no such rules.
+    fn asks_first(&self, invoker: &Actor, action: &ActionInfo) -> bool {
+        let _ = (invoker, action);
+        false
+    }
+
     /// Whether the workspace still lets `app`'s code reach `host` with `uses web`. What the
     /// package declares is checked before this ([`crate::web::granted`]); a workspace that
     /// revoked a host refuses it here, and the request answers as a value.

@@ -14,5 +14,5 @@
 mod area;
 pub mod tiles;
 
-pub use area::{Area, Kept};
+pub use area::{Area, AreaBounds, Kept};
 pub use tiles::Tiles;

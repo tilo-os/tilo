@@ -880,7 +880,8 @@ mod cases {
         );
         let zoom = m.float(&m.root, "centre_zoom");
         assert!(
-            (40075016.686 * (latitude * 3.14159265 / 180.0).cos() / (1048576.0 * zoom) - 0.8).abs()
+            (40_075_016.686 * (latitude * std::f64::consts::PI / 180.0).cos() / (1_048_576.0 * zoom) - 0.8)
+                .abs()
                 < 0.4,
             "about 0.8 metres of the route stand for a screen pixel: {zoom}"
         );

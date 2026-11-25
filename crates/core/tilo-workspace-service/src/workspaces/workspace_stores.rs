@@ -41,6 +41,7 @@ const PASSWORDS_REACHES: [&str; 7] = [
     tilo_actions::remote::person_vault::REVEAL,
 ];
 
+use super::hosted_use::answers_narrow;
 use super::{WorkspaceId, Workspaces};
 
 /// Where a store stands in the workspace's policy: an app's node, and the
@@ -382,7 +383,7 @@ impl Workspaces {
         let access = access.granted(turn.caller.granted());
         let node = store.node(access.workspace(), action);
         let verdict = access.verdict(&node, effect, &Context::at_time(tilo_clock::wall()));
-        let narrowed = policy_narrows(access.policy.as_ref(), agent);
+        let narrowed = answers_narrow(access.policy.as_ref(), agent);
         let answer = if effect == ActionKind::Read {
             verdict.answer
         } else {
@@ -441,28 +442,15 @@ fn agent_read(verdict: &tilo_action_policy::Verdict<'_>, narrowed: bool) -> Answ
     theirs.min(own)
 }
 
-/// Whether its person narrowed the agent `agent` in `policy`: an answer they gave it stands
-/// there ([`tilo_action_policy::agent_answers`]). It then takes only what those answers name,
-/// and is never asked for what they do not.
-fn policy_narrows(policy: &tilo_action_policy::WorkspacePolicy, agent: &str) -> bool {
-    let named = tilo_action_policy::Grantee::agent(agent.to_owned());
-    let now = Context::at_time(tilo_clock::wall());
-    policy.grants.iter().any(|grant| {
-        grant.grantee == named
-            && grant.is_live(&now)
-            && tilo_action_policy::agent_answers::is_answer(grant)
-    })
-}
-
 impl Workspaces {
     /// Whether the agent `acting` names is narrowed by its person's answers in `workspace`
-    /// ([`policy_narrows`]).
+    /// ([`answers_narrow`]).
     async fn agent_narrowed(&self, workspace: &str, acting: &Acting) -> bool {
         let Some(agent) = acting.agent_id() else {
             return false;
         };
         self.policy_of(workspace)
             .await
-            .is_some_and(|policy| policy_narrows(&policy, agent))
+            .is_some_and(|policy| answers_narrow(&policy, agent))
     }
 }

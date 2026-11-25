@@ -85,6 +85,7 @@ fn note(
 ) -> bool {
     let action = match kind {
         "download" => "download",
+        "extension_download" => "note_extension_download",
         "history" => "remember_history",
         "open" => "open_from_page",
         "credential" => "remember_credential",
