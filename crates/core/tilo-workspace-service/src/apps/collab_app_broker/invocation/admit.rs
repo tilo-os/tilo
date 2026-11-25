@@ -343,7 +343,7 @@ impl AppBrokerState {
             ));
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut admitted = invocation_journal::Durable::settled();
+        let mut admitted = tilo_invocation_journal::Durable::settled();
         let journal_key = if let Some(journal) = journal.as_mut() {
             let key = InvocationKey {
                 workspace: offered.0.route.cluster_id.clone(),
@@ -360,9 +360,9 @@ impl AppBrokerState {
                 Some(key)
             } else {
                 let admission = if owner.verified_actor().is_some() {
-                    let facts = invocation_journal::evidence_facts(&key, &intent)?;
+                    let facts = tilo_invocation_journal::evidence_facts(&key, &intent)?;
                     Some(
-                        crate::apps::action_evidence::mint(facts, &intent).map_err(|why| {
+                        tilo_invocation_journal::action_evidence::mint(facts, &intent).map_err(|why| {
                             format!("action_evidence_unavailable: host signing identity unavailable: {why}")
                         })?,
                     )

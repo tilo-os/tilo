@@ -629,7 +629,7 @@ impl AppBrokerState {
                 },
             };
             let (update, completion) = if pending.journal_key.is_some() {
-                let update = invocation_journal::unknown(pending.update.invocation());
+                let update = tilo_invocation_journal::unknown(pending.update.invocation());
                 let completion = InvocationCompletion {
                     code: "action_outcome_unknown".into(),
                     message: "application outcome unknown after silence".into(),

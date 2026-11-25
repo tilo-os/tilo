@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
                     .unwrap()
                     .unwrap();
                 let receipt = record.admission.as_ref().unwrap().public_receipt();
-                crate::apps::action_evidence::verify(receipt, &receipt.facts).unwrap();
+                tilo_invocation_journal::action_evidence::verify(receipt, &receipt.facts).unwrap();
                 assert_eq!(
                     record.intent["host_start"]["parent_invocation"],
                     serde_json::to_value(parent_id).unwrap()

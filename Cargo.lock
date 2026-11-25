@@ -17854,6 +17854,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-invocation-journal"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-advisory-lock",
+ "tilo-app-id",
+ "tilo-broker-core",
+ "tilo-canonical-json",
+ "tilo-clock",
+ "tilo-collab-types",
+ "tilo-device-identity",
+ "tilo-failure",
+ "tilo-files",
+ "tilo-identity",
+ "tilo-runtime-collab",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-key-group"
 version = "0.1.0"
 dependencies = [
@@ -22090,6 +22122,7 @@ dependencies = [
  "tilo-history",
  "tilo-identity",
  "tilo-identity-client",
+ "tilo-invocation-journal",
  "tilo-key-group",
  "tilo-lock",
  "tilo-mcp",

@@ -3380,7 +3380,7 @@ impl AppBrokerState {
 /// The answer to a request `staged` in the journal: given once its write
 /// resolves, and never sooner.
 pub(super) fn answered_when_durable(
-    staged: Result<super::invocation_journal::Durable, ActionCallError>,
+    staged: Result<tilo_invocation_journal::Durable, ActionCallError>,
 ) -> Pending<Result<(), ActionCallError>> {
     let durable = match staged {
         Ok(durable) => durable,
@@ -3643,7 +3643,7 @@ mod app_close_tests {
             let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
             let scratch = tempfile::tempdir().unwrap();
             *state.journal.lock().unwrap() = Ok(Some(
-                super::super::invocation_journal::InvocationJournal::open(
+                tilo_invocation_journal::InvocationJournal::open(
                     &scratch.path().join("journal"),
                 )
                 .unwrap(),
@@ -3691,11 +3691,11 @@ mod app_close_tests {
             });
             let (state, caller, workspace) = broker(Arc::clone(&launcher), true);
             let scratch = tempfile::tempdir().unwrap();
-            let mut journal = super::super::invocation_journal::InvocationJournal::open(
+            let mut journal = tilo_invocation_journal::InvocationJournal::open(
                 &scratch.path().join("journal"),
             )
             .unwrap();
-            journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
+            journal.fail_at = Some(tilo_invocation_journal::BarrierFailure::File);
             *state.journal.lock().unwrap() = Ok(Some(journal));
             assert!(invoke_close(&state, &caller, &close_request(&workspace)).is_err());
             assert!(launcher.closed.lock().unwrap().is_empty());

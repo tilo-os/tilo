@@ -19,8 +19,8 @@ use tilo_actions::remote::{
 use tilo_desktop_model::Workspace;
 
 use super::AppBrokerState;
-use super::invocation_journal::ContentPutRecord;
 use crate::apps::services::{CONTENT_PUT_SCOPE, ContentSink, ContentStoreServices};
+use tilo_invocation_journal::ContentPutRecord;
 
 /// What a caller the workspace does not let add content is told: what it may
 /// not do, and the one rule that would let it.
@@ -116,7 +116,7 @@ impl AppBrokerState {
 /// left there when the attributions are compacted.
 struct StoredContent<'a>(Option<&'a dyn ContentStoreServices>);
 
-impl super::invocation_journal::ContentHolds for StoredContent<'_> {
+impl tilo_invocation_journal::ContentHolds for StoredContent<'_> {
     fn holds(&mut self, workspace: &str, hash: &str) -> bool {
         self.0.is_none_or(|store| store.holds(workspace, hash))
     }

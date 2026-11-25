@@ -873,7 +873,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                 done.send((retry, next)).unwrap();
             });
             let (answers, queued) = std::sync::mpsc::channel();
-            *crate::apps::evidence_signer::BEFORE_SIGN.lock() = Some(Box::new(move || {
+            *tilo_invocation_journal::BEFORE_SIGN.lock() = Some(Box::new(move || {
                 send.send(()).unwrap();
                 let pending = tilo_test_env::recv(
                     "UI lookup/cancel/enqueue to finish while signing is stalled",

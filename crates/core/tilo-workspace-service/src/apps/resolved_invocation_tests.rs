@@ -273,8 +273,9 @@ async fn revisionless_admission_records_the_resolved_revision() {
             let (wire_id, _) = fixture
                 .take_invocation_identity()
                 .expect("the owner receives the invocation");
-            let snapshot =
-                invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
+            let snapshot = tilo_invocation_journal::durable_snapshot(
+                &root.path().join("state.json.invocations"),
+            );
             let records = snapshot["records"].as_array().unwrap();
             assert_eq!(records.len(), 1, "{snapshot}");
             assert_eq!(records[0]["wire_id"], wire_id);
@@ -355,8 +356,9 @@ async fn confirmed_directory_action_needs_a_revision() {
                 .await
                 .expect("an action asking no confirmation acts on the directory as it is now");
             assert!(fixture.take_invocation_identity().is_some());
-            let snapshot =
-                invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
+            let snapshot = tilo_invocation_journal::durable_snapshot(
+                &root.path().join("state.json.invocations"),
+            );
             let records = snapshot["records"].as_array().unwrap();
             assert_eq!(records.len(), 2, "{snapshot}");
             assert!(

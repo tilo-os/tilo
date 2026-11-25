@@ -3,8 +3,8 @@
 mod peer_integration {
     include!("../../peer_action_integration_tests.rs");
 }
-use super::super::invocation_journal::BarrierFailure;
 use super::*;
+use tilo_invocation_journal::BarrierFailure;
 
 async fn update_app(
     client: &runtime_collab::RecordHandle,

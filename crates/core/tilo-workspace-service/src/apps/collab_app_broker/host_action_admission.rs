@@ -6,7 +6,7 @@
 
 use super::{
     AppBrokerState, BrokerActor, InvocationCaller, InvocationKey, InvocationOwner,
-    invocation_journal, person_id_for_root,
+    person_id_for_root,
 };
 use tilo_action_policy::MemberId;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
@@ -314,7 +314,7 @@ impl AppBrokerState {
                 "action_evidence_unavailable: admission journal unavailable",
             ));
         }
-        let mut admitted = invocation_journal::Durable::settled();
+        let mut admitted = tilo_invocation_journal::Durable::settled();
         let key = if let Some(journal) = journal {
             let key = InvocationKey {
                 workspace: workspace.into(),
@@ -327,7 +327,7 @@ impl AppBrokerState {
             // revision remains part of the exact request, not an authority claim.
             let resolved_descriptor = serde_json::to_value(descriptor)
                 .map_err(|error| ActionCallError::unavailable(error.to_string()))?;
-            let descriptor_digest = hex::encode(invocation_journal::admission_request_digest(
+            let descriptor_digest = hex::encode(tilo_invocation_journal::admission_request_digest(
                 &resolved_descriptor,
             ));
             let mut intent = serde_json::json!({
@@ -348,10 +348,10 @@ impl AppBrokerState {
                 fields.insert("host_start".into(), start);
             }
             let evidence = if owner.verified_actor().is_some() {
-                let facts = invocation_journal::evidence_facts(&key, &intent)
+                let facts = tilo_invocation_journal::evidence_facts(&key, &intent)
                     .map_err(ActionCallError::unavailable)?;
                 Some(
-                    crate::apps::action_evidence::mint(facts, &intent).map_err(|why| {
+                    tilo_invocation_journal::action_evidence::mint(facts, &intent).map_err(|why| {
                         ActionCallError::unavailable(format!(
                             "action_evidence_unavailable: host signing identity unavailable: {why}"
                         ))

@@ -17,8 +17,8 @@ use tilo_user_identity::DeviceCert;
 
 /// One-shot fault injection. Admission signs on a blocking thread, so a test
 /// installs the hook from any thread.
-#[cfg(test)]
-pub(crate) static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+#[cfg(any(test, feature = "test-support"))]
+pub static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
 static CACHE: LazyLock<Mutex<SignerCache>> = LazyLock::new(Mutex::default);
 const CACHE_LIMIT: usize = 256;
@@ -41,15 +41,15 @@ struct Entry {
 #[derive(Default)]
 struct SignerCache {
     entries: HashMap<CacheKey, Entry>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     loads: usize,
 }
 
 /// Sign already domain-separated semantic receipt bytes with this host's
 /// currently trusted device. This never calls a signing RPC or uses a user
 /// root key. The returned certificate identifies the device signing the bytes.
-pub(crate) fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), String> {
-    #[cfg(test)]
+pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), String> {
+    #[cfg(any(test, feature = "test-support"))]
     {
         let hook = BEFORE_SIGN.lock().take();
         if let Some(hook) = hook {
@@ -92,7 +92,7 @@ impl SignerCache {
         }
         // Drop stale ownership before attempting a reload, including on error.
         self.entries.remove(&cache_key);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.loads = self.loads.saturating_add(1);
         }

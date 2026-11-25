@@ -20,6 +20,11 @@
 //! rows a format holds is what its checks allow, so reading one the checks do
 //! not cover would admit rows this build would not have written.
 
+pub mod action_evidence;
+mod evidence_signer;
+#[cfg(any(test, feature = "test-support"))]
+pub use evidence_signer::BEFORE_SIGN;
+
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
@@ -27,32 +32,28 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-#[path = "invocation_journal/content_puts.rs"]
 mod content_puts;
-#[path = "invocation_journal/effect.rs"]
 mod effect;
-#[cfg(test)]
-pub(crate) use content_puts::CONTENT_PUTS_FILE;
-pub(crate) use content_puts::ContentHolds;
-pub(crate) use content_puts::ContentPutRecord;
-#[cfg(test)]
-pub(crate) use content_puts::attributions;
-#[path = "invocation_journal/writer.rs"]
+#[cfg(any(test, feature = "test-support"))]
+pub use content_puts::CONTENT_PUTS_FILE;
+pub use content_puts::ContentHolds;
+pub use content_puts::ContentPutRecord;
+#[cfg(any(test, feature = "test-support"))]
+pub use content_puts::attributions;
 mod writer;
-pub(crate) use effect::PreparedEffect;
-#[cfg(test)]
-pub(crate) use writer::Barriers;
-pub(crate) use writer::Durable;
+pub use effect::PreparedEffect;
+#[cfg(any(test, feature = "test-support"))]
+pub use writer::Barriers;
+pub use writer::Durable;
 use writer::{Counted, Injected, Write as Staged, Writer};
 #[cfg(test)]
-#[path = "invocation_journal/effect_tests.rs"]
 mod effect_tests;
 use std::path::{Path, PathBuf};
 use tilo_actions::{InvocationId, InvocationUpdate};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) enum InvocationOwner {
+pub enum InvocationOwner {
     Local {
         actor: tilo_action_policy::Actor,
     },
@@ -76,7 +77,7 @@ pub(super) enum InvocationOwner {
 /// The value an omitted `agent` deserializes to. Serde's default for an
 /// `Option` field is `None`, which would read a dropped field as the person
 /// themselves; this sentinel cannot be a real agent name, so
-/// [`Self::validate`] (and [`crate::apps::action_evidence::verify`]) refuses it
+/// [`Self::validate`] (and [`crate::action_evidence::verify`]) refuses it
 /// instead.
 #[allow(
     clippy::unnecessary_wraps,
@@ -91,8 +92,8 @@ fn omitted_agent() -> Option<String> {
 const OMITTED_AGENT: &str = "\u{0}omitted-agent";
 
 impl InvocationOwner {
-    pub(super) fn verified_actor(&self) -> Option<crate::apps::action_evidence::VerifiedActor> {
-        use crate::apps::action_evidence::VerifiedActor as Actor;
+    pub fn verified_actor(&self) -> Option<crate::action_evidence::VerifiedActor> {
+        use crate::action_evidence::VerifiedActor as Actor;
         Some(match self {
             Self::Local { .. } => return None,
             Self::Certified { root, device } => Actor::Certified {
@@ -110,7 +111,7 @@ impl InvocationOwner {
             },
         })
     }
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if let Self::AuthenticatedLocal {
             agent: Some(agent), ..
         } = self
@@ -126,7 +127,7 @@ impl InvocationOwner {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InvocationKey {
+pub struct InvocationKey {
     pub workspace: String,
     pub host: uuid::Uuid,
     pub owner: InvocationOwner,
@@ -134,25 +135,25 @@ pub(super) struct InvocationKey {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct DurableInvocation {
-    pub(super) key: InvocationKey,
+pub struct DurableInvocation {
+    pub key: InvocationKey,
     /// The admission intent. Its `request`, when it had one, is retained only
     /// as `request_digest`: ask [`Self::admitted_request_is`], never this map.
-    pub(super) intent: serde_json::Value,
+    pub intent: serde_json::Value,
     request_digest: Option<Digest>,
     pub wire_id: u64,
     pub update: InvocationUpdate,
     pub uncertain: bool,
     pub cancellation_requested: bool,
-    pub(crate) prepared_effect: Option<PreparedEffect>,
-    pub(crate) admission: Option<crate::apps::action_evidence::AdmissionEvidence>,
-    pub(crate) terminal: Option<crate::apps::action_evidence::TerminalReceipt>,
+    pub prepared_effect: Option<PreparedEffect>,
+    pub admission: Option<crate::action_evidence::AdmissionEvidence>,
+    pub terminal: Option<crate::action_evidence::TerminalReceipt>,
 }
 
 impl DurableInvocation {
     /// Whether `request` is the request this invocation was admitted with.
     /// A record without one compares as `null`, like an absent JSON member.
-    pub(crate) fn admitted_request_is(&self, request: &serde_json::Value) -> bool {
+    pub fn admitted_request_is(&self, request: &serde_json::Value) -> bool {
         match (&self.request_digest, self.intent.get("request")) {
             (Some(digest), _) => *digest == request_digest(request),
             (None, Some(retained)) => retained == request,
@@ -161,7 +162,7 @@ impl DurableInvocation {
     }
 
     /// Whether `intent` is the whole intent this invocation was admitted with.
-    pub(crate) fn admitted_intent_is(&self, intent: &serde_json::Value) -> bool {
+    pub fn admitted_intent_is(&self, intent: &serde_json::Value) -> bool {
         if self.request_digest.is_none() {
             return self.intent == *intent;
         }
@@ -180,7 +181,7 @@ fn retained_intent(mut intent: serde_json::Value) -> (serde_json::Value, Option<
 }
 
 /// The journal's exact retry digest, also bound by private admission evidence.
-pub(crate) fn admission_request_digest(request: &serde_json::Value) -> [u8; 32] {
+pub fn admission_request_digest(request: &serde_json::Value) -> [u8; 32] {
     runtime_collab::admission_request_digest(request)
 }
 
@@ -424,10 +425,10 @@ impl Loaded {
 }
 
 /// Every check one stored row must pass.
-pub(super) fn evidence_facts(
+pub fn evidence_facts(
     key: &InvocationKey,
     intent: &serde_json::Value,
-) -> Result<crate::apps::action_evidence::AdmissionFacts, String> {
+) -> Result<crate::action_evidence::AdmissionFacts, String> {
     let text = |field| {
         intent
             .get(field)
@@ -435,7 +436,7 @@ pub(super) fn evidence_facts(
             .map(str::to_owned)
             .ok_or_else(|| format!("admission {field} missing"))
     };
-    Ok(crate::apps::action_evidence::AdmissionFacts {
+    Ok(crate::action_evidence::AdmissionFacts {
         host: key.host,
         workspace: key.workspace.clone(),
         invocation: key.invocation,
@@ -467,7 +468,7 @@ pub(super) fn evidence_facts(
 fn check_evidence(
     key: &InvocationKey,
     intent: &serde_json::Value,
-    evidence: &crate::apps::action_evidence::AdmissionEvidence,
+    evidence: &crate::action_evidence::AdmissionEvidence,
 ) -> Result<(), String> {
     let expected = evidence_facts(key, intent)?;
     evidence.validate(&expected)?;
@@ -491,9 +492,9 @@ fn check_resource(record: &DurableInvocation, host: uuid::Uuid) -> Result<(), St
             .admission
             .as_ref()
             .ok_or("terminal lacks admission")?;
-        crate::apps::action_evidence::verify_terminal(terminal, admission.public_receipt())?;
+        crate::action_evidence::verify_terminal(terminal, admission.public_receipt())?;
         if Some(terminal.category)
-            != crate::apps::action_evidence::terminal_category(&record.update, record.uncertain)
+            != crate::action_evidence::terminal_category(&record.update, record.uncertain)
         {
             return Err("terminal category differs from retained outcome".into());
         }
@@ -518,7 +519,7 @@ fn check_resource(record: &DurableInvocation, host: uuid::Uuid) -> Result<(), St
     Ok(())
 }
 
-pub(super) struct InvocationJournal {
+pub struct InvocationJournal {
     root: PathBuf,
     snapshot: Snapshot,
     index: Index,
@@ -541,17 +542,17 @@ pub(super) struct InvocationJournal {
     /// The record [`Self::document_mut`] last handed out, as it was before.
     before: Option<DurableInvocation>,
     poisoned: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fail_at: Option<BarrierFailure>,
     /// One-shot: the next write is made durable but reported as failed.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub unconfirmed_next: bool,
     /// One-shot pause after durable admission, while the writer is still held.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub after_admission: Option<Box<dyn FnOnce() + Send>>,
     /// Run before each write starts, on the thread making it, as a slow
     /// disk would hold it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub hold_writes: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -599,9 +600,9 @@ impl Undurable {
 /// An injected failure. `File` fails before the write is durable, so the
 /// transition is absent after restart; `Directory` fails once the write is
 /// durable (after an entry's data barrier, or a compaction's rename).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum BarrierFailure {
+pub enum BarrierFailure {
     File,
     Directory,
     AfterAdmission,
@@ -717,13 +718,13 @@ impl InvocationJournal {
             undurable: HashMap::new(),
             before: None,
             poisoned: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             fail_at: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             unconfirmed_next: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_admission: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             hold_writes: None,
         };
         // The attributions are read before anything appends: a line its last
@@ -844,7 +845,7 @@ impl InvocationJournal {
 
     /// The write a transition of `invocation` must wait for: the last one in
     /// flight, if any.
-    pub(crate) fn in_flight(&self, invocation: &InvocationId) -> Durable {
+    pub fn in_flight(&self, invocation: &InvocationId) -> Durable {
         self.undurable
             .get(invocation)
             .map_or_else(Durable::settled, Undurable::last)
@@ -868,7 +869,7 @@ impl InvocationJournal {
     }
 
     /// Journal fixtures may exercise admission without signing identities.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn admit(
         &mut self,
         key: InvocationKey,
@@ -884,12 +885,12 @@ impl InvocationJournal {
     /// Whether this admitted the invocation, and the write to wait for before
     /// it is delivered or acknowledged: this admission's, or the one still in
     /// flight of an invocation already admitted.
-    pub(super) fn admit_with_evidence(
+    pub fn admit_with_evidence(
         &mut self,
         key: InvocationKey,
         intent: serde_json::Value,
         wire_id: u64,
-        admission: Option<crate::apps::action_evidence::AdmissionEvidence>,
+        admission: Option<crate::action_evidence::AdmissionEvidence>,
     ) -> Result<(bool, Durable), String> {
         self.ready()?;
         self.prune();
@@ -943,11 +944,11 @@ impl InvocationJournal {
         )?;
         self.before = None;
         #[cfg_attr(
-            not(test),
+            not(any(test, feature = "test-support")),
             expect(unused_mut, reason = "injections are made only under test")
         )]
         let mut injected = Injected::default();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             injected.after = self.after_admission.take();
             if self.fail_at == Some(BarrierFailure::AfterAdmission) {
@@ -960,7 +961,7 @@ impl InvocationJournal {
     }
 
     /// [`Self::record_update`], waiting for the write here.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn update(
         &mut self,
         key: &InvocationKey,
@@ -1037,7 +1038,7 @@ impl InvocationJournal {
     /// writer simply attempts the next write. A write that may be durable
     /// although its caller was told it failed leaves the store holding what
     /// this writer cannot account for; [`Self::recover`] reads it back.
-    pub(super) fn check(&self) -> Result<(), String> {
+    pub fn check(&self) -> Result<(), String> {
         if self.failed() {
             Err("invocation journal requires recovery after a failed barrier".into())
         } else {
@@ -1049,7 +1050,7 @@ impl InvocationJournal {
     /// writer stopped at a write that may be durable recovers here first, so
     /// one failed barrier never needs a restart. A journal that could not
     /// stage at all stays failed.
-    pub(super) fn ready(&mut self) -> Result<(), String> {
+    pub fn ready(&mut self) -> Result<(), String> {
         if !self.poisoned && self.failed() {
             self.recover()?;
         }
@@ -1146,21 +1147,19 @@ impl InvocationJournal {
             && let Some(admission) = &record.admission
             && record.terminal.is_none()
             && let Some(category) =
-                crate::apps::action_evidence::terminal_category(&record.update, record.uncertain)
+                crate::action_evidence::terminal_category(&record.update, record.uncertain)
         {
             // Losing signing identity must not lose an application's outcome.
             // No receipt is preferable to falsely certifying a completion;
             // recovery uncertainty is never retroactively signed as success.
-            record.terminal = match crate::apps::action_evidence::mint_terminal(
-                admission.public_receipt(),
-                category,
-            ) {
-                Ok(terminal) => Some(terminal),
-                Err(error) => {
-                    tracing::warn!(%error, "the invocation's completion has no signed receipt");
-                    None
-                }
-            };
+            record.terminal =
+                match crate::action_evidence::mint_terminal(admission.public_receipt(), category) {
+                    Ok(terminal) => Some(terminal),
+                    Err(error) => {
+                        tracing::warn!(%error, "the invocation's completion has no signed receipt");
+                        None
+                    }
+                };
         }
         let record = self
             .snapshot
@@ -1275,7 +1274,7 @@ impl InvocationJournal {
 
     /// `write` as durable here: the outcome, once it is waited for, with the
     /// record it made put back if the write left nothing durable.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn settle(
         &mut self,
         at: usize,
@@ -1325,7 +1324,7 @@ impl InvocationJournal {
     /// Hands `write` to the writer, after every write staged before it. While
     /// the journal opens, before its writer starts, the write is made here.
     fn stage(&mut self, write: Staged, injected: Injected) -> Result<Durable, String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let injected = Injected {
             fail: injected.fail.or(self.fail_at),
             hold: self.hold_writes.clone(),
@@ -1346,22 +1345,23 @@ impl InvocationJournal {
     }
 
     /// What this writer asked of the disk so far.
-    #[cfg(test)]
-    pub(super) fn barriers(&self) -> Barriers {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn barriers(&self) -> Barriers {
         self.counted.barriers()
     }
 
     /// Skip the barriers themselves, for tests that measure size.
-    #[cfg(test)]
-    pub(super) fn elide_barriers(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn elide_barriers(&self) {
         self.counted.elide();
     }
 }
 
 /// The durable store as a snapshot value: what a restart replays before
 /// recovery. It reads the file only; a live writer keeps its lock.
-#[cfg(test)]
-pub(super) fn durable_snapshot(root: &Path) -> serde_json::Value {
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::expect_used, reason = "a test reads a store it just wrote")]
+pub fn durable_snapshot(root: &Path) -> serde_json::Value {
     let mut file = File::open(root.join("records.json")).expect("invocation journal store");
     let loaded = Loaded::read(&mut file).expect("decodable invocation journal store");
     serde_json::to_value(&loaded.snapshot).expect("invocation journal snapshot value")
@@ -1403,8 +1403,8 @@ impl<'de> Deserialize<'de> for Digest {
 
 // Capture only update-level and public typed output/error duplicate fields.
 // Arbitrary JSON values retain serde_json's existing map semantics.
-pub(super) struct RawUpdate {
-    pub(super) value: serde_json::Value,
+pub struct RawUpdate {
+    pub value: serde_json::Value,
     duplicate: Vec<String>,
     error_duplicate: Vec<String>,
     output_duplicate: Vec<String>,
@@ -1536,7 +1536,7 @@ impl<'de> Deserialize<'de> for RawUpdate {
     }
 }
 impl RawUpdate {
-    pub(super) fn check_duplicates(&self) -> Result<(), String> {
+    pub fn check_duplicates(&self) -> Result<(), String> {
         let state = self.value.get("state").and_then(serde_json::Value::as_str);
         let fields: &[&str] = match state {
             Some("accepted") => &["state", "invocation"],
@@ -1590,9 +1590,9 @@ struct Row {
     #[serde(default, deserialize_with = "digest_present")]
     request_digest: Option<Digest>,
     #[serde(default)]
-    admission: Option<crate::apps::action_evidence::AdmissionEvidence>,
+    admission: Option<crate::action_evidence::AdmissionEvidence>,
     #[serde(default)]
-    terminal: Option<crate::apps::action_evidence::TerminalReceipt>,
+    terminal: Option<crate::action_evidence::TerminalReceipt>,
 }
 // Like the other optional members, absent only through #[serde(default)].
 fn digest_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Digest>, D::Error> {
@@ -1654,7 +1654,7 @@ impl Serialize for DurableInvocation {
     }
 }
 
-pub(super) fn unknown(invocation: InvocationId) -> InvocationUpdate {
+pub fn unknown(invocation: InvocationId) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
         error: tilo_actions::ActionFailure {
@@ -2096,9 +2096,7 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "invocation_journal/authenticated_local_tests.rs"]
 mod authenticated_local_tests;
 
 #[cfg(test)]
-#[path = "invocation_journal/append_tests.rs"]
 mod append_tests;

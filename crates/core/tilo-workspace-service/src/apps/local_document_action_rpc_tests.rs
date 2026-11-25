@@ -306,7 +306,7 @@ async fn local_report_admission(
                     .unwrap_or_default()
                     .is_empty()
             );
-            let evidence: crate::apps::action_evidence::AdmissionEvidence =
+            let evidence: tilo_invocation_journal::action_evidence::AdmissionEvidence =
                 serde_json::from_str(observation.admission_json.as_deref().unwrap()).unwrap();
             let facts = &evidence.public_receipt().facts;
             assert_eq!(facts.invocation.0, invocation);
@@ -314,7 +314,7 @@ async fn local_report_admission(
             assert_eq!(facts.document_id, env.route.document_id);
             assert_eq!(
                 facts.actor,
-                crate::apps::action_evidence::VerifiedActor::AuthenticatedLocal {
+                tilo_invocation_journal::action_evidence::VerifiedActor::AuthenticatedLocal {
                     root: env.cert.user_public_key,
                     device: env.cert.device_public_key,
                     agent: None,

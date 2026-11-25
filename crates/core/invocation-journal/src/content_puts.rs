@@ -25,23 +25,23 @@ use super::writer::{Injected, Write as Staged};
 use super::{Durable, InvocationJournal};
 
 /// The file the attributions are appended to.
-pub(crate) const CONTENT_PUTS_FILE: &str = "content-puts.jsonl";
+pub const CONTENT_PUTS_FILE: &str = "content-puts.jsonl";
 
 /// One finished content put.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ContentPutRecord {
+pub struct ContentPutRecord {
     /// Seconds since the Unix epoch, on the broker's policy clock.
-    pub(crate) at: u64,
-    pub(crate) actor: tilo_action_policy::Actor,
-    pub(crate) workspace: String,
-    pub(crate) hash: String,
-    pub(crate) len: u64,
+    pub at: u64,
+    pub actor: tilo_action_policy::Actor,
+    pub workspace: String,
+    pub hash: String,
+    pub len: u64,
 }
 
 /// Whether the workspace a put names still holds its content: what a compaction
 /// keeps an attribution by.
-pub(crate) trait ContentHolds {
+pub trait ContentHolds {
     fn holds(&mut self, workspace: &str, hash: &str) -> bool;
 }
 
@@ -66,7 +66,7 @@ struct Appended {
 const VERSION: u32 = 1;
 
 /// What the attribution file holds, as the journal stages it.
-pub(super) struct ContentPutsStore {
+pub struct ContentPutsStore {
     /// The snapshot line, as last compacted.
     snapshot: Vec<u8>,
     /// The puts appended after it, which a compaction folds into the snapshot
@@ -78,7 +78,7 @@ pub(super) struct ContentPutsStore {
 
 impl ContentPutsStore {
     /// The store `root`'s attribution file holds.
-    pub(super) fn read(root: &Path) -> Result<Self, String> {
+    pub fn read(root: &Path) -> Result<Self, String> {
         let mut file = match tilo_files::native::private::read(&root.join(CONTENT_PUTS_FILE)) {
             Ok(file) => file,
             // Nothing put yet: the first put finds nothing to compact.
@@ -277,15 +277,15 @@ fn snapshot_of(puts: &[ContentPutRecord]) -> Result<Vec<u8>, String> {
 
 /// Every attribution `root`'s file holds, as a journal opened there reads
 /// them: what a restart keeps.
-#[cfg(test)]
-pub(crate) fn attributions(root: &Path) -> Result<Vec<ContentPutRecord>, String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn attributions(root: &Path) -> Result<Vec<ContentPutRecord>, String> {
     ContentPutsStore::read(root)?.held()
 }
 
 impl InvocationJournal {
     /// Stage `record` for the journal's writer, after every write staged
     /// before it; its ticket resolves once the line is durable.
-    pub(crate) fn record_content_put(
+    pub fn record_content_put(
         &mut self,
         record: &ContentPutRecord,
         holds: &mut dyn ContentHolds,

@@ -1,0 +1,57 @@
+[package]
+name = "tilo-invocation-journal"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "A host's private, single-writer journal of the invocations it admitted, and the signed evidence of each admission and its outcome."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tilo_invocation_journal"
+path = "src/lib.rs"
+
+[features]
+# The journal's fault injection (failed barriers, a hook before signing), for the
+# tests of the host that writes through it.
+test-support = []
+
+[dependencies]
+tilo-actions = { path = "../actions" }
+tilo-action-policy = { path = "../action-policy" }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+# Who a person is, by the root key their devices are certified under.
+tilo-broker-core = { path = "../broker-core" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+# The digest an admission's request is kept as.
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab" }
+# The device identity a receipt is signed with.
+tilo-identity = { path = "../tilo-identity" }
+tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tilo-identity = { path = "../tilo-identity", features = ["test-support"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

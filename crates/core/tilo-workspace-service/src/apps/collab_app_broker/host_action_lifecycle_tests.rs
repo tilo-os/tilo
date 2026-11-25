@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
             Some(InvocationUpdate::Accepted { .. })
         ));
         let journal =
-            invocation_journal::InvocationJournal::open(&root.path().join("journal")).unwrap();
+            tilo_invocation_journal::InvocationJournal::open(&root.path().join("journal")).unwrap();
         let record = journal
             .lookup(admitted.key.as_ref().unwrap())
             .unwrap()
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             signed.intent["host_descriptor_digest"],
-            hex::encode(invocation_journal::admission_request_digest(
+            hex::encode(tilo_invocation_journal::admission_request_digest(
                 &serde_json::to_value(&descriptor).unwrap()
             ))
         );

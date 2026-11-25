@@ -110,7 +110,7 @@ tilo_test_env::scenario! {
             },
         );
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(
+            tilo_invocation_journal::InvocationJournal::open(
                 &directory.path().join("library"),
             )
             .unwrap(),
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
 
     phase keyboard_and_library_effects_require_admission_and_keep_request_identity;
     {
-        use super::super::invocation_journal::{BarrierFailure, InvocationJournal};
+        use tilo_invocation_journal::{BarrierFailure, InvocationJournal};
         for failure in [
             Some(BarrierFailure::File),
             Some(BarrierFailure::Directory),
@@ -239,10 +239,8 @@ fn keyboard_rechecks_live_policy_and_execution_after_ownership() {
             },
         );
         *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(
-                &directory.path().join("keyboard"),
-            )
-            .unwrap(),
+            tilo_invocation_journal::InvocationJournal::open(&directory.path().join("keyboard"))
+                .unwrap(),
         ));
         request.target.address = tilo_actions::ActionAddress::new("keyboard-shortcuts", "rebind");
         let current = tree.clone();
@@ -353,7 +351,7 @@ tilo_test_env::scenario! {
 
     phase registered_governance_never_runs_before_durable_admission;
     {
-        use super::super::invocation_journal::BarrierFailure;
+        use tilo_invocation_journal::BarrierFailure;
         for failure in [
             BarrierFailure::File,
             BarrierFailure::Directory,
@@ -518,7 +516,7 @@ fn fixture(
         },
     );
     *state.journal.lock().unwrap() = Ok(Some(
-        super::super::invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
+        tilo_invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
     let caller = Caller::local_person("owner").in_workspace(workspace.id().to_string());
     let request = InvokeRequest {

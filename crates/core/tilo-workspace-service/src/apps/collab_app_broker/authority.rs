@@ -216,10 +216,6 @@ impl AppBrokerState {
         caller.owner()?;
         Ok(current.admitted)
     }
-    #[expect(
-        private_interfaces,
-        reason = "the journal key is the broker's own handle, reachable crate-wide only for tests"
-    )]
     #[cfg(test)]
     pub(crate) fn caller_key(
         &self,

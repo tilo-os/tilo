@@ -88,7 +88,7 @@ impl AppBrokerState {
     pub(super) fn cancel_durable_document(
         &self,
         record: &DurableInvocation,
-    ) -> Result<invocation_journal::Durable, String> {
+    ) -> Result<tilo_invocation_journal::Durable, String> {
         let mut registry = self
             .pending_invocations
             .lock()
@@ -116,7 +116,7 @@ impl AppBrokerState {
     pub(super) fn persist_cancellation(
         &self,
         pending: &PendingInvocation,
-    ) -> Result<invocation_journal::Durable, String> {
+    ) -> Result<tilo_invocation_journal::Durable, String> {
         let durable = match &pending.journal_key {
             Some(key) => self
                 .journal
@@ -127,20 +127,20 @@ impl AppBrokerState {
                 .as_mut()
                 .ok_or("durable admission unavailable")?
                 .record_cancellation(key)?,
-            None => invocation_journal::Durable::settled(),
+            None => tilo_invocation_journal::Durable::settled(),
         };
         pending.cancellation_fence.store(true, Ordering::Release);
         Ok(durable)
     }
     /// The journal write invocation `id` must wait for before anyone hears
     /// of its last transition.
-    pub(super) fn invocation_in_flight(&self, id: u64) -> invocation_journal::Durable {
+    pub(super) fn invocation_in_flight(&self, id: u64) -> tilo_invocation_journal::Durable {
         let key = self
             .pending_invocations
             .lock()
             .ok()
             .and_then(|pending| pending.get(&id).and_then(|job| job.journal_key.clone()));
-        key.map_or_else(invocation_journal::Durable::settled, |key| {
+        key.map_or_else(tilo_invocation_journal::Durable::settled, |key| {
             self.journal_in_flight(&key.invocation)
         })
     }
@@ -157,7 +157,7 @@ impl AppBrokerState {
             return Ok(DefiniteOutcome {
                 state: self,
                 id: None,
-                durable: invocation_journal::Durable::settled(),
+                durable: tilo_invocation_journal::Durable::settled(),
             });
         };
         let durable = self

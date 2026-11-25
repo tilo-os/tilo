@@ -7,10 +7,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PreparedEffect {
+pub struct PreparedEffect {
     version: u8,
     #[serde(deserialize_with = "terminal_update")]
-    pub(crate) update: InvocationUpdate,
+    pub update: InvocationUpdate,
     workspace: String,
     invocation: uuid::Uuid,
     redacted: Vec<u8>,
@@ -31,7 +31,7 @@ fn terminal_update<'de, D: serde::Deserializer<'de>>(d: D) -> Result<InvocationU
 }
 
 impl PreparedEffect {
-    pub(super) fn new(
+    pub fn new(
         update: InvocationUpdate,
         workspace: &str,
         invocation: uuid::Uuid,
@@ -47,12 +47,12 @@ impl PreparedEffect {
     }
 
     /// The workspace the receipt is recorded in, and its exact bytes.
-    #[cfg(test)]
-    pub(crate) fn receipt(&self) -> (&str, &[u8]) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn receipt(&self) -> (&str, &[u8]) {
         (&self.workspace, &self.redacted)
     }
 
-    pub(super) fn validate(&self, record: &DurableInvocation) -> Result<(), String> {
+    pub fn validate(&self, record: &DurableInvocation) -> Result<(), String> {
         if self.version != 1
             || self.workspace != record.key.workspace
             || self.invocation != record.key.invocation.0
@@ -79,9 +79,10 @@ impl PreparedEffect {
             InvocationOwner::Certified { root, .. }
             | InvocationOwner::AuthenticatedLocal {
                 root, agent: None, ..
-            } => {
-                Some(tilo_actions::MemberId::person(super::super::person_id_for_root(*root)).into())
-            }
+            } => Some(
+                tilo_actions::MemberId::person(tilo_broker_core::actor::person_id_for_root(*root))
+                    .into(),
+            ),
             InvocationOwner::AuthenticatedLocal {
                 root,
                 agent: Some(agent),
@@ -89,7 +90,7 @@ impl PreparedEffect {
             } => Some(
                 tilo_actions::MemberId::agent(
                     agent.clone(),
-                    super::super::person_id_for_root(*root),
+                    tilo_broker_core::actor::person_id_for_root(*root),
                 )
                 .into(),
             ),
@@ -128,8 +129,8 @@ impl PreparedEffect {
 
 impl InvocationJournal {
     /// [`Self::stage_prepared_effect`], waiting for the write here.
-    #[cfg(test)]
-    pub(crate) fn prepare_effect(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn prepare_effect(
         &mut self,
         key: &InvocationKey,
         update: InvocationUpdate,
@@ -147,8 +148,8 @@ impl InvocationJournal {
     }
 
     /// [`Self::stage_finished_effect`], waiting for the write here.
-    #[cfg(test)]
-    pub(crate) fn finish_effect(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn finish_effect(
         &mut self,
         key: &InvocationKey,
         prepared: &PreparedEffect,
@@ -162,7 +163,7 @@ impl InvocationJournal {
     }
 
     /// The prepared effect, durable once the returned write resolves.
-    pub(crate) fn stage_prepared_effect(
+    pub fn stage_prepared_effect(
         &mut self,
         key: &InvocationKey,
         update: InvocationUpdate,
@@ -193,8 +194,8 @@ impl InvocationJournal {
 
     /// The prepared effect's terminal, durable once the returned write
     /// resolves; the record as that write makes it.
-    #[cfg(test)]
-    pub(crate) fn stage_finished_effect(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stage_finished_effect(
         &mut self,
         key: &InvocationKey,
         prepared: &PreparedEffect,

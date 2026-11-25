@@ -153,8 +153,8 @@ async fn a_callers_invocation_id_admits_once_and_keeps_its_retained_outcome() {
 async fn durable_admission_survives_restart_and_journal_barrier_failures() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::collab_app_broker::invocation_journal::BarrierFailure;
             use tilo_actions::remote::Confirmation;
+            use tilo_invocation_journal::BarrierFailure;
             for barrier in [
                 None,
                 Some(BarrierFailure::File),
@@ -177,7 +177,8 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                         .unwrap()
                         .fail_at = Some(failure);
                 };
-                if let Some(failure) = barrier.filter(|failure| *failure != BarrierFailure::Terminal)
+                if let Some(failure) =
+                    barrier.filter(|failure| *failure != BarrierFailure::Terminal)
                 {
                     fail_at(&rig, failure);
                 }
@@ -214,10 +215,10 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                     );
                 } else {
                     // The journal keeps the outcome across the restart.
-                    let key = crate::apps::collab_app_broker::invocation_journal::InvocationKey {
+                    let key = tilo_invocation_journal::InvocationKey {
                         workspace: env.route.cluster_id.clone(),
                         host: restarted.state.invocation_host().unwrap(),
-                        owner: crate::apps::collab_app_broker::invocation_journal::InvocationOwner::AuthenticatedLocal {
+                        owner: tilo_invocation_journal::InvocationOwner::AuthenticatedLocal {
                             root: env.cert.user_public_key,
                             device: env.cert.device_public_key,
                             agent: None,
@@ -244,11 +245,9 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                     // the journal keeps: nothing runs again, nothing is
                     // admitted anew, and the caller recovers the answer it
                     // lost across the restart.
-                    let retained_receipt = tilo_actions::remote::InvocationState::new(
-                        invocation,
-                        row.update.clone(),
-                    )
-                    .receipt();
+                    let retained_receipt =
+                        tilo_actions::remote::InvocationState::new(invocation, row.update.clone())
+                            .receipt();
                     assert_eq!(
                         invoke(handle, invocation).await.unwrap(),
                         retained_receipt,

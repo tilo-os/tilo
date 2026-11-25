@@ -528,7 +528,7 @@ impl AppBrokerState {
         );
         let (_sent, completion) = std::sync::mpsc::channel();
         StagedJob {
-            admitted: invocation_journal::Durable::settled(),
+            admitted: tilo_invocation_journal::Durable::settled(),
             start: Admitted::Reported(InvocationJob {
                 id: record.wire_id,
                 completion,
@@ -784,7 +784,7 @@ impl AppBrokerState {
         &self,
         id: u64,
         actor: &tilo_action_policy::Actor,
-    ) -> Result<invocation_journal::Durable, String> {
+    ) -> Result<tilo_invocation_journal::Durable, String> {
         self.request_cancellation_for_owner(
             id,
             &InvocationOwner::Local {
@@ -798,15 +798,15 @@ impl AppBrokerState {
         &self,
         id: u64,
         owner: &InvocationOwner,
-    ) -> Result<invocation_journal::Durable, String> {
+    ) -> Result<tilo_invocation_journal::Durable, String> {
         self.expire_stale_invocations();
         if let Some(cancelled) = self.live_views.cancel(id, Some(owner)) {
-            return cancelled.map(|()| invocation_journal::Durable::settled());
+            return cancelled.map(|()| tilo_invocation_journal::Durable::settled());
         }
         // A host step that declared itself cancellable stops on its own flag, and answers as
         // cancelled when it does. Such a step keeps no pending invocation of its own.
         if self.stop_host_step(id) {
-            return Ok(invocation_journal::Durable::settled());
+            return Ok(tilo_invocation_journal::Durable::settled());
         }
         let mut pending = self
             .pending_invocations
@@ -1029,7 +1029,7 @@ impl AppBrokerState {
         invocation.cancellation_fence.store(true, Ordering::Release);
         let (update, completion) = if invocation.journal_key.is_some() {
             (
-                invocation_journal::unknown(invocation.update.invocation()),
+                tilo_invocation_journal::unknown(invocation.update.invocation()),
                 InvocationCompletion {
                     code: "action_outcome_unknown".into(),
                     message: unknown.into(),

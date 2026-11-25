@@ -23,8 +23,8 @@ use tilo_actions::remote::{
 };
 
 use super::AppBrokerState;
-use super::invocation_journal::InvocationOwner;
 use super::published_invocation::InvocationCaller;
+use tilo_invocation_journal::InvocationOwner;
 
 impl AppBrokerState {
     /// Put `request` to the person `caller` acts for, when it is an agent

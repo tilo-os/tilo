@@ -17,7 +17,7 @@
 //! renamed but its directory not yet synced) fails every later one: the
 //! journal then requires recovery, as a failed barrier always did.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use super::BarrierFailure;
 use std::fs::File;
 use std::io::Write as _;
@@ -27,9 +27,9 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 /// What this writer asked of the disk. `elide` skips the barriers themselves
 /// for tests that measure size rather than durability.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Barriers {
+pub struct Barriers {
     pub writes: u64,
     pub file: u64,
     pub directory: u64,
@@ -38,32 +38,32 @@ pub(crate) struct Barriers {
 
 /// Counts every write and barrier, and skips the barriers when a size test asks.
 #[derive(Clone, Default)]
-pub(super) struct Counted {
-    #[cfg(test)]
+pub struct Counted {
+    #[cfg(any(test, feature = "test-support"))]
     barriers: Arc<Mutex<Barriers>>,
 }
 
 impl Counted {
-    #[cfg(test)]
-    pub(super) fn barriers(&self) -> Barriers {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn barriers(&self) -> Barriers {
         *self
             .barriers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    #[cfg(test)]
-    pub(super) fn elide(&self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn elide(&self) {
         self.barriers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .elide = true;
     }
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-support")),
         expect(clippy::unused_self, reason = "counted only under test")
     )]
     fn write(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let mut barriers = self
                 .barriers
@@ -73,11 +73,11 @@ impl Counted {
         }
     }
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-support")),
         expect(clippy::unused_self, reason = "counted only under test")
     )]
     fn file(&self, barrier: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let mut barriers = self
                 .barriers
@@ -91,11 +91,11 @@ impl Counted {
         barrier()
     }
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-support")),
         expect(clippy::unused_self, reason = "counted only under test")
     )]
     fn directory(&self, barrier: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             let mut barriers = self
                 .barriers
@@ -111,7 +111,7 @@ impl Counted {
 }
 
 /// One staged transition's place in the writer's order.
-pub(super) struct Ticket {
+pub struct Ticket {
     state: Mutex<Resolution>,
     settled: Condvar,
     notify: tokio::sync::Notify,
@@ -157,7 +157,7 @@ impl Ticket {
         self.settled.notify_all();
         self.notify.notify_waiters();
     }
-    pub(super) fn outcome(&self) -> Option<Result<(), String>> {
+    pub fn outcome(&self) -> Option<Result<(), String>> {
         self.lock().outcome.clone()
     }
 }
@@ -166,26 +166,26 @@ impl Ticket {
 /// Nothing may act on the transition before: no acknowledgement, delivery or
 /// answer. Dropping it unwaited never cancels the write.
 #[must_use = "nothing may act on a transition before it is durable"]
-pub(crate) struct Durable(Option<Arc<Ticket>>);
+pub struct Durable(Option<Arc<Ticket>>);
 
 impl Durable {
     /// Nothing to wait for: the transition was already durable.
-    pub(crate) const fn settled() -> Self {
+    pub const fn settled() -> Self {
         Self(None)
     }
-    pub(super) fn of(ticket: Arc<Ticket>) -> Self {
+    pub fn of(ticket: Arc<Ticket>) -> Self {
         Self(Some(ticket))
     }
-    pub(super) const fn ticket(&self) -> Option<&Arc<Ticket>> {
+    pub const fn ticket(&self) -> Option<&Arc<Ticket>> {
         self.0.as_ref()
     }
     /// Whether nothing is in flight: the transition was already durable.
-    pub(crate) const fn is_settled(&self) -> bool {
+    pub const fn is_settled(&self) -> bool {
         self.0.is_none()
     }
     /// Wait for the write without holding the thread: the broker's loop
     /// goes on answering meanwhile.
-    pub(crate) async fn wait(self) -> Result<(), String> {
+    pub async fn wait(self) -> Result<(), String> {
         let Some(ticket) = self.0 else {
             return Ok(());
         };
@@ -201,7 +201,7 @@ impl Durable {
     }
     /// Run `then` with the write's outcome once it resolves: at once if it
     /// has, else on the writer's thread, so it must only hand the outcome on.
-    pub(crate) fn then(self, then: impl FnOnce(Result<(), String>) + Send + 'static) {
+    pub fn then(self, then: impl FnOnce(Result<(), String>) + Send + 'static) {
         let Some(ticket) = self.0 else {
             return then(Ok(()));
         };
@@ -216,7 +216,7 @@ impl Durable {
     }
     /// Wait for the write on a thread that may block: never the broker's
     /// loop, whose answers would all wait with it.
-    pub(crate) fn wait_blocking(self) -> Result<(), String> {
+    pub fn wait_blocking(self) -> Result<(), String> {
         let Some(ticket) = self.0 else {
             return Ok(());
         };
@@ -234,7 +234,7 @@ impl Durable {
 }
 
 /// The bytes of one staged transition.
-pub(super) enum Write {
+pub enum Write {
     /// One entry line appended to the store and its data barrier.
     Append(Vec<u8>),
     /// The whole store rewritten as a snapshot through an atomic rename.
@@ -255,24 +255,24 @@ pub(super) enum Write {
 
 /// Test injections that travel with a write to the thread making it.
 #[derive(Default)]
-pub(super) struct Injected {
-    #[cfg(test)]
+pub struct Injected {
+    #[cfg(any(test, feature = "test-support"))]
     pub fail: Option<BarrierFailure>,
     /// Run once the write is durable, before its ticket resolves, while the
     /// writer is still held.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub after: Option<Box<dyn FnOnce() + Send>>,
     /// Durable, but the caller is told the process crashed before acting.
     /// The store now holds an entry this writer never recounts, so only a
     /// restart may append to it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub crash_after: bool,
     /// The write was made durable but could not be confirmed: a later write
     /// could not tell whether the store already holds it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub unconfirmed: bool,
     /// Run before the write starts, as a slow disk holds it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub hold: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -295,7 +295,7 @@ enum Made {
 }
 
 /// The writer thread, its order and its failure.
-pub(super) struct Writer {
+pub struct Writer {
     jobs: Option<mpsc::Sender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
     failed: Arc<AtomicBool>,
@@ -315,7 +315,7 @@ impl Writer {
     /// Start the writer of `root`, appending to `tail` (`None`: the first
     /// transition compacts). It holds the store's `lock` until its last
     /// write is done, so no other writer opens the store before then.
-    pub(super) fn start(
+    pub fn start(
         root: PathBuf,
         tail: Option<File>,
         lock: advisory_lock::FileLock,
@@ -365,7 +365,7 @@ impl Writer {
                         tail = None;
                     }
                     let fatal = matches!(made, Made::Unconfirmed);
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     let (error, fatal) = {
                         let (mut error, mut fatal) = (error, fatal);
                         if error.is_none()
@@ -415,12 +415,12 @@ impl Writer {
         })
     }
 
-    pub(super) fn failed(&self) -> bool {
+    pub fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
     }
 
     /// Queue `write` after every write staged before it.
-    pub(super) fn stage(&self, write: Write, injected: Injected) -> Arc<Ticket> {
+    pub fn stage(&self, write: Write, injected: Injected) -> Arc<Ticket> {
         let ticket = Ticket::new();
         let job = Job {
             write,
@@ -456,7 +456,7 @@ impl Drop for Writer {
     }
 }
 
-pub(super) const FAILED: &str = "invocation journal requires recovery after a failed barrier";
+pub const FAILED: &str = "invocation journal requires recovery after a failed barrier";
 
 /// A write that reached no durable byte and was taken back: nothing was
 /// acknowledged and the store is unchanged, so the journal carries on.
@@ -465,7 +465,7 @@ const WITHDRAWN: &str = "invocation journal write failed";
 /// Whether `write` left nothing of itself durable, so the journal goes on as
 /// if it had never been staged: a withdrawn write is not the failed barrier
 /// that stops the writer.
-pub(super) fn withdrew(outcome: &Result<(), String>) -> bool {
+pub fn withdrew(outcome: &Result<(), String>) -> bool {
     matches!(outcome, Err(error) if error != FAILED)
 }
 
@@ -476,7 +476,7 @@ fn make_durable(
     injected: &Injected,
     counted: &Counted,
 ) -> Result<(), &'static str> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(hold) = &injected.hold {
         hold();
     }
@@ -529,15 +529,15 @@ fn append_beside(root: &Path, name: &str, line: &[u8]) -> Result<(), &'static st
 
 /// One entry and its data barrier. A failed entry is taken back if the disk
 /// lets us: no caller was told of it.
-pub(super) fn append(
+pub fn append(
     file: &mut File,
     bytes: &[u8],
     injected: &Injected,
     counted: &Counted,
 ) -> Result<(), &'static str> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let fail = injected.fail;
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = injected;
     let len = file
         .metadata()
@@ -547,7 +547,7 @@ pub(super) fn append(
     let mut durable = file
         .write_all(bytes)
         .map_err(|_| "invocation journal write failed");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if durable.is_ok() && fail == Some(BarrierFailure::File) {
         durable = Err("injected file barrier failure");
     }
@@ -570,7 +570,7 @@ pub(super) fn append(
     }
     // The entry is in the store; only the barrier that would confirm it for
     // good did not happen, so it may be durable and nothing was acknowledged.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if fail == Some(BarrierFailure::Directory) {
         return Err(FAILED);
     }
@@ -579,15 +579,15 @@ pub(super) fn append(
 
 /// The whole store as one snapshot through an atomic rename, left open for
 /// appends: later entries append to exactly the renamed file.
-pub(super) fn write_snapshot(
+pub fn write_snapshot(
     root: &Path,
     bytes: &[u8],
     injected: &Injected,
     counted: &Counted,
 ) -> Result<File, &'static str> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let fail = injected.fail;
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = injected;
     let temporary = root.join(format!(".write-{}", uuid::Uuid::new_v4()));
     let result: Result<File, &'static str> = (|| {
@@ -596,7 +596,7 @@ pub(super) fn write_snapshot(
         counted.write();
         file.write_all(bytes)
             .map_err(|_| "invocation journal write failed")?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if fail == Some(BarrierFailure::File) {
             return Err("injected file barrier failure");
         }
@@ -607,7 +607,7 @@ pub(super) fn write_snapshot(
             .map_err(|_| "invocation journal rename failed")?;
         // From here on the new snapshot may be the store for good: a failure
         // to confirm it leaves later appends unable to know what it holds.
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if fail == Some(BarrierFailure::Directory) {
             return Err(FAILED);
         }

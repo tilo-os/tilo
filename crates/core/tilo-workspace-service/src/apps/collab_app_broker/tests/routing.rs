@@ -69,14 +69,14 @@ async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion(
         assert!(matches!(fixture.state.invocation_status(job),
             Some(tilo_actions::InvocationUpdate::Accepted { invocation }) if invocation == request.invocation));
         let path = root.path().join("state.json.invocations");
-        let snapshot = invocation_journal::durable_snapshot(&path);
+        let snapshot = tilo_invocation_journal::durable_snapshot(&path);
         assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
         fixture.complete_invocation(job, &tilo_actions::InvocationUpdate::Succeeded {
             invocation: delivered, output: tilo_actions::ActionOutput::default(),
         }).await.unwrap();
         assert!(matches!(fixture.state.invocation_status(job),
             Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == request.invocation));
-        let snapshot = invocation_journal::durable_snapshot(&path);
+        let snapshot = tilo_invocation_journal::durable_snapshot(&path);
         assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
         assert!(fixture.take_invocation_identity().is_none());
     }).await;

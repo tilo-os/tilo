@@ -459,7 +459,7 @@ mod tests {
             );
             assert_eq!(
                 completed.terminal.as_ref().unwrap().category,
-                crate::apps::action_evidence::TerminalCategory::Succeeded
+                tilo_invocation_journal::action_evidence::TerminalCategory::Succeeded
             );
             f.reopen_journal();
             assert_eq!(f.assert_signed(&asked, true), completed);
@@ -495,9 +495,9 @@ mod tests {
                 assert_eq!(
                     completed.terminal.unwrap().category,
                     if dropped {
-                        crate::apps::action_evidence::TerminalCategory::Uncertain
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Uncertain
                     } else {
-                        crate::apps::action_evidence::TerminalCategory::Failed
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Failed
                     }
                 );
                 f.invoke(&asked).unwrap();
@@ -565,7 +565,7 @@ mod tests {
             let completed = f.assert_signed(&asked, true);
             assert_eq!(
                 completed.terminal.unwrap().category,
-                crate::apps::action_evidence::TerminalCategory::Failed
+                tilo_invocation_journal::action_evidence::TerminalCategory::Failed
             );
             assert!(
                 f.invoke(&asked).is_ok(),

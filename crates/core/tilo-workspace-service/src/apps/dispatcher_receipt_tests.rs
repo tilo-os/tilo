@@ -32,7 +32,7 @@ fn receipt_record(rig: &Rig, wire: u64) -> DurableInvocation {
         .expect("admission retained")
 }
 
-fn receipt_barriers(rig: &Rig) -> invocation_journal::Barriers {
+fn receipt_barriers(rig: &Rig) -> tilo_invocation_journal::Barriers {
     rig.state
         .journal
         .lock()
@@ -93,10 +93,7 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
 }
 
 /// The row the host's journal keeps for `key`.
-fn retained(
-    rig: &Rig,
-    key: &crate::apps::collab_app_broker::invocation_journal::InvocationKey,
-) -> DurableInvocation {
+fn retained(rig: &Rig, key: &tilo_invocation_journal::InvocationKey) -> DurableInvocation {
     rig.state
         .journal
         .lock()
@@ -112,8 +109,8 @@ fn retained(
 
 fn assert_receipt_substitution_refused(
     env: &Environment,
-    evidence: &crate::apps::action_evidence::AdmissionEvidence,
-    expected: &crate::apps::action_evidence::AdmissionFacts,
+    evidence: &tilo_invocation_journal::action_evidence::AdmissionEvidence,
+    expected: &tilo_invocation_journal::action_evidence::AdmissionFacts,
 ) {
     let receipt = evidence.public_receipt();
     for field in [
@@ -133,11 +130,12 @@ fn assert_receipt_substitution_refused(
             "workspace" => altered.workspace.push('x'),
             "invocation" => altered.invocation = tilo_actions::InvocationId::new(),
             "actor" => {
-                altered.actor = crate::apps::action_evidence::VerifiedActor::AuthenticatedLocal {
-                    root: env.cert.user_public_key,
-                    device: [0; 32],
-                    agent: None,
-                }
+                altered.actor =
+                    tilo_invocation_journal::action_evidence::VerifiedActor::AuthenticatedLocal {
+                        root: env.cert.user_public_key,
+                        device: [0; 32],
+                        agent: None,
+                    }
             }
             "app" => altered.app_id.push('x'),
             "record" => altered.document_id.push('x'),
@@ -147,13 +145,13 @@ fn assert_receipt_substitution_refused(
             _ => unreachable!(),
         }
         assert!(
-            crate::apps::action_evidence::verify(receipt, &altered).is_err(),
+            tilo_invocation_journal::action_evidence::verify(receipt, &altered).is_err(),
             "substituted {field}"
         );
         let mut forged = receipt.clone();
         forged.facts = altered.clone();
         assert!(
-            crate::apps::action_evidence::verify(&forged, &altered).is_err(),
+            tilo_invocation_journal::action_evidence::verify(&forged, &altered).is_err(),
             "signature binds {field}"
         );
         if field == "actor" {
@@ -190,15 +188,16 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
                 .as_ref()
                 .expect("the dispatcher signs the admission");
             let public = evidence.public_receipt();
-            let expected = crate::apps::action_evidence::AdmissionFacts {
+            let expected = tilo_invocation_journal::action_evidence::AdmissionFacts {
                 host: rig.state.invocation_host().unwrap(),
                 workspace: env.route.cluster_id.clone(),
                 invocation: request.invocation,
-                actor: crate::apps::action_evidence::VerifiedActor::AuthenticatedLocal {
-                    root: env.cert.user_public_key,
-                    device: env.cert.device_public_key,
-                    agent: None,
-                },
+                actor:
+                    tilo_invocation_journal::action_evidence::VerifiedActor::AuthenticatedLocal {
+                        root: env.cert.user_public_key,
+                        device: env.cert.device_public_key,
+                        agent: None,
+                    },
                 actor_id: tilo_actions::MemberId::person(person_id_for_root(
                     env.cert.user_public_key,
                 )),
@@ -208,7 +207,7 @@ async fn an_authenticated_read_is_admitted_with_private_signed_evidence() {
                 action: "open".into(),
                 revision: Some("original-r1".into()),
             };
-            crate::apps::action_evidence::verify(public, &expected).unwrap();
+            tilo_invocation_journal::action_evidence::verify(public, &expected).unwrap();
             evidence.validate_retained(&record.intent).unwrap();
             let opening = evidence.opening_for_owner(&expected.actor).unwrap();
             assert!(
@@ -297,7 +296,7 @@ async fn an_authenticated_dispatch_without_a_host_signer_is_refused() {
 async fn dispatcher_terminal_receipts_attest_only_the_observed_outcome() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::apps::action_evidence::{TerminalCategory, verify_terminal};
+            use tilo_invocation_journal::action_evidence::{TerminalCategory, verify_terminal};
             for category in [
                 TerminalCategory::Succeeded,
                 TerminalCategory::Failed,

@@ -13,7 +13,7 @@ fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
     let (state, _bridge) =
         AppBrokerState::test_state(None, crate::apps::services::ProcessServices::default());
     *state.journal.lock().unwrap() = Ok(Some(
-        invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
+        tilo_invocation_journal::InvocationJournal::open(&root.join("journal")).unwrap(),
     ));
     state
 }
@@ -261,9 +261,9 @@ tilo_test_env::scenario! {
     phase failed_admission_barrier_returns_no_dispatch_permit_or_accepted_update;
     {
         for failure in [
-            invocation_journal::BarrierFailure::File,
-            invocation_journal::BarrierFailure::Directory,
-            invocation_journal::BarrierFailure::AfterAdmission,
+            tilo_invocation_journal::BarrierFailure::File,
+            tilo_invocation_journal::BarrierFailure::Directory,
+            tilo_invocation_journal::BarrierFailure::AfterAdmission,
         ] {
             let root = tempfile::tempdir().unwrap();
             let state = state(root.path());
@@ -322,7 +322,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .as_mut()
             .unwrap()
-            .fail_at = Some(invocation_journal::BarrierFailure::File);
+            .fail_at = Some(tilo_invocation_journal::BarrierFailure::File);
         assert!(
             state
                 .complete_host_action(

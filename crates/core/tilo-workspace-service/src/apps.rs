@@ -1,7 +1,6 @@
 //! The apps a device's workspace service serves: the app wire its apps call on, their launch,
 //! the actions they publish and invoke, the journal those invocations are kept in, and the
 //! person's consent to each. A server holds workspaces without apps and builds without it.
-pub mod action_evidence;
 pub mod app_actions;
 pub mod automation;
 mod broker_error;
@@ -28,7 +27,6 @@ pub use tilo_broker_core::{collab_core, collab_history};
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod commits;
-mod evidence_signer;
 pub mod local_document_action;
 /// Nearby Send published as a resource: the devices in reach, the offers another
 /// device made, and the actions that answer them.

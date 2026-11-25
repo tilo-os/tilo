@@ -36,7 +36,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json", "dep:jiff"]
+apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-invocation-journal", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # The surface fixtures a test builds declare (test support): what the service stores is the compiled form.
@@ -120,6 +120,8 @@ zeroize.workspace = true
 tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
 tilo-app-package = { path = "../tilo-app-package", optional = true }
+# The journal of the invocations the apps' broker admitted, and their evidence.
+tilo-invocation-journal = { path = "../invocation-journal", optional = true }
 parking_lot = { workspace = true, optional = true }
 tilo-identity-client = { path = "../tilo-identity-client", optional = true }
 registry-types = { package = "tilo-registry-types", path = "../registry-types", optional = true }
@@ -248,6 +250,7 @@ tilo-mcp = { path = "../tilo-mcp" }
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../actions", features = ["test-support"] }
 tilo-workspace-search = { path = "../workspace-search", features = ["test-support"] }
+tilo-invocation-journal = { path = "../invocation-journal", features = ["test-support"] }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }

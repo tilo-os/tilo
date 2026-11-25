@@ -5,11 +5,11 @@
 use super::super::*;
 use super::*;
 use crate::apps::collab_app_broker::InvocationOwner;
-use crate::apps::collab_app_broker::invocation_journal::{InvocationJournal, InvocationKey};
 use crate::apps::services::{
     LocalPersonServices, ProcessServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
 use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_invocation_journal::{InvocationJournal, InvocationKey};
 
 struct Library(tokio::runtime::Handle);
 
@@ -341,7 +341,7 @@ async fn direct_palette_and_triggered_runs_cross_signed_barriers() {
         );
         assert_eq!(record.intent["host_start"]["inputs"], serde_json::json!({}));
         let evidence = record.admission.as_ref().expect("direct run is signed");
-        crate::apps::action_evidence::verify(
+        tilo_invocation_journal::action_evidence::verify(
             evidence.public_receipt(),
             &evidence.public_receipt().facts,
         )
@@ -441,7 +441,7 @@ async fn signed_run_keeps_original_uuid_owner_and_terminal_and_retries_only_once
         .admission
         .as_ref()
         .expect("host signed the run admission");
-    crate::apps::action_evidence::verify(
+    tilo_invocation_journal::action_evidence::verify(
         evidence.public_receipt(),
         &evidence.public_receipt().facts,
     )
@@ -572,7 +572,7 @@ async fn nested_steps_keep_original_owner_and_sign_each_steps_own_uuid() {
         // Guarded history retains a request digest, not the private request.
         // The signed receipt must still identify this step's own UUID.
         assert_eq!(evidence.public_receipt().facts.invocation, key.invocation);
-        crate::apps::action_evidence::verify(
+        tilo_invocation_journal::action_evidence::verify(
             evidence.public_receipt(),
             &evidence.public_receipt().facts,
         )

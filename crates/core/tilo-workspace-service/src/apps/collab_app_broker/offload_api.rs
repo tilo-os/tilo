@@ -18,7 +18,7 @@ use tilo_actions::offload::{ActionOffload, OffloadRequest, Offloaded};
 use tilo_actions::remote::InvokeRequest;
 use tokio::sync::mpsc;
 
-use super::{AppBrokerState, InvocationEnvelope, invocation_journal};
+use super::{AppBrokerState, InvocationEnvelope};
 
 /// An admitted offloadable invocation, waiting for the broker turn.
 pub(super) struct QueuedOffload {
@@ -156,8 +156,10 @@ impl AppBrokerState {
             drop(registry);
             self.invocation_changed();
             if let Some(pending) = removed {
-                let _ = self
-                    .persist_uncertain_outcome(&pending, &invocation_journal::unknown(invocation));
+                let _ = self.persist_uncertain_outcome(
+                    &pending,
+                    &tilo_invocation_journal::unknown(invocation),
+                );
             }
             return;
         }

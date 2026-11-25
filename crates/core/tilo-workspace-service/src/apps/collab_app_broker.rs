@@ -85,8 +85,6 @@ mod files_listing;
 #[cfg(feature = "files")]
 mod files_open;
 mod host_workers;
-#[path = "invocation_journal.rs"]
-mod invocation_journal;
 mod invocations;
 pub use invocations::{questions_reading, with_questions};
 use tilo_actions::remote::invocation_record;
@@ -129,8 +127,8 @@ pub use committed_document::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
     NativeDocumentReadContext, NativeDocumentReads, ReadAnswering, ResourceRead,
 };
-pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
-use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
+pub(crate) use tilo_invocation_journal::{DurableInvocation, admission_request_digest};
+use tilo_invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 
 pub use action_provider::delivering::LaunchOrigin;
 pub use native_media::{

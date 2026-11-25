@@ -2,7 +2,7 @@
 use super::{
     AdmissionProvenance, AdmittedJoinIdentity, AppBrokerState, CrdtRoute, InvocationCaller,
     InvocationInputs, InvocationJournal, InvocationKey, InvocationOwner, JoinedChannel,
-    PublishedAction, Rc, admission_request_digest, invocation_journal,
+    PublishedAction, Rc, admission_request_digest,
 };
 use crate::apps::BrokerError;
 use crate::apps::local_document_action;
@@ -21,7 +21,7 @@ pub(super) struct ReceiptCache {
 pub(super) struct ReceiptRecord {
     pub key: InvocationKey,
     pub intent: serde_json::Value,
-    pub admission: crate::apps::action_evidence::AdmissionEvidence,
+    pub admission: tilo_invocation_journal::action_evidence::AdmissionEvidence,
     pub id: u64,
     request_digest: [u8; 32],
     report_digest: [u8; 32],
@@ -73,8 +73,8 @@ impl ReceiptCache {
             }
             return Ok(());
         }
-        let facts = invocation_journal::evidence_facts(&key, intent)?;
-        let admission = crate::apps::action_evidence::mint_local_report(facts, intent)?;
+        let facts = tilo_invocation_journal::evidence_facts(&key, intent)?;
+        let admission = tilo_invocation_journal::action_evidence::mint_local_report(facts, intent)?;
         let bytes = serde_json::to_vec(&(&key, &retained, &admission, &report_digest, peer_id))
             .map_err(|_| "local receipt encoding failed")?
             .len();

@@ -230,6 +230,7 @@ members = [
     "crates/core/tilo-server-protocol",
     "crates/core/tilo-workspace-service",
     "crates/core/workspace-search",
+    "crates/core/invocation-journal",
 
     # Device services
     "crates/services/vision",

@@ -43,7 +43,7 @@ pub enum VerifiedActor {
 /// The value an omitted `agent` deserializes to. Serde's default for an
 /// `Option` field is `None`, which would read a dropped field as the person
 /// themselves; this sentinel cannot be a real agent name, so
-/// [`Self::validate`] (and [`crate::apps::action_evidence::verify`]) refuses it
+/// [`Self::validate`] (and [`crate::action_evidence::verify`]) refuses it
 /// instead.
 #[allow(
     clippy::unnecessary_wraps,
@@ -145,7 +145,7 @@ pub struct TerminalReceipt {
     pub signature: Vec<u8>,
 }
 
-pub(crate) fn terminal_category(
+pub fn terminal_category(
     update: &tilo_actions::InvocationUpdate,
     uncertain: bool,
 ) -> Option<TerminalCategory> {
@@ -175,12 +175,12 @@ fn terminal_bytes(digest: &[u8; 32], category: TerminalCategory) -> Result<Vec<u
     Ok(bytes)
 }
 
-pub(crate) fn mint_terminal(
+pub fn mint_terminal(
     admission: &AdmissionReceipt,
     category: TerminalCategory,
 ) -> Result<TerminalReceipt, String> {
     let digest = admission_digest(admission)?;
-    let (certificate, signature) = crate::apps::evidence_signer::sign(
+    let (certificate, signature) = crate::evidence_signer::sign(
         &admission.facts.workspace,
         &terminal_bytes(&digest, category)?,
     )?;
@@ -216,29 +216,26 @@ pub fn verify_terminal(
 /// Mint only after semantic admission has authenticated the actor and resolved
 /// the resource/action. `exact_intent` must be the complete admission value,
 /// including arguments, cause and context; no fields are selected or dropped.
-pub(crate) fn mint(
-    facts: AdmissionFacts,
-    exact_intent: &Value,
-) -> Result<AdmissionEvidence, String> {
-    mint_with_signer(facts, exact_intent, crate::apps::evidence_signer::sign)
+pub fn mint(facts: AdmissionFacts, exact_intent: &Value) -> Result<AdmissionEvidence, String> {
+    mint_with_signer(facts, exact_intent, crate::evidence_signer::sign)
 }
 
 /// A local report can be reconstructed after cache eviction or host restart.
 /// Derive its private salt from a domain-separated device signature, not from
 /// public input: a public content hash would allow guesses of private text.
 /// This is not an execution permit and never reserves a journal identity.
-pub(crate) fn mint_local_report(
+pub fn mint_local_report(
     facts: AdmissionFacts,
     exact_intent: &Value,
 ) -> Result<AdmissionEvidence, String> {
     let mut seed = b"tilo-local-report-private-salt-v1\0".to_vec();
     seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)));
-    let (_, signature) = crate::apps::evidence_signer::sign(&facts.workspace, &seed)?;
+    let (_, signature) = crate::evidence_signer::sign(&facts.workspace, &seed)?;
     mint_with_nonce(
         facts,
         exact_intent,
         *blake3::hash(&signature).as_bytes(),
-        crate::apps::evidence_signer::sign,
+        crate::evidence_signer::sign,
     )
 }
 
@@ -268,7 +265,7 @@ fn mint_with_nonce(
         request: Some(RequestBinding {
             digest: exact_intent
                 .get("request")
-                .map(crate::apps::collab_app_broker::admission_request_digest),
+                .map(crate::admission_request_digest),
         }),
     };
     let intent_commitment = opening.commitment();
@@ -346,14 +343,14 @@ impl AdmissionEvidence {
         self.opening.validate_commitment(&self.receipt)
     }
 
-    pub(crate) fn validate_retained(&self, retained: &Value) -> Result<(), String> {
+    pub fn validate_retained(&self, retained: &Value) -> Result<(), String> {
         if retained_digest(retained) != self.opening.retained_digest {
             return Err("retained admission intent differs from signed intent".into());
         }
         Ok(())
     }
 
-    pub(crate) fn validate_request_digest(&self, digest: Option<[u8; 32]>) -> Result<(), String> {
+    pub fn validate_request_digest(&self, digest: Option<[u8; 32]>) -> Result<(), String> {
         if let Some(request) = &self.opening.request
             && request.digest != digest
         {
@@ -616,7 +613,7 @@ mod tests {
                 let evidence = evidence_for(&intent);
                 let digest = intent
                     .get("request")
-                    .map(crate::apps::collab_app_broker::admission_request_digest);
+                    .map(crate::admission_request_digest);
                 evidence.validate_request_digest(digest).unwrap();
                 assert!(evidence.validate_request_digest(Some([0; 32])).is_err());
                 if digest.is_some() {

@@ -9,14 +9,14 @@ use tokio::sync::mpsc;
 
 use super::{
     AppBrokerState, InvocationCompletion, InvocationEnvelope, InvocationJob, PendingInvocation,
-    invocation_journal, offload_api,
+    offload_api,
 };
 
 /// An invocation admitted in the journal, which nobody hears of (neither
 /// its application nor its asker) before the admission is durable.
 #[must_use = "an admission is acknowledged and delivered only by starting it"]
 pub struct StagedJob {
-    pub(super) admitted: invocation_journal::Durable,
+    pub(super) admitted: tilo_invocation_journal::Durable,
     pub(super) start: Admitted,
 }
 
@@ -88,14 +88,17 @@ impl StagedJob {
 pub(super) struct DefiniteOutcome<'a> {
     pub(super) state: &'a AppBrokerState,
     pub(super) id: Option<u64>,
-    pub(super) durable: invocation_journal::Durable,
+    pub(super) durable: tilo_invocation_journal::Durable,
 }
 
 impl DefiniteOutcome<'_> {
     /// Wait for the write without holding the broker's loop, then tell the
     /// caller. The invocation is left to expiry and disconnects again.
     pub(super) async fn settle(mut self) -> Result<(), String> {
-        let durable = std::mem::replace(&mut self.durable, invocation_journal::Durable::settled());
+        let durable = std::mem::replace(
+            &mut self.durable,
+            tilo_invocation_journal::Durable::settled(),
+        );
         durable.wait().await
     }
 }
@@ -116,7 +119,7 @@ impl AppBrokerState {
     pub(super) fn journal_in_flight(
         &self,
         invocation: &tilo_actions::InvocationId,
-    ) -> invocation_journal::Durable {
+    ) -> tilo_invocation_journal::Durable {
         self.journal
             .lock()
             .ok()
@@ -127,7 +130,7 @@ impl AppBrokerState {
                     .as_ref()
                     .map(|journal| journal.in_flight(invocation))
             })
-            .unwrap_or_else(invocation_journal::Durable::settled)
+            .unwrap_or_else(tilo_invocation_journal::Durable::settled)
     }
 
     /// Run `work` with this broker for `durable`'s outcome: now when nothing is
@@ -136,7 +139,7 @@ impl AppBrokerState {
     /// there.
     pub(super) fn when_durable(
         self: &Arc<Self>,
-        durable: invocation_journal::Durable,
+        durable: tilo_invocation_journal::Durable,
         work: impl FnOnce(&Self, Result<(), String>) + Send + 'static,
     ) {
         if durable.is_settled() {
@@ -238,8 +241,10 @@ impl AppBrokerState {
             drop(registry);
             self.invocation_changed();
             if let Some(pending) = removed {
-                let _ = self
-                    .persist_uncertain_outcome(&pending, &invocation_journal::unknown(invocation));
+                let _ = self.persist_uncertain_outcome(
+                    &pending,
+                    &tilo_invocation_journal::unknown(invocation),
+                );
             }
             return Err("the application invocation stream closed; outcome unknown".into());
         }

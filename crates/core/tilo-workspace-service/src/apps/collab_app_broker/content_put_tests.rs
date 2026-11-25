@@ -190,7 +190,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(shelf.aborted, 0);
         // Who put it is kept, without the bytes.
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+        let records = tilo_invocation_journal::attributions(&fixture.journal).unwrap();
         assert_eq!(records.len(), 1, "{records:?}");
         assert_eq!(records[0].actor, tilo_actions::Actor::from(tilo_actions::MemberId::person(owner_id())));
         assert_eq!(records[0].workspace, fixture.workspace);
@@ -344,7 +344,7 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(
             fixture
                 .journal
-                .join(super::super::invocation_journal::CONTENT_PUTS_FILE),
+                .join(tilo_invocation_journal::CONTENT_PUTS_FILE),
         )
         .unwrap();
         let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 3).unwrap();
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
         let fixture = fixture();
         let path = fixture
             .journal
-            .join(super::super::invocation_journal::CONTENT_PUTS_FILE);
+            .join(tilo_invocation_journal::CONTENT_PUTS_FILE);
         // Content the workspace keeps dropping, as an app discards what it uploaded.
         let mut longest = 0;
         for n in 0..256_u32 {
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
         // made since. That backlog is bounded too: it never outgrows the snapshot
         // line, so the log is bounded by the content workspaces hold plus that backlog,
         // never by every put the device ever made.
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+        let records = tilo_invocation_journal::attributions(&fixture.journal).unwrap();
         assert!(
             records.len() < 32,
             "the attributions kept are a bounded backlog, not every put made: {}",
@@ -408,7 +408,7 @@ tilo_test_env::scenario! {
         for n in 0..64_u32 {
             hashes.push(put(&fixture, &n.to_le_bytes().repeat(16)));
         }
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+        let records = tilo_invocation_journal::attributions(&fixture.journal).unwrap();
         let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
         for hash in &hashes {
             assert!(
@@ -433,7 +433,7 @@ tilo_test_env::scenario! {
             .stored
             .retain(|(_, hash, _)| *hash != dropped);
         let kept = put(&fixture, b"still held");
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+        let records = tilo_invocation_journal::attributions(&fixture.journal).unwrap();
         let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
         assert!(stored.contains(&kept), "the held put stays: {stored:?}");
         // A compaction, made by enough further puts that the lines outgrow the
@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
         for n in 0..64_u32 {
             put(&fixture, &n.to_le_bytes().repeat(16));
         }
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+        let records = tilo_invocation_journal::attributions(&fixture.journal).unwrap();
         let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
         assert!(
             !stored.contains(&dropped),

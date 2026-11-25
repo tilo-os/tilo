@@ -895,7 +895,7 @@ async fn failed_terminal_journal_barrier_cannot_publish_success() {
         pending.journal_key = Some(key);
         drop(registry);
     }
-    journal.fail_at = Some(invocation_journal::BarrierFailure::File);
+    journal.fail_at = Some(tilo_invocation_journal::BarrierFailure::File);
     *state.journal.lock().unwrap() = Ok(Some(journal));
     assert!(
         state

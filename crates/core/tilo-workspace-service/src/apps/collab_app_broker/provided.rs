@@ -1273,7 +1273,7 @@ pub(crate) mod signed_test_support {
                 .unwrap()
                 .as_mut()
                 .unwrap()
-                .fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
+                .fail_at = Some(tilo_invocation_journal::BarrierFailure::File);
         }
 
         pub fn reopen_journal(&self) {
@@ -1289,14 +1289,14 @@ pub(crate) mod signed_test_support {
             let record = self.record(request);
             let admission = record.admission.as_ref().expect("signed admission");
             let receipt = admission.public_receipt();
-            crate::apps::action_evidence::verify(receipt, &receipt.facts).unwrap();
+            tilo_invocation_journal::action_evidence::verify(receipt, &receipt.facts).unwrap();
             assert_eq!(receipt.facts.invocation, request.invocation);
             assert_eq!(receipt.facts.workspace, self.workspace);
             assert_eq!(receipt.facts.resource, request.target.address.resource);
             assert_eq!(receipt.facts.action, request.target.address.action);
             assert!(record.admitted_request_is(&serde_json::to_value(request).unwrap()));
             if terminal {
-                crate::apps::action_evidence::verify_terminal(
+                tilo_invocation_journal::action_evidence::verify_terminal(
                     record.terminal.as_ref().expect("signed terminal"),
                     receipt,
                 )
@@ -1803,9 +1803,9 @@ mod identity_admin_tests {
                 assert_eq!(
                     completed.terminal.as_ref().unwrap().category,
                     if dropped {
-                        crate::apps::action_evidence::TerminalCategory::Uncertain
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Uncertain
                     } else {
-                        crate::apps::action_evidence::TerminalCategory::Failed
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Failed
                     }
                 );
                 f.reopen_journal();

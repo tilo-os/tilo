@@ -1,8 +1,8 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
-use super::invocation_journal::{InvocationJournal, InvocationKey};
 use super::{AppBrokerState, BrokerActor, DurableInvocation, InvocationCaller, InvocationOwner};
 use tilo_action_policy::MemberId;
 use tilo_actions::remote::{ActionCallError, Caller};
+use tilo_invocation_journal::{InvocationJournal, InvocationKey};
 
 /// The action check of one admission, decided on the caller's borrowed
 /// sample of exactly that workspace's committed workspace.

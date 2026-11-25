@@ -463,10 +463,8 @@ mod tests {
                     .is_ok()
             );
             *state.journal.lock().unwrap() = Ok(Some(
-                super::super::invocation_journal::InvocationJournal::open(
-                    &scratch.path().join("journal"),
-                )
-                .unwrap(),
+                tilo_invocation_journal::InvocationJournal::open(&scratch.path().join("journal"))
+                    .unwrap(),
             ));
             let caller = Caller::local_person(person).in_workspace(&workspace_id);
             Self {
@@ -600,21 +598,21 @@ mod tests {
                 assert_eq!(
                     record.terminal.as_ref().unwrap().category,
                     if step == 2 {
-                        crate::apps::action_evidence::TerminalCategory::Uncertain
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Uncertain
                     } else if matches!(step, 1 | 5) {
-                        crate::apps::action_evidence::TerminalCategory::Failed
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Failed
                     } else {
-                        crate::apps::action_evidence::TerminalCategory::Succeeded
+                        tilo_invocation_journal::action_evidence::TerminalCategory::Succeeded
                     }
                 );
                 let evidence = record.admission.as_ref().unwrap();
-                crate::apps::action_evidence::verify_terminal(
+                tilo_invocation_journal::action_evidence::verify_terminal(
                     record.terminal.as_ref().unwrap(),
                     evidence.public_receipt(),
                 )
                 .unwrap();
                 let facts =
-                    super::super::invocation_journal::evidence_facts(&key, &record.intent).unwrap();
+                    tilo_invocation_journal::evidence_facts(&key, &record.intent).unwrap();
                 evidence.validate(&facts).unwrap();
             }
         }
@@ -661,7 +659,7 @@ mod tests {
             let (state, workspace) = broker();
             let scratch = tempfile::tempdir().unwrap();
             *state.journal.lock().unwrap() = Ok(Some(
-                super::super::invocation_journal::InvocationJournal::open(
+                tilo_invocation_journal::InvocationJournal::open(
                     &scratch.path().join("journal"),
                 )
                 .unwrap(),
@@ -712,11 +710,11 @@ mod tests {
         {
             let (state, workspace) = broker();
             let scratch = tempfile::tempdir().unwrap();
-            let mut journal = super::super::invocation_journal::InvocationJournal::open(
+            let mut journal = tilo_invocation_journal::InvocationJournal::open(
                 &scratch.path().join("journal"),
             )
             .unwrap();
-            journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
+            journal.fail_at = Some(tilo_invocation_journal::BarrierFailure::File);
             *state.journal.lock().unwrap() = Ok(Some(journal));
             let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
             assert!(invoke(&state, &caller, &request(&workspace)).is_err());
