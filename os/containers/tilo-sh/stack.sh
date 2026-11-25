@@ -1423,8 +1423,10 @@ host_ticket() {
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
-# checkout's release build the site serves at /releases (with the daemon
-# tilo-runtime it starts from beside itself), else the command the
+# checkout's release build the site serves at /releases (with everything the
+# release packs beside it: the daemon tilo-runtime it starts, and the
+# tilo-launcher and task program that daemon starts apps through from beside
+# itself, as an installed computer has them), else the command the
 # stack built for itself (the same one, before the site packs it), else a build
 # left here. The stack's own build is where it runs; a build left here is not on
 # the build server, so a command that acts on a stack there finds its command
@@ -1434,7 +1436,7 @@ find_tilo() {
   local tarball=$state/releases/tilo-cli/latest/tilo-linux-x86_64.tar.gz candidate
   if [[ -s $tarball ]]; then
     mkdir -p "$state/cli"
-    tar -xzf "$tarball" -C "$state/cli" tilo tilo-runtime && { printf '%s' "$state/cli/tilo"; return; }
+    tar -xzf "$tarball" -C "$state/cli" && { printf '%s' "$state/cli/tilo"; return; }
   fi
   for candidate in "$programs/tilo" "$repo/target/release/tilo" "$repo/target/debug/tilo"; do
     [[ -x $candidate ]] && { printf '%s' "$candidate"; return; }
