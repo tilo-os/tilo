@@ -1,7 +1,7 @@
 //! What [`Column`](super::Column) and [`Row`](super::Row) share apart from their axis: the
 //! child list and its retained Taffy nodes, the resolved geometry, the presence /
-//! permission bindings, the theme-resolved spacing, and the subtree scene cache that
-//! replays a stable subtree as one append.
+//! permission bindings, the theme-resolved spacing, and the drawing the flow keeps to replay
+//! while nothing in it changed.
 
 #[cfg(feature = "model")]
 use crate::permissions::PermissionScope;
@@ -33,7 +33,10 @@ pub(super) struct Flow {
     pub gap_override: Option<f32>,
     pub rhythm: Option<Rhythm>,
     pub padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
-    subtree_cache: Scene,
+    /// What the last full draw drew, in order: the drawings of runs of children kept here, and the
+    /// children that keep their own (a nested flow), drawn again each frame to replay theirs. Each
+    /// drawing is kept once in the tree, whatever its depth.
+    cache: Vec<Kept>,
     cache_rect: Rect,
     cache_theme: Option<Box<DrawnTheme>>,
     cache_permissions: u64,
@@ -50,13 +53,16 @@ pub(super) struct Flow {
     /// input. One that read nothing outside keeps across it.
     cache_input: u64,
     cache_outside: bool,
-    /// A child's update changed what it shows since the cache was drawn: a widget that paints what
-    /// its update took up keeps no flag of its own, and only the columns above it draw again.
+    /// A child's update changed what it shows since the children were drawn: a widget that paints
+    /// what its update took up keeps no flag of its own, and only the columns above it draw again.
     pub(super) updated: bool,
+    /// [`Self::updated`] for a child whose drawing this flow keeps: only then is its drawing stale.
+    pub(super) updated_kept: bool,
     cache_present: bool,
     descendant_caches_released: bool,
     cache_carries_material: bool,
-    cache_parts: Option<crate::scene_parts::SectionParts>,
+    /// Every kept drawing has its parts, for a tracked scene ([`crate::scene_parts`]).
+    cache_tracked: bool,
     cache_shows_secret: bool,
     pub style_dirty: bool,
     pub vertical: bool,
@@ -118,7 +124,7 @@ impl Flow {
             gap_override: None,
             rhythm: None,
             padding_rhythm: None,
-            subtree_cache: Scene::new(),
+            cache: Vec::new(),
             cache_rect: Rect::ZERO,
             cache_theme: None,
             cache_permissions: 0,
@@ -127,10 +133,11 @@ impl Flow {
             cache_input: 0,
             cache_outside: false,
             updated: false,
+            updated_kept: false,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
-            cache_parts: None,
+            cache_tracked: false,
             cache_shows_secret: false,
             style_dirty: false,
             vertical: false,
@@ -451,11 +458,12 @@ impl Flow {
             || self.rect.height() != self.cache_rect.height();
         // A child that is moving paints other pixels every frame without
         // being dirty in the `needs_redraw` sense (a fade in, a spring): the
-        // cache is only as fresh as the child that can repaint itself.
+        // cache is only as fresh as the child that can repaint itself. One
+        // that keeps its own drawing is drawn every frame anyway.
         let any_child_dirty = self
             .children
             .iter()
-            .any(|c| c.needs_redraw() || c.needs_animation_frame());
+            .any(|c| !c.keeps_its_drawing() && (c.needs_redraw() || c.needs_animation_frame()));
         let theme_changed = self
             .cache_theme
             .as_deref()
@@ -476,12 +484,12 @@ impl Flow {
             || self.cache_writes
             || self.cache_written != written
             || input_moved
-            || self.updated
+            || self.updated_kept
             || any_child_dirty
             || self.cache_carries_material
             || self.drawn_shifted
             || !self.ghosts.is_empty()
-            || (tracked && self.cache_parts.is_none());
+            || (tracked && !self.cache_tracked);
 
         if needs_rebuild
             && self.ghosts.is_empty()
@@ -507,92 +515,23 @@ impl Flow {
             return true;
         }
         if needs_rebuild {
-            // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
-            // its transform with each stored primitive transform, so passing
-            // `transform` here would double-apply it on the outer `append`
-            // below, landing cached widgets off-screen at any DPI scale ≠ 1.
-            //
-            // Culling is cleared for the recursion too: with it on, the
-            // cache would only hold primitives for the currently-visible
-            // sub-range, and a later scroll (cache-hit, no rebuild) would
-            // translate the cache into a viewport where the now-visible
-            // widgets were never recorded. vello's tile binner already
-            // skips off-viewport tiles at compose time, so nothing is saved
-            // by culling here.
-            let prev_vp = env.viewport.take();
-            let mut local = std::mem::take(&mut self.subtree_cache);
-            local.reset();
-            crate::backdrop::nest_scene(&local);
-            let secrets = crate::secret_paint::SecretPaint::begin();
-            self.ghosts.retain_drawn();
-            let shifts = self.follower_shifts();
-            self.drawn_shifted = shifts.is_some();
-            let ghosts = &self.ghosts;
-            let clip = (shifts.is_some() && !self.content_sized).then_some(self.rect);
-            let mut draw_children = |local: &mut Scene| {
-                if let Some(clip) = clip {
-                    local.push_layer(
-                        vello::peniko::Fill::NonZero,
-                        vello::peniko::BlendMode::default(),
-                        1.0,
-                        Affine::IDENTITY,
-                        &clip,
-                    );
-                }
-                for (index, child) in self.children.iter_mut().enumerate() {
-                    let dy = shifts
-                        .as_deref()
-                        .and_then(|shifts| shifts.get(index).copied())
-                        .unwrap_or(0.0);
-                    let child_transform = Affine::translate((0.0, dy));
-                    let begun = crate::scene_parts::begin_widget(
-                        local,
-                        child.as_ref(),
-                        Some(index),
-                        child_transform,
-                    );
-                    child.draw_child(local, child_transform, text_renderer, theme, &env);
-                    crate::scene_parts::end_widget(local, begun);
-                }
-                ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
-                if clip.is_some() {
-                    local.pop_layer();
-                }
-            };
-            // A tracked section compares its parts frame to frame; a part
-            // drawn into this cache would otherwise vanish from it.
-            // The cache lands on screen through `transform`; a scroller
-            // drawn into it offers copies in screen space.
-            let enclosing = crate::outside_paint::begin();
-            self.cache_parts = crate::scroll_copy::drawing_into_cache(transform, || {
-                if tracked {
-                    crate::scene_parts::record(&mut local, draw_children).1
-                } else {
-                    draw_children(&mut local);
-                    None
-                }
-            });
-            self.cache_outside = crate::outside_paint::end(enclosing);
-            self.cache_shows_secret = secrets.finish();
-            self.cache_carries_material = crate::scene_parts::append_with(
+            self.keep_drawing(&mut crate::draw::DrawCtx::new(
                 scene,
-                self.cache_parts.as_ref(),
-                Some(transform),
-                |scene| crate::backdrop::append_nested(scene, &local, transform),
-            ) > 0;
-            self.subtree_cache = local;
+                transform,
+                text_renderer,
+                theme,
+                env,
+            ));
             self.cache_rect = self.rect;
             if theme_changed {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
-            self.cache_permissions = env.paint_permissions;
             self.cache_writes = writes;
             self.cache_written = written;
             self.cache_input = crate::input_generation::generation();
-            self.updated = false;
+            self.updated_kept = false;
             self.cache_present = true;
             self.descendant_caches_released = false;
-            env.viewport = prev_vp;
         } else {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
@@ -603,26 +542,148 @@ impl Flow {
                 reason = "Affine composition is float matrix math and cannot panic"
             )]
             let cache_transform = transform * Affine::translate((dx, dy));
-            crate::scene_parts::append(
-                scene,
-                &self.subtree_cache,
-                self.cache_parts.as_ref(),
-                Some(cache_transform),
-            );
+            let unculled = unculled(&env);
+            for kept in &self.cache {
+                match kept {
+                    Kept::Drawn(drawing) => crate::scene_parts::append(
+                        scene,
+                        &drawing.scene,
+                        drawing.parts.as_ref(),
+                        Some(cache_transform),
+                    ),
+                    Kept::Child(index) => {
+                        if let Some(child) = self.children.get_mut(*index) {
+                            super::draw_child_at(
+                                child.as_mut(),
+                                Some(*index),
+                                scene,
+                                transform,
+                                text_renderer,
+                                theme,
+                                &unculled,
+                            );
+                        }
+                    }
+                }
+            }
             if self.cache_shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
             if self.cache_outside {
                 crate::outside_paint::note();
             }
+            // The kept drawings hold what the children in them drew: a copy those children
+            // keep below would be a second one.
             if !self.descendant_caches_released {
                 for child in &mut self.children {
-                    child.release_scene_cache();
+                    if !child.keeps_its_drawing() {
+                        child.release_scene_cache();
+                    }
                 }
                 self.descendant_caches_released = true;
             }
         }
+        self.updated = false;
         true
+    }
+
+    /// Draw every child and keep what to replay: each run of children that keep no drawing of
+    /// their own is drawn into a scene kept here, and each child that keeps its own draws
+    /// straight into `scene`, rebuilding or replaying as it needs.
+    fn keep_drawing(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        let (scene, transform, text_renderer, theme, env) = ctx.parts();
+        let unculled = unculled(&env);
+        let mut spare: Vec<Scene> = std::mem::take(&mut self.cache)
+            .into_iter()
+            .filter_map(|kept| match kept {
+                Kept::Drawn(drawing) => Some(drawing.scene),
+                Kept::Child(_) => None,
+            })
+            .collect();
+        let tracked = crate::scene_parts::is_tracked(scene);
+        self.ghosts.retain_drawn();
+        let shifts = self.follower_shifts();
+        self.drawn_shifted = shifts.is_some();
+        let shift = |index: usize| {
+            shifts
+                .as_deref()
+                .and_then(|shifts| shifts.get(index).copied())
+                .unwrap_or(0.0)
+        };
+        let clip = (shifts.is_some() && !self.content_sized).then_some(self.rect);
+        if let Some(clip) = clip {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &clip,
+            );
+        }
+        let mut kept = Vec::new();
+        let mut seen = Seen::default();
+        let mut run = None;
+        for index in 0..=self.children.len() {
+            let keeps_its_own = self
+                .children
+                .get(index)
+                .map(|child| child.keeps_its_drawing());
+            if keeps_its_own == Some(false) {
+                run.get_or_insert(index);
+                continue;
+            }
+            if let Some(first) = run.take()
+                && let Some(run) = self.children.get_mut(first..index)
+            {
+                let drawing = seen.keep(spare.pop(), scene, transform, tracked, |local| {
+                    for (index, child) in (first..).zip(run.iter_mut()) {
+                        let child_transform = Affine::translate((0.0, shift(index)));
+                        let begun = crate::scene_parts::begin_widget(
+                            local,
+                            child.as_ref(),
+                            Some(index),
+                            child_transform,
+                        );
+                        child.draw_child(local, child_transform, text_renderer, theme, &unculled);
+                        crate::scene_parts::end_widget(local, begun);
+                    }
+                });
+                kept.push(Kept::Drawn(drawing));
+            }
+            if let Some(child) = self.children.get_mut(index) {
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine composition is float matrix math and cannot panic"
+                )]
+                let child_transform = transform * Affine::translate((0.0, shift(index)));
+                super::draw_child_at(
+                    child.as_mut(),
+                    Some(index),
+                    scene,
+                    child_transform,
+                    text_renderer,
+                    theme,
+                    &unculled,
+                );
+                kept.push(Kept::Child(index));
+            }
+        }
+        if !self.ghosts.is_empty() {
+            let ghosts = &self.ghosts;
+            let drawing = seen.keep(spare.pop(), scene, transform, tracked, |local| {
+                ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
+            });
+            kept.push(Kept::Drawn(drawing));
+        }
+        if clip.is_some() {
+            scene.pop_layer();
+        }
+        self.cache = kept;
+        self.cache_outside = seen.outside;
+        self.cache_shows_secret = seen.secret;
+        self.cache_carries_material = seen.material;
+        self.cache_tracked = tracked && seen.tracked;
+        self.cache_permissions = env.paint_permissions;
     }
 
     /// A stacked column the view shows only part of draws the children
@@ -686,13 +747,112 @@ impl Flow {
         true
     }
 
+    /// The paths in the drawings this flow keeps, not counting those its children keep.
+    #[cfg(test)]
+    pub(super) fn kept_paths(&self) -> u32 {
+        self.cache
+            .iter()
+            .map(|kept| match kept {
+                Kept::Drawn(drawing) => drawing.scene.encoding().n_paths,
+                Kept::Child(_) => 0,
+            })
+            .sum()
+    }
+
     pub fn release_scene_cache(&mut self) {
-        self.subtree_cache = Scene::new();
-        self.cache_parts = None;
+        self.cache = Vec::new();
         self.cache_present = false;
         self.descendant_caches_released = true;
         for child in &mut self.children {
             child.release_scene_cache();
+        }
+    }
+}
+
+/// What a [`Flow`] keeps and replays is drawn without culling: with it on, a kept drawing
+/// would hold only the children near the current view, and a later scroll (replayed, not
+/// drawn) would translate it into a view where the children now shown were never drawn.
+/// vello's tile binner skips what lies outside the viewport anyway.
+fn unculled<'a>(env: &crate::draw::DrawEnv<'a>) -> crate::draw::DrawEnv<'a> {
+    let mut unculled = env.clone();
+    unculled.viewport = None;
+    unculled
+}
+
+/// One entry of what a [`Flow`] replays.
+enum Kept {
+    /// A run of children drawn into a scene kept here.
+    Drawn(Drawing),
+    /// The child at this index, which keeps its own drawing.
+    Child(usize),
+}
+
+struct Drawing {
+    scene: Scene,
+    parts: Option<crate::scene_parts::SectionParts>,
+}
+
+/// What the drawings kept in one full draw read and carried.
+struct Seen {
+    outside: bool,
+    secret: bool,
+    material: bool,
+    tracked: bool,
+}
+
+impl Default for Seen {
+    fn default() -> Self {
+        Self {
+            outside: false,
+            secret: false,
+            material: false,
+            tracked: true,
+        }
+    }
+}
+
+impl Seen {
+    /// Draw `draw` into a kept scene (`spare` reused when there is one) and append it to
+    /// `scene` at `transform`. It draws at `Affine::IDENTITY`: `Scene::append` composes its
+    /// transform with each stored one, so `transform` drawn in too would apply twice.
+    fn keep(
+        &mut self,
+        spare: Option<Scene>,
+        scene: &mut Scene,
+        transform: Affine,
+        tracked: bool,
+        draw: impl FnOnce(&mut Scene),
+    ) -> Drawing {
+        let mut local = spare.unwrap_or_default();
+        local.reset();
+        crate::backdrop::nest_scene(&local);
+        let secrets = crate::secret_paint::SecretPaint::begin();
+        // Only what this drawing read: what was read before it is restored after.
+        let enclosing = crate::outside_paint::begin();
+        // A tracked section compares its parts frame to frame; a part drawn into a kept
+        // scene would otherwise vanish from it. The scene lands on screen through
+        // `transform`; a scroller drawn into it offers copies in screen space.
+        let parts = crate::scroll_copy::drawing_into_cache(transform, || {
+            if tracked {
+                crate::scene_parts::record(&mut local, draw).1
+            } else {
+                draw(&mut local);
+                None
+            }
+        });
+        self.outside |= crate::outside_paint::end(false);
+        if enclosing {
+            crate::outside_paint::note();
+        }
+        self.secret |= secrets.finish();
+        self.tracked &= parts.is_some();
+        self.material |=
+            crate::scene_parts::append_with(scene, parts.as_ref(), Some(transform), |scene| {
+                crate::backdrop::append_nested(scene, &local, transform)
+            }) > 0;
+        Drawing {
+            scene: local,
+            parts,
         }
     }
 }
@@ -783,7 +943,9 @@ macro_rules! flow_widget_methods {
         ) -> bool {
             let mut changed = false;
             for child in &mut self.flow.children {
-                changed |= child.update(state, path);
+                let moved = child.update(state, path);
+                changed |= moved;
+                self.flow.updated_kept |= moved && !child.keeps_its_drawing();
             }
             self.flow.updated |= changed;
             changed
@@ -942,6 +1104,10 @@ macro_rules! flow_widget_methods {
 
         fn release_scene_cache(&mut self) {
             self.flow.release_scene_cache();
+        }
+
+        fn keeps_its_drawing(&self) -> bool {
+            true
         }
     };
 }

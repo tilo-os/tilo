@@ -54,6 +54,12 @@ impl Column {
 
     flow_builders!();
 
+    /// The paths in the drawings this column keeps, not counting those its children keep.
+    #[cfg(test)]
+    pub(super) fn kept_paths(&self) -> u32 {
+        self.flow.kept_paths()
+    }
+
     /// Resolve the column's height from its content (`auto`) instead of
     /// filling the parent (`percent(1.0)`). Required when wrapping the
     /// column in a `Scrollable` — see the field doc on

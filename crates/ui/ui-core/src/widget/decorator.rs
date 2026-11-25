@@ -575,6 +575,7 @@ decorator_trait! {
         fn has_pending_visual_work() -> bool;
         fn has_transient_feedback() -> bool;
         fn needs_redraw() -> bool;
+        fn keeps_its_drawing() -> bool;
         fn collect_damage(regions: &mut Vec<vello::kurbo::Rect>);
         fn damage_covers_own_box() -> bool;
         fn is_layout_dirty() -> bool;

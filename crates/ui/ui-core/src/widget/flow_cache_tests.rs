@@ -218,6 +218,94 @@ fn a_sync_redraws_the_columns_above_what_it_moved_and_no_other() {
     );
 }
 
+/// A tree four columns deep: a section holding a gauge beside two columns, and a column three
+/// deep holding the last. Each gauge comes back with its value and how often it drew.
+fn deep_screen() -> (Column, [(Rc<Cell<f32>>, Rc<Cell<u32>>); 4]) {
+    let gauges = [40.0f32, 60.0, 80.0, 100.0]
+        .map(|value| (Rc::new(Cell::new(value)), Rc::new(Cell::new(0))));
+    let gauge = |at: usize| Box::new(Gauge::new(&gauges[at].0, &gauges[at].1));
+    let column = |child: Box<dyn Widget>| Box::new(Column::new().push(child));
+    let section = Column::new()
+        .push(gauge(0))
+        .push(column(gauge(1)))
+        .push(column(gauge(2)));
+    let screen = Column::new()
+        .push(Box::new(section))
+        .push(column(column(column(gauge(3)))));
+    (screen, gauges)
+}
+
+/// The paths every column in `widget`'s tree keeps to replay.
+fn kept_paths(widget: &dyn Widget) -> u32 {
+    let own = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<Column>())
+        .map_or(0, Column::kept_paths);
+    own + widget.children().into_iter().map(kept_paths).sum::<u32>()
+}
+
+#[test]
+fn a_sync_deep_in_a_tree_redraws_only_what_moved() {
+    let t0 = crate::time::now();
+    let mut frame = ShotFrame::new((320, 240), Theme::dark());
+    let (mut screen, gauges) = deep_screen();
+    let draws = || gauges.each_ref().map(|(_, draws)| draws.get());
+    let mut at = t0;
+    let mut next_frame = |frame: &mut ShotFrame, screen: &mut Column| {
+        at += Duration::from_millis(16);
+        let scene = frame_at(frame, screen, at);
+        crate::widget::Widget::mark_drawn(screen);
+        scene
+    };
+    next_frame(&mut frame, &mut screen);
+    assert_eq!(draws(), [1, 1, 1, 1], "the first frame draws every gauge");
+
+    for (moved, expected) in [(1, [1, 2, 1, 1]), (0, [2, 2, 1, 1]), (3, [2, 2, 1, 2])] {
+        gauges[moved].0.set(gauges[moved].0.get() + 50.0);
+        assert!(
+            screen.update(&frame.state.doc, &frame.state.root),
+            "the sync's update took up gauge {moved}'s value"
+        );
+        let synced = next_frame(&mut frame, &mut screen);
+        assert_eq!(
+            draws(),
+            expected,
+            "gauge {moved} draws again, and every other gauge replays what it drew"
+        );
+        let rested = next_frame(&mut frame, &mut screen);
+        assert_eq!(draws(), expected, "at rest nothing draws");
+        assert!(
+            synced.encoding_eq(&rested),
+            "and the screen is the one the sync drew"
+        );
+    }
+}
+
+#[test]
+fn a_replayed_tree_keeps_each_drawing_once() {
+    let t0 = crate::time::now();
+    let mut frame = ShotFrame::new((320, 240), Theme::dark());
+    let (mut screen, gauges) = deep_screen();
+    let drawn = frame_at(&mut frame, &mut screen, t0);
+    crate::widget::Widget::mark_drawn(&mut screen);
+    let replayed = frame_at(&mut frame, &mut screen, t0 + Duration::from_millis(16));
+    assert!(
+        drawn.encoding_eq(&replayed),
+        "the second frame replays the first"
+    );
+    assert_eq!(
+        (replayed.encoding().n_paths, kept_paths(&screen)),
+        (4, 4),
+        "the frame shows four gauges, and the tree keeps each one's drawing once, \
+         not once more for every column above it"
+    );
+
+    gauges[1].0.set(140.0);
+    assert!(screen.update(&frame.state.doc, &frame.state.root));
+    frame_at(&mut frame, &mut screen, t0 + Duration::from_millis(32));
+    assert_eq!(kept_paths(&screen), 4, "a sync keeps it at one copy");
+}
+
 impl Widget for Gauge {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         let moved = self.shown != self.value.get();

@@ -1014,6 +1014,14 @@ pub trait Widget {
         defaults::release_scene_cache(self.children_mut());
     }
 
+    /// Whether this widget keeps its own drawing and replays it each time it is drawn (a column, a
+    /// row, or a decorator around one). A container that keeps its children's drawing draws such a
+    /// child every frame instead of keeping a second copy of it, so an update inside it redraws
+    /// only that child.
+    fn keeps_its_drawing(&self) -> bool {
+        false
+    }
+
     /// Default `true`; widgets with a fixed intrinsic size should override to `false` unless a
     /// size-affecting mutation landed. A widget that places children answers from them: it asks
     /// layout when one of them does, and it asks nothing when it holds none, since there is no
