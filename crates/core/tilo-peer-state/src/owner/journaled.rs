@@ -143,8 +143,9 @@ impl Journaled {
             // The layout the snapshot names: one this build writes reads as it
             // is, and an earlier one is brought up, the next publication writing
             // a snapshot of this build's version. A journal is a delta of the
-            // snapshot beside it, as that version's bytes: one beside an
-            // earlier snapshot is refused.
+            // snapshot beside it, as that version's bytes: one beside an earlier
+            // snapshot is replayed as that build wrote it, and one whose entries
+            // a later build appended is refused where it is read.
             let snapshot_version = stored_version(&name, &snapshot)?;
             let snapshot = parts.bring_up_part(&name, snapshot, snapshot_version)?;
             let mut size = snapshot.len();
