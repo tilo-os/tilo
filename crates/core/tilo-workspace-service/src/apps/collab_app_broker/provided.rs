@@ -216,39 +216,41 @@ fn descriptor_of(
 }
 
 impl AppBrokerState {
-    /// What the workspace decides of `request`, an action the registered provider `registered`
-    /// answers, made by `caller` on their own device's connection: the same verdict the
-    /// workspace's admission makes of it, with their own connection answering what the workspace
-    /// asks of them, and nothing of it run or approved. `Ok` where it runs unasked, the ask
-    /// refusal where the person is asked first, and the refusal where the workspace denies it.
-    ///
-    /// # Errors
-    /// What the admission would refuse it with: [`ActionCallError::ConfirmationRequired`] where
-    /// the workspace's rules ask the person first, and [`ActionCallError::NotPermitted`] where
-    /// they deny it.
-    pub fn admits_own_device_action(
+    /// What the workspace decides of `request`, when it names an action of the caller's own
+    /// device that the registered provider `registered` answers: the same verdict the workspace's
+    /// admission makes of it, with their own connection answering what the workspace asks of
+    /// them, and nothing of it run or approved. `Ok` where it runs unasked, the ask refusal where
+    /// the person is asked first, and the refusal where the workspace denies it. `None` for an
+    /// action that is no own-device one, which the admission decides as any other.
+    pub fn own_device_verdict(
         &self,
         caller: &Caller,
         workspace: &str,
         registered: &Registered,
         request: &InvokeRequest,
-    ) -> Result<(), ActionCallError> {
+    ) -> Option<Result<(), ActionCallError>> {
         let argument = request.argument.to_slot();
-        let descriptor = descriptor_of(registered, caller, request, argument.as_deref())
-            .ok_or(ActionCallError::UnknownAction)?;
-        let (workspace, policy, now) = self.current_framework_authority(caller, None, workspace)?;
-        // The call's own confirmation is never read here: an ask is answered only by the
-        // person's approve of the asked record the admission keeps, which this call is not. An
-        // action whose contract asks its person every time asks here too, before anything runs.
-        if !Self::confirmed_as_asked(&policy, &descriptor, argument.as_deref(), None, false) {
-            return Err(ActionCallError::confirmation_required());
+        let descriptor = descriptor_of(registered, caller, request, argument.as_deref())?;
+        if !descriptor.contract.is_own_device() {
+            return None;
         }
-        self.admit_answer(
-            (&workspace, &policy, now),
-            deciding_app(registered, None),
-            &descriptor,
-            (argument.as_deref(), None),
-        )
+        Some((|| {
+            let (workspace, policy, now) =
+                self.current_framework_authority(caller, None, workspace)?;
+            // The call's own confirmation is never read here: an ask is answered only by the
+            // person's approve of the asked record the admission keeps, which this call is not.
+            // An action whose contract asks its person every time asks here too, before anything
+            // runs.
+            if !Self::confirmed_as_asked(&policy, &descriptor, argument.as_deref(), None, false) {
+                return Err(ActionCallError::confirmation_required());
+            }
+            self.admit_answer(
+                (&workspace, &policy, now),
+                deciding_app(registered, None),
+                &descriptor,
+                (argument.as_deref(), None),
+            )
+        })())
     }
 }
 
@@ -2527,7 +2529,8 @@ mod own_device_verdict_tests {
         let caller = Caller::own_person(owner.clone()).in_workspace(&workspace);
         assert!(
             state
-                .admits_own_device_action(&caller, &workspace, &registered(), &request())
+                .own_device_verdict(&caller, &workspace, &registered(), &request())
+                .expect("an own-device action")
                 .is_ok(),
             "with no rule set, an own-device action of the person's runs"
         );
@@ -2541,7 +2544,8 @@ mod own_device_verdict_tests {
             assert_eq!(same, id, "the same workspace");
             let caller = Caller::own_person(MEMBER).in_workspace(&workspace);
             let refused = state
-                .admits_own_device_action(&caller, &workspace, &registered(), &request())
+                .own_device_verdict(&caller, &workspace, &registered(), &request())
+                .expect("an own-device action")
                 .expect_err("a rule the person set decides their action");
             let answered = if matches!(&refused, ActionCallError::ConfirmationRequired(_)) {
                 "confirmation_required"

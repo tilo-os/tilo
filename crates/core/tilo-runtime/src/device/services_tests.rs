@@ -2560,6 +2560,159 @@ type = "gui"
     }
 }
 
+const OWN_DEVICE_PROBE: &str = "so.tilo.probe.device";
+
+/// A provider offering `probe-device#publish`, an action of the invoker's own device whose
+/// contract asks its person every time: it records what it was asked, and nothing else.
+fn own_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
+    use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow, TestProvider};
+    Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
+        let row = CatalogueRow::for_action(
+            OWN_DEVICE_PROBE,
+            OWN_DEVICE_PROBE,
+            tilo_actions::ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new("probe-device", "publish"),
+                resource_kind: "probe.device".into(),
+                resource_label: "Probe".into(),
+                action_label: "Publish".into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Effect,
+                contract: tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Outside,
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    tags: vec![tilo_actions::OWN_DEVICE_SCOPE.to_owned()],
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        );
+        let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
+        if query.provider.is_none() {
+            page.providers.push(CatalogueProvider {
+                provider: OWN_DEVICE_PROBE.into(),
+                app_id: OWN_DEVICE_PROBE.into(),
+                workspace: caller.workspace().unwrap_or_default().to_owned(),
+                document_id: String::new(),
+                browsable: true,
+            });
+        }
+        Ok(page)
+    }))
+}
+
+/// The call of the probe's action, as the person's own connection makes it.
+fn own_device_call() -> InvokeRequest {
+    InvokeRequest::plain(
+        RemoteActionTarget {
+            provider: OWN_DEVICE_PROBE.into(),
+            address: tilo_actions::ActionAddress::new("probe-device", "publish"),
+        },
+        serde_json::Map::new(),
+    )
+}
+
+/// What `pending` answers, within the hang bound.
+fn answered<T: Send + 'static>(
+    pending: tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionCallError>>,
+) -> Result<T, tilo_actions::remote::ActionCallError> {
+    pending
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answered")
+}
+
+const OWN_ASK_TEST: &str =
+    "device::services::tests::an_own_device_actions_ask_is_answered_by_the_persons_prompt";
+
+/// An action of the person's own device whose contract asks them every time, called on their own
+/// connection: it waits as its asked record and nothing runs until their prompt approves that
+/// record, and an answer given again runs nothing more. A confirmation the call writes itself is
+/// no answer to it.
+#[test]
+fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
+    use tilo_actions::remote::{
+        ActionProvider as _, Confirmation, ReceiptStatus, asked, workspace_invocations,
+    };
+
+    let Some(root) = isolated_root(OWN_ASK_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let probe = own_device_probe();
+    daemon.provide(OWN_DEVICE_PROBE, Arc::clone(&probe) as _);
+    let (tree, caller) = daemon.connection_tree_in(None).unwrap();
+    assert!(
+        caller.is_own_connection(),
+        "a plain connection is the person's own: {caller:?}"
+    );
+
+    // Their call waits for them: its asked record is written, and nothing of it ran.
+    let first = answered(tree.invoke(&caller, own_device_call())).expect("the call is admitted");
+    assert!(
+        matches!(first.status, ReceiptStatus::Accepted),
+        "the call waits for its person: {first:?}"
+    );
+    assert!(probe.asked().is_empty(), "nothing of it ran yet");
+    let asked_records = daemon
+        .asked
+        .store()
+        .asked_of(&daemon.workspaces.device_cert().user_public_key);
+    let question = asked_records
+        .iter()
+        .find(|asked| asked.action.ends_with("#publish"))
+        .unwrap_or_else(|| panic!("the call's question is kept: {asked_records:?}"))
+        .clone();
+
+    // Their own connection answers it as their CLI prompt does: their yes runs the call, once.
+    let resolve = || {
+        let mut approve = serde_json::Map::new();
+        approve.insert("resolution".into(), serde_json::json!("approve"));
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: workspace_invocations::PROVIDER.into(),
+                address: tilo_actions::ActionAddress::new(
+                    question.record.record.clone(),
+                    asked::RESOLVE,
+                ),
+            },
+            approve,
+        )
+    };
+    answered(tree.invoke(&caller, resolve())).expect("their answer is admitted");
+    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    while probe.asked().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(probe.asked().len(), 1, "their yes runs it, once");
+
+    // The same answer again runs nothing more.
+    let _ = answered(tree.invoke(&caller, resolve()));
+    assert_eq!(probe.asked().len(), 1, "an answer given twice runs nothing");
+
+    // A call that writes its own confirmation is no answer to the question that waits.
+    let mut written = own_device_call();
+    written.confirmation = Some(Confirmation::Confirmed);
+    let waiting = answered(tree.invoke(&caller, written)).expect("the call is admitted");
+    assert!(
+        matches!(waiting.status, ReceiptStatus::Accepted),
+        "a confirmation the call writes itself waits: {waiting:?}"
+    );
+    assert_eq!(
+        probe.asked().len(),
+        1,
+        "nothing ran for it, whatever it wrote"
+    );
+}
+
 const SECRET_RECORD_TEST: &str =
     "device::services::tests::a_secret_answer_is_kept_out_of_every_invocation_record";
 
