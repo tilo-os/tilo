@@ -427,12 +427,55 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     // frame before playing the first, so a late frame is waited for, not a gap.
     grace.speak(&[7, 8, 9]);
     grace.speak(&[7, 8, 9]);
+    let mut handed = Vec::new();
     let said = until(&mut grace, "the workspace's frame reached the app", |_| {
-        app.said_call()
-            .into_iter()
-            .find(|frame| frame.opus == [7, 8, 9])
+        handed.extend(app.said_call());
+        handed.iter().find(|frame| frame.opus == [7, 8, 9]).cloned()
     });
     assert_eq!(said.speaker, hex::encode(GRACE));
+    assert_eq!(
+        said.skipped, 0,
+        "a lone speaker's frame comes as it was said"
+    );
+
+    // What this device says in the call is never handed back to the app: Dana's voice, which
+    // the device speaks there for her while Grace speaks too, reaches Grace and not the app,
+    // which would send her own words back to her service.
+    let before = grace
+        .voices
+        .iter()
+        .filter(|(_, opus)| opus == &[1, 2, 3])
+        .count();
+    until(&mut grace, "Dana heard again", |grace| {
+        app.hear_call(CallAudio {
+            speaker: "7001".into(),
+            opus: vec![1, 2, 3],
+            skipped: 0,
+        })
+        .unwrap();
+        (grace
+            .voices
+            .iter()
+            .filter(|(_, opus)| opus == &[1, 2, 3])
+            .count()
+            > before + 1)
+            .then_some(())
+    });
+    grace.speak(&[5, 5, 5]);
+    grace.speak(&[5, 5, 5]);
+    until(&mut grace, "Grace's next frame reached the app", |_| {
+        handed.extend(app.said_call());
+        handed
+            .iter()
+            .any(|frame| frame.opus == [5, 5, 5])
+            .then_some(())
+    });
+    assert!(
+        handed
+            .iter()
+            .all(|frame| frame.speaker == hex::encode(GRACE) && frame.opus != [1, 2, 3]),
+        "only Grace's frames reach the app, never the device's own: {handed:?}"
+    );
 
     // Dana mutes herself there: the call shows her muted, and nothing she sends is carried.
     app.report_call(dana(true)).expect("the report was taken");
