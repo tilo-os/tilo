@@ -1783,8 +1783,10 @@ mod recovery_words_tests {
 
     fn stored_backend(record: &Path) -> Result<String, Box<dyn std::error::Error>> {
         let value: serde_json::Value = serde_json::from_slice(&fs::read(record)?)?;
-        Ok(value["secret_ref"]["backend"]
-            .as_str()
+        Ok(value
+            .get("secret_ref")
+            .and_then(|reference| reference.get("backend"))
+            .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_owned())
     }
