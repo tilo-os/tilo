@@ -34,7 +34,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo::rerun-if-changed={}", source.join(input).display());
         }
         println!("cargo::rerun-if-changed={}", tool.display());
-        let root = prepared(&tool, &source, "fixtures", &catalogs)?;
+        let root = match prepared(&tool, &source, "fixtures", &catalogs) {
+            Ok(root) => root,
+            // A checkout whose fonts are not here (no seed, no cache, no network) still compiles:
+            // text is set in the installed faces, as in a published catalog-only crate, and a
+            // test that needs the pinned faces says so where it reads them. The page embeds its
+            // cuts, so a `web` build keeps the failure: it cannot compile without them.
+            Err(why) if std::env::var_os("CARGO_FEATURE_WEB").is_none() => {
+                println!("cargo::warning=the pinned font catalog was not prepared: {why:#}");
+                // A seed that appears later runs this script again, which publishes the catalog.
+                println!("cargo::rerun-if-env-changed=TILO_FONT_IMAGE_SEED");
+                println!("cargo::rerun-if-env-changed=TILO_FONT_ASSET_CACHE");
+                source.clone()
+            }
+            Err(why) => return Err(why),
+        };
         if std::env::var_os("CARGO_FEATURE_WEB").is_some() {
             write_web_cuts(&prepared(&tool, &source, "web", &catalogs)?)?;
         }

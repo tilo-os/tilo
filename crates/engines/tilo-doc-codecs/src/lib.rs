@@ -76,6 +76,11 @@ pub mod xlsx;
 #[cfg(test)]
 #[cfg(feature = "all")]
 mod bulk_equivalence;
+// The fixtures `bulk_equivalence` embeds are prepared by build.rs. A build without them compiles
+// every other target; the test build is told what to fetch, and where (build.rs).
+#[cfg(test)]
+#[cfg(feature = "all")]
+include!(concat!(env!("OUT_DIR"), "/fixtures-unavailable.rs"));
 
 #[cfg(test)]
 #[cfg(feature = "all")]

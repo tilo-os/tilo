@@ -25,12 +25,17 @@ fn prepare_fixture_assets(
     let python = std::env::var_os("PYTHON")
         .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
     let directory = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
+    // What the tests that read the fixtures are told where they are not here: `…/*.rs` for a
+    // test that embeds one at compile time (tilo-doc-codecs), `…*.txt` for one that reads it
+    // (tilo-pdf). A build that compiles no test needs neither, so a missing set is no failure.
+    let unavailable = directory.join("fixtures-unavailable.txt");
+    let _ = std::fs::remove_file(&unavailable);
     let mut command = Command::new(python);
     // Isolated, as the CI helpers in `tools/ci` are run: without it Python puts the script's
     // directory on `sys.path` and lists it looking its imports up, so every package including
     // this script would read the whole `tools/` tree and rerun when any file in it changes. The
     // tool imports nothing of its own.
-    command.arg("-I").arg(tool).arg(manifest);
+    command.arg("-I").arg(tool).arg(&manifest);
     // TILO_TEST_ASSET_SEED, inherited from the environment, names read-only caches the
     // tool takes verified assets from before it fetches (tools/test-assets.py).
     // A build script writes only under OUT_DIR: the source tree may be read-only, as it
@@ -48,16 +53,29 @@ fn prepare_fixture_assets(
     }
     let output = command.output()?;
     if !output.status.success() {
-        return Err(format!(
-            "fixture preparation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+        let why = String::from_utf8_lossy(&output.stderr);
+        let why: String = why.trim().chars().take(2000).collect();
+        let said = format!(
+            "the pinned fixtures of {} are not here, and fetching them failed: {why}\n\
+             A build that compiles no test needs none of them; a test build does. Run the \
+             `test-assets` check and build where its output is given, or set TILO_TEST_ASSET_SEED \
+             to that output and TILO_TEST_ASSET_CACHE to a directory the tool can write.",
+            manifest.display()
+        );
+        println!("cargo::warning={}", said.replace('\n', " "));
+        std::fs::write(&unavailable, &said)?;
+        let literal = said.replace('\\', "\\\\").replace('"', "\\\"");
+        std::fs::write(
+            directory.join("fixtures-unavailable.rs"),
+            format!("compile_error!(\"{literal}\");\n"),
+        )?;
+        return Ok(());
     }
     for source in String::from_utf8(output.stdout)?.lines() {
         let source = PathBuf::from(source);
         let name = source.file_name().ok_or("missing fixture filename")?;
         std::fs::copy(&source, directory.join(name))?;
     }
+    std::fs::write(directory.join("fixtures-unavailable.rs"), "")?;
     Ok(())
 }

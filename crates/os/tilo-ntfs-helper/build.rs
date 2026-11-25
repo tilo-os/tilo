@@ -11,7 +11,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg(&out)
         .status()?;
     if !status.success() {
-        return Err("pinned native build failed".into());
+        return Err(
+            "the pinned NTFS source is not here, and this crate compiles it: a build of \
+             tilo-ntfs-helper needs the `ntfs-source` check's output (TILO_NTFS_SOURCE_CACHE), \
+             never a fetch when offline"
+                .into(),
+        );
     }
     let src = out.join("ntfs-3g-d327833ec1d5eb1358b6f2c37139f10a3460944d");
     for source in ["ntfs_reader", "strict_logfile"] {

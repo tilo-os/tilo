@@ -16,7 +16,12 @@ use tilo_pdf::{
 };
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(Path::new(env!("OUT_DIR")).join(name)).expect("fixture")
+    let directory = Path::new(env!("OUT_DIR"));
+    // build.rs leaves this where it could not put the pinned fixtures, saying what to run.
+    if let Ok(why) = std::fs::read_to_string(directory.join("fixtures-unavailable.txt")) {
+        panic!("{why}");
+    }
+    std::fs::read(directory.join(name)).expect("fixture")
 }
 
 /// The portable engine on one of the fixtures.
