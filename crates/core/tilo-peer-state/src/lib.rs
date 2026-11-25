@@ -10,8 +10,6 @@
         reason = "a page's signer answers through a JavaScript promise, so the owner's write future, which awaits it while it holds the page's store, stays on the page's one thread"
     )
 )]
-mod before_own_removal;
-pub use before_own_removal::kept_message;
 pub mod device_answers;
 mod frames;
 pub mod governance;

@@ -292,7 +292,7 @@ pub(crate) fn admit_local_write_answering(
 /// signer answers through a promise, and no link admits in between the draft and the admission.
 pub fn admit_local_write(
     replica: Replica,
-    owner: Option<NativeWorkspaceOwner>,
+    owner: Option<DeviceWorkspaces>,
     device: [u8; 32],
     signer: Arc<dyn DeviceSigner>,
     workspace: &str,

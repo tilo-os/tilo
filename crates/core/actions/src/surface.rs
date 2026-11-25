@@ -486,6 +486,9 @@ pub fn content_verb(id: &str, label: &str) -> VerbSurface {
         writes: Vec::new(),
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
+        origin: None,
     }
 }
 
