@@ -169,14 +169,20 @@ class PackageSetsTests(unittest.TestCase):
     def test_the_families_t_lints_name_the_sets_derived_here(self):
         # A crate that starts building for the page, or a package that starts shipping without
         # the features its tests get, moves the set: the family has to move with it, or the shape
-        # it names goes unlinted.
+        # it names goes unlinted. The page's compile, main's gate beside `check`, names the same
+        # crates the page's lints do.
         families = {family["name"]: family for family in
                     tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))["cargo"]}
         sys.path.insert(0, str(ROOT / "tools/ci"))
         import workspace_graph
         packages = {p["name"]: p for p in workspace_graph.cargo_metadata(ROOT)["packages"]}
-        self.assertEqual(sorted(families["clippy-page"]["packages"]),
-                         sorted(package_sets.wasm_crates(packages) | {package_sets.PAGE_ENTRY}))
+        page = sorted(package_sets.wasm_crates(packages) | {package_sets.PAGE_ENTRY})
+        self.assertEqual(sorted(families["clippy-page"]["packages"]), page)
+        self.assertEqual(sorted(families["check-page"]["packages"]), page)
+        self.assertTrue(families["check-page"]["gate"], "the page's compile gates main")
+        self.assertFalse(families["check-page"].get("default", True), "and is no default check")
+        self.assertTrue(families["check"]["gate"], "the workspace's compile gates main")
+        self.assertFalse(families["check"].get("default", True), "and is no default check")
         self.assertEqual(sorted(families["clippy-shipped"]["packages"]),
                          sorted(package_features.DEFAULT_BUILDS_ALSO_CHECKED))
 
