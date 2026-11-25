@@ -870,12 +870,19 @@ impl EngineConnector {
                     self.ask_moved(&account, &to);
                 }
             }
-            // A copy the account's server kept none of changes nothing
-            // here: the message left, which its completion says.
+            // A copy the account's server kept none of changes nothing this workspace holds:
+            // the message left, which its completion says, and why its Sent folder holds none
+            // of it goes to whoever waits on the send.
+            EngineEvent::Unfiled { request_id, reason } => {
+                eprintln!("DBG engine connector unfiled {request_id}: {reason}");
+                out.push(Event::Unfiled {
+                    request: request_id,
+                    reason,
+                })
+            }
             EngineEvent::Connected { .. }
             | EngineEvent::Folders { .. }
-            | EngineEvent::Sent { .. }
-            | EngineEvent::Unfiled { .. } => {}
+            | EngineEvent::Sent { .. } => {}
         }
     }
 }

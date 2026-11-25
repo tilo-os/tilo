@@ -156,6 +156,12 @@ pub enum Event {
     Arrived {
         account: String,
     },
+    /// The server took a send and kept no copy in its account's Sent folder: why. It comes
+    /// before the [`Self::Accepted`] that says the message went.
+    Unfiled {
+        request: Request,
+        reason: String,
+    },
 }
 
 /// Why a request was not made.

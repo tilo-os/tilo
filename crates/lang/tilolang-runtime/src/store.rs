@@ -1383,6 +1383,8 @@ pub enum OutboxState {
 pub enum Settled {
     /// The service took it.
     Done,
+    /// The service took it, and said something of it the person should read: why.
+    DoneWith(String),
     /// The service refused it, for this reason.
     Rejected(String),
     /// The process handing it over stopped before the service answered: whether it went is
@@ -1397,7 +1399,7 @@ impl Settled {
     #[must_use]
     pub const fn word(&self) -> &'static str {
         match self {
-            Self::Done => "done",
+            Self::Done | Self::DoneWith(_) => "done",
             Self::Rejected(_) => "rejected",
             Self::Unknown => "unknown",
             Self::Withdrawn(_) => "withdrawn",
@@ -1408,7 +1410,7 @@ impl Settled {
     #[must_use]
     pub fn reason(&self) -> &str {
         match self {
-            Self::Rejected(reason) | Self::Withdrawn(reason) => reason,
+            Self::Rejected(reason) | Self::Withdrawn(reason) | Self::DoneWith(reason) => reason,
             Self::Done | Self::Unknown => "",
         }
     }
@@ -1479,7 +1481,9 @@ impl DeliveryState {
         held_until: Option<&str>,
     ) -> Self {
         let (state, reason) = match settled {
-            Some(("done", _)) => ("sent", ""),
+            // What a service said of an effect it took stays beside it: a message that left
+            // with no copy in Sent reads sent, and says so.
+            Some(("done", reason)) => ("sent", reason),
             Some(("unknown", _)) => ("unknown", ""),
             Some(("withdrawn", reason)) => ("withdrawn", reason),
             Some((_, reason)) => ("rejected", reason),

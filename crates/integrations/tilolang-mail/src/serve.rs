@@ -107,6 +107,9 @@ pub struct Connector {
     sends: HashMap<String, Sending>,
     /// The content of each send the engine is working on, by the engine's id.
     send_of: HashMap<Request, String>,
+    /// Why a send's copy could not be kept in its account's Sent folder, by the message's
+    /// content: told with the answer that it went.
+    unfiled: HashMap<String, String>,
     /// The device came online again.
     online: Arc<AtomicBool>,
     /// The content store the files messages carry are kept in ([`EngineConnector::keeping`]).
@@ -147,6 +150,7 @@ impl Connector {
             unreachable: BTreeMap::new(),
             sends: HashMap::new(),
             send_of: HashMap::new(),
+            unfiled: HashMap::new(),
             online,
             content,
         };
@@ -397,9 +401,16 @@ impl Connector {
             }
             // It never reached its server: it goes again.
             Some(Some(Sent::Unsent(_))) | None => {}
-            // Done: the outcome, and it is not kept further.
+            // Done: the outcome, and it is not kept further. What it said of a copy in Sent
+            // that is not there goes before the answer, as it does for the instance that asked.
             Some(Some(outcome)) => {
                 self.sends.remove(&key);
+                if let (Sent::Accepted, Some(reason)) = (&outcome, self.unfiled.remove(&key)) {
+                    self.tell(
+                        session,
+                        &FromConnector::Event(Event::Unfiled { request, reason }),
+                    );
+                }
                 self.tell(session, &FromConnector::Event(outcome.event(request)));
                 return;
             }
@@ -474,6 +485,14 @@ impl Connector {
     /// Say `event` to the instance `session` that asked, or, when nobody attached asked, to
     /// every instance attached, or keep it until one attaches.
     fn answer(&mut self, session: Option<u64>, event: Event) {
+        // A copy the server kept none of is said with the answer that the message went, under
+        // the request whoever waits knows it by: kept here until that answer comes.
+        if let Event::Unfiled { request, reason } = &event
+            && let Some(key) = self.send_of.get(request)
+        {
+            self.unfiled.insert(key.clone(), reason.clone());
+            return;
+        }
         let finished = match &event {
             Event::Accepted(request) => Some((*request, Sent::Accepted)),
             Event::Refused { request, reason } => Some((*request, Sent::Refused(reason.clone()))),
@@ -522,14 +541,21 @@ impl Connector {
     }
 
     /// The send `key` ended with `outcome`: tell whoever waits, and keep it for one who asks
-    /// later when nobody did.
+    /// later when nobody did. A message that went with no copy in Sent says so first.
     fn sent(&mut self, key: &str, outcome: Sent) {
         let Some(mut sending) = self.sends.remove(key) else {
             return;
         };
+        let unfiled = self.unfiled.remove(key);
         let mut told = false;
         for (session, request) in std::mem::take(&mut sending.waiters) {
             if self.sessions.contains_key(&session) {
+                if let (Sent::Accepted, Some(reason)) = (&outcome, unfiled.clone()) {
+                    self.tell(
+                        session,
+                        &FromConnector::Event(Event::Unfiled { request, reason }),
+                    );
+                }
                 self.tell(session, &FromConnector::Event(outcome.event(request)));
                 told = true;
             }
@@ -537,6 +563,9 @@ impl Connector {
         if !told {
             sending.outcome = Some(outcome);
             self.sends.insert(key.to_owned(), sending);
+            if let Some(reason) = unfiled {
+                self.unfiled.insert(key.to_owned(), reason);
+            }
         }
     }
 
@@ -770,6 +799,44 @@ mod tests {
         assert_eq!(
             heard(&mut again),
             FromConnector::Event(Event::Accepted(second))
+        );
+    }
+
+    #[test]
+    fn a_send_whose_copy_was_not_filed_says_so_before_it_is_accepted() {
+        let mut rig = rig();
+        let mut ada = rig.attach();
+        let _accounts = heard(&mut ada);
+        let _ = rig.engine_requests();
+        let message = Outgoing {
+            to: "ada@analytical.example".into(),
+            ..Outgoing::default()
+        };
+        let request = uuid::Uuid::new_v4();
+        ask(&mut ada, &sending(request, &message));
+        rig.turn();
+        let sent = sends(rig.engine_requests());
+        assert_eq!(sent.len(), 1, "handed to the engine");
+        // The message left, and the server kept no copy in Sent: the reason comes before the
+        // answer that says it went, under the request the instance knows it by.
+        rig.answer(EngineEvent::Unfiled {
+            request_id: sent[0].request_id(),
+            reason: "the server would not take the copy".into(),
+        });
+        rig.answer(EngineEvent::Completed {
+            request_id: sent[0].request_id(),
+            kind: EngineRequestKind::Send,
+        });
+        assert_eq!(
+            heard(&mut ada),
+            FromConnector::Event(Event::Unfiled {
+                request,
+                reason: "the server would not take the copy".into(),
+            })
+        );
+        assert_eq!(
+            heard(&mut ada),
+            FromConnector::Event(Event::Accepted(request))
         );
     }
 

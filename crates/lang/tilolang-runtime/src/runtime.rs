@@ -2224,6 +2224,14 @@ impl Runtime {
                             )?;
                             report.delivered = report.delivered.saturating_add(1);
                         }
+                        Delivery::DeliveredWith(reason) => {
+                            store.outbox_settle(
+                                &entry,
+                                &Settled::DoneWith(reason),
+                                &note(&entry, "$settle"),
+                            )?;
+                            report.delivered = report.delivered.saturating_add(1);
+                        }
                         Delivery::Rejected(reason) => {
                             let outcome = Settled::Rejected(reason.clone());
                             store.outbox_settle(&entry, &outcome, &note(&entry, "$settle"))?;

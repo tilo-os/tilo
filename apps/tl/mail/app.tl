@@ -2572,13 +2572,18 @@ view draft_row(d: Draft) {
 }
 
 /// How a message stands: sent, sending, waiting to send or to go online (and why), not sent and
-/// why, taken back, or not known.
+/// why, taken back, or not known. A message that went with no copy in its account's Sent folder
+/// says so, in the server's words.
 fn delivery_says(d: Draft) -> Text {
     if d.recalled {
         std.say("Taken back, and a draft again")
     } else if let s = delivery(d) {
         if s.state == "sent" {
-            std.say("Sent")
+            if s.reason == "" {
+                std.say("Sent")
+            } else {
+                std.say("Sent, but its server kept no copy in Sent: {s.reason}")
+            }
         } else if s.state == "sending" {
             std.say("Sending")
         } else if s.state == "rejected" {
@@ -2598,6 +2603,17 @@ fn delivery_says(d: Draft) -> Text {
 /// Whether a message was sent and can still be taken back: nothing carried it out yet.
 fn can_undo(d: Draft) -> Bool {
     d.sent and not d.recalled and delivery(d)?.state != "sent"
+}
+
+/// Why a message that went has no copy in its account's Sent folder, in the server's words: empty
+/// while it has one, and while it did not go.
+fn unfiled(d: Draft) -> Text {
+    if not d.sent or d.recalled {
+        return ""
+    }
+    if let s = delivery(d) {
+        if s.state == "sent" { s.reason } else { "" }
+    } else { "" }
 }
 
 /// A conversation's window: its subject, then every message in order with who wrote it, to
@@ -3001,6 +3017,16 @@ view editor(d: Draft) {
             field("Status") {
                 text(delivery_says(d))
             }
+        }
+        // It went, and the server kept no copy in Sent: what a person reads here, before they
+        // find its Sent folder missing it.
+        if unfiled(d) != "" {
+            ui.Banner(
+                "Sent, but there is no copy in Sent",
+                message: unfiled(d),
+                kind: .warning,
+                icon: .triangle_alert,
+            )
         }
         if can_undo(d) {
             ui.Banner(

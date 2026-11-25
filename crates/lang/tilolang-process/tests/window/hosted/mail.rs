@@ -135,6 +135,20 @@ fn empty_servers() -> Servers {
     servers_of(ME)
 }
 
+/// Empty servers of a plain server: one that files nothing itself and names no service that
+/// does, so the mail program keeps the copy of what it sends.
+fn plain_servers() -> Servers {
+    let imap = started(Serving {
+        layout: Layout::Plain,
+        ..Serving::local(ME, "app-password")
+    })
+    .expect("the mail servers start");
+    Servers {
+        smtp: imap.clone(),
+        imap,
+    }
+}
+
 /// Empty servers that take `login`'s sign-in.
 fn servers_of(login: &str) -> Servers {
     let imap = started(Serving {
@@ -3472,6 +3486,14 @@ fn search_finds_mail_by_sender_subject_and_date() {
     let after = format!("latest:>{}", came[0]);
     window.set_view_state(&query_state, RtValue::text(after.as_str()));
     window.poll_patches().expect("the window shows the span");
+    // The view builds the list anew for the place it now shows: the list that stands is the
+    // one to read, not the node the place before it left.
+    let list = window
+        .tree()
+        .of_kind("ui.VirtualList")
+        .first()
+        .map(|node| node.key.clone())
+        .expect("the window lists the conversations of the span");
     assert_eq!(
         window.list_len(&list),
         Some(2),
@@ -4255,5 +4277,47 @@ fn an_address_in_the_subject_or_the_body_is_no_recipient() {
             .iter()
             .any(|line| line.contains("eve@elsewhere.test")),
         "an address in the subject or the words is no recipient: {sent}"
+}
+
+// USER REQUIREMENT: a message that went but whose server kept no copy in Sent says so, where it
+// stands and in its status.
+#[test]
+fn a_message_that_went_with_no_copy_in_sent_says_so() {
+    let servers = plain_servers();
+    servers.imap.append("INBOX", &plan(), &[]);
+    servers.imap.refuse_appends();
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the plan to come in", |session| {
+        !session.threads().is_empty()
+    });
+    session.hold_for(0);
+    let draft = session.sent_reply("Launch plan");
+    session.until("the server to take the reply", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let (state, reason) = session.wait_for("the reply to settle", |session| {
+        session
+            .delivery_of(&draft)
+            .filter(|(state, _)| state == "sent")
+    });
+    assert_eq!(state, "sent");
+    assert!(
+        !reason.is_empty(),
+        "it says why its Sent folder holds none: {reason:?}"
+    );
+
+    session.open_showing(&draft);
+    let shown = session.shown();
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "Sent, but there is no copy in Sent"),
+        "the composer warns under the message: {shown:#?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.starts_with("Sent, but its server kept no copy in Sent:")),
+        "and its status says what the server said: {shown:#?}"
     );
 }

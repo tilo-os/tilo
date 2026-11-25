@@ -116,6 +116,8 @@ enum Pending {
 enum Sending {
     Going,
     Gone,
+    /// It went, and its account's server kept no copy in Sent: why.
+    GoneUnfiled(String),
     Refused(String),
     /// The server could not be reached: the message waits to go online.
     Unsent(String),
@@ -211,6 +213,9 @@ pub struct ImapOrigin {
     polling: Rc<std::cell::Cell<bool>>,
     pending: BTreeMap<Request, Pending>,
     sends: HashMap<String, Sending>,
+    /// Why the copy of the send asked as `Request` could not be kept in Sent, until that send
+    /// is answered.
+    unfiled: HashMap<Request, String>,
     /// Why each account's server could not be reached, until it can.
     trouble: HashMap<String, String>,
     /// Of what kind each account's trouble is (`signed-out`, `no-password`, `withheld`,
@@ -246,6 +251,7 @@ impl ImapOrigin {
             subscribed: false,
             pending: BTreeMap::new(),
             sends: HashMap::new(),
+            unfiled: HashMap::new(),
             trouble: HashMap::new(),
             trouble_kind: HashMap::new(),
             unsaved: HashMap::new(),
@@ -373,9 +379,18 @@ impl ImapOrigin {
                     self.trouble_kind.insert(account.clone(), kind);
                     self.trouble.insert(account, reason);
                 }
+                Event::Unfiled { request, reason } => {
+                    self.unfiled.insert(request, reason);
+                }
                 Event::Accepted(request) => match self.pending.remove(&request) {
                     Some(Pending::Send(payload)) => {
-                        self.sends.insert(payload, Sending::Gone);
+                        // What a copy the server kept none of said goes with it, so the message
+                        // reads sent and says why its Sent folder holds none.
+                        let sending = match self.unfiled.remove(&request) {
+                            Some(reason) => Sending::GoneUnfiled(reason),
+                            None => Sending::Gone,
+                        };
+                        self.sends.insert(payload, sending);
                         polled.settle = true;
                     }
                     Some(Pending::Purge { account, key }) => {
@@ -2014,6 +2029,11 @@ impl Origin for ImapOrigin {
             Some(Sending::Gone) => {
                 self.sends.remove(&key);
                 return Delivery::Delivered;
+            }
+            Some(Sending::GoneUnfiled(reason)) => {
+                let reason = reason.clone();
+                self.sends.remove(&key);
+                return Delivery::DeliveredWith(reason);
             }
             Some(Sending::Refused(reason)) => {
                 let reason = reason.clone();

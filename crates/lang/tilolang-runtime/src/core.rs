@@ -102,6 +102,9 @@ pub trait ModelHost {
 pub enum Delivery {
     /// The service took it: it is done.
     Delivered,
+    /// The service took it, and said something of it beside that: it is done, and its record
+    /// keeps what the service said, so a person reads it where the effect stood.
+    DeliveredWith(String),
     /// The service refused it, for this reason. It is never tried again.
     Rejected(String),
     /// Handed over; the service has not answered yet. Asked again on the next settle.

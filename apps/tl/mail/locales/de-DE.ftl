@@ -533,6 +533,7 @@ d-dqdt6fce = Titel des Platzes
 d-k2js7gyd = Zustellung sagt
     .w-taken-back-and-a-draft-again = Zurückgeholt und wieder ein Entwurf
     .w-sent = Gesendet
+    .w-sent-but-its-server-kept-no = Gesendet, aber ihr Server hat keine Kopie in „Gesendet“ behalten: { $reason }
     .w-sending = Wird gesendet
     .w-not-sent = Nicht gesendet: { $reason }
     .w-not-known-whether-it-was-sent = Nicht bekannt, ob sie gesendet wurde
@@ -709,6 +710,7 @@ d-nxayphhi = Nachrichtendatei
 
 d-oqpazwvc = Schreiben
     .w-status = Status
+    .w-sent-but-there-is-no-copy = Gesendet, aber es gibt keine Kopie in „Gesendet“
     .w-sending = Wird gesendet
     .w-it-goes-in-a-moment = Sie geht gleich raus.
     .w-undo-send = Senden rückgängig
