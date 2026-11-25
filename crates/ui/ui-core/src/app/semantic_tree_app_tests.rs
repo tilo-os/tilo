@@ -924,10 +924,41 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         app.action_registry_mut()
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
+        // A press that asks waits on the device's ask: the workspace's peer plays that device.
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
         activate_bound_button(&mut app);
-        assert_eq!(app.dispatch_control_invocations(), 1);
-        assert_eq!(counter(&app), 0);
+        assert_eq!(
+            app.dispatch_control_invocations(),
+            1,
+            "the press went to the device as its ask"
+        );
+        assert_eq!(counter(&app), 0, "nothing ran before the person answers");
         assert!(app.state.peek_last_undo().is_none());
+        assert!(
+            app.action_palette().is_none(),
+            "the ask is the device's, never a palette sheet"
+        );
+        let asked = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    ..
+                } => Some(request.clone()),
+                _ => None,
+            })
+            .expect("the ask is a call the device may send again");
+        assert_eq!(
+            asked.target.address,
+            tilo_actions::ActionAddress::new("test.counter", "bump")
+        );
+        assert!(
+            asked.confirmation.is_none(),
+            "an ask is sent without the person's approve"
+        );
     }
 
     {
@@ -936,25 +967,36 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         probe.typed_text = true;
         observed.enqueue_text("run", "captured before confirmation");
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+        // The device's ask carries the intent the control captured, arguments and all.
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        host.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
 
         assert_eq!(host.dispatch_control_invocations(), 1);
         assert!(
-            host.action_palette()
-                .is_some_and(crate::action_palette::ActionPalette::in_argument_mode),
-            "captured arguments enter confirmation directly"
+            host.action_palette().is_none(),
+            "captured arguments enter the device's ask, never a palette sheet"
         );
         assert!(observed.payloads.borrow().is_empty());
-
-        host.actions
-            .action_palette
-            .as_deref_mut()
-            .expect("confirmation palette is open")
-            .set_query("CONFIRM");
-        assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
+        let asked = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    ..
+                } => Some(request.clone()),
+                _ => None,
+            })
+            .expect("the press asked the device");
+        assert_eq!(asked.target.address.action, "run");
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = &asked.argument else {
+            panic!("the captured arguments travel as typed arguments");
+        };
         assert_eq!(
-            observed.payloads.borrow().as_slice(),
-            ["captured before confirmation"],
-            "confirmation dispatches the original intent arguments"
+            arguments.get("text").and_then(|text| text.as_str()),
+            Some("captured before confirmation"),
+            "the ask carries the original intent arguments"
         );
     }
 }
@@ -1413,14 +1455,35 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
         probe.confirmation = true;
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+        // A press that asks waits on the device's ask, whose workspace peer this plays.
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        host.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
         observed.enqueue("run");
-        host.dispatch_control_invocations();
+        assert_eq!(host.dispatch_control_invocations(), 1);
         assert_eq!(observed.calls.get(), 0);
         assert_eq!(
             *observed.results.borrow(),
-            vec![Err(tilo_actions::ApiError::ConfirmationRequired)]
+            vec![Err(tilo_actions::ApiError::ConfirmationRequired)],
+            "the control hears that the workspace waits for the person's yes"
         );
-        assert!(host.action_palette().is_some());
+        assert!(
+            host.action_palette().is_none(),
+            "the ask is the device's, not a palette sheet"
+        );
+        let asked = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    ..
+                } => Some(request.clone()),
+                _ => None,
+            })
+            .expect("the press asked the device");
+        assert_eq!(asked.target.address.action, "run");
+        assert!(asked.confirmation.is_none());
     }
 
     {
@@ -1459,24 +1522,41 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let (probe, observed) = Probe::new(false);
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
         observed.enqueue("run");
+        // The workspace's peer plays the device a refused press is handed to.
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        host.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
         let readonly = crate::permissions::PermissionContext::member(
             &crate::permissions::MemberId::person("reader"),
             collab_types::role::Role::Viewer,
         );
         host.set_permission_ctx(readonly);
         let before = host.state.doc.base_heads();
-        host.dispatch_control_invocations();
+        assert_eq!(host.dispatch_control_invocations(), 1);
         assert_eq!(observed.calls.get(), 0, "permission checked before handler");
         assert_eq!(host.state.doc.base_heads(), before);
         assert_eq!(
             automerge::transaction::Transactable::pending_ops(&host.state.doc),
             0
         );
-        assert!(matches!(
-            observed.results.borrow().as_slice(),
-            [Err(tilo_actions::ApiError::Unknown(_))]
-        ));
+        assert_eq!(
+            *observed.results.borrow(),
+            vec![Ok(crate::widget::ResourceOperationStart::Accepted)],
+            "the control hears its press went to the workspace to be decided"
+        );
         assert!(observed.pending.borrow().is_empty());
+        let asked = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    ..
+                } => Some(request.clone()),
+                _ => None,
+            })
+            .expect("the press went to the workspace");
+        assert_eq!(asked.target.address.action, "run");
     }
 
     {

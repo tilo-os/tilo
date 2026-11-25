@@ -375,13 +375,20 @@ impl crate::app::App {
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
         if !self.locally_offered(&intent) {
             // The person pressed what the window shows them but their grants keep from them: the
-            // workspace decides it, and its refusal is said over the window when it answers.
+            // workspace decides it, and its refusal is said over the window when it answers. The
+            // control is told what became of the press, as one the window offers is.
             if says_refusal && acting.is_none() && self.declares(&intent) {
-                return self.press_through_device(
+                let arguments = ControlContinuationArguments::Json(intent.arguments);
+                let started = self.ask_through_device(
                     &LocalResourceTarget::Outer,
                     &intent.address,
-                    ControlContinuationArguments::Json(intent.arguments),
+                    &arguments,
                 );
+                if let Err(error) = &started {
+                    self.refuse_visibly(error);
+                }
+                self.outer_control_settled(&intent.address, on_behalf_of, &started);
+                return started.is_ok();
             }
             let error = ApiError::Unknown(intent.address.clone());
             tracing::warn!(
