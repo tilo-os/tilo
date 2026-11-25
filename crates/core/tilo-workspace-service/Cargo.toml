@@ -104,7 +104,7 @@ tilo-agent-session = { path = "../agent-session", optional = true }
 # their vault keeps: the wires, the stream reading and the price table are its.
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true, features = ["model"] }
 # Shortcuts and the events they fire on: what a saved shortcut holds, as its triggers and steps.
 tilo-automation = { path = "../automation" }
 # The one recurrence expander: the days a repeat falls on, as the Calendar app's views read them.
@@ -263,7 +263,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
 # certificate, which no authority signed.
 tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }

@@ -6,11 +6,12 @@ inspectors), layout for any window size, text shaping and editing, theming, acce
 AccessKit, and animation through the shared motion primitives. It draws with the vello renderer on
 wgpu, and on the CPU where there is no GPU.
 
-Depend on `tilo-app` to build an app. It re-exports this toolkit unchanged and adds the model an
-app is made of: resources kept in a synced document, typed actions that change them, and views
+Depend on `tilo-app` to build an app. It re-exports this toolkit and turns on the model an app is
+made of: resources kept in a synced document, typed actions that change them, and views
 bound to both, with history and undo, the command palette, permissions and search. Depend on
 `tilo-ui` itself for a program that only draws, such as a custom surface or a tool whose state
-does not need to be a shared resource. [Build an app](../app-development.md) covers `tilo-app`;
+does not need to be a shared resource: it compiles none of Tilo's records, sync, settings store or
+identity. [Build an app](../app-development.md) covers `tilo-app`;
 this page builds a window on the toolkit alone.
 
 ## A window with the shared components
@@ -25,7 +26,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tilo-ui = "0.4"
+tilo-ui = "0.5"
 ```
 
 The default `native` feature brings the winit event loop that opens the window, the AccessKit
@@ -202,7 +203,7 @@ process services. That is the build for `wasm32-unknown-unknown`:
 
 ```toml
 [dependencies]
-tilo-ui = { version = "0.4", default-features = false }
+tilo-ui = { version = "0.5", default-features = false }
 ```
 
 A browser host drives the widget tree itself. `Driver` lays it out and dispatches the events

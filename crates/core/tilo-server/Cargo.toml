@@ -290,7 +290,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # Text a test lays out uses the pinned catalog, never the fonts the machine
 # running it has installed.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }

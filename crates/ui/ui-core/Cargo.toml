@@ -9,7 +9,7 @@ autotests = false
 autoexamples = false
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
+description = "The Tilo UI toolkit: retained-mode widgets, layout, text, theming and accessibility, drawn with vello."
 
 [package.metadata.cargo-machete]
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
@@ -20,7 +20,7 @@ description = "The Tilo UI toolkit: retained-mode, CRDT-native widgets."
 ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 
 [features]
-default = ["native", "broker-transport", "model"]
+default = ["native", "broker-transport"]
 # Tilo's model: its records and actions over them (tilo-resource), the synced
 # documents and their collaboration client (tilo-collaboration,
 # tilo-runtime-collab, tilo-collab-types, tilo-automerge), the workspace's

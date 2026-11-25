@@ -72,6 +72,8 @@ PROOFS = {
     "embedding": Proof(guide="docs/tilolang/embedding.md", crates=("tilolang", "tilolang-runtime")),
     # Lay out a window's shared components and press its button in the toolkit's headless host.
     "tilo-ui": Proof(guide="docs/tilolang/tilo-ui.md", crates=("tilo-ui",), args=("--headless",)),
+    # The window the toolkit's README shows, as crates.io shows it.
+    "tilo-ui-readme": Proof(guide="crates/ui/ui-core/README.md", crates=("tilo-ui",), args=("--headless",)),
 }
 
 # The `tilolang` command, installed from its package: what it is installed from, and the

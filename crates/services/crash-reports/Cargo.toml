@@ -32,7 +32,7 @@ blake3.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 [dev-dependencies]
 # The canonical compiled form of the surface this crate publishes.

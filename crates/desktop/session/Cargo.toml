@@ -223,7 +223,7 @@ hex-engine = { path = "../../engines/hex-engine" }
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 # The live session over this session's own iroh endpoint: native only.
 tilo-live = { path = "../../core/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync", "macros", "time"] }
@@ -587,7 +587,7 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"]
 # The styles the shell's switch lists when no daemon serves a session: the language reads the
 # store's packages, and the shell names its own styles as a daemon would offer them.
 tilolang-workspace = { path = "../../lang/tilolang-workspace" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }

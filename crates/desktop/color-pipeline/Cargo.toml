@@ -23,7 +23,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 os-actions = { path = "../../os/os-actions" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 [lints]
 workspace = true

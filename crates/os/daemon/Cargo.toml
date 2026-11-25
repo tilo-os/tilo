@@ -104,7 +104,7 @@ tilo-device-identity = { path = "../../core/tilo-device-identity" }
 # Where a profile's daemon listens, derived as every client derives it: the process tests reach
 # a profile's daemon over the socket it names.
 tilo-api = { path = "../../core/tilo-api" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 # The development build the process tests install: its manifest, and the action they hand it to
 # the device with.
 tilo-app-package = { path = "../../core/tilo-app-package" }
