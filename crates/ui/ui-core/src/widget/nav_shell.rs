@@ -769,6 +769,10 @@ pub struct NavShell {
     /// The frame after a motion ended rebuilds the structure (a part the
     /// last pose hides goes): the host owes the shell that frame too.
     settling: bool,
+    /// A slide, push or switch of the columns moved in the motion now running, so the part its
+    /// last pose hides goes when it ends. The content's own cross-fade moves no part and leaves
+    /// the structure standing.
+    slid: bool,
     built: bool,
     /// The window's bar presents search for the window, so the headers carry no button of their own
     /// that opens the app's search.
@@ -912,6 +916,7 @@ impl NavShell {
             content_fade: crate::motion::Presence::opened(),
             animating: false,
             settling: false,
+            slid: false,
             built: false,
             window_search: false,
             retired_actions: Vec::new(),
@@ -2007,6 +2012,7 @@ impl NavShell {
         self.switch_columns = [false; 4];
         self.animating = false;
         self.settling = false;
+        self.slid = false;
         self.structure_dirty = true;
         self.invalidate();
     }
@@ -2333,6 +2339,7 @@ impl NavShell {
             self.paint_dirty = true;
             moving = true;
         }
+        let slid = moving || advanced;
         if self.content_fade.is_moving(now) {
             self.paint_dirty = true;
             moving = true;
@@ -2341,8 +2348,11 @@ impl NavShell {
         if moving || advanced {
             self.invalidate();
             self.animating = true;
+            self.slid |= slid;
         } else if self.animating {
-            self.structure_dirty = true;
+            if std::mem::take(&mut self.slid) {
+                self.structure_dirty = true;
+            }
             self.invalidate();
             self.animating = false;
             self.settling = true;

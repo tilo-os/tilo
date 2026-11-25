@@ -1234,6 +1234,17 @@ fn inbox_task(session: &Session, today: &[String]) -> Option<(String, String)> {
     })
 }
 
+/// The task whose page the content column shows, as the resource its title field edits: the
+/// column's page is reconciled in place, so its field keeps its key from one task to the next.
+fn opened_task(session: &mut Session) -> Option<String> {
+    let view = session.hosted().view()?;
+    let field = find(view.composed()?, &|node| {
+        node.kind == "ui.TextInput" && node.binding.as_ref().is_some_and(|b| b.field().is_some())
+    })?;
+    let (task, _) = field.binding.as_ref()?.field()?;
+    Some(format!("{task:?}"))
+}
+
 /// The row held open into its item where it stands: the page a person reads there, and the
 /// field they type the item's title into. `None` while no row stands open.
 fn opened_title_field(session: &mut Session) -> Option<String> {
@@ -1633,10 +1644,10 @@ fn a_window_at_rest_asks_its_host_for_no_frame() {
     assert_eq!(schedule.next_wake_deadline, None);
 }
 
-/// Opening a row's page mounts the task's document where the row stands: the frame that shows it
-/// adds the document's widgets to the retained layout tree and measures those, and no frame
-/// composes the window's whole layout tree again for it. Rows open all day, and the window's
-/// composition is the work none of them may cost — the row's document is a slot mount.
+/// Opening the first row's page brings the content column in beside the list: the window composes
+/// its layout once for the column, in the one frame that places every widget, and no frame after
+/// it composes again. A page opened while the column stands costs no composition at all
+/// ([`choosing_another_task_keeps_the_windows_composition`]).
 fn opening_a_rows_page_mounts_the_document_where_the_row_stands(
     seeded: &Rc<tilolang_process::testing::Bus>,
 ) {
@@ -1658,13 +1669,12 @@ fn opening_a_rows_page_mounts_the_document_where_the_row_stands(
         !page.is_empty(),
         "the page of {title} stands where the row did"
     );
-    // The frame that showed it mounted the document and measured it; the window's own
-    // composition stood, as it does for a row coming into view.
+    // The column the page stands in came in once; nothing composed the window again after it.
     assert_eq!(
-        after.rebuilt,
-        before.rebuilt,
+        after.rebuilt - before.rebuilt,
+        1,
         "opening the page of {title} composed the window's layout tree {} time(s) in the {} \
-         rounds that showed it: the document mounts where its row stands",
+         rounds that showed it: the content column comes in once",
         after.rebuilt - before.rebuilt,
         rest.rounds
     );
@@ -1795,16 +1805,15 @@ fn choosing_another_task_keeps_the_windows_composition(
     let (x, y) = shown_at(&mut session, &titles[0]);
     session.window.click_at(x, y);
     session.settle();
-    let first = opened_title_field(&mut session)
+    let first = opened_task(&mut session)
         .unwrap_or_else(|| panic!("the row a person opened shows the page of {}", titles[0]));
-    assert!(!first.is_empty(), "the page of {} stands", titles[0]);
     let before = Lay::of(&mut session);
     let drawn = session.window.harness().drawn_commands();
     let (x, y) = shown_at(&mut session, &titles[1]);
     session.window.click_at(x, y);
     let rest = at_rest(&mut session, drawn);
     let after = Lay::of(&mut session);
-    let second = opened_title_field(&mut session)
+    let second = opened_task(&mut session)
         .unwrap_or_else(|| panic!("the row a person chose shows the page of {}", titles[1]));
     assert_ne!(
         second, first,

@@ -77,6 +77,9 @@ impl Described for Section {
         if title != self.header {
             self.header.clone_from(&title);
             match &title {
+                // A title that changes is said by the heading that stands: another note's name
+                // over the same group is new words, not a new header.
+                Some(title) if self.retitle_header(title) => {}
                 Some(title) => {
                     self.set_header_row(super::SectionHeader::heading(title.as_str()).into_widget(
                         self.expanded.as_ref().map(|state| super::Disclosure {
@@ -88,12 +91,14 @@ impl Described for Section {
                             cursor: Point::ZERO,
                             toggled: false,
                         }),
-                    ))
+                    ));
+                    self.described();
                 }
                 None => {
                     if self.has_header {
                         self.parts.children.remove(0);
                         self.has_header = false;
+                        self.described();
                     }
                 }
             }
@@ -102,6 +107,10 @@ impl Described for Section {
         if collapsible {
             if self.expanded.is_none() {
                 self.make_collapsible(expanded.unwrap_or(true), on_toggle);
+                // The header that stood gained its chevron.
+                if self.has_header {
+                    self.described();
+                }
             } else {
                 if let Some(disclosure) = self.header_disclosure() {
                     disclosure.on_toggle = on_toggle;
@@ -117,6 +126,7 @@ impl Described for Section {
                 if row.has_chevron {
                     row.parts.children.pop();
                     row.has_chevron = false;
+                    self.described();
                 }
             }
         }
@@ -135,6 +145,33 @@ fn reports(toggle: Event) -> Option<Box<dyn FnMut(bool)>> {
 impl Section {
     fn header_disclosure(&mut self) -> Option<&mut super::Disclosure> {
         self.header_row()?.disclosure.as_mut()
+    }
+
+    /// Say `title` in the plain heading that stands, as a heading built for it would: whether
+    /// there was such a heading.
+    fn retitle_header(&mut self, title: &str) -> bool {
+        let Some(row) = self.header_row().filter(|row| {
+            row.level == super::Level::Section
+                && !(row.has_leading || row.has_trailing || row.has_action)
+                && row.parts.children.len() == 1 + usize::from(row.has_chevron)
+        }) else {
+            return false;
+        };
+        let Some(text) = row
+            .parts
+            .children
+            .first_mut()
+            .and_then(|child| child.as_any_mut())
+            .and_then(|any| any.downcast_mut::<crate::widget::Text>())
+        else {
+            return false;
+        };
+        text.show_content(title.to_owned());
+        title.clone_into(&mut row.title);
+        if let Some(disclosure) = row.disclosure.as_mut() {
+            disclosure.id = format!("disclosure:{title}");
+        }
+        true
     }
 
     fn header_row(&mut self) -> Option<&mut super::HeaderRow> {
