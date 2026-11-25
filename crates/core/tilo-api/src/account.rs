@@ -958,6 +958,7 @@ impl Account {
             Invoked {
                 answer: answer_for(&grant, op, args),
                 attended: false,
+                outside: false,
                 resource: None,
             },
             Asker {
