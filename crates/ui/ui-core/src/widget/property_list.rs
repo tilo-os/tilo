@@ -175,6 +175,46 @@ fn natural_label_column(text: &mut TextRenderer, m: &ListMetrics, rows: &[Proper
         .ceil()
 }
 
+/// The inner width `groups` take with nothing narrowing them: the label column, each value on
+/// one line beside it (prose at most a readable measure, and never so narrow the labels would
+/// stand over their values), and the trailing actions. A list asked how wide it would like to be
+/// answers this, so a card it stands in is as wide as what it says.
+fn natural_width(
+    text: &mut TextRenderer,
+    m: &ListMetrics,
+    groups: &[(Option<&str>, &[PropertyRow<'_>])],
+    label_column: Option<f64>,
+) -> f64 {
+    let all: Vec<PropertyRow<'_>> = groups
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().copied())
+        .collect();
+    let label_col = label_column.unwrap_or_else(|| natural_label_column(text, m, &all));
+    let most_actions = all.iter().map(PropertyRow::action_count).max().unwrap_or(0) as f64;
+    let action_col = if most_actions > 0.0 {
+        most_actions * m.action + (most_actions - 1.0) * m.action_gap + m.column_gap / 2.0
+    } else {
+        0.0
+    };
+    let line = m.line(text);
+    let readable = f64::from(READABLE_LINES) * line;
+    let widest_value = all
+        .iter()
+        .map(|row| {
+            let w = f64::from(text.measure_style(row.value, None, &m.value_style(row)).0);
+            if row.unbreakable() { w } else { w.min(readable) }
+        })
+        .fold(f64::from(MIN_VALUE_LINES) * line, f64::max);
+    let titles = groups
+        .iter()
+        .filter_map(|(title, _)| *title)
+        .map(|title| f64::from(text.measure_style(title, None, &m.group).0))
+        .fold(0.0, f64::max);
+    (label_col + m.column_gap + widest_value + action_col)
+        .max(titles)
+        .ceil()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct RowLayout {
     rect: Rect,
@@ -912,6 +952,22 @@ impl PropertyList {
         });
         lay_out(text, m, &borrowed, origin, width, shared)
     }
+
+    /// The inner width this list would like, with nothing narrowing it ([`natural_width`]).
+    fn natural_width_at(&self, text: &mut TextRenderer, m: &ListMetrics) -> f64 {
+        let groups = self.groups();
+        let borrowed: Vec<(Option<&str>, &[PropertyRow<'_>])> = groups
+            .iter()
+            .map(|(title, rows)| (*title, rows.as_slice()))
+            .collect();
+        let shared = self.column.as_ref().map(|column| {
+            let all: Vec<PropertyRow<'_>> =
+                groups.iter().flat_map(|(_, r)| r.iter().copied()).collect();
+            column.offer(natural_label_column(text, m, &all));
+            column.get()
+        });
+        natural_width(text, m, &borrowed, shared)
+    }
 }
 
 impl Widget for PropertyList {
@@ -950,9 +1006,7 @@ impl Widget for PropertyList {
         };
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
-            _ => crate::num::f32_of_f64(
-                metrics.line(text_renderer) * f64::from(MIN_VALUE_LINES) * 3.0,
-            ),
+            _ => crate::num::f32_of_f64(self.natural_width_at(text_renderer, &metrics)),
         });
         let outer = f64::from(width) + 2.0 * metrics.pad_x;
         let layout = self.lay_out_at(text_renderer, &metrics, Point::ZERO, outer);

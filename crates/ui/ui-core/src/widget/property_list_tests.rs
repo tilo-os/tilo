@@ -553,3 +553,43 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     assert!(!list.run_action(0, 1));
     assert!(list.take_control_invocation().is_none());
 }
+
+/// A list asked how wide it would like to be is as wide as its labels and values on one line,
+/// not a fixed measure: a card it stands in is as wide as what it says, and laid out at that
+/// width every value still stands beside its label on one line.
+#[test]
+fn a_list_with_room_to_spare_is_as_wide_as_what_it_says() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let m = regular(&theme);
+    let short = [
+        PropertyRow::new("With", "Mia Clayton"),
+        PropertyRow::new("Access", "Can edit"),
+    ];
+    let natural = natural_width(&mut text, &m, &[(None, &short)], None);
+    let line = m.line(&mut text);
+    assert!(
+        natural < line * f64::from(MIN_VALUE_LINES) * 3.0,
+        "two short rows ask for less than a wide panel: {natural}"
+    );
+    let laid = layout(&mut text, &theme, &short, natural + 2.0 * m.pad_x);
+    assert!(!laid.stacked, "each label stands beside its value");
+    for (row, given) in laid.rows.iter().zip(&short) {
+        let one_line = f64::from(text.measure_style(given.value, None, &m.value_style(given)).1);
+        assert!(
+            row.rect.height() <= (one_line + 2.0 * m.pad_y).max(m.min_row).ceil() + 0.5,
+            "{} stands on one line",
+            given.value
+        );
+    }
+
+    // Prose longer than a readable measure wraps there, however much room there is.
+    let long = rows();
+    let wide = natural_width(&mut text, &m, &[(None, &long)], None);
+    let readable = f64::from(READABLE_LINES) * line;
+    assert!(
+        wide <= natural_label_column(&mut text, &m, &long) + m.column_gap + readable
+            + m.action + m.column_gap / 2.0 + 1.0,
+        "a long address wraps at a readable measure: {wide}"
+    );
+}
