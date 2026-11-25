@@ -4438,25 +4438,70 @@ impl RuntimeActionProvider {
         Some(answered)
     }
 
+    /// The workspace's own tree (`workspace/apps`, `workspace/vault`, `workspace/members`) as
+    /// this device answers it for `caller`, its person: the provider this device registered for
+    /// the workspaces it keeps, asked as this device, whose certificate names them. That is the
+    /// caller a member's other device is there, and what the tree offers is decided by their
+    /// grants. `None` for anyone else, an agent included, or where this device keeps no
+    /// workspace.
+    fn workspace_tree(
+        &self,
+        caller: &Caller,
+    ) -> Option<(
+        tilo_workspace_service::workspaces::providers::Registered,
+        Caller,
+    )> {
+        if !self.is_the_person(caller) {
+            return None;
+        }
+        let tree = self
+            .workspaces
+            .copies()
+            .providers()
+            .get(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)?;
+        let cert = self.workspaces.device_cert();
+        let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&self.workspace);
+        Some((tree, device))
+    }
+
     /// `answer`, with the daemon's own `tilo.device` provider listed beside the workspace's apps,
-    /// and its page answered whole when the query names it.
+    /// and its page answered whole when the query names it. The workspace's own tree is listed
+    /// beside them where `caller` reaches it ([`Self::workspace_tree`]).
     fn with_devices(
         &self,
+        caller: &Caller,
         answer: Pending<Result<CataloguePage, ActionCallError>>,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let query = query.clone();
         let workspace = self.workspace.clone();
+        let tree = self.workspace_tree(caller).is_some();
         answer.map(move |answer| {
             answer.map(|page| {
                 let mut page = super::ticket::with_device_actions(page, &query, &workspace);
                 // The workspace's invocations are published beside its apps, as one more thing
-                // a walk of the workspace finds.
+                // a walk of the workspace finds, and so is the workspace's own tree.
                 if query.provider.is_none() {
                     page.providers
                         .push(tilo_actions::remote::workspace_invocations::publisher(
                             &workspace,
                         ));
+                    let provider = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
+                    if tree
+                        && !page.providers.iter().any(|listed| {
+                            listed.provider == provider && listed.workspace == workspace
+                        })
+                    {
+                        page.providers
+                            .push(tilo_actions::remote::CatalogueProvider {
+                                provider: provider.to_owned(),
+                                app_id: provider.to_owned(),
+                                workspace: workspace.clone(),
+                                document_id: String::new(),
+                                browsable: true,
+                            });
+                    }
                 }
                 page
             })
@@ -4809,6 +4854,11 @@ impl ActionProvider for RuntimeActionProvider {
                 &query,
             ));
         }
+        if query.provider.as_deref() == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+            && let Some((tree, device)) = self.workspace_tree(caller)
+        {
+            return tree.answers.query(&device, query);
+        }
         if let Some(session) = &self.session {
             // Owner discovery remains the ordinary read path: no per-query
             // identity-store resolution. Opening a result uses retained ownership.
@@ -4820,7 +4870,7 @@ impl ActionProvider for RuntimeActionProvider {
                     .broker
                     .state()
                     .action_query(&on_this_device(caller), &query);
-                return self.with_devices(answer, &query);
+                return self.with_devices(caller, answer, &query);
             }
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
@@ -4831,13 +4881,13 @@ impl ActionProvider for RuntimeActionProvider {
                 .is_some_and(|provider| certified_provider(provider))
             {
                 let answer = session.provider.query(caller, query.clone());
-                return self.with_devices(answer, &query);
+                return self.with_devices(caller, answer, &query);
             }
             // Existing general catalogue/builtin APIs retain the exact
             // authenticated run. They make no SDK original-ownership claim.
             let answer = self.broker.state().action_query(session.acting(), &query);
             let answer = session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
-            return self.with_devices(answer, &query);
+            return self.with_devices(caller, answer, &query);
         }
         if !self.admitted(caller) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
@@ -4846,7 +4896,7 @@ impl ActionProvider for RuntimeActionProvider {
             .broker
             .state()
             .action_query(&on_this_device(caller), &query);
-        self.with_devices(answer, &query)
+        self.with_devices(caller, answer, &query)
     }
 
     fn invoke(
@@ -4947,6 +4997,21 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(session) = &self.session {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
+            }
+            // The person's own act on the workspace's tree (adding to its vault, installing an
+            // app), answered as this device ([`Self::workspace_tree`]) and recorded as theirs, so
+            // following it reaches what took it.
+            if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+                && let Some((tree, device)) = self.workspace_tree(caller)
+            {
+                self.invocations.record(
+                    caller,
+                    &device,
+                    &request,
+                    Some(&self.workspace),
+                    (Arc::clone(&tree.answers), device.clone()),
+                );
+                return tree.answers.invoke(&device, request);
             }
             // A person's answer to a question that waits for them, as the run admitted them: an
             // agent answers nobody's, its own least. Only the system confirms for them: their own
