@@ -694,7 +694,22 @@ fn the_mark_box(app: &mut impl Driven) -> [f64; 4] {
             })
         })
         .map(|node| node.rect)
-        .expect("the opened task's page offers to complete it")
+        .unwrap_or_else(|| {
+            let offered: Vec<_> = snapshot
+                .root
+                .nodes()
+                .into_iter()
+                .filter_map(|node| node.semantics.as_ref())
+                .filter(|access| {
+                    matches!(
+                        access.role,
+                        ui::a11y::Role::ToggleButton | ui::a11y::Role::Button
+                    )
+                })
+                .map(|access| (access.role, access.name.clone()))
+                .collect();
+            panic!("the opened task's page offers to complete it: {offered:?}")
+        })
 }
 
 /// What a still window costs a frame: what its frames do in work, not how long a machine busy

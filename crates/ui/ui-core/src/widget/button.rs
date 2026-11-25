@@ -2447,6 +2447,11 @@ impl Widget for Button {
         let on = self.is_toggled();
         let now = crate::time::now();
         if self.toggled.is_some() {
+            // A toggle swapped in for the one an answer rebuilt may paint before it is laid out:
+            // it goes on from the turn the one it replaces left all the same.
+            if let Some((kept, found)) = self.hand_on.build(Some(&self.id)) {
+                self.take_up(kept, found);
+            }
             self.turn.follow(on, theme.motion(), now);
         }
         let turning = self
@@ -2913,8 +2918,18 @@ impl crate::widget::controls::ActionControls for Button {
 impl Button {
     fn activate(&mut self) {
         if let Some(action) = &mut self.action {
-            if let Err(error) = action.emit(()) {
-                tracing::warn!(%error, button = %self.id, "action-bound control refused its arguments");
+            let pressed = action.is_available();
+            match action.emit(()) {
+                // A toggle turns as it is pressed, as a box's check does: the app's answer, which
+                // names the same state, finds it turned already.
+                Ok(()) => {
+                    if pressed && let Some(on) = self.toggled {
+                        self.set_toggled(!on);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, button = %self.id, "action-bound control refused its arguments");
+                }
             }
             return;
         }
