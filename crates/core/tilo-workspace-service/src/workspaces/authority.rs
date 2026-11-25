@@ -417,52 +417,12 @@ fn decide_by_governance(
             }
         }
     };
-    // A key is no device of the person's own. What the workspace's own rule leaves to a device
-    // of theirs it may not do, and the workspace's refusal says so: the administration, the
-    // workspace itself, and a place. It lets people in at a role its person may hand out, and
-    // reads what the workspace lists. Its own rule decides it: asked as a member whose device is
-    // not theirs, the workspace refuses what only its owner or its administrators may change
-    // ([`tilo_action_policy::Cap::FOREIGN_DEVICE`]).
-    if !crate::workspace_access::person_device(device) {
-        let capped = member.policy.person_on_device(person, true);
-        let refusal = match op {
-            WorkspaceOp::MakeAdministrator | WorkspaceOp::AdmitAdministrator => {
-                Some(tilo_action_policy::Refusal::Administrators {
-                    actor: person.to_owned(),
-                    unmaking: false,
-                })
-            }
-            WorkspaceOp::MakeOwner => Some(tilo_action_policy::Refusal::OwnershipByOwner),
-            WorkspaceOp::Change(change) if member.policy.unmakes_administrator(person, change) => {
-                Some(tilo_action_policy::Refusal::Administrators {
-                    actor: person.to_owned(),
-                    unmaking: true,
-                })
-            }
-            // Letting someone in, at a role the workspace already let this key hand out, and
-            // the listings a reading member holds.
-            WorkspaceOp::Admit(_)
-            | WorkspaceOp::Read(_)
-            | WorkspaceOp::Change(Change::AddMember { .. })
-            | WorkspaceOp::Host(_) => None,
-            // Letting people in is the one governance a key keeps.
-            WorkspaceOp::Govern(action) if action == roles::governance::ADD_MEMBER => None,
-            // The workspace itself: its name, its settings and its grants.
-            WorkspaceOp::Govern(action) => member
-                .policy
-                .check_action(&capped, action, &cx, false)
-                .err(),
-            // Who is in it and what they hold, beyond letting someone in.
-            WorkspaceOp::Change(change) => member
-                .policy
-                .check(person, &capped, change, &cx, false)
-                .err(),
-            // Both were turned into one of the above above.
-            WorkspaceOp::Place(..) | WorkspaceOp::Role(..) => None,
-        };
-        if let Some(refusal) = refusal {
-            return Err(refused(op, &refusal));
-        }
+    // A key is no device of the person's own: what the workspace's own rule leaves to one of
+    // those it may not do ([`a_key_may_not`]).
+    if !crate::workspace_access::person_device(device)
+        && let Some(refusal) = a_key_may_not(&member.policy, person, op, now)
+    {
+        return Err(refused(op, &refusal));
     }
     // Its person decides, whichever key of theirs asks: an agent's own grants were decided where
     // it asked.
@@ -476,6 +436,51 @@ fn decide_by_governance(
     permits(&hex::encode(host), false)
         .map_err(|refusal| CollaborationError::new(format!("{OWNER_SIGNS}: {refusal}")))?;
     Ok(person.to_owned())
+}
+
+/// Why a key that is no device of the person's own may not do `op` in the workspace `policy`
+/// governs, when the workspace's own rule refuses it: `None` where the workspace leaves the
+/// operation to such a key. Its own rule decides it, asked as a member whose device is not
+/// theirs ([`tilo_action_policy::Cap::FOREIGN_DEVICE`]): what that member may not is the
+/// administration, the workspace itself, and a place. It lets people in at a role its person may
+/// hand out, and reads what the workspace lists.
+fn a_key_may_not(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    person: &str,
+    op: WorkspaceOp<'_>,
+    now: u64,
+) -> Option<tilo_action_policy::Refusal> {
+    let capped = policy.person_on_device(person, true);
+    let cx = Context::at_time(system_time(now));
+    match op {
+        WorkspaceOp::MakeAdministrator | WorkspaceOp::AdmitAdministrator => {
+            Some(tilo_action_policy::Refusal::Administrators {
+                actor: person.to_owned(),
+                unmaking: false,
+            })
+        }
+        WorkspaceOp::MakeOwner => Some(tilo_action_policy::Refusal::OwnershipByOwner),
+        WorkspaceOp::Change(change) if policy.unmakes_administrator(person, change) => {
+            Some(tilo_action_policy::Refusal::Administrators {
+                actor: person.to_owned(),
+                unmaking: true,
+            })
+        }
+        // Letting someone in, at a role the workspace already let this key hand out, and the
+        // listings a reading member holds.
+        WorkspaceOp::Admit(_)
+        | WorkspaceOp::Read(_)
+        | WorkspaceOp::Change(Change::AddMember { .. })
+        | WorkspaceOp::Host(_) => None,
+        // Letting people in is the one governance a key keeps.
+        WorkspaceOp::Govern(action) if action == roles::governance::ADD_MEMBER => None,
+        // The workspace itself: its name, its settings and its grants.
+        WorkspaceOp::Govern(action) => policy.check_action(&capped, action, &cx, false).err(),
+        // Who is in it and what they hold, beyond letting someone in.
+        WorkspaceOp::Change(change) => policy.check(person, &capped, change, &cx, false).err(),
+        // Both were turned into one of the above by the time an operation is decided.
+        WorkspaceOp::Place(..) | WorkspaceOp::Role(..) => None,
+    }
 }
 
 /// Why this host does not carry out a change the workspace lets its caller
