@@ -1976,6 +1976,9 @@ pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
 pub mod hex_grid;
 pub use hex_grid::{HexColumn, HexGrid, HexGridProps};
 
+pub mod key_pad;
+pub use key_pad::{KeyPad, KeyPadProps, PadKey, PadSize, PadTone};
+
 pub mod diff_grid;
 pub use diff_grid::{DiffGrid, DiffGridProps, DiffSide};
 
