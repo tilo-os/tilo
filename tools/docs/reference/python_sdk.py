@@ -38,6 +38,7 @@ TYPES = "sdk/python/src/tilo/types"
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Client", ("Tilo", "AsyncTilo")),
     ("Transports", ("Transport", "DaemonTransport", "KeyTransport")),
+    ("Calls", ("CallLane", "CallAsk", "CallFrame")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
     ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit", "made")),
     ("Invocations", (
