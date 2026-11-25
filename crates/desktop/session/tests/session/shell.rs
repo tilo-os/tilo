@@ -935,8 +935,7 @@ fn two_strips(
     failures: &mut Vec<String>,
 ) {
     let (notebook, notes) = crate::common::notebook(&crate::common::TITLES);
-    let mut session = crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
+    let mut session = Session::headless(
         Options {
             person: crate::common::PERSON.to_owned(),
             presentation,
@@ -944,7 +943,9 @@ fn two_strips(
             services: vec![Box::new(notebook)],
             ..Options::default()
         },
-    );
+        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
+    )
+    .expect("session");
     crate::layout_shortcuts::open(&mut session, &notes, 1);
     crate::layout_shortcuts::new_strip(&mut session);
     crate::common::wait_for(&mut session, "the rail counts two strips", |session| {
