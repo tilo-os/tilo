@@ -17,6 +17,8 @@
 pub(in crate::workspaces) mod cloud_control;
 /// The cloud-storage accounts a device's mount reads, and the sign-ins it is handed.
 pub(in crate::workspaces) mod cloud_mounts;
+/// A person's accounts at issuers an app describes, connected so the app knows who they are.
+mod connected_accounts;
 /// The sign-ins of the accounts and providers, as entries of the workspace's vault.
 pub(in crate::workspaces) mod kept_sign_ins;
 pub(in crate::workspaces) mod oauth_grant;
@@ -438,6 +440,17 @@ impl Workspaces {
                 request,
             ))
             .await;
+        }
+        // A person connecting their own account at an issuer an app describes, from that app:
+        // kept with their own things, never the workspace's accounts.
+        if matches!(
+            action,
+            person_accounts::CONNECT_ACCOUNT | person_accounts::FINISH_CONNECT_ACCOUNT
+        ) {
+            let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+            return self
+                .connected_accounts_invoke(&workspace.to_string(), caller, request)
+                .await;
         }
         let effect = mail_effect(action);
         let asked = (workspace_id, caller, certificate);

@@ -1693,6 +1693,8 @@ mod calendar_accounts_tests;
 #[cfg(all(test, feature = "agents"))]
 mod calendars_turn_tests;
 #[cfg(test)]
+mod connected_accounts_tests;
+#[cfg(test)]
 mod connections_tests;
 #[cfg(all(test, feature = "agents"))]
 mod device_key_tests;

@@ -145,6 +145,16 @@ pub const BEGIN_CLOUD_SIGN_IN: &str = "begin-cloud-sign-in";
 /// verification code, or the code a provider showed instead of redirecting
 /// back. Answers the accounts as [`MailAccounts`] once the account is kept.
 pub const SUBMIT_SIGN_IN_CODE: &str = "submit-sign-in-code";
+/// Connect the person's account at an issuer an app describes ([`ConnectAccount`]), so the app
+/// can tell who they are there: answered with where their browser goes ([`SignInStep`]), and
+/// finished with [`FINISH_CONNECT_ACCOUNT`]. Only a person asks it, from that app. The grant
+/// stays in their vault; the app reads back only the account the issuer confirmed, its id and
+/// name, and only for issuers it described itself.
+pub const CONNECT_ACCOUNT: &str = "connect-account";
+/// Wait for a [`CONNECT_ACCOUNT`] to come back from the person's browser
+/// ([`FinishConnectAccount`]), answering the [`ConnectedAccount`] the issuer confirmed, or why
+/// it did not, in words the person reads.
+pub const FINISH_CONNECT_ACCOUNT: &str = "finish-connect-account";
 /// The kind of the record Settings keeps the workspace's accounts in, without their secrets.
 pub const ACCOUNTS_RECORD_KIND: &str = "tilo.accounts";
 /// The accounts record's step that keeps an account, added or changed.
@@ -189,6 +199,9 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
         ),
         (RESOURCE, SET_CALENDARS) => (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT]),
         (RESOURCE, SET_FILES_MODE) => (&[], &[SAVE_ACCOUNT]),
+        // A connected account keeps its grant in the person's vault, in place of the one an
+        // earlier connect of the same account kept.
+        (RESOURCE, CONNECT_ACCOUNT) => (&[KEEP_SEALED, REMOVE_SEALED], &[]),
         // A mount asking for its account's sign-in writes down the use, as every sign-in to a
         // server with what the workspace's vault keeps does, and keeps a grant it renewed; what
         // it reports is the record's.
@@ -607,6 +620,63 @@ impl SetServices {
             files: self.files,
         }
     }
+}
+
+/// An issuer an app describes, to connect a person's account there ([`CONNECT_ACCOUNT`]): its
+/// endpoints, what it is asked for, which fields of its identity answer name the account, and
+/// the one loopback port its client registered `http://127.0.0.1:<port>/oauth` for. Data, never
+/// code: every issuer is signed in to the same way.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountIssuer {
+    /// Unique among the issuers one app describes.
+    pub id: String,
+    pub label: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    /// Answers the signed-in account to its access token.
+    pub identity_endpoint: String,
+    /// Where a grant is given back when the person forgets the account, if the issuer has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_endpoint: Option<String>,
+    /// The identity answer's field holding the account's stable id.
+    pub id_field: String,
+    /// The identity answer's field holding the name the account goes by.
+    pub name_field: String,
+    pub scopes: Vec<String>,
+    pub redirect_port: u16,
+}
+
+/// A connect of the person's account at `issuer` ([`CONNECT_ACCOUNT`]), signed in to as the
+/// public client `client_id`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectAccount {
+    pub issuer: AccountIssuer,
+    pub client_id: String,
+}
+
+/// The connect to wait for ([`FINISH_CONNECT_ACCOUNT`]), as its [`SignInStep::id`] names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishConnectAccount {
+    pub sign_in: String,
+}
+
+/// An account of the person's an issuer confirmed: all of it an app reads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedAccount {
+    /// The app that described the issuer.
+    pub app: String,
+    /// The issuer's id, as that app describes it.
+    pub issuer: String,
+    /// The issuer's label.
+    pub label: String,
+    /// The account's id at the issuer.
+    pub id: String,
+    /// The name the account goes by there.
+    pub name: String,
 }
 
 /// One login of the workspace's vault, as [`SIGN_INS`] lists it: where it belongs, never what
