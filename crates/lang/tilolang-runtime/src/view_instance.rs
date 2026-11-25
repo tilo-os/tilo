@@ -852,11 +852,13 @@ impl ViewInstance {
         else {
             return Ok(false);
         };
+        // The place runs over what the window shows: the view's own arguments.
+        let args = root.args.clone();
         let made = self.core.call_in_view(
             &pkg,
             &declared.func.id,
             &declared.func.params,
-            &[],
+            &args,
             &self.live.window,
             &self.live.viewer,
             &declared.func.result,

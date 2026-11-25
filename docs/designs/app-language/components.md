@@ -267,7 +267,9 @@ list that holds it, not on a page over a place the person was not looking at.
 
 A window's places are opened the same way. `on show week: set(place, "week")` names a place of
 the window and the action that takes the view there; `on show inbox "Task inbox": ...` gives it
-words of its own where the name does not say them. The host publishes each place of a root's
+words of its own where the name does not say them. The action runs over the view's own
+parameters, so a place may also act on what the window shows (`on show print: set(place,
+"print").then(leave_handed(p))`). The host publishes each place of a root's
 window as an action on the root (`show-week`), labelled in the reader's language, so the
 launcher, the palette, an agent and a script open the window at the place by the same address.
 The action is the system's `open` of the root through the place; the window answers it by

@@ -1293,7 +1293,9 @@ impl Checker<'_> {
             c.params.iter().map(|p| p.name.clone()).collect();
         for show in &shows {
             match ast::place_of(show) {
-                Some(place) => self.run_place(&c.id, &c.name, place, show, &v.body, &params),
+                Some(place) => {
+                    self.run_place(c, place, show, &v.body, &params);
+                }
                 None => self.run_show(&c.id, &c.name, show, &v.body, &params),
             }
         }

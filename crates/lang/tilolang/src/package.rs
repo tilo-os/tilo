@@ -15,7 +15,7 @@ use crate::meta::{
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
-use crate::resolve::{CKind, Env, ParamInfo, default_alias, resolve};
+use crate::resolve::{CKind, Callable, Env, ParamInfo, default_alias, resolve};
 use crate::source::PackageSource;
 use crate::types::Ty;
 
@@ -594,7 +594,9 @@ fn shows_of(shows: &[crate::ir::ViewShow], id: &str, name: &str, app: &str) -> V
 
 /// The places the window of the view `id` (called `name`) can be opened at, in the order it
 /// declares them.
-fn places_of(places: &[crate::ir::ViewPlace], id: &str, name: &str, app: &str) -> Vec<PlaceMeta> {
+/// The places the view `view` declares, each a function over the view's own parameters.
+fn places_of(places: &[crate::ir::ViewPlace], view: &Callable, app: &str) -> Vec<PlaceMeta> {
+    let (id, name) = (view.id.as_str(), view.name.as_str());
     places
         .iter()
         .filter(|place| place.view == id)
@@ -606,7 +608,7 @@ fn places_of(places: &[crate::ir::ViewPlace], id: &str, name: &str, app: &str) -
                 id: place.export.clone(),
                 name: format!("{name} at {}", place.name),
                 doc: String::new(),
-                params: Vec::new(),
+                params: params_meta(&view.params, app),
                 result: Ty::Action.meta_text(app),
             },
         })
@@ -990,7 +992,7 @@ fn build_meta(
                     presents: None,
                     row_of: None,
                     shows: shows_of(shows, &c.id, &c.name, app),
-                    places: places_of(&ir.places, &c.id, &c.name, app),
+                    places: places_of(&ir.places, c, app),
                     capture_protected: ir.capture_protected.contains(&c.id),
                 });
             }

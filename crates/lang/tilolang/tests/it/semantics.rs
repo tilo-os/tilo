@@ -638,8 +638,8 @@ tilo_test_env::scenario! {
 
     phase a_view_names_the_places_its_window_opens_at;
     // `on show week: ...` names a place a caller opens the window at: the action it makes in the view's own
-    // state, run with nothing, called by its name or by the words written for it, which its catalogue
-    // carries under the place's id.
+    // state, run over the view's own parameters, called by its name or by the words written for it,
+    // which its catalogue carries under the place's id.
     {
         let source = "type Book {\n    title: Text\n}\nroot Book\ndefault view book for Book\n\
                       view book(b: Book) {\n    state place: Text = \"month\"\n    \
@@ -654,7 +654,11 @@ tilo_test_env::scenario! {
             .map(|place| (place.name.as_str(), place.label.as_str()))
             .collect();
         assert_eq!(named, [("week", "Week"), ("inbox", "Task inbox")]);
-        assert!(places.iter().all(|place| place.func.params.is_empty()), "given nothing");
+        let given: Vec<Vec<&str>> = places
+            .iter()
+            .map(|place| place.func.params.iter().map(|p| p.name.as_str()).collect())
+            .collect();
+        assert_eq!(given, [["b"], ["b"]], "run over what the window shows");
         assert_eq!(
             places[0].id,
             c.ids.get("book.show.week").expect("the place's id").to_owned()
