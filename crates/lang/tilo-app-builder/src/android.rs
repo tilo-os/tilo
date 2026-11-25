@@ -1084,6 +1084,10 @@ fn unified_push_entries(unified_push: bool) -> (&'static str, &'static str) {
 /// own pickers: only the app whose library answers it (`workspace-files` in its
 /// `[package.metadata.tilo-app]`) carries the entry.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one manifest, read top to bottom against Android's own examples"
+)]
 pub fn android_manifest(
     app: &AndroidMetadata,
     lib_name: &str,
