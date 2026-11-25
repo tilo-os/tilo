@@ -422,6 +422,16 @@ export function fromDiscord(state, event) {
       }),
     ];
   }
+  if (event.source === "MEMBER_CHANGED") {
+    // A member Discord banned is blocked here, and what was mirrored of them goes, as a
+    // moderator's block does. One who only left keeps what they said.
+    const payload = event.payload;
+    if (!payload.banned || !payload.user_id || blocked(state, payload.user_id)) return [];
+    return [
+      self("block_persona", { discord_user: payload.user_id }),
+      ...mirroredOf(state, payload.user_id),
+    ];
+  }
   if (event.source === "LAYOUT_CHANGED") {
     // What Discord shows is recorded; bringing it into Chat reads Chat's sidebar first
     // ([`importOf`]). A channel gone from Discord is marked vanished by `observe_layout`.
@@ -755,4 +765,31 @@ export function memberToDiscord(state, event) {
     }
   }
   return ops;
+}
+
+/// The calls that remove what was mirrored here of the Discord account `user`: each message it
+/// wrote there that the bridge relayed, deleted and let go of.
+function mirroredOf(state, user) {
+  return mappings(state)
+    .filter((m) => m.kind === "message" && m.origin === "discord" && m.persona === user)
+    .flatMap((m) => [
+      chat("delete", { m: m.tilo, to: null }),
+      self("unmap", { kind: "message", tilo: m.tilo }),
+    ]);
+}
+
+/// What a moderator's block of Discord accounts removes here: every message still mirrored of an
+/// account the record now blocks.
+export function blockedToChat(state) {
+  return (state?.blocked_personas ?? []).flatMap((user) => mirroredOf(state, user));
+}
+
+/// Whether a change is a moderator blocking a Discord account in the bridge's record.
+export function blocksPersona(event) {
+  if (event?.kind !== "change") return false;
+  const verb = String(event.verb ?? "").replace(/-/g, "_");
+  return (
+    verb === "block_persona" &&
+    (event.resources ?? []).some((resource) => resource?.app === SELF || event.app === SELF)
+  );
 }

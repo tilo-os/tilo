@@ -24,6 +24,8 @@ import {
   sidebarOf,
   byDiscord,
   memberToDiscord,
+  blockedToChat,
+  blocksPersona,
   CHAT,
   SELF,
 } from "./src/plan.js";
@@ -613,6 +615,7 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
     // The record is read again for each change: what it pairs since the gateway opened is
     // carried from the change it names.
     const account = current.account;
+    if (blocksPersona(event)) await purgeBlocked({ calls, account, log });
     for (const { action, op } of memberToDiscord(account, event)) {
       try {
         if (!(await carries(calls, action, op, log))) continue;
@@ -631,6 +634,27 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
       } catch (error) {
         log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
       }
+    }
+  }
+}
+
+/// A moderator blocked a Discord account: what was mirrored of it here is removed. The record is
+/// read again, as the block is its newest change.
+async function purgeBlocked({ calls, account, log }) {
+  let state = account;
+  try {
+    const accounts = await calls.state(ACCOUNTS);
+    const listed = accounts?.accounts ?? [];
+    state = listed.find((held) => held?.guild_id === account.guild_id) ?? listed[0] ?? account;
+  } catch (error) {
+    log(`the bridge's record did not read, so a block waits: ${error?.message ?? error}`);
+    return;
+  }
+  for (const call of blockedToChat(state)) {
+    try {
+      await calls.do(call);
+    } catch (error) {
+      log(`a blocked account's message stayed: ${error?.message ?? error}`);
     }
   }
 }

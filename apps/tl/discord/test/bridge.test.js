@@ -764,3 +764,27 @@ test("a bridge of one channel leaves the server's members alone", async () => {
   workspace.finish();
   await running;
 });
+
+test("a Discord account a moderator blocks loses what was mirrored of it here", async () => {
+  const relayed = { kind: "message", tilo: "tl:so.tilo.chat:m9", discord: "779", origin: "discord", persona: "3006" };
+  let held = account({ map: [...account().map, relayed] });
+  const workspace = fakeWorkspace({ accounts: () => [held] });
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+
+  // The moderator's block is the record's newest change: the bridge reads the record again.
+  held = { ...held, blocked_personas: ["3006"] };
+  workspace.say({
+    kind: "change",
+    verb: "block_persona",
+    actor: { by: { member: { person: "mod" } } },
+    resources: [{ path: "so.tilo.discord.preview", app: "so.tilo.discord.preview", record: "accounts", item: "x" }],
+  });
+  await until(() => workspace.done.some((call) => call.address === "so.tilo.chat#delete"), "the deletion");
+  expect(workspace.done.filter((call) => /#(delete|unmap)$/.test(call.address))).toEqual([
+    { address: "so.tilo.chat#delete", args: { m: "tl:so.tilo.chat:m9", to: null } },
+    { address: "so.tilo.discord.preview#unmap", args: { kind: "message", tilo: "tl:so.tilo.chat:m9" } },
+  ]);
+  workspace.finish();
+  await running;
+});

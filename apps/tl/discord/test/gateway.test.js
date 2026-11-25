@@ -312,3 +312,26 @@ test("a call hands the voice session Discord named, never the gateway's", async 
   client.destroy();
   discord.stop();
 });
+
+test("a member banned from or leaving the server reaches the bridge as their change", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  discord.send({ op: 0, s: 3, t: "GUILD_BAN_ADD", d: { guild_id: "123", user: { id: "3005", username: "eve" } } });
+  discord.send({ op: 0, s: 4, t: "GUILD_MEMBER_REMOVE", d: { guild_id: "123", user: { id: "3006", username: "bob" } } });
+  await until(() => events.filter((event) => event.source === "MEMBER_CHANGED").length === 2, "the member changes");
+  expect(
+    events
+      .filter((event) => event.source === "MEMBER_CHANGED")
+      .map(({ payload }) => [payload.user_id, payload.banned, payload.left]),
+  ).toEqual([
+    ["3005", true, false],
+    ["3006", false, true],
+  ]);
+  client.destroy();
+  discord.stop();
+});

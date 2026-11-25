@@ -18,6 +18,8 @@ import {
   reactionToDiscord,
   importOf,
   sidebarOf,
+  blockedToChat,
+  blocksPersona,
   SELF as SELF_APP,
 } from "../src/plan.js";
 import { callsOf } from "../main.js";
@@ -660,4 +662,41 @@ test("a server's emoji is the workspace's :name: here and itself there, in words
   expect(said.args.outside_emoji).toEqual([
     { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
   ]);
+});
+
+test("a member Discord bans is blocked here and what was mirrored of them goes; one who left keeps it", () => {
+  const said = (tilo, discord, persona) => ({ kind: "message", tilo, discord, origin: "discord", persona });
+  const held = state({
+    map: [
+      said("tl:so.tilo.chat:m1", "777", "3005"),
+      said("tl:so.tilo.chat:m2", "778", "3005"),
+      said("tl:so.tilo.chat:m3", "779", "3006"),
+      // Written here and carried there: never Discord's to take back.
+      { kind: "message", tilo: "tl:so.tilo.chat:m4", discord: "780", origin: "tilo", persona: "" },
+    ],
+  });
+  const member = (how) => ({
+    source: "MEMBER_CHANGED",
+    payload: { guild_id: "123", user_id: "3005", roles: [], banned: false, left: false, ...how },
+  });
+  expect(fromDiscord(held, member({ banned: true })).map((call) => [call.action, call.args])).toEqual([
+    ["block_persona", { discord_user: "3005" }],
+    ["delete", { m: "tl:so.tilo.chat:m1", to: null }],
+    ["unmap", { kind: "message", tilo: "tl:so.tilo.chat:m1" }],
+    ["delete", { m: "tl:so.tilo.chat:m2", to: null }],
+    ["unmap", { kind: "message", tilo: "tl:so.tilo.chat:m2" }],
+  ]);
+  expect(fromDiscord(held, member({ left: true }))).toEqual([]);
+  // Banned again while already blocked: nothing more to do.
+  expect(fromDiscord({ ...held, blocked_personas: ["3005"] }, member({ banned: true }))).toEqual([]);
+
+  // A moderator's block removes the same, read from the record once it holds the block.
+  expect(blockedToChat({ ...held, blocked_personas: ["3006"] }).map((call) => call.args.m ?? call.args.tilo)).toEqual([
+    "tl:so.tilo.chat:m3",
+    "tl:so.tilo.chat:m3",
+  ]);
+  const block = (verb, app = SELF_APP) => ({ kind: "change", verb, resources: [{ app, record: "r", item: "x" }] });
+  expect(blocksPersona(block("block_persona"))).toBe(true);
+  expect(blocksPersona(block("unblock_persona"))).toBe(false);
+  expect(blocksPersona(block("block_persona", "so.tilo.chat"))).toBe(false);
 });

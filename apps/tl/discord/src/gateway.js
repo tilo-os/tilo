@@ -45,7 +45,7 @@ export async function connect({ make, token, onEvent, onVoice, watch, url, log =
   client.on("messageReactionRemove", (reaction, user) =>
     onEvent(discordReaction("REACTION_REMOVED", reaction, user)),
   );
-  client.on("guildMemberUpdate", (_, member) => onEvent(discordMember(member)));
+  client.on("guildMemberUpdate", (_, member, how) => onEvent(discordMember(member, how)));
   client.on("threadCreate", (thread) => onEvent(discordThread(thread)));
   client.on("layout", (guild) => onEvent(discordLayout(guild)));
   await client.login(token, url);
@@ -119,16 +119,17 @@ export function discordReaction(source, reaction, user) {
   };
 }
 
-/// A member change as the planners read it.
-export function discordMember(member) {
+/// A member change as the planners read it: `how` says whether Discord banned the member or they
+/// left the server.
+export function discordMember(member, { banned = false, left = false } = {}) {
   return {
     source: "MEMBER_CHANGED",
     payload: {
       guild_id: member?.guild?.id ?? "",
       user_id: member?.id ?? "",
       roles: [...(member?.roles?.cache?.keys?.() ?? [])],
-      banned: false,
-      left: false,
+      banned,
+      left,
       user: { name: member?.user?.username ?? "Someone" },
       avatar: member?.user?.avatar ?? null,
     },
@@ -480,6 +481,13 @@ export class Gateway {
         this.#emit("guildMemberUpdate", null, memberOf(data));
         return;
       }
+      // A member banned or gone from the server: the planners read it as their change.
+      case "GUILD_BAN_ADD":
+        this.#emit("guildMemberUpdate", null, memberOf(data), { banned: true });
+        return;
+      case "GUILD_MEMBER_REMOVE":
+        this.#emit("guildMemberUpdate", null, memberOf(data), { left: true });
+        return;
       case "CHANNEL_CREATE":
       case "CHANNEL_UPDATE": {
         const standing = this.#standing.get(String(data?.guild_id ?? ""));
