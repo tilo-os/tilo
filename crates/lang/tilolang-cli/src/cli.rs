@@ -2088,20 +2088,20 @@ fn build_android(
         };
         std::fs::create_dir_all(&output)
             .with_context(|| format!("creating {}", output.display()))?;
-        let name = build
-            .apk
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("{} has no file name", build.apk.display()))?;
-        let destination = output.join(name);
-        std::fs::copy(&build.apk, &destination).with_context(|| {
-            format!(
-                "copying {} to {}",
-                build.apk.display(),
-                destination.display()
-            )
-        })?;
+        // The APK, and beside it the debug info its stripped library is read against.
+        let mut copied = Vec::new();
+        for file in std::iter::once(&build.apk).chain(build.debug_info.as_ref()) {
+            let name = file
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("{} has no file name", file.display()))?;
+            let destination = output.join(name);
+            std::fs::copy(file, &destination).with_context(|| {
+                format!("copying {} to {}", file.display(), destination.display())
+            })?;
+            copied.push(destination);
+        }
         if let Some(fields) = json.as_object_mut() {
-            fields.insert("copied".to_owned(), json!([destination]));
+            fields.insert("copied".to_owned(), json!(copied));
         }
     }
     eprintln!(

@@ -193,10 +193,10 @@ impl Toolchain {
         Ok(env)
     }
 
-    fn strip_tool(&self) -> Option<PathBuf> {
+    fn objcopy_tool(&self) -> Option<PathBuf> {
         self.ndk_bin()
-            .map(|bin| bin.join(exe("llvm-strip")))
-            .filter(|strip| strip.is_file())
+            .map(|bin| bin.join(exe("llvm-objcopy")))
+            .filter(|objcopy| objcopy.is_file())
     }
 
     /// bundletool: `$TILO_BUNDLETOOL_JAR`, the jar `setup` installs under the
@@ -1079,6 +1079,19 @@ fn unified_push_entries(unified_push: bool) -> (&'static str, &'static str) {
     (queries, push)
 }
 
+/// The `<uses-permission>` lines of the permissions an app's metadata asks for.
+fn uses_permissions(permissions: &[&str]) -> String {
+    permissions
+        .iter()
+        .fold(String::new(), |mut text, permission| {
+            let _ = writeln!(
+                text,
+                "    <uses-permission android:name=\"{permission}\" />"
+            );
+            text
+        })
+}
+
 /// The `AndroidManifest.xml` of an APK whose activity loads `lib<lib_name>.so`. `workspace_files`
 /// declares the app's documents provider, which serves the person's workspace files to Android's
 /// own pickers: only the app whose library answers it (`workspace-files` in its
@@ -1091,16 +1104,7 @@ pub fn android_manifest(
     workspace_files: bool,
 ) -> String {
     let id = xml_escape(&app.application_id);
-    let permissions = app
-        .permissions
-        .iter()
-        .fold(String::new(), |mut text, permission| {
-            let _ = writeln!(
-                text,
-                "    <uses-permission android:name=\"{permission}\" />"
-            );
-            text
-        });
+    let permissions = uses_permissions(&app.permissions);
     let documents = workspace_files_provider(workspace_files, &id);
     let (queries, push) = unified_push_entries(app.unified_push);
     format!(
@@ -1492,6 +1496,9 @@ pub struct AndroidBuild {
     pub profile: String,
     pub apk: PathBuf,
     pub bundle: Option<PathBuf>,
+    /// The library's debug info, kept beside the APK, which ships the library stripped: what
+    /// turns a crash report's addresses back into functions and lines.
+    pub debug_info: Option<PathBuf>,
     pub elapsed: Duration,
 }
 
@@ -1509,6 +1516,7 @@ impl AndroidBuild {
             "profile": self.profile,
             "apk": self.apk,
             "bundle": self.bundle,
+            "debug_info": self.debug_info,
             "elapsed_ms": u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX),
         })
     }
@@ -1616,17 +1624,35 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         .tempdir_in(&out)
         .context("creating the APK staging area")?;
     let stage = stage.path();
+    let name = format!("{}-{}", spec.cargo_package, request.arch.android_abi());
+    // The library ships stripped of everything but what links it; its debug info stays here,
+    // beside the APK, for a crash report to be read against.
+    let debug_info = match tools.objcopy_tool() {
+        Some(objcopy) => {
+            let debug_info = out.join(format!("{name}.so.debug"));
+            run_quiet(
+                Command::new(objcopy)
+                    .arg("--only-keep-debug")
+                    .arg(&built)
+                    .arg(&debug_info),
+            )?;
+            Some(debug_info)
+        }
+        None => None,
+    };
     let staged = stage_apk(
         &tools,
         &android_jar,
         &checkout,
         &app_dir,
         &metadata,
-        &built,
+        &Library {
+            built: &built,
+            debug_info: debug_info.as_deref(),
+        },
         request,
         stage,
     )?;
-    let name = format!("{}-{}", spec.cargo_package, request.arch.android_abi());
     let apk = out.join(format!("{name}.apk"));
     link_apk(&tools, &android_jar, &staged, &keystore, &apk)?;
     let bundle = if request.bundle {
@@ -1647,6 +1673,7 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         profile: request.profile.clone(),
         apk,
         bundle,
+        debug_info,
         elapsed: started.elapsed(),
     })
 }
@@ -1661,16 +1688,23 @@ struct StagedApk {
     content: PathBuf,
 }
 
+/// The app's library as cargo built it, and the debug info taken out of it before it is staged.
+struct Library<'a> {
+    built: &'a Path,
+    debug_info: Option<&'a Path>,
+}
+
 fn stage_apk(
     tools: &Toolchain,
     android_jar: &Path,
     checkout: &Checkout,
     app_dir: &Path,
     metadata: &AndroidMetadata,
-    built: &Path,
+    library: &Library<'_>,
     request: &BuildRequest,
     stage: &Path,
 ) -> Result<StagedApk> {
+    let Library { built, debug_info } = *library;
     let lib_file = built
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("{} has no file name", built.display()))?
@@ -1686,16 +1720,17 @@ fn stage_apk(
     let abi_dir = content.join("lib").join(request.arch.android_abi());
     std::fs::create_dir_all(&abi_dir)?;
     let staged_lib = abi_dir.join(&lib_file);
-    match tools.strip_tool() {
-        // DWARF goes; the symbol table stays, so backtraces still name functions.
-        Some(strip) => run_quiet(
-            Command::new(strip)
-                .arg("--strip-debug")
-                .arg("-o")
-                .arg(&staged_lib)
-                .arg(built),
+    match (tools.objcopy_tool(), debug_info) {
+        // Only what loads and links the library stays (its dynamic symbols, the JNI entry points
+        // among them); the debug info kept beside the APK is named by its link.
+        (Some(objcopy), Some(debug_info)) => run_quiet(
+            Command::new(objcopy)
+                .arg("--strip-all")
+                .arg(format!("--add-gnu-debuglink={}", debug_info.display()))
+                .arg(built)
+                .arg(&staged_lib),
         )?,
-        None => {
+        _ => {
             std::fs::copy(built, &staged_lib)
                 .with_context(|| format!("copying {}", built.display()))?;
         }

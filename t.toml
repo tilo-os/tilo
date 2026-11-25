@@ -1053,7 +1053,10 @@ heavy = true
 name = "android-apk"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-25-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
-run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/javac | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\"\nexport ANDROID_HOME=\"$TMPDIR/android-sdk\"\nexport ANDROID_USER_HOME=\"$TMPDIR/android-user\"\nmkdir -p \"$ANDROID_HOME\" \"$ANDROID_USER_HOME\"\ncargo run --locked -p tilolang-cli --bin tilolang -- setup android --accept-licenses\ncargo run --locked -p tilolang-cli --bin tilolang -- build --platform android --arch x86_64 crates/desktop/phone\n"
+run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/javac | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\"\nexport ANDROID_HOME=\"$TMPDIR/android-sdk\"\nexport ANDROID_USER_HOME=\"$TMPDIR/android-user\"\nmkdir -p \"$ANDROID_HOME\" \"$ANDROID_USER_HOME\"\ncargo run --locked -p tilolang-cli --bin tilolang -- setup android --accept-licenses\ncargo run --locked -p tilolang-cli --bin tilolang -- build --platform android --arch x86_64 --profile release --output /target/android-apk crates/desktop/phone\n"
+# The APK as it ships: an optimised build, whose size is the one the app-size budget reads, and
+# the file a walk on an emulator or a phone installs (`t outputs android-apk`).
+outputs = ["/target/android-apk/**"]
 requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
 heavy = true
