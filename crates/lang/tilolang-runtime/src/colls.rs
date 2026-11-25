@@ -798,10 +798,21 @@ impl Core {
 
     /// The item right before the item at `at` in `coll`, as a row asks for its neighbour: the
     /// read is what the item before it is, not the place either stood at, so rows after one
-    /// that left keep theirs.
-    pub(crate) fn coll_before(&self, coll: &Rc<CollRef>, at: usize, item: &str) -> HResult<Value> {
+    /// that left keep theirs. `rows` are the rows the row stands among where its list holds
+    /// rows the listing no longer does: a row the person's own change took out of the listing
+    /// stands where it stood until the view is left, so it is still the neighbour of the row
+    /// under it, and the row above it is still its own.
+    pub(crate) fn coll_before(
+        &self,
+        coll: &Rc<CollRef>,
+        at: usize,
+        item: &str,
+        rows: Option<&Listing>,
+    ) -> HResult<Value> {
         let listing = self.coll_listing(coll)?;
-        let before = at.checked_sub(1).and_then(|before| listing.get(before));
+        let before = at
+            .checked_sub(1)
+            .and_then(|before| rows.unwrap_or(&listing).get(before));
         self.saw(
             coll,
             Read::Before(Rc::from(item), before.clone()),

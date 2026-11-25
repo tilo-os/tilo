@@ -13,7 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::colls::CollSeen;
-use crate::core::Core;
+use crate::core::{Core, RowPlace};
 use crate::error::RuntimeError;
 use crate::handles::Retained;
 use crate::ids::Actor;
@@ -1165,6 +1165,9 @@ impl Live {
             depth,
         };
         let held = self.lists_of(id);
+        // A row of a virtual list reads the rows around it by where it stands among the rows the
+        // list holds.
+        let place = self.virtual_place(id);
         let mut builder = Builder {
             live: self,
             core,
@@ -1174,6 +1177,7 @@ impl Live {
             loops: Vec::new(),
         };
         let prefix = (id != ROOT).then_some(key.as_str());
+        let outer = place.map(|place| core.row_place.replace(Some(place)));
         // A call that fails for want of a reading that has not arrived draws its waiting state,
         // and one that cannot be shown at all draws a failed state naming it; either way the
         // rest of the tree stands, so one place's failure causes no other place to fail.
@@ -1190,6 +1194,9 @@ impl Live {
                 boundaries: Some(&mut builder),
             }),
         );
+        if let Some(outer) = outer {
+            core.row_place.replace(outer);
+        }
         let Builder {
             old, new, loops, ..
         } = builder;
@@ -1743,7 +1750,11 @@ impl Live {
                 .insert(index, rows.rows.fragment(key, Vec::new()));
         }
         if !lazy {
-            let place = Some((Rc::clone(&rows.coll), index));
+            let place = Some(RowPlace {
+                coll: Rc::clone(&rows.coll),
+                at: index,
+                rows: None,
+            });
             self.render_row(core, id, place)?;
             if rows.rows.lazy {
                 self.shown
@@ -1756,12 +1767,13 @@ impl Live {
     }
 
     /// Render the row `id` into its `fragment`, at its path, telling the view where it stands
-    /// among the rows of `place`: the list's rows and the row's place in them.
+    /// among the rows of `place`: the list's rows and the row's place in them. A row of a
+    /// virtual list is told its place by [`Self::render`].
     fn render_row(
         &mut self,
         core: &Rc<Core>,
         id: BoundId,
-        place: Option<(Rc<crate::value::CollRef>, usize)>,
+        place: Option<RowPlace>,
     ) -> Result<(), RuntimeError> {
         self.reused.clear();
         let outer = core.row_place.replace(place);

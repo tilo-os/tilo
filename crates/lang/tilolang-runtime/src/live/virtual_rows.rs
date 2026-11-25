@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{Bound, BoundId, Builder, Live, Pending, Steps};
-use crate::core::Core;
+use crate::core::{Core, RowPlace};
 use crate::error::RuntimeError;
 use crate::host_ui::{KEEP_ACTION, SET_ACTION};
 use crate::render::{RowSource, RowsOf, VirtualRows, item_key};
@@ -68,6 +68,23 @@ impl Rows {
             Self::Coll { listing, kept, .. } => listing.len().saturating_add(kept.len()),
             Self::List { values, kept } => values.len().saturating_add(kept.len()),
         }
+    }
+
+    /// Where row `index` stands among these rows, as the row's body reads the rows around it:
+    /// among the listing with the rows kept for the viewer counted, where there are any.
+    fn row_place(&self, index: usize) -> Option<RowPlace> {
+        let Self::Coll { coll, kept, .. } = self else {
+            return None;
+        };
+        Some(RowPlace {
+            coll: Rc::clone(coll),
+            at: index,
+            rows: if kept.is_empty() {
+                None
+            } else {
+                self.listing()
+            },
+        })
     }
 
     /// The collection whose items the rows are, if they are a collection's.
@@ -461,6 +478,14 @@ impl Live {
         }
     }
 
+    /// Where the row `id` stands among the rows of the virtual list that built it, if one did.
+    pub(super) fn virtual_place(&self, id: BoundId) -> Option<RowPlace> {
+        self.lists.values().find_map(|list| {
+            let (index, _) = list.built.iter().find(|(_, row)| *row == id)?;
+            list.rows.row_place(*index)
+        })
+    }
+
     /// The host's rows of the virtual list `list`, if it is one, are no longer known.
     pub(super) fn lose_rows(&mut self, list: &str) {
         if let Some(rows) = self.lists.get_mut(list) {
@@ -591,9 +616,6 @@ impl Live {
             return Ok(None);
         };
         let holder = rows.holder;
-        // Where the row stands among the rows of the collection it is a row of, which its body
-        // reads the rows around it by.
-        let among = rows.rows.coll().map(|coll| (coll, index));
         let (key, args) = rows.template.row(&item, index);
         let fragment = rows.template.fragment(key.clone(), Vec::new());
         let place = rows.built.partition_point(|(other, _)| *other < index);
@@ -615,7 +637,7 @@ impl Live {
             _ => return Ok(None),
         }
         self.place_built(list, &at);
-        self.render_row(core, id, among)?;
+        self.render_row(core, id, None)?;
         Ok(Some(key))
     }
 
@@ -1317,7 +1339,10 @@ impl Builder<'_> {
             && before.template.makes_as(&template);
         let (steps, (built, children)): (Vec<RowStep>, BuiltRows) = if same {
             // Nothing the list shows changed and none of its rows moved.
-            (Vec::new(), self.keep_built(&before.built, &template)?)
+            (
+                Vec::new(),
+                self.keep_built(&before.built, &template, &rows)?,
+            )
         } else {
             // Where each row built before is now, by key.
             let old = before.rows.keys(&before.template);
@@ -1345,7 +1370,7 @@ impl Builder<'_> {
                 let (row_key, args) = template.row(&item, now);
                 let mut stub = template.stub(&row_key, args);
                 stub.menu = menu.as_deref() == Some(row_key.as_str());
-                let (id, content) = self.keep_row(stub)?;
+                let (id, content) = self.keep_row(stub, rows.row_place(now))?;
                 built.push((now, id));
                 children.push((now, template.fragment(row_key, content)));
             }
@@ -1374,6 +1399,7 @@ impl Builder<'_> {
         &mut self,
         before: &[(usize, BoundId)],
         template: &RowsOf,
+        rows: &Rows,
     ) -> Result<BuiltRows, RuntimeError> {
         let mut built: Vec<(usize, BoundId)> = Vec::with_capacity(before.len());
         let mut children: Vec<(usize, UiNode)> = Vec::with_capacity(before.len());
@@ -1390,7 +1416,7 @@ impl Builder<'_> {
                 self.live.reused.insert(row_key.clone());
                 children.push((*index, template.fragment(row_key, Vec::new())));
             } else {
-                let content = vec![self.live.render(self.core, *id)?];
+                let content = vec![self.render_at(*id, rows.row_place(*index))?];
                 children.push((*index, template.fragment(row_key, content)));
             }
             built.push((*index, *id));
@@ -1405,6 +1431,7 @@ impl Builder<'_> {
     fn keep_row(
         &mut self,
         stub: crate::render::Stub<'_>,
+        place: Option<RowPlace>,
     ) -> Result<(BoundId, Vec<UiNode>), RuntimeError> {
         if let Some(&id) = self.old.get(stub.key) {
             let same = self.live.bound(id).is_some_and(|b| {
@@ -1422,14 +1449,23 @@ impl Builder<'_> {
                     self.live.reused.insert(stub.key.to_owned());
                     return Ok((id, Vec::new()));
                 }
-                return Ok((id, vec![self.live.render(self.core, id)?]));
+                return Ok((id, vec![self.render_at(id, place)?]));
             }
             self.old.remove(stub.key);
             self.live.drop_bound(id);
         }
         let id = self.live.add_bound(Bound::new(stub, true));
         self.new.push(id);
-        Ok((id, vec![self.live.render(self.core, id)?]))
+        Ok((id, vec![self.render_at(id, place)?]))
+    }
+
+    /// Render the row `id` of the list being built, standing at `place` among its rows: the
+    /// list is out of [`Live::lists`] while its holder builds it, so the row is told here.
+    fn render_at(&mut self, id: BoundId, place: Option<RowPlace>) -> Result<UiNode, RuntimeError> {
+        let outer = self.core.row_place.replace(place);
+        let rendered = self.live.render(self.core, id);
+        self.core.row_place.replace(outer);
+        rendered
     }
 }
 

@@ -680,14 +680,24 @@ impl Driven for TestApp<TlApp> {
     }
 }
 
-/// The box of the opened task's done toggle: the change mark a person sees fill.
+/// The box of the opened task's done mark, which a person sees fill as they tick it off: the check
+/// its row draws at the row's start, as tall as its box. The task's page stands beside the list,
+/// and the list holds the opened task's row chosen.
 fn the_mark_box(app: &mut impl Driven) -> [f64; 4] {
+    const BOX: f64 = 22.0;
     let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    all.into_iter()
-        .find(|node| node.widget == "Checkbox")
+    let row = snapshot
+        .root
+        .nodes()
+        .into_iter()
+        .find(|node| {
+            node.semantics.as_ref().is_some_and(|access| {
+                access.role == ui::a11y::Role::ListItem && access.state.selected
+            })
+        })
         .map(|node| node.rect)
-        .expect("the opened task's box")
+        .expect("the opened task's row, chosen in the list");
+    [row[0] + 4.0, row[1] + (row[3] - BOX) / 2.0, BOX, BOX]
 }
 
 /// What a still window costs a frame: what its frames do in work, not how long a machine busy

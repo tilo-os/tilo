@@ -365,7 +365,7 @@ pub struct Core {
     /// The row being rendered, while a view renders one: the rows of the list it is a row
     /// of, and where in them it stands. A row reads the rows around it by that place, without
     /// walking the list.
-    pub row_place: RefCell<Option<(Rc<crate::value::CollRef>, usize)>>,
+    pub(crate) row_place: RefCell<Option<RowPlace>>,
     /// The Rust apps' views the host told the runtime, by app: what a resource of a Rust app's
     /// type is drawn with, where a tilolang view's export would be called
     /// ([`crate::rust_views`]).
@@ -455,6 +455,18 @@ pub fn ordering_to_i32(o: Ordering) -> i32 {
 
 /// The device this host runs as, by the name of its resource branch: `local` for a host that is
 /// a device of its own.
+
+/// Where the row a view renders stands ([`Core::row_place`]): the collection it is a row of, its
+/// place among the list's rows, and those rows as the list holds them, the rows the person's own
+/// changes keep where they stood counted (`None` when the list holds the collection's listing
+/// as it is).
+#[derive(Clone)]
+pub(crate) struct RowPlace {
+    pub coll: Rc<crate::value::CollRef>,
+    pub at: usize,
+    pub rows: Option<Rc<crate::store::Listing>>,
+}
+
 impl Core {
     pub(crate) fn device_name(&self) -> String {
         self.device
