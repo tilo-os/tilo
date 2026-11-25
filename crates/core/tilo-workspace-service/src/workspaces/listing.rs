@@ -37,12 +37,18 @@ use tilo_peer_state::join_log::request_digest;
 use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
-use tilo_server_protocol::workspaces::{IssuedInvitation, WorkspaceListing};
+use tilo_server_protocol::workspaces::{
+    IssueInvitationRequest, IssuedInvitation, WorkspaceListing,
+};
 use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, HostedWorkspace, Workspaces, wait_list};
+
+/// How long an invitation the entry hands a person the workspace declared
+/// stands: time for their device to redeem it now, not to keep it.
+const ENTRY_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
 
 /// Why a public workspace's entry turns a person away.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +192,42 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
     hex::decode_to_slice(hex_key, &mut key)
         .map_err(|_| CollaborationError::new("a person is 64 hex characters"))?;
     Ok(key)
+}
+
+/// Whether `hosted` lists a device of `person`'s own now: one of the person's
+/// devices, never a key acting for them nor a device that serves the workspace.
+fn has_device_of(hosted: &HostedWorkspace, person: [u8; 32]) -> bool {
+    // One read of the workspace, held across the row it reads: its peer is not locked twice.
+    let peer = hosted.peer();
+    let keeping: BTreeSet<[u8; 32]> = peer
+        .governance()
+        .keeping_devices()
+        .into_iter()
+        .map(|hint| hint.host.device_public_key)
+        .collect();
+    let their_devices: BTreeSet<[u8; 32]> = peer
+        .certificates()
+        .into_iter()
+        .filter(|cert| {
+            cert.user_public_key == person && crate::workspace_access::person_device(cert)
+        })
+        // A device the workspace took off its member list is no device of theirs here: the
+        // person brings it back the way the workspace's rules say, not by asking the entry.
+        .filter(|cert| !peer.governance().removed_from_member_list(cert))
+        .map(|cert| cert.device_public_key)
+        .collect();
+    peer.governance()
+        .governed_members(tilo_clock::wall())
+        .is_ok_and(|members| {
+            members
+                .devices
+                .get(&tilo_action_policy::MemberId::person(hex::encode(person)))
+                .is_some_and(|devices| {
+                    devices
+                        .iter()
+                        .any(|device| their_devices.contains(device) && !keeping.contains(device))
+                })
+        })
 }
 
 /// What a workspace's entry answers a device that asks to come in.
@@ -651,9 +693,11 @@ impl Workspaces {
         let refused = |error: CollaborationError| EntryRefusal::Refused(error.to_string());
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
+        let address = self.invitation_addr().await;
+        let mut minted = false;
         let listed = {
             let state = self.workspace(workspace).await.map_err(refused)?;
-            let hosted = state.lock().await;
+            let mut hosted = state.lock().await;
             let policy = hosted
                 .peer()
                 .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
@@ -669,30 +713,77 @@ impl Workspaces {
             if hosted.removals.refuses(user, now) {
                 return Err(EntryRefusal::Removed);
             }
-            // A person the workspace has in it brings another device in as
-            // theirs, on a device of theirs that is already in: the entry
-            // admits strangers, and hands nobody a part of their own.
-            if policy.active_role(&hex::encode(user)).is_some() {
+            let part = policy.active_role(&hex::encode(user));
+            // An open entry admits strangers, so a person whose device is
+            // already in the workspace brings another device in as theirs, on
+            // the device that is in. An invitation-only entry takes only whom
+            // the workspace declares or invites, and a declared person's
+            // devices come in at the part the workspace gave them.
+            if !entry.invitation_only && part.is_some() && has_device_of(&hosted, user) {
                 return Err(EntryRefusal::refused(
                     tilo_peer_state::workspace::membership::ENTRY_NAMES_ANOTHER_DEVICE,
                 ));
             }
-            // An invitation-only entry refuses a stranger who holds no
-            // invitation of their own, and says so: the person's page offers
-            // them the way to be invited (the site's wait list) instead of a
-            // link in as a guest. The invitation a member made is the
-            // decision; this host issues none of its own.
-            if entry.invitation_only {
-                // An invitation the workspace holds for this person is the
-                // member's decision: the entry hands it to the person it
-                // names, and the host issues none of its own.
+            // An invitation-only entry refuses a stranger with no invitation of
+            // their own, and says so: the person's page offers them the way to
+            // be invited (the site's wait list) instead of a link in as a
+            // guest. The invitation a member made is the decision when nobody
+            // declared them here.
+            if entry.invitation_only && part.is_none() {
                 let Some(issued) = hosted.invitation_for(user, now) else {
                     return Err(EntryRefusal::InvitationOnly);
                 };
                 return Ok(Listed::Invited(issued));
             }
-            Listed::Open
+                    return Err(EntryRefusal::InvitationOnly);
+                };
+                return Ok(Listed::Invited(issued));
+            }
+            if let Some(part) = part {
+                // Someone the operator declared here comes in at the part
+                // they were given, not at the role the entry hands a
+                // stranger: the workspace invites them at it, as a member
+                // would, rather than the entry changing their role.
+                let invited = hosted.invitation_for(user, now);
+                let issued = if let Some(issued) = invited {
+                    issued
+                } else {
+                    let role = match part {
+                        Role::Viewer | Role::Commenter => part,
+                        _ => Role::Editor,
+                    };
+                    let request = IssueInvitationRequest {
+                        request_id: rand::random(),
+                        role,
+                        recipient_user_public_key: Some(user),
+                        invitee_name: tilo_user_identity::display_name(&join.display_name)
+                            .ok()
+                            .map(str::to_owned),
+                        expires_at_ns: now.saturating_add(ENTRY_INVITATION_NS),
+                        inviter_name: self
+                            .member_name_by_root(&hosted, self.inner.host.cert.user_public_key),
+                    };
+                    let issued = self
+                        .stage_issue(
+                            &mut hosted,
+                            &self.inner.host.cert,
+                            request,
+                            false,
+                            &address,
+                            now,
+                        )
+                        .map_err(refused)?;
+                    minted = true;
+                    issued
+                };
+                Listed::Invited(issued)
+            } else {
+                Listed::Open
+            }
         };
+        if minted {
+            self.written(workspace, true).await.map_err(refused)?;
+        }
         Ok(listed)
     }
 
@@ -813,14 +904,14 @@ pub(crate) mod entry_tests {
     use tilo_server_protocol::directory::{EntryJoin, Listing};
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
     use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
-    use tilo_user_identity::DeviceCert;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     use super::super::actions::{PUBLISH, UNPUBLISH};
     use super::Listed;
     use crate::workspaces::EntryRefusal;
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
-    use crate::workspaces::tests::{guest_device, hosting_device, test_host};
+    use crate::workspaces::tests::{device_cert, guest_device, hosting_device, test_host};
     use crate::workspaces::{AddMemberRequest, MemberPlace};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
@@ -997,22 +1088,25 @@ pub(crate) mod entry_tests {
             )
             .await
             .unwrap();
-        let (member_key, member) = guest_device();
-        workspaces
-            .add_member(
-                &workspace,
-                &owner,
-                AddMemberRequest {
-                    request_id: [21; 32],
-                    user_public_key: member.user_public_key,
-                    place: MemberPlace::Role(Role::Editor),
-                    name: None,
-                },
-            )
-            .await
-            .unwrap();
+        // The person's first device walks in through the open entry.
+        let root = SigningKey::from_bytes(&rand::random());
+        let (first_key, first) = device_cert(&root, "first", DeviceCapabilities::member());
+        let first_join = EntryJoin {
+            user_public_key: hex::encode(first.user_public_key),
+            display_name: "Ada".into(),
+        };
+        assert!(
+            matches!(
+                walk_in_as(workspaces, &workspace, &first_join, (&first_key, &first)).await,
+                Ok(JoinReply::Admitted { .. })
+            ),
+            "the person's first device comes in"
+        );
+        // A second device of the same person asks the entry: it is told to be
+        // added from the device that is in.
+        let (second_key, second) = device_cert(&root, "second", DeviceCapabilities::member());
         let join = EntryJoin {
-            user_public_key: hex::encode(member.user_public_key),
+            user_public_key: hex::encode(second.user_public_key),
             display_name: "Ada".into(),
         };
         let refused = workspaces.admit_listed(&workspace, &join).await;
@@ -1023,7 +1117,7 @@ pub(crate) mod entry_tests {
             said.contains("as one of yours") && said.contains("already in"),
             "the person reads what to do instead: {said}"
         );
-        let _ = (member_key, member);
+        let _ = (second_key, second);
         server.shutdown().await;
     }
 
@@ -1504,10 +1598,11 @@ pub(crate) mod entry_tests {
                 .removed_within_the_day(&workspace, guest.user_public_key)
                 .await
         );
-        assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
-            Ok(JoinReply::Admitted { .. })
-        ));
+        let reply = walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await;
+        assert!(
+            matches!(reply, Ok(JoinReply::Admitted { .. })),
+            "an administrator holding them again lets their device in: {reply:?}"
+        );
 
         an_invitation_is_let_in(workspaces, &workspace, &owner, &guest, &guest_key, &join).await;
         server.shutdown().await;
