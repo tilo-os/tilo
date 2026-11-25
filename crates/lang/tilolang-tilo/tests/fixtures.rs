@@ -69,6 +69,15 @@ pub const MAIL: (&str, &str) = (
 /// The packages a host loads to run Mail.
 pub const MAIL_SET: &[(&str, &str)] = &[CONTACTS, MAIL];
 
+/// The Calendar package (`apps/tl/calendar`), and the Mail and Contacts packages it reads.
+pub const CALENDAR: (&str, &str) = (
+    include_str!("../../../../apps/tl/calendar/app.tl"),
+    include_str!("../../../../apps/tl/calendar/app.ids"),
+);
+
+/// The packages a host loads to run Calendar.
+pub const CALENDAR_SET: &[(&str, &str)] = &[CONTACTS, MAIL, CALENDAR];
+
 /// The Chat package (`apps/tl/chat`): its own app, with no service's records in it.
 pub const CHAT: (&str, &str) = (
     include_str!("../../../../apps/tl/chat/app.tl"),

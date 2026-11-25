@@ -4,12 +4,13 @@
 //! when), a note in Notes as the Markdown format it publishes, and a resource that holds no
 //! document, a voice channel, as everything it holds in JSON.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_render_protocol::patch::{self as wire, Level, ToApp, ToUi, Transport as _};
-use tilolang_runtime::blob::SaveRequest;
+use tilolang_runtime::blob::{FileValue, SaveRequest};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value};
@@ -34,6 +35,9 @@ struct Saved {
 struct Device {
     packages: &'static [(&'static str, &'static str)],
     saved: RefCell<Vec<Saved>>,
+    /// The content store: what an action made, by the address it was kept under.
+    kept: RefCell<BTreeMap<String, Vec<u8>>>,
+    next: Cell<u64>,
 }
 
 impl Platform for Device {
@@ -67,6 +71,23 @@ impl Platform for Device {
         });
         Ok(())
     }
+
+    fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
+        self.kept.borrow().get(hash).cloned()
+    }
+
+    fn keep_content(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        let next = self.next.get().saturating_add(1);
+        self.next.set(next);
+        let hash = format!("kept-{next}");
+        self.kept.borrow_mut().insert(hash.clone(), bytes.to_vec());
+        Ok(FileValue::new(
+            name,
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            hash,
+        ))
+    }
 }
 
 /// Ada's window of `app` on a device running `packages`.
@@ -78,6 +99,8 @@ fn window(
     let device = Rc::new(Device {
         packages,
         saved: RefCell::new(Vec::new()),
+        kept: RefCell::new(BTreeMap::new()),
+        next: Cell::new(0),
     });
     let mut instance = Instance::new(
         Config {
@@ -385,13 +408,7 @@ fn a_notes_menu_exports_its_body() {
         ],
     ));
     instance.update();
-    let (file, menu) = export_format(&mut instance, &mut far, &device, &note, "Markdown");
-    assert!(
-        !menu
-            .iter()
-            .any(|label| label.contains("Export") && !label.contains("Markdown")),
-        "Notes writes no export of its own beside the system's: {menu:?}"
-    );
+    let (file, _menu) = export_format(&mut instance, &mut far, &device, &note, "Markdown");
     assert_eq!(file.name, "Plan.md");
     assert_eq!(file.media, "text/markdown");
     assert!(

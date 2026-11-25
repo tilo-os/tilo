@@ -1455,10 +1455,12 @@ fn ics_task(t: Task) -> Text {
 }
 
 /// The calendar — every event and task it holds, or only one event — as an iCalendar file, for
-/// a person to save or an agent to hand on. Nothing is written by this.
+/// a person to save or an agent to hand on. Nothing is written by this. The system's one
+/// Export… lists it, and saves the file where the person says.
 action export_calendar(c: Calendars, e: Option<Event> = .none) -> File (
     icon: .download,
     label: "Export calendar",
+    export: "iCalendar",
 ) {
     let events = if let one = e { [one] } else { c.events.map(x -> x) }
     let tasks: List<Task> = if e == .none { c.tasks.map(x -> x) } else { [] }

@@ -817,6 +817,7 @@ d-wka7zl52 = Times
 d-wka7zl52-typed = Erinnerung aus
 
 d-3u4tdxfq = Export calendar
+    .export = iCalendar
     .doc = The calendar — every event and task it holds, or only one event — as an iCalendar file, for a person to save or an agent to hand on.
 
 d-3u4tdxfq-e = Jede Woche am

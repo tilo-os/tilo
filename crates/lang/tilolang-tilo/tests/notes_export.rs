@@ -166,19 +166,25 @@ fn told(far: &mut End) -> Vec<ToUi> {
     messages
 }
 
-/// The formats the window's bar lists under the system's one Export…: each row's label and the
-/// key pressing it fires, in the order the app declares them. The bar keeps the window's
-/// resource's actions as its own buttons, and the rows of one run fold into one Export….
-fn bar_export_rows(tree: &UiNode) -> Vec<(String, String)> {
-    tree.of_kind("ui.Button")
-        .into_iter()
-        .filter(|row| row.props.get("in_menu") == Some(&Value::Int(1)))
-        .filter(|row| row.props.get("group") == Some(&Value::text("Export…")))
-        .filter_map(|row| {
-            let label = row.props.get("label")?.as_text()?.to_owned();
-            Some((label, row.key.clone()))
-        })
-        .collect()
+/// The formats the window lists under the system's one Export…, in the order the app declares
+/// them: the rows of a bar's overflow, or the rows behind the title's "…", whichever the window
+/// keeps its resource's actions in. The rows of one run fold into one Export….
+fn window_export_formats(tree: &UiNode) -> Vec<String> {
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        let a_row = matches!(node.kind.as_str(), "ui.Button" | "ui.MenuItem");
+        if a_row
+            && node.props.get("group") == Some(&Value::text("Export…"))
+            && let Some(label) = node.props.get("label").and_then(Value::as_text)
+        {
+            out.push(label.to_owned());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(tree, &mut out);
+    out
 }
 
 /// Whether `node` presents `item`.
@@ -306,15 +312,12 @@ fn a_notebooks_window_lists_the_formats_it_exports() {
     instance.update();
     let view = instance.view(Level::Root).expect("the notebook's window");
 
-    // The notebook's own bar lists both formats it publishes, together under the system's one
-    // Export…: the zip of Markdown files and one Markdown document.
+    // The notebook's own window lists both formats it publishes, together under the system's
+    // one Export…: the zip of Markdown files and one Markdown document.
     let tree = view.borrow().tree().clone();
     assert_eq!(
-        bar_export_rows(&tree)
-            .into_iter()
-            .map(|(label, _)| label)
-            .collect::<Vec<_>>(),
+        window_export_formats(&tree),
         ["Zip of Markdown files", "One Markdown document"],
-        "the notebook's bar lists the formats Notes publishes for it"
+        "the notebook's window lists the formats Notes publishes for it"
     );
 }
