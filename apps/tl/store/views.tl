@@ -57,6 +57,21 @@ view catalogue(s: Store) {
                             on act: refresh(s)
                         }
                     }
+                    if s.flathub_trouble != "" {
+                        ui.Banner(
+                            "Flathub could not be read",
+                            message: s.flathub_trouble,
+                            kind: .warning,
+                        )
+                    }
+                    if s.command_trouble != "" {
+                        ui.Banner(
+                            "Could not carry that out",
+                            message: s.command_trouble,
+                            kind: .warning,
+                        )
+                    }
+                    sources_missing(s)
                     if chosen == "" and searched == "" {
                         discover(s)
                     } else if found.is_empty() {
@@ -136,6 +151,29 @@ view catalogue_sidebar(s: Store, places: List<Filter<App>>, chosen: State<Text>)
                 ui.NavItem("category:{c}", category_words(c), icon: .layout_grid) {
                     on select: set(chosen, "category:{c}")
                 }
+            }
+        }
+    }
+}
+
+/// The sources whose apps are missing from the catalogue, each named where a person looks for
+/// them.
+view sources_missing(s: Store) {
+    if not s.unanswered.is_empty() or not s.expired.is_empty() {
+        stack(gap: .tight) {
+            for name in s.unanswered.sort_by(x -> x) {
+                ui.Text(
+                    "{name} did not answer. Apps it lists are missing until it does.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for name in s.expired.sort_by(x -> x) {
+                ui.Text(
+                    "The app catalogue from {name} has expired. Apps you have keep working.",
+                    role: .caption,
+                    secondary: true,
+                )
             }
         }
     }
@@ -230,8 +268,14 @@ view app_row(a: App) {
         secondary: if verb != "" and verb != "open" {
             "{action_label(a, s.flatpak)} · {device_words(a)}"
         } else if a.summary != "" { a.summary } else { device_words(a) },
-        meta: if why != "" { why } else if a.job != "" { "Working…" } else { origin_short(a) },
-        meta_tone: if why != "" { .warning } else if a.job != "" { .info } else { .neutral },
+        meta: if why != "" {
+            why
+        } else if a.failed != "" {
+            "Could not finish"
+        } else if a.job != "" { "Working…" } else { origin_short(a) },
+        meta_tone: if why != "" or a.failed != "" {
+            .warning
+        } else if a.job != "" { .info } else { .neutral },
         icon: if a.origin == "tilo" {
             .package
         } else if a.origin == "flathub" {
@@ -316,6 +360,9 @@ view app_page(a: App) {
             }
             if why != "" {
                 ui.Banner("Cannot change this app", message: why, kind: .warning)
+            }
+            if a.failed != "" {
+                ui.Banner("Could not finish", message: a.failed, kind: .error)
             }
             if a.job != "" {
                 ui.ProgressBar(label: "Working…")
@@ -412,7 +459,7 @@ action apply_action(a: App, verb: Text) {
     } else if verb == "add-bot" {
         add_bot(s, a)
     } else if verb == "flatpak-setup" {
-        s.trouble = "Install Flatpak on this computer to use this app."
+        s.command_trouble = "Install Flatpak on this computer to use this app."
     }
 }
 
@@ -569,6 +616,9 @@ view report_page(r: Report) {
     let s = root Store
     stack(gap: .section) {
         ui.ObjectHeader("Report for {r.identity}", caption: r.status, icon: .flag)
+        if s.command_trouble != "" {
+            ui.Banner("Could not carry that out", message: s.command_trouble, kind: .error)
+        }
         report_form(s, r)
         if let a = s.apps.find(x -> x.identity == r.identity) {
             ui.Button("Show the app", icon: .package) {
@@ -592,6 +642,9 @@ view remotes_page(s: Store) {
         }
         if s.flatpak_trouble != "" {
             ui.Banner("Flatpak unavailable", message: s.flatpak_trouble, kind: .warning)
+        }
+        if s.command_trouble != "" {
+            ui.Banner("Could not carry that out", message: s.command_trouble, kind: .warning)
         }
         ui.Section("Configured repositories") {
             if s.remotes.is_empty() {
@@ -727,22 +780,6 @@ view trust_page(s: Store) {
                     ui.ListItem(item: r) {
                         report_row(s, r)
                     }
-                }
-            }
-        }
-        if not s.unanswered.is_empty() or not s.expired.is_empty() {
-            ui.Section("Sources") {
-                for name in s.unanswered.sort_by(x -> x) {
-                    ui.Fact(
-                        "{name} did not respond. Other apps remain available.",
-                        icon: .triangle_alert,
-                    )
-                }
-                for name in s.expired.sort_by(x -> x) {
-                    ui.Fact(
-                        "The app catalogue from {name} has expired. Apps you have keep working.",
-                        icon: .hourglass,
-                    )
                 }
             }
         }

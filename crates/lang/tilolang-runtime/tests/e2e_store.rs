@@ -124,12 +124,12 @@ action open_app(app_name: Text) {
       "runtime": "", "updatable": false, "trouble": ""
     }"#;
 
-    fn catalogue() -> String {
+    fn catalogue(missing: &[String]) -> String {
         serde_json::json!({
             "items": [NOTES],
             "remotes": [],
             "status": "Store refreshed.", "trouble": "", "flatpak": true, "flatpak_trouble": "",
-            "unanswered": [], "expired": []
+            "unanswered": missing, "expired": []
         })
         .to_string()
     }
@@ -191,6 +191,10 @@ action open_app(app_name: Text) {
         done: Rc<RefCell<bool>>,
         /// Whether the sources answer at all.
         unreachable: Rc<RefCell<bool>>,
+        /// The error the running job ends with, when it fails instead of finishing.
+        fails: Rc<RefCell<Option<String>>>,
+        /// The registries that did not answer the catalogue's read, by name.
+        missing: Rc<RefCell<Vec<String>>>,
     }
 
     impl Engine {
@@ -221,7 +225,7 @@ action open_app(app_name: Text) {
                 return Err("the sources are unreachable".to_owned());
             }
             match op {
-                "catalogue" => Ok(catalogue()),
+                "catalogue" => Ok(catalogue(&self.missing.borrow())),
                 "one" | "runtime" => Ok(one()),
                 "details" => Ok(details()),
                 "remotes" => Ok(remotes()),
@@ -250,6 +254,12 @@ action open_app(app_name: Text) {
             if job != "job-1" {
                 return Err(format!("no job `{job}`"));
             }
+            if let Some(error) = self.fails.borrow().clone() {
+                return Ok(serde_json::json!({
+                    "state": "failed", "done": 0, "total": 1, "error": error, "status": ""
+                })
+                .to_string());
+            }
             if *self.done.borrow() {
                 Ok(r#"{"state":"done","done":1,"total":1,"error":"","status":"Done."}"#.to_owned())
             } else {
@@ -269,11 +279,21 @@ action open_app(app_name: Text) {
     #[derive(Clone, Default)]
     struct Flathub {
         asked: Rc<RefCell<Vec<WebRequest>>>,
+        /// Whether Flathub answers at all.
+        offline: Rc<RefCell<bool>>,
     }
 
     impl WebTransport for Flathub {
         fn fetch(&self, request: &WebRequest) -> WebReply {
             self.asked.borrow_mut().push(request.clone());
+            if *self.offline.borrow() {
+                return WebReply {
+                    status: 503,
+                    status_text: "Service Unavailable".to_owned(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                };
+            }
             let body = if request.url.contains("/api/v2/search") {
                 search()
             } else if request.url.contains("/api/v2/appstream/") {
@@ -988,11 +1008,163 @@ action open_app(app_name: Text) {
             assert_eq!(m.text(&m.root, "trouble"), "the sources are unreachable");
             let window = m.window();
             let tree = window.tree();
-            let banners = of_kind(tree, "ui.Banner");
-            assert_eq!(banners.len(), 1, "the window says why: {}", dump(tree));
+            let read = of_kind(tree, "ui.Banner")
+                .into_iter()
+                .find(|b| {
+                    b.props.get("title").and_then(Value::as_text)
+                        == Some("Could not read the sources")
+                })
+                .unwrap_or_else(|| panic!("the read says why: {}", dump(tree)));
             assert_eq!(
-                banners[0].props.get("message").and_then(Value::as_text),
+                read.props.get("message").and_then(Value::as_text),
                 Some("the sources are unreachable")
+            );
+        }
+
+        phase a_source_that_failed_alone_is_named_where_its_apps_are_missing;
+        {
+            let m = Market::new();
+            *m.engine.missing.borrow_mut() = vec!["Tilo main".to_owned()];
+            m.read();
+            assert_eq!(m.text(&m.root, "trouble"), "", "the read itself finished");
+            let window = m.window();
+            let tree = window.tree();
+            assert!(
+                of_kind(tree, "ui.Banner")
+                    .iter()
+                    .all(|b| b.props.get("title").and_then(Value::as_text)
+                        != Some("Could not read the sources")),
+                "one source's failure is no failed read: {}",
+                dump(tree)
+            );
+            let said: Vec<String> = of_kind(tree, "ui.Text")
+                .iter()
+                .filter_map(|t| t.props.get("value").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                said.iter()
+                    .any(|t| t.starts_with("Tilo main did not answer")),
+                "the source is named beside its apps: {said:?}"
+            );
+        }
+
+        phase flathub_failing_is_said_beside_the_catalogue;
+        {
+            let m = Market::new();
+            *m.flathub.offline.borrow_mut() = true;
+            m.read();
+            assert_eq!(m.text(&m.root, "trouble"), "", "the read itself finished");
+            assert!(
+                m.text(&m.root, "flathub_trouble").starts_with("Flathub did not answer"),
+                "{}",
+                m.text(&m.root, "flathub_trouble")
+            );
+            let window = m.window();
+            let tree = window.tree();
+            let flathub = of_kind(tree, "ui.Banner")
+                .into_iter()
+                .find(|b| {
+                    b.props.get("title").and_then(Value::as_text)
+                        == Some("Flathub could not be read")
+                })
+                .unwrap_or_else(|| panic!("Flathub says it could not be read: {}", dump(tree)));
+            assert!(
+                flathub
+                    .props
+                    .get("message")
+                    .and_then(Value::as_text)
+                    .is_some_and(|m| m.starts_with("Flathub did not answer"))
+            );
+            assert!(
+                !rows(tree).is_empty(),
+                "what the registry offered stands: {}",
+                dump(tree)
+            );
+        }
+
+        phase a_report_that_did_not_leave_stays_a_draft;
+        {
+            let m = Market::new();
+            m.read();
+            let notes = m.app("so.tilo.notes");
+            let report = returned_ref(m.call(
+                "draft_report",
+                vec![Value::resource(&m.root), Value::resource(&notes)],
+            ));
+            m.call(
+                "prepare_report",
+                vec![
+                    Value::resource(&m.root),
+                    Value::resource(&report),
+                    Value::Bool(false),
+                ],
+            );
+            // The device cannot sign this send yet: the draft must not claim it went.
+            m.call("submit_report", vec![Value::resource(&report)]);
+            assert_eq!(
+                m.text(&report, "status"),
+                "Not submitted",
+                "a report that was not sent stays a draft"
+            );
+            let why = m.text(&m.root, "command_trouble");
+            assert!(
+                !why.is_empty(),
+                "the Store says why the send did not start"
+            );
+            let page = m
+                .rt
+                .open_view(
+                    &me(),
+                    &m.app.view("report_page"),
+                    vec![Value::resource(&report)],
+                )
+                .unwrap();
+            assert!(
+                of_kind(page.tree(), "ui.Banner")
+                    .iter()
+                    .any(|b| b.props.get("title").and_then(Value::as_text)
+                        == Some("Could not carry that out")),
+                "the report's page says it: {}",
+                dump(page.tree())
+            );
+        }
+
+        phase a_change_that_failed_says_so_on_the_app;
+        {
+            let m = Market::new();
+            m.read();
+            let notes = m.app("so.tilo.notes");
+            *m.engine.fails.borrow_mut() = Some("The download stopped.".to_owned());
+            m.call("get", vec![Value::resource(&notes)]);
+            m.call_root("poll");
+            assert_eq!(m.text(&notes, "failed"), "The download stopped.");
+            assert_eq!(
+                m.text(&m.root, "trouble"),
+                "",
+                "an app's change is no failed source read"
+            );
+            let window = m.window();
+            let tree = window.tree();
+            let row = of_kind(tree, "ui.ListRow")
+                .into_iter()
+                .find(|r| r.props.get("title").and_then(Value::as_text) == Some("Notes"))
+                .unwrap_or_else(|| panic!("Notes is listed: {}", dump(tree)));
+            assert_eq!(
+                row.props.get("meta").and_then(Value::as_text),
+                Some("Could not finish"),
+                "the row says its change failed"
+            );
+            let page = m.page(&notes);
+            let banner = of_kind(page.tree(), "ui.Banner")
+                .into_iter()
+                .find(|b| {
+                    b.props.get("title").and_then(Value::as_text) == Some("Could not finish")
+                })
+                .unwrap_or_else(|| panic!("the page says why: {}", dump(page.tree())));
+            assert_eq!(
+                banner.props.get("message").and_then(Value::as_text),
+                Some("The download stopped.")
             );
         }
     }
