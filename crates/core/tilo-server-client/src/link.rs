@@ -23,6 +23,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use tilo_server_protocol::refusal::Refusal;
 use tilo_server_protocol::web::{
     LINK_ACTIONS_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH, WebLink,
 };
@@ -231,7 +232,9 @@ pub enum ExpectedHost {
 /// # Errors
 ///
 /// The host refused the device, proved another person or device, or answered
-/// nothing; or the proof could not be written.
+/// nothing; or the proof could not be written. A host that refuses a device its
+/// person's root retired says so with the entry the root signed
+/// ([`Refusal::Revoked`]), which the device takes in to let go of what it holds.
 pub async fn prove_stream<R, W>(
     send: &mut W,
     recv: &mut R,
@@ -239,32 +242,36 @@ pub async fn prove_stream<R, W>(
     signer: &dyn crate::signer::DeviceSigner,
     revocations: &tilo_user_identity::RevocationList,
     expected: ExpectedHost,
-) -> Result<tilo_server_protocol::auth::AuthenticatedPeer, String>
+) -> Result<tilo_server_protocol::auth::AuthenticatedPeer, Refusal>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tilo_server_protocol::auth::{self, Hello, HelloAck, HelloRefused};
+    let failed = |error: String| Refusal::Other(error);
     const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
     let client_nonce: [u8; 32] = rand::random();
     let hello = Hello::new(cert.clone(), client_nonce);
-    let hello = postcard::to_allocvec(&hello).map_err(|error| error.to_string())?;
+    let hello = postcard::to_allocvec(&hello).map_err(|error| failed(error.to_string()))?;
     crate::frame::write_frame(send, &hello)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failed(error.to_string()))?;
     let answer = crate::frame::read_answer(recv, MAX_HANDSHAKE_BYTES)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failed(error.to_string()))?;
     let ack: HelloAck = match answer {
         Some(crate::frame::Answer::Frame(bytes)) => {
-            auth::decode_handshake(&bytes).map_err(|error| error.to_string())?
+            auth::decode_handshake(&bytes).map_err(|error| failed(error.to_string()))?
         }
         Some(crate::frame::Answer::Refusal(bytes)) => {
             let refused: HelloRefused =
-                auth::decode_handshake(&bytes).map_err(|error| error.to_string())?;
-            return Err(format!("the host refused the device: {}", refused.refusal));
+                auth::decode_handshake(&bytes).map_err(|error| failed(error.to_string()))?;
+            return Err(refused.revocation.map_or_else(
+                || failed(format!("the host refused the device: {}", refused.refusal)),
+                |entry| Refusal::Revoked(Box::new(entry)),
+            ));
         }
-        None => return Err("the host answered nothing".into()),
+        None => return Err(failed("the host answered nothing".into())),
     };
     let now = tilo_clock::unix_now_ns();
     let (peer, expected_device) = match expected {
@@ -277,15 +284,19 @@ where
             Some(device),
         ),
     };
-    let peer = peer.map_err(|error| error.to_string())?;
+    let peer = peer.map_err(|error| failed(error.to_string()))?;
     if expected_device.is_some_and(|expected| peer.cert.device_public_key != expected) {
-        return Err("the host proved another device than the one dialled".into());
+        return Err(failed(
+            "the host proved another device than the one dialled".into(),
+        ));
     }
-    let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce).await?;
-    let ack2 = postcard::to_allocvec(&ack2).map_err(|error| error.to_string())?;
+    let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce)
+        .await
+        .map_err(failed)?;
+    let ack2 = postcard::to_allocvec(&ack2).map_err(|error| failed(error.to_string()))?;
     crate::frame::write_frame(send, &ack2)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failed(error.to_string()))?;
     Ok(peer)
 }
 

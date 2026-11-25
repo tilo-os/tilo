@@ -122,6 +122,13 @@ pub async fn reconcile_into(
         .is_some_and(|server| !server.retired && !server.revocation.is_empty())
     {
         super::apply(workspaces, super::Servers::RETIRE_SERVER.with(own.clone())).await?;
+        // Its retirement is kept by another holder before it refuses its own key below: once
+        // the revocation reaches them, they refuse whatever this device writes after it, its
+        // retirement included.
+        let admin = person_workspace_id(&cert.user_public_key);
+        if let Err(error) = workspaces.taken_in_elsewhere(&admin).await {
+            tracing::warn!(%error, "a server retired its entry, and no other holder said it keeps that");
+        }
         servers = read(workspaces).await?;
     }
     // Every device of the person refuses the key of each retired server,

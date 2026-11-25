@@ -7,6 +7,7 @@
     reason = "the devices and routers a test starts stay alive until each test ends"
 )]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -19,9 +20,11 @@ use tilo_server::servers::{self, applied, person_workspace_id};
 use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
+use tilo_workspace_service::workspaces::DeviceKeyGroups;
+use tilo_workspace_service::workspaces::fixtures::TestGroupKeys;
 
 use crate::common::{
-    Hosted, Linked, TestDevice, TestUser, join_person_workspace, serve_in, serve_on,
+    Hosted, Linked, TestDevice, TestUser, join_person_workspace, serve_on, serve_with_keys,
 };
 
 /// Ask the device `linked` reaches to do `action` in `workspace` with
@@ -84,6 +87,9 @@ struct Fixture {
     desktop: Box<Hosted>,
     admin: String,
     server: Box<Hosted>,
+    /// The keys of the groups of the person's workspaces their devices hold: what the server
+    /// reads sealed records with, and opens again with after a restart.
+    keys: Arc<TestGroupKeys>,
     state: tempfile::TempDir,
     _policy: tempfile::TempDir,
     _following: Vec<applied::Following>,
@@ -103,14 +109,41 @@ impl Fixture {
     }
 }
 
+/// A host of `user`'s `device` over `state`, taking part in its workspaces' groups through
+/// `keys`.
+async fn serve_as(
+    user: &TestUser,
+    device: &TestDevice,
+    keys: &Arc<TestGroupKeys>,
+    state: tempfile::TempDir,
+) -> Hosted {
+    let channels = DeviceKeyGroups {
+        keys: Arc::clone(keys) as _,
+        sink: None,
+    };
+    serve_with_keys(
+        user,
+        device,
+        WorkSetting::own_person(),
+        state,
+        Some(channels),
+    )
+    .await
+}
+
 fn person_with_a_server() -> std::pin::Pin<Box<dyn std::future::Future<Output = Fixture> + Send>> {
     Box::pin(async move {
         let alice = TestUser::fresh("Alice");
         let nas = alice.enrol("nas", DeviceCapabilities::member());
         let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
         let phone = alice.enrol("phone", DeviceCapabilities::member());
-        let server = Box::new(serve_on(&alice, &nas, WorkSetting::own_person()).await);
-        let desktop = Box::new(serve_on(&alice, &laptop, WorkSetting::own_person()).await);
+        // Every device of the person reads what the others seal in the person's own
+        // workspaces, a retirement asked of the server among them: they hold the same keys of
+        // those workspaces' groups.
+        let keys = Arc::new(TestGroupKeys::default());
+        let server = Box::new(serve_as(&alice, &nas, &keys, tempfile::tempdir().unwrap()).await);
+        let desktop =
+            Box::new(serve_as(&alice, &laptop, &keys, tempfile::tempdir().unwrap()).await);
         let state = tempfile::tempdir().unwrap();
         let policy = tempfile::tempdir().unwrap();
         let mut following = vec![applied::follow(
@@ -145,6 +178,7 @@ fn person_with_a_server() -> std::pin::Pin<Box<dyn std::future::Future<Output = 
             phone,
             desktop,
             server,
+            keys,
             state,
             _policy: policy,
             _following: following,
@@ -279,6 +313,7 @@ async fn a_server_retired_while_away_retires_itself_once_back() {
         desktop,
         admin: _admin,
         server,
+        keys,
         state,
         _policy: policy,
         _following: mut following,
@@ -310,7 +345,7 @@ async fn a_server_retired_while_away_retires_itself_once_back() {
         user_pk: root.verifying_key().to_bytes(),
         user_sk: root,
     };
-    let back = serve_in(&user, &nas, WorkSetting::own_person(), kept).await;
+    let back = serve_as(&user, &nas, &keys, kept).await;
     let _follow = applied::follow(
         back.host.workspaces(),
         applied::Requests::at(policy.path().join("nas.request")),

@@ -8,11 +8,13 @@
 //! that expected the proof would refuse a dial without it.
 
 use collab_types::signer::DeviceSigner;
-use tilo_server_client::frame::{read_frame, write_frame};
+use tilo_server_client::frame::{read_frame, write_frame, write_refusal};
 use tilo_server_client::link::{ExpectedHost, prove_stream};
 use tilo_server_protocol::auth::{
-    self, HandshakeFrameError, Hello, HelloAck, HelloAck2, PEER_PROTOCOL_VERSION,
+    self, HandshakeFrameError, Hello, HelloAck, HelloAck2, HelloRefusal, HelloRefused,
+    PEER_PROTOCOL_VERSION,
 };
+use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -26,7 +28,8 @@ const MAX_PROOF_BYTES: usize = 64 * 1024;
 ///
 /// # Errors
 ///
-/// The host refused the device, proved another device, or answered nothing.
+/// The host refused the device, proved another device, or answered nothing: a device its
+/// person's root retired is told with the entry the root signed ([`Refusal::Revoked`]).
 pub(crate) async fn prove_dialled<R, W>(
     send: &mut W,
     recv: &mut R,
@@ -35,7 +38,7 @@ pub(crate) async fn prove_dialled<R, W>(
     revocations: &RevocationList,
     workspace: &str,
     device: [u8; 32],
-) -> Result<(), String>
+) -> Result<(), Refusal>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -107,6 +110,30 @@ where
     tilo_user_identity::verify_device_cert_at(&hello.cert, now)
         .map_err(|error| format!("the dialling device's certificate: {error}"))?;
     if revocations.refuses_at(&hello.cert, now) {
+        // A device its person's root retired is told so with the entry the root signed, as a
+        // refused hello is everywhere: a server that was away learns it was retired from the
+        // first device that refuses it, and lets go of what it holds. A device revoked for any
+        // other reason is told nothing.
+        if let Some(entry) =
+            revocations.retired(&hello.cert.user_public_key, &hello.cert.device_public_key)
+        {
+            let refusal = HelloRefusal::DeviceRevoked;
+            let sig_over_refusal = signer
+                .sign(auth::refusal_digest(&hello.client_nonce, refusal).to_vec())
+                .await
+                .map_err(|error| error.0)?;
+            let refused = HelloRefused {
+                protocol: PEER_PROTOCOL_VERSION,
+                cert: cert.clone(),
+                refusal,
+                sig_over_refusal,
+                revocation: Some(entry.clone()),
+            };
+            let refused = postcard::to_allocvec(&refused).map_err(|error| error.to_string())?;
+            write_refusal(send, &refused)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         return Err("the dialling device is revoked".into());
     }
     let mut server_nonce = [0; 32];

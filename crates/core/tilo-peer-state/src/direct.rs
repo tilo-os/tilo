@@ -2081,8 +2081,7 @@ impl DirectSync {
             &workspace.to_string(),
             device,
         )
-        .await
-        .map_err(Refusal::Other)?;
+        .await?;
         send.finish()
             .map_err(|error| Refusal::Other(error.to_string()))?;
         self.named_over(Arc::new(connection), device, takes).await

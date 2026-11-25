@@ -1248,6 +1248,24 @@ impl Workspaces {
         }
     }
 
+    /// Wait until another device keeping `workspace` took in every change this device's store
+    /// keeps of it ([`Self::caught_up_elsewhere`]): what a device does before it stops reaching
+    /// the others, so its last writes are kept where it is still reached.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here, or no other device keeping it took its changes in.
+    pub async fn taken_in_elsewhere(&self, workspace: &str) -> Result<(), String> {
+        let workspace_id = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?
+            .lock()
+            .await
+            .workspace_id();
+        self.caught_up_elsewhere(workspace, workspace_id).await
+    }
+
     /// Have another device keeping `workspace` take in every change this
     /// device keeps of it ([`Self::caught_up_elsewhere`]), as `caller` asks
     /// before it takes this device out: the workspace's owner, or this
