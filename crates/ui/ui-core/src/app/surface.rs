@@ -91,7 +91,7 @@ impl App {
             false,
         );
         if let Some(id) = focus_target {
-            self.set_focused_node(Some(id));
+            self.focus_for_input(id, event);
         }
         if handled {
             self.commit_action();
@@ -904,7 +904,7 @@ impl App {
         phases.finish(InputPhase::Publication, publication);
 
         if let Some(id) = focus_target {
-            app.set_focused_node(Some(id));
+            app.focus_for_input(id, &event);
             handled = true;
         }
 

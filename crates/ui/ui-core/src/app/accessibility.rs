@@ -923,6 +923,25 @@ impl App {
     }
 
     pub(super) fn set_focused_node(&mut self, new_id: Option<NodeId>) {
+        if self.place_focus(new_id) {
+            self.reveal_focused();
+        }
+    }
+
+    /// Give the keyboard to the control `event` asked for: a press focuses what the person is
+    /// pointing at, which they already see, so the view holding it stays still under the pointer
+    /// or finger (a drag across a field selects in the text the finger came down on); any
+    /// other input brings the control into view as [`Self::set_focused_node`] does.
+    pub(super) fn focus_for_input(&mut self, id: NodeId, event: &WindowEvent) {
+        if matches!(event, WindowEvent::MouseInput { .. }) {
+            self.place_focus(Some(id));
+        } else {
+            self.set_focused_node(Some(id));
+        }
+    }
+
+    /// Move the keyboard to `new_id`, leaving where the view stands alone. Whether it moved.
+    fn place_focus(&mut self, new_id: Option<NodeId>) -> bool {
         self.mark_semantic_tree_stale();
         #[cfg(feature = "model")]
         self.suspend_history_focus(new_id);
@@ -953,8 +972,9 @@ impl App {
             self.layout.layout_dirty = true;
             self.needs_sync = true;
             self.invalidate_widget_resource_cache();
-            self.reveal_focused();
+            return true;
         }
+        false
     }
 
     /// Bring the control that holds the keyboard into view: whatever scrolls around it moves the
@@ -1642,7 +1662,7 @@ impl App {
                 focus_target = None;
             }
             if let Some(id) = focus_target {
-                self.set_focused_node(Some(id));
+                self.focus_for_input(id, &event);
             }
             handled_any |= handled;
         }
