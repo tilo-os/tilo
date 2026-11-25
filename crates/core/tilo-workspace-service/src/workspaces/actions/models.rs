@@ -681,6 +681,7 @@ mod surface_tests {
             returns: None,
             writes: vec!["record".to_owned()],
             field: None,
+            tags: crate::workspaces::actions::tags_of(verb.id),
         }
     }
 

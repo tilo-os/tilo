@@ -499,6 +499,22 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
     effects
 }
 
+/// Whether the action `action` answers a secret ([`crate::SECRET_ANSWER_TAG`]): handed to its
+/// caller in the answer alone and kept in no record. The actions that declare it are the vault's
+/// reveal and the code of this moment, a cloud mount's sign-in, and the sign-ins whose answers
+/// carry a one-time code, wherever a host publishes them.
+#[must_use]
+pub fn answers_a_secret(action: &str) -> bool {
+    matches!(
+        action,
+        person_vault::REVEAL
+            | person_vault::CODE
+            | person_accounts::CLOUD_CREDENTIAL
+            | person_accounts::BEGIN_SIGN_IN
+            | person_accounts::BEGIN_CLOUD_SIGN_IN
+    )
+}
+
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
 #[must_use]
 pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> String {

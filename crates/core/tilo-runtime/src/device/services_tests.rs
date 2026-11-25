@@ -2422,4 +2422,144 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() 
         stdout.contains("test result: ok. 1 passed"),
         "the isolated child ran no test: {stdout}"
     );
+const SECRET_RECORD_TEST: &str =
+    "device::services::tests::a_secret_answer_is_kept_out_of_every_invocation_record";
+
+/// A vault item's secret reaches the caller that asked in the answer alone: the device's record
+/// of the call keeps only that it was given, and another connection reading the workspace's
+/// invocations reads no secret there. Asked through the dispatch a plain connection of the
+/// person's reaches, which records the call before the workspace's tree answers it.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one secret answer, from the item to the record another member reads"
+)]
+fn a_secret_answer_is_kept_out_of_every_invocation_record() {
+    use serde_json::json;
+    use tilo_actions::remote::{
+        InvocationReceipt, InvokeRequest, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
+        WORKSPACE_VAULT, workspace_governance_child,
+    };
+    use tilo_actions::{ActionAddress, InvocationId};
+    use tilo_workspace_service::workspaces::account_logins::AccountLogin;
+
+    let Some(root) = isolated_root(SECRET_RECORD_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace.clone();
+    let workspaces = daemon.workspaces();
+    let (tree, caller) = daemon.connection_tree_in(Some(&workspace)).unwrap();
+    assert!(
+        caller.is_own_connection(),
+        "a plain connection is the person's own"
+    );
+    // The item, as Passwords keeps it: the vault takes it from a device of the workspace's,
+    // which this computer is.
+    let cert = daemon.cert.clone();
+    let device = tilo_actions::remote::Caller::authenticated(
+        cert.user_public_key,
+        cert.device_public_key,
+    )
+    .in_workspace(&workspace);
+    let reference = tilo_rt::app()
+        .block_on(async {
+            let place =
+                accounts::vault_items::Place::parse("https://bank.example.test").unwrap();
+            workspaces
+                .keep_account_password(
+                    &workspace,
+                    (&device, None),
+                    None,
+                    AccountLogin {
+                        title: "Bank".into(),
+                        username: "ada".into(),
+                        places: vec![place],
+                    },
+                    zeroize::Zeroizing::new("made-up-password".to_owned()),
+                )
+                .await
+                .expect("the workspace's vault keeps the item")
+        })
+        .expect("the item is kept");
+
+    let target = RemoteActionTarget {
+        provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+        address: ActionAddress::new(
+            workspace_governance_child(&workspace, Some(WORKSPACE_VAULT)),
+            "reveal",
+        ),
+    };
+    let argument = json!({"item": reference.to_string(), "part": "secret"});
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: InvocationId::new(),
+        target,
+        argument: InvokeArgument::Json(argument.as_object().cloned().unwrap_or_default()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let id = request.invocation;
+    let answered = tree
+        .invoke(&caller, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    let Some(Ok(InvocationReceipt {
+        status: ReceiptStatus::Completed { output },
+        ..
+    })) = answered
+    else {
+        panic!("the person is shown the item's secret: {answered:?}");
+    };
+    assert_eq!(
+        output.value.unwrap_or_default()["value"],
+        json!("made-up-password")
+    );
+
+    let record = daemon
+        .invocations
+        .get(&caller, &id)
+        .expect("the call is recorded");
+    assert!(record.secret, "a reveal answers a secret");
+    let kept = serde_json::to_string(&(&record.request, &record.state)).unwrap();
+    assert!(!kept.contains("made-up-password"), "{kept}");
+    if let Some(state) = &record.state {
+        let state = serde_json::to_string(state).unwrap();
+        assert!(state.contains("given"), "only that it was given: {state}");
+    }
+    assert!(
+        matches!(record.request.argument, InvokeArgument::None),
+        "the call's arguments are kept out too"
+    );
+
+    // Another connection of the person, with Read on what the call addressed, reads the
+    // workspace's invocations: neither the listing nor the record holds the secret.
+    let member = device;
+    let broker = daemon
+        .broker
+        .fanout
+        .app_broker()
+        .expect("the broker runs");
+    let listed = broker
+        .invocation_listing(
+            &workspace,
+            &member,
+            &tilo_actions::remote::workspace_invocations::InvocationsQuery {
+                invocation: Some(id.to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("a member with Read lists the invocations");
+    let text = serde_json::to_string(&listed).unwrap();
+    assert!(!text.contains("made-up-password"), "{text}");
+    let read = broker
+        .read_invocations(&member, &workspace, &id.to_string(), Vec::new())
+        .expect("a member with Read reads the record");
+    let text = format!("{read:?}");
+    assert!(!text.contains("made-up-password"), "{text}");
 }

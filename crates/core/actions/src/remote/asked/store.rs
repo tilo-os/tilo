@@ -891,7 +891,22 @@ impl AskedStore {
             return;
         };
         ask.taken = self.here.get().cloned();
-        ask.outcome = Some(outcome);
+        // An action whose answer is a secret ([`crate::SECRET_ANSWER_TAG`]) keeps only that it
+        // was given, here as in the device's record of the call: the workspace's record of this
+        // question is one others may read.
+        let secret = super::super::person_vault::answers_secret(&ask.request);
+        ask.outcome = Some(match outcome {
+            crate::InvocationUpdate::Succeeded { invocation, .. } if secret => {
+                crate::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: crate::ActionOutput {
+                        value: Some(serde_json::json!({ "given": true })),
+                        resources: Vec::new(),
+                    },
+                }
+            }
+            outcome => outcome,
+        });
         self.keep(&ask);
         let mut kept = self.kept.lock_recover();
         kept.records.retain(|record| record.at != ask.at);

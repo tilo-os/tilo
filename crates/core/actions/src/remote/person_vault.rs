@@ -685,12 +685,30 @@ impl std::fmt::Debug for Revealed {
 }
 
 /// Whether `request` answers a secret, so that whatever records it keeps neither its answer nor
-/// its arguments: the vault's [`REVEAL`], asked of its provider or of the vault in its
-/// workspace's tree, and a call of the action registry that names it by address.
+/// its arguments: an action whose declaration carries
+/// [`SECRET_ANSWER_TAG`](crate::SECRET_ANSWER_TAG), or a call of the action registry that names
+/// one by address.
 #[must_use]
 pub fn answers_secret(request: &super::InvokeRequest) -> bool {
     let target = &request.target;
-    (target.address.action == REVEAL && is_vault(target)) || calls_by_address(request, REVEAL)
+    super::answers_a_secret(&target.address.action) || calls_answering_a_secret(request)
+}
+
+/// Whether `request` is a call of the action registry (`tilo.actions#call`) that names, by its
+/// address, an action whose answer is a secret.
+#[must_use]
+pub fn calls_answering_a_secret(request: &super::InvokeRequest) -> bool {
+    let target = &request.target;
+    target.address.action == "call"
+        && target.provider == super::ACTIONS_PROVIDER
+        && match &request.argument {
+            super::InvokeArgument::Json(arguments) => arguments
+                .get("address")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|address| address.rsplit_once('#'))
+                .is_some_and(|(_, action)| super::answers_a_secret(action)),
+            super::InvokeArgument::None | super::InvokeArgument::Text(_) => false,
+        }
 }
 
 /// Whether `request` is a call of the action registry (`tilo.actions#call`) that names the
@@ -710,18 +728,6 @@ pub fn calls_by_address(request: &super::InvokeRequest, action: &str) -> bool {
                 .is_some_and(|rest| rest.ends_with(super::WORKSPACE_VAULT)),
             super::InvokeArgument::None | super::InvokeArgument::Text(_) => false,
         }
-}
-
-/// Whether `target` is asked of the vault: its provider, or the vault in its workspace's own
-/// tree.
-fn is_vault(target: &RemoteActionTarget) -> bool {
-    target.provider == PROVIDER
-        || target.address.resource == RESOURCE
-        || target
-            .address
-            .resource
-            .strip_suffix(super::WORKSPACE_VAULT)
-            .is_some_and(|rest| rest.ends_with('/'))
 }
 
 /// The item whose leaves to take back: every one, or only those

@@ -1213,6 +1213,7 @@ impl Verb {
                     } else {
                         RiskLevel::Privileged
                     },
+                    tags: tags_of(self.id),
                     ..ActionContract::default()
                 },
                 input: InputSpec::None,
@@ -1223,6 +1224,16 @@ impl Verb {
             visibility: None,
             surface: None,
         }
+    }
+}
+
+/// The contract tags one of the host's verbs carries as its declaration states them: a secret
+/// answer is kept in no record ([`tilo_actions::SECRET_ANSWER_TAG`]).
+pub(super) fn tags_of(action: &str) -> Vec<String> {
+    if tilo_actions::remote::answers_a_secret(action) {
+        vec![tilo_actions::SECRET_ANSWER_TAG.to_owned()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -4858,6 +4869,40 @@ pub(super) fn published_params(
             .map(|verb| (verb.params)()),
         _ => None,
     }
+}
+
+/// Whether the action `target` names answers a secret, as the host's own declarations state it
+/// ([`tilo_actions::SECRET_ANSWER_TAG`]): `None` where this host describes no such action.
+#[must_use]
+pub(super) fn published_answers_secret(
+    target: &tilo_actions::remote::RemoteActionTarget,
+) -> Option<bool> {
+    let address = &target.address;
+    let action = |action: &str| tilo_actions::remote::answers_a_secret(action);
+    if let Some((_, action)) = vault::vault_action(address) {
+        return Some(tilo_actions::remote::answers_a_secret(action));
+    }
+    if let Some((_, action)) = mail::account_action(address) {
+        return Some(tilo_actions::remote::answers_a_secret(action));
+    }
+    if let Some((_, action)) = models::models_action(address) {
+        return Some(tilo_actions::remote::answers_a_secret(action));
+    }
+    match target.provider.as_str() {
+        person_vault::PROVIDER
+        | person_accounts::PROVIDER
+        | model_providers::PROVIDER
+        | WORKSPACE_GOVERNANCE_PROVIDER => Some(action(&address.action)),
+        _ => None,
+    }
+}
+
+/// [`published_answers_secret`] where the host keeps none of those.
+#[cfg(target_arch = "wasm32")]
+pub(super) fn published_answers_secret(
+    _target: &tilo_actions::remote::RemoteActionTarget,
+) -> Option<bool> {
+    None
 }
 
 /// [`published_params`] where the host keeps none of those.

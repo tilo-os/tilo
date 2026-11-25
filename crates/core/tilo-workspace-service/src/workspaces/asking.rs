@@ -279,6 +279,35 @@ impl Workspaces {
         })
     }
 
+    /// Whether each call's action answers a secret, as this device publishes the action
+    /// ([`tilo_actions::SECRET_ANSWER_TAG`]): what every record of the call keeps out of its
+    /// answer, whoever asked for it. Read from the provider registered for the action or from
+    /// the host's own actions, as [`Self::secret_parameters`] reads what its arguments are.
+    #[must_use]
+    pub fn secret_answers(&self) -> tilo_actions::remote::secret_arguments::SecretAnswers {
+        let providers = self.providers().downgrade();
+        Arc::new(move |request: &InvokeRequest| {
+            let target = &request.target;
+            if tilo_actions::remote::person_vault::answers_secret(request) {
+                return true;
+            }
+            let registered = providers.upgrade().and_then(|providers| {
+                providers
+                    .get(&target.provider)
+                    .or_else(|| providers.published(target, super::providers::Reach::ThisDevice))
+            });
+            let published = registered
+                .and_then(|registered| {
+                    tilo_actions::api::locate(&registered.published, &target.address)
+                        .map(|(_, action)| action.contract.answers_a_secret())
+                })
+                .unwrap_or(false);
+            // A host's own action is read from its declaration even where a provider also
+            // lists it: a surface that carries no tags must not hide it.
+            published || super::actions::published_answers_secret(target) == Some(true)
+        })
+    }
+
     /// Keep every call that waits for a person's yes as its asked record in `store`, which the
     /// host hands this once and hands every dispatch of its own: a person's answer to one comes
     /// back to the dispatch that keeps it.

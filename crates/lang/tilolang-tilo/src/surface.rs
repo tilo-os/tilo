@@ -358,6 +358,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
         }),
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
+        tags: Vec::new(),
     }
 }
 
@@ -436,6 +437,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
         returns: None,
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
+        tags: Vec::new(),
     };
     let mut verbs = vec![create];
     verbs.extend(DIRECT_EDITS.iter().map(|direct| {
@@ -476,6 +478,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
             returns: None,
             writes: vec![RESOURCE_UNIT.to_owned()],
             field: None,
+            tags: Vec::new(),
         }
     }));
     // A type with rich text offers an agent the edits of one paragraph of it, by the address
@@ -533,6 +536,7 @@ fn block_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
                 returns: None,
                 writes: vec![RESOURCE_UNIT.to_owned()],
                 field: None,
+                tags: Vec::new(),
             }
         })
         .collect()
@@ -554,6 +558,7 @@ fn origin_verb() -> VerbSurface {
         returns: None,
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
+        tags: Vec::new(),
     }
 }
 
@@ -570,6 +575,7 @@ fn scenario_verb() -> VerbSurface {
         returns: None,
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
+        tags: Vec::new(),
     }
 }
 
@@ -778,6 +784,7 @@ pub fn personal_surface() -> Surface {
         returns: None,
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
+        tags: Vec::new(),
     })
     .collect();
     Surface {

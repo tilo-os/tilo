@@ -608,6 +608,29 @@ pub(super) enum BarrierFailure {
     Terminal,
 }
 
+/// `update` as the journal keeps a call whose action answers a secret
+/// ([`tilo_actions::SECRET_ANSWER_TAG`]): only that it was given. A record kept before the
+/// declaration carried the tag is rewritten the same way when the store is recovered, so no
+/// credential lies in the file or in the entries it rewrites.
+fn secret_answer_left_out(
+    action: Option<&serde_json::Value>,
+    update: InvocationUpdate,
+) -> InvocationUpdate {
+    let answers = action
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(tilo_actions::remote::answers_a_secret);
+    match update {
+        InvocationUpdate::Succeeded { invocation, .. } if answers => InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({ "given": true })),
+                resources: Vec::new(),
+            },
+        },
+        update => update,
+    }
+}
+
 impl InvocationJournal {
     const MAX_BYTES: u64 = 256 * 1024 * 1024;
     /// One appended entry: a record with its intent, update and prepared effect.
@@ -708,7 +731,16 @@ impl InvocationJournal {
         // what the next put compacts from.
         journal.content_puts = Some(content_puts::ContentPutsStore::read(root)?);
         let mut recovered = false;
+        let mut redacted = false;
         for record in &mut journal.snapshot.records {
+            // A record kept before its action's declaration carried the tag keeps none of the
+            // answer either: the snapshot it is rewritten into holds no credential.
+            let left_out =
+                secret_answer_left_out(record.intent.get("action"), record.update.clone());
+            if left_out != record.update {
+                record.update = left_out;
+                redacted = true;
+            }
             if !record.update.is_terminal() {
                 record.update = if record.prepared_effect.is_some() {
                     InvocationUpdate::Accepted {
@@ -721,7 +753,7 @@ impl InvocationJournal {
                 recovered = true;
             }
         }
-        if created || recovered || loaded.entries > 0 || loaded.torn {
+        if created || recovered || redacted || loaded.entries > 0 || loaded.torn {
             // Fold the replayed entries (dropping a torn one) and the recovered
             // records into one fresh snapshot before anything is exposed.
             journal.compact()?;
@@ -964,7 +996,7 @@ impl InvocationJournal {
             return Err("prepared effect requires its exact owner-accepted terminal".into());
         }
         let terminal = update.is_terminal();
-        record.update = update;
+        record.update = secret_answer_left_out(record.intent.get("action"), update);
         record.uncertain = uncertain;
         if terminal {
             let settled = self
@@ -1060,6 +1092,8 @@ impl InvocationJournal {
         self.before = None;
         self.content_puts = Some(content_puts::ContentPutsStore::read(&self.root)?);
         for record in &mut self.snapshot.records {
+            record.update =
+                secret_answer_left_out(record.intent.get("action"), record.update.clone());
             if !record.update.is_terminal() {
                 record.update = if record.prepared_effect.is_some() {
                     InvocationUpdate::Accepted {

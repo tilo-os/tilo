@@ -2173,8 +2173,11 @@ impl Daemon {
         let shell_links = Arc::default();
         let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
         let invocations: Arc<Invocations> = Arc::default();
-        // No record of a call keeps what its action takes secret.
+        // No record of a call keeps what its action takes secret, nor what an action whose
+        // declaration says so answers.
         invocations.keep_no_secrets(workspaces.copies().secret_parameters());
+        invocations.keep_secret_answers(workspaces.copies().secret_answers());
+        invocations.drop_secret_answers();
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with no
         // desktop session open on it.
@@ -5525,11 +5528,6 @@ impl RuntimeActionProvider {
             Some(&self.workspace),
             (Arc::clone(&session.provider), runs_as.clone()),
         );
-        // A device's cloud mount is handed its account's sign-in in the receipt alone: what
-        // is kept of the call says only that it was given.
-        if tilo_actions::remote::person_accounts::is_cloud_credential(&request.target) {
-            self.invocations.keep_secret(&request.invocation);
-        }
         let records = Arc::clone(&self.invocations);
         session
             .provider

@@ -118,7 +118,7 @@ impl AppBrokerState {
     /// The workspace's invocations as a record read, whole (an empty id) or one by its id, as
     /// `caller` may read each call there. What a program, an agent and a view read through the
     /// record API, never as an action.
-    pub(crate) fn read_invocations(
+    pub fn read_invocations(
         &self,
         caller: &Caller,
         workspace: &str,

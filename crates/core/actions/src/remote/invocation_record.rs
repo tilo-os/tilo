@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::secret_arguments::{SecretParameters, secret_arguments, without_secrets};
+use super::secret_arguments::{SecretAnswers, SecretParameters, secret_arguments, without_secrets};
 use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use super::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvocationState,
@@ -99,6 +99,9 @@ pub struct Invocations {
     /// What each call's action declares secret, as the device's dispatch reads it from its
     /// registry of actions ([`Self::keep_no_secrets`]): no record here keeps those arguments.
     secrets: std::sync::OnceLock<SecretParameters>,
+    /// Whether each call's action answers a secret, as the device's dispatch reads its
+    /// declaration ([`Self::keep_secret_answers`]): no record here keeps its answer.
+    answers: std::sync::OnceLock<SecretAnswers>,
 }
 
 #[derive(Default)]
@@ -120,6 +123,14 @@ impl Invocations {
     /// of them. Named once, by the device's dispatch.
     pub fn keep_no_secrets(&self, secrets: SecretParameters) {
         let _ = self.secrets.set(secrets);
+    }
+
+    /// Decide whether a call's action answers a secret ([`crate::SECRET_ANSWER_TAG`]) by
+    /// `answers`, from now on: its declaration, as the device's dispatch reads it, keeps every
+    /// record of the call from holding its answer, whoever asked and wherever it was dispatched.
+    /// Named once, by the device's dispatch.
+    pub fn keep_secret_answers(&self, answers: SecretAnswers) {
+        let _ = self.answers.set(answers);
     }
 
     /// `request` as its record keeps it: without the arguments its action declares secret, or
@@ -174,7 +185,12 @@ impl Invocations {
         retries: Option<InvocationId>,
     ) {
         let id = request.invocation;
-        let (journaled, sealed) = self.journaled(request);
+        let secret = self.answers_a_secret(request);
+        let (mut journaled, sealed) = self.journaled(request);
+        if secret {
+            // What it was asked with may be as telling as what it answered; neither is kept.
+            journaled.argument = InvokeArgument::None;
+        }
         let recorded = Recorded {
             caller: caller.clone(),
             asked: asked.clone(),
@@ -190,7 +206,7 @@ impl Invocations {
             retries,
             spend: None,
             undone: false,
-            secret: super::person_vault::answers_secret(request),
+            secret,
             route,
         };
         let mut kept = self.kept();
@@ -219,6 +235,15 @@ impl Invocations {
         for wake in woken {
             wake.wake();
         }
+    }
+
+    /// Whether `request`'s action answers a secret ([`Self::keep_secret_answers`]): kept out of
+    /// every record of it, its answer and its arguments alike.
+    fn answers_a_secret(&self, request: &InvokeRequest) -> bool {
+        self.answers.get().map_or_else(
+            || super::person_vault::answers_secret(request),
+            |answers| answers(request),
+        )
     }
 
     /// Wake `wake` once `workspace`'s invocations next change: another is recorded there, or
@@ -293,6 +318,25 @@ impl Invocations {
     pub fn note_spend(&self, id: &InvocationId, spend: Spend) {
         if let Some(recorded) = self.kept().by_id.get_mut(id) {
             recorded.spend = Some(spend);
+        }
+    }
+
+    /// Forget what every record already kept of a secret answer: each of an action whose
+    /// declaration answers a secret ([`Self::keep_secret_answers`]) keeps only that it was given.
+    /// What the device's dispatch calls once it names them, so a record written before the
+    /// declaration carried the tag holds none of the answer either.
+    pub fn drop_secret_answers(&self) {
+        let answers = self.answers.get();
+        let mut kept = self.kept();
+        for recorded in kept.by_id.values_mut() {
+            let secret = recorded.secret
+                || answers.is_some_and(|answers| answers(&recorded.request))
+                || super::person_vault::answers_secret(&recorded.request);
+            if secret {
+                recorded.secret = true;
+                recorded.request.argument = InvokeArgument::None;
+                recorded.state = recorded.state.take().map(given);
+            }
         }
     }
 
@@ -1044,15 +1088,24 @@ mod tests {
         }
     }
 
-    /// A vault reveal answers a secret, asked of the vault or through the action registry by
-    /// its address, so its record keeps only that it was answered.
+    /// A vault reveal and a cloud mount's sign-in answer secrets, asked of their provider or
+    /// through the action registry by address, so their records keep only that they were
+    /// answered.
     #[test]
     fn a_vault_reveal_is_recorded_as_answering_a_secret() {
-        use super::super::person_vault;
+        use super::super::{person_accounts, person_vault};
         let invocations = Arc::new(Invocations::default());
         let asked = Caller::local_person("ada").in_new_execution();
         let mut reveal = request();
         reveal.target = person_vault::target(person_vault::REVEAL);
+        let mut credential = request();
+        credential.target = person_accounts::target(person_accounts::CLOUD_CREDENTIAL);
+        let serde_json::Value::Object(signing_in) = serde_json::json!({
+            "account": "files-1",
+        }) else {
+            unreachable!("an object");
+        };
+        credential.argument = InvokeArgument::Json(signing_in);
         let mut called = request();
         called.target = RemoteActionTarget {
             provider: "tilo.actions".to_owned(),
@@ -1065,6 +1118,15 @@ mod tests {
             unreachable!("an object");
         };
         called.argument = InvokeArgument::Json(arguments);
+        let mut called_credential = called.clone();
+        called_credential.invocation = InvocationId::new();
+        let serde_json::Value::Object(signing_in_call) = serde_json::json!({
+            "address": "tilo.accounts/accounts#cloud-credential",
+            "arguments": {"account": "files-1"},
+        }) else {
+            unreachable!("an object");
+        };
+        called_credential.argument = InvokeArgument::Json(signing_in_call);
         let mut listed = called.clone();
         listed.invocation = InvocationId::new();
         let serde_json::Value::Object(listing) = serde_json::json!({
@@ -1073,12 +1135,26 @@ mod tests {
             unreachable!("an object");
         };
         listed.argument = InvokeArgument::Json(listing);
-        for (request, secret) in [(&reveal, true), (&called, true), (&listed, false)] {
+        for (request, secret) in [
+            (&reveal, true),
+            (&credential, true),
+            (&called, true),
+            (&called_credential, true),
+            (&listed, false),
+        ] {
             assert_eq!(person_vault::answers_secret(request), secret);
             let runs = Arc::new(Runs::default());
             invocations.record(&asked, &asked, request, Some("w1"), (runs, asked.clone()));
             let kept = invocations.get(&asked, &request.invocation).unwrap();
             assert_eq!(kept.secret, secret, "{:?}", request.target);
+            if secret {
+                assert_eq!(
+                    kept.request.argument,
+                    InvokeArgument::None,
+                    "{:?} keeps none of what it was asked with",
+                    request.target
+                );
+            }
         }
     }
 

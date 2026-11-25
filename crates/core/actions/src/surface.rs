@@ -151,6 +151,10 @@ pub struct VerbSurface {
     /// comment verb under the comments it writes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    /// The tags its declaration carries ([`crate::SECRET_ANSWER_TAG`]): what a host reading the
+    /// surface knows of the action without running the app.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 fn stored_value() -> String {
@@ -267,6 +271,7 @@ pub fn verb_of(action: &crate::ActionSpec, params: Vec<ParamSurface>) -> VerbSur
         returns: result_of(&action.contract.result),
         writes: record_unit(),
         field: None,
+        tags: Vec::new(),
     }
 }
 
@@ -447,6 +452,7 @@ impl Surface {
                     returns: None,
                     writes: vec![RESOURCE_UNIT.to_owned()],
                     field: None,
+                    tags: Vec::new(),
                 }
             })
             .collect();

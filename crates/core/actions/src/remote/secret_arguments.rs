@@ -14,6 +14,11 @@ use super::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 /// argument is taken for a secret.
 pub type SecretParameters = Arc<dyn Fn(&RemoteActionTarget) -> Option<Vec<String>> + Send + Sync>;
 
+/// Whether the call `request` answers a secret, as its action's declaration says
+/// ([`crate::SECRET_ANSWER_TAG`]): what whatever keeps the call keeps of its answer, which is
+/// only that it was given.
+pub type SecretAnswers = Arc<dyn Fn(&InvokeRequest) -> bool + Send + Sync>;
+
 /// The name a call's single text argument ([`InvokeArgument::Text`]) is kept under where it is
 /// left out: no parameter's name begins with `$` but what the system adds.
 pub const TEXT_ARGUMENT: &str = "$text";

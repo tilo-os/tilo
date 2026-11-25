@@ -239,6 +239,8 @@ tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "mic
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
+# The workspace's account list a cloud mount's sign-in is kept for.
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
 # A test takes the changes a placed view wrote into the layout the one way the workspace does.
 tilo-automerge.workspace = true
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
