@@ -150,7 +150,7 @@ const hostNamespace = (serverCert, index, cert = undefined, current = undefined)
   return pick(`${PROFILE_DEVICE}:${key}:${hexKey(random(new Uint8Array(16)))}`);
 };
 /** The wasm runtime, loaded through the page host. */
-const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
+const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.('peer', 'tickets');
 
 const REFRESH_TIMEOUT_MS = 30_000;
 
