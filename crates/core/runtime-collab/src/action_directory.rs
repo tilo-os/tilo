@@ -12,6 +12,27 @@ use tilo_actions::{ResourcePresentation, ResourceSemanticIdentity, ResourceViewD
 
 pub use tilo_actions::remote::RowVisibility;
 
+/// Why an application answered a directory ask with an error instead of a
+/// page: it is publishing a change and its next revision is not in place yet.
+/// The asker waits for that revision, bounded by its own deadline, rather
+/// than refuse a call over a republish.
+pub const PUBLISHING: &str = "the application's action directory is being published";
+
+/// [`PUBLISHING`] for an asker that had to queue behind the application's
+/// own turn.
+pub const BUSY: &str = "the application's action directory is busy with a change";
+
+/// The answer to an ask about a directory the connection has no answerer for
+/// yet: it publishes one with the route it next joins.
+pub const NO_ANSWERER: &str = "nothing answers for this here";
+
+/// Whether `reason` is an application's word that asking again once its next
+/// revision is in place answers it.
+#[must_use]
+pub fn unready(reason: &str) -> bool {
+    reason == PUBLISHING || reason == BUSY || reason == NO_ANSWERER
+}
+
 /// The descriptive source identity an exported action may carry.
 pub type ExportedResourceSemanticIdentity = ResourceSemanticIdentity;
 /// Explicit resource-view metadata attached to the action that opens it.

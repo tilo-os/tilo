@@ -146,7 +146,7 @@ impl AppBrokerState {
                 check_execution(&caller)?;
                 directory_page(&root, reply)
             }),
-            Err(error) => Pending::ready(Err(bridge_error(error))),
+            Err(error) => Pending::ready(Err(bridge_error(&root.app_id, error))),
         }
     }
 
@@ -234,7 +234,7 @@ impl AppBrokerState {
                 if let Ok(mut log) = self.remote_invocations.lock() {
                     log.abandon(&request.invocation);
                 }
-                return Pending::ready(Err(bridge_error(error)));
+                return Pending::ready(Err(bridge_error(&root.app_id, error)));
             }
         };
         let (completer, admitted) = pending();
@@ -304,7 +304,7 @@ impl AppBrokerState {
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
             ))) => return Err(stale()),
             Some(Ok(_)) => return Err(ActionCallError::UnknownAction),
-            Some(Err(error)) => return Err(bridge_error(error)),
+            Some(Err(error)) => return Err(bridge_error(&root.app_id, error)),
             None => {
                 return Err(ActionCallError::Unavailable {
                     reason: "the action directory went away".into(),
@@ -431,7 +431,7 @@ fn directory_page(
     root: &ActionDirectoryRoot,
     reply: ActionDirectoryBridgeReply,
 ) -> Result<CataloguePage, ActionCallError> {
-    match reply.map_err(bridge_error)? {
+    match reply.map_err(|error| bridge_error(&root.app_id, error))? {
         ActionDirectoryBridgeResponse::Page(page) => Ok(CataloguePage {
             locator: None,
             rows: page
@@ -468,17 +468,18 @@ fn directory_page(
     }
 }
 
-pub(super) fn bridge_error(error: ActionDirectoryBridgeError) -> ActionCallError {
+pub(super) fn bridge_error(app: &str, error: ActionDirectoryBridgeError) -> ActionCallError {
     match error {
         ActionDirectoryBridgeError::InvalidRequest => ActionCallError::InvalidRequest {
             reason: "the directory request is malformed".into(),
         },
         ActionDirectoryBridgeError::TimedOut => ActionCallError::Unavailable {
-            reason: "the app has not answered its action directory for a long time: it is hung"
-                .into(),
+            reason: format!(
+                "{app}'s action directory did not answer in time: it is publishing a change, or hung"
+            ),
         },
         other => ActionCallError::Unavailable {
-            reason: format!("the action directory is {other:?}"),
+            reason: format!("{app}'s action directory is {other:?}"),
         },
     }
 }

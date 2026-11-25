@@ -36,17 +36,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .take()
             .filter(|_| !request.revision.as_deref().unwrap_or_default().is_empty());
         let revision = request.revision.clone().unwrap_or_default();
-        // A call held until its action has ended waits for its admission as long: no
-        // patience ends it. One that named a wait is answered as pending when it has passed.
-        let until = match wait.at_least(HOST_ANSWER_WAIT) {
-            crate::Hold::UntilEnded => None,
-            crate::Hold::For(patience) => Some((
-                tokio::time::Instant::now()
-                    .checked_add(patience)
-                    .unwrap_or_else(tokio::time::Instant::now),
-                patience,
-            )),
+        // A call held until its action has ended waits for its admission far longer than one
+        // that named a wait, which is answered as pending once that has passed. Even it has a
+        // bound: a provider that never answers leaves the call waiting forever, and the action
+        // may be running all the same, so the caller is answered as pending under the
+        // invocation id it can follow.
+        let (until, patience) = match wait.at_least(HOST_ANSWER_WAIT) {
+            crate::Hold::UntilEnded => (ADMISSION_ANSWER_WAIT, ADMISSION_ANSWER_WAIT),
+            crate::Hold::For(patience) => (patience, patience),
         };
+        let until = tokio::time::Instant::now()
+            .checked_add(until)
+            .unwrap_or_else(tokio::time::Instant::now);
         // An answer that was lost on its way (the provider did not answer in time, or the
         // session carrying it gave it up) says nothing about whether the provider admitted the
         // invocation: it may be done already. The same invocation is asked again, which the
@@ -55,14 +56,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let answer = loop {
             let again = request.clone();
             let admitting = self.at_host(blocking, move |host, caller| host.invoke(caller, again));
-            let answer = match until {
-                Some((until, patience)) => {
-                    let Ok(answer) = tokio::time::timeout_at(until, admitting).await else {
-                        return Ok(Admission::Unanswered(patience));
-                    };
-                    answer
-                }
-                None => admitting.await,
+            let Ok(answer) = tokio::time::timeout_at(until, admitting).await else {
+                return Ok(Admission::Unanswered(patience));
             };
             // A workspace a server has not started serving yet refuses the ask and takes it
             // once it does: the session is the signal that it moved, and the call waits for
@@ -82,13 +77,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if !lost(answer.as_ref()) {
                 break answer;
             }
-            if let Some((until, patience)) = until {
-                let pause = tokio::time::Instant::now()
-                    .checked_add(ASK_AGAIN_PAUSE)
-                    .unwrap_or(until);
-                if pause >= until {
-                    return Ok(Admission::Unanswered(patience));
-                }
+            let pause = tokio::time::Instant::now()
+                .checked_add(ASK_AGAIN_PAUSE)
+                .unwrap_or(until);
+            if pause >= until {
+                return Ok(Admission::Unanswered(patience));
             }
             tokio::time::sleep(ASK_AGAIN_PAUSE).await;
         };
@@ -158,6 +151,12 @@ pub(super) fn unanswered_admission(
 /// admitted by then is answered as pending with its invocation id, to be
 /// invoked again.
 const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a call held until its action has ended waits for its admission.
+/// Longer than any admission the host bounds itself (a launch is thirty
+/// seconds, an app's directory a minute), so the host's own reason is heard
+/// first, and short enough that a provider that never answers is heard of
+/// rather than waited on forever.
+const ADMISSION_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 /// How long an admission whose answer was lost waits before it is asked again.
 const ASK_AGAIN_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
 /// Whether `answer`, the provider's answer to an invocation, was lost on its way rather than

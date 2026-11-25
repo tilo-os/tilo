@@ -178,6 +178,7 @@ pub fn directory_state(revision: &str) -> Rc<RefCell<TestActionDirectory>> {
         params: Vec::new(),
         query_count: 0,
         resolve_count: 0,
+        publishing: 0,
     }))
 }
 

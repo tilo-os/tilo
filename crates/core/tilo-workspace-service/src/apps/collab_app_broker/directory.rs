@@ -489,6 +489,31 @@ pub(super) const DIRECTORY_MAX_CURSOR_BYTES: usize = 4 * 1024;
 
 pub(super) const DIRECTORY_MAX_CONFIRMATION_BYTES: usize = 4 * 1024;
 
+/// How long between asks of an app's directory while it is between
+/// revisions. Publishing a change is one of the app's own turns; the asker's
+/// deadline, never this pause, decides when to stop.
+const DIRECTORY_REPUBLISH_PAUSE: Duration = Duration::from_millis(5);
+
+/// Why one ask of an app's directory did not answer: the app is between
+/// revisions, so asking again once its next one is published answers it, or
+/// it refused, saying why.
+enum Unserved {
+    BetweenRevisions,
+    Refused(String),
+}
+
+/// [`Unserved`] for the reason an ask failed.
+fn unserved(reason: String) -> Unserved {
+    // An app publishing a change answers so until its next revision is in
+    // place, and a connection a new one replaced publishes its directory
+    // again: either way the next ask can be answered.
+    if runtime_collab::unready(&reason) || reason == super::wire::CONNECTION_CLOSED {
+        Unserved::BetweenRevisions
+    } else {
+        Unserved::Refused(reason)
+    }
+}
+
 pub(super) fn validate_directory_text(
     value: &str,
     field: &str,
@@ -1154,6 +1179,13 @@ impl AppBrokerState {
     /// It forwards one selected live directory only, preserving the same
     /// broker budgets and current permission checks without synthesising an
     /// eager cross-app catalogue for every shell keystroke.
+    ///
+    /// An app publishes a change by building its next directory and swapping
+    /// it in whole; while the swap is in flight the app answers that it is
+    /// publishing, or the registration is being replaced. Neither is a
+    /// refusal: the ask is put again until the answerer's own deadline
+    /// ([`DirectoryReply::patience`]) gives up, and only an answer that is no
+    /// republish is passed on.
     #[allow(
         clippy::future_not_send,
         reason = "the registered directory handle is Rc-backed and is awaited on the shell LocalSet"
@@ -1173,9 +1205,37 @@ impl AppBrokerState {
             return Err("directory query requires one peer and non-zero budgets".into());
         }
         validate_directory_query_input(query).map_err(|error| error.to_string())?;
-        let registered = directories
-            .registered(query.peer_id, cluster_id)
-            .map_err(|error| error.to_string())?;
+        loop {
+            let Ok(registered) = directories.registered(query.peer_id, cluster_id) else {
+                // A republish replaces the registration: the app's turn
+                // that does it answers the next ask.
+                tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
+                continue;
+            };
+            match self
+                .registered_directory_page(&registered, actor, query)
+                .await
+            {
+                Ok(page) => return Ok(page),
+                Err(Unserved::Refused(reason)) => return Err(reason),
+                Err(Unserved::BetweenRevisions) => {
+                    tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
+                }
+            }
+        }
+    }
+
+    /// The page `query` asks of `registered`, or why it cannot answer one yet.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the registered directory handle is Rc-backed and is awaited on the shell LocalSet"
+    )]
+    async fn registered_directory_page(
+        &self,
+        registered: &RegisteredActionDirectory,
+        actor: &BrokerActor,
+        query: &runtime_collab::ActionDirectoryQuery,
+    ) -> Result<runtime_collab::ActionDirectoryPage, Unserved> {
         let max_results = query.max_results.min(Self::DIRECTORY_MAX_RESULTS);
         let max_bytes = query.max_bytes.min(Self::DIRECTORY_MAX_BYTES);
         let max_work = query.max_work.min(Self::DIRECTORY_MAX_WORK);
@@ -1189,7 +1249,7 @@ impl AppBrokerState {
                 &query.parent_resource,
                 &query.cursor,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Unserved::Refused(error.to_string()))?;
         let page = registered
             .directory
             .query(
@@ -1207,17 +1267,18 @@ impl AppBrokerState {
                 },
                 max_bytes,
             )
-            .await?;
+            .await
+            .map_err(unserved)?;
         let mut page = filter_directory_page(
             self,
-            cluster_id,
+            &registered.route.cluster_id,
             actor,
             &registered.app_id,
             registered.publishing_person.as_deref(),
             page,
             max_results,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| Unserved::Refused(error.to_string()))?;
         if !query.resource_name.is_empty() {
             // A name lookup is answered whole; no cursor continues it.
             page.next_cursor.clear();
@@ -1227,6 +1288,7 @@ impl AppBrokerState {
             .shield(actor, &query.needle, &query.parent_resource, &mut page);
         Ok(page)
     }
+
     /// Shell-local exact re-resolution. A `Found` row is policy-checked at
     /// this instant; callers must never execute from an earlier page cache.
     #[allow(
@@ -1245,9 +1307,42 @@ impl AppBrokerState {
         let (revision, resource, action) = target;
         validate_directory_target_input(cluster_id, revision, resource, action, None)
             .map_err(|error| error.to_string())?;
-        let registered = directories
-            .registered(peer_id, cluster_id)
-            .map_err(|error| error.to_string())?;
+        loop {
+            let Ok(registered) = directories.registered(peer_id, cluster_id) else {
+                tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
+                continue;
+            };
+            match self
+                .registered_directory_resolution(
+                    &registered,
+                    actor,
+                    (revision, resource, action),
+                    naming,
+                )
+                .await
+            {
+                Ok(resolution) => return Ok(resolution),
+                Err(Unserved::Refused(reason)) => return Err(reason),
+                Err(Unserved::BetweenRevisions) => {
+                    tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
+                }
+            }
+        }
+    }
+
+    /// The resolution of `target` in `registered`, or why it cannot answer one
+    /// yet.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the registered directory handle is Rc-backed and is awaited on the shell LocalSet"
+    )]
+    async fn registered_directory_resolution(
+        &self,
+        registered: &RegisteredActionDirectory,
+        actor: &BrokerActor,
+        (revision, resource, action): (&str, &str, &str),
+        naming: bool,
+    ) -> Result<runtime_collab::ActionDirectoryResolution, Unserved> {
         let decoded = registered
             .directory
             .resolve(
@@ -1255,7 +1350,8 @@ impl AppBrokerState {
                 false,
                 Self::DIRECTORY_MAX_BYTES,
             )
-            .await?;
+            .await
+            .map_err(unserved)?;
         match decoded {
             runtime_collab::ActionDirectoryResolution::Found {
                 row,
@@ -1264,13 +1360,13 @@ impl AppBrokerState {
                 && row.action.as_deref() == Some(action)
                 && permits_directory_row(
                     self,
-                    cluster_id,
+                    &registered.route.cluster_id,
                     actor,
                     &registered.app_id,
                     registered.publishing_person.as_deref(),
                     &row,
                 )
-                .map_err(|error| error.to_string())? =>
+                .map_err(|error| Unserved::Refused(error.to_string()))? =>
             {
                 // A named revision is the one resolved; only an empty one
                 // takes the owner's word for which revision it read, and
@@ -1312,6 +1408,11 @@ impl AppBrokerState {
             }
             runtime_collab::ActionDirectoryResolution::Found { .. } => {
                 Ok(runtime_collab::ActionDirectoryResolution::NotFound)
+            }
+            // The app had no directory to resolve against at this instant:
+            // it is between revisions, and the next one answers.
+            runtime_collab::ActionDirectoryResolution::Unavailable => {
+                Err(Unserved::BetweenRevisions)
             }
             other => Ok(other),
         }

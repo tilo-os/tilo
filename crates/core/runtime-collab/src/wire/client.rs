@@ -396,7 +396,7 @@ fn route(shared: &Arc<Shared>, frame: HostFrame) {
             let Some(answerer) = answerer else {
                 shared.notify(Operation::Answer {
                     ask: id,
-                    answer: Err("nothing answers for this here".into()),
+                    answer: Err(crate::NO_ANSWERER.into()),
                 });
                 return;
             };

@@ -5020,16 +5020,14 @@ fn directory_answerer(
                         &owner,
                         ActionDirectoryRequest::Query { query, reply },
                     )
-                    .map_err(|_| {
-                        "application action directory is busy or unavailable".to_owned()
-                    })?;
+                    .map_err(|_| runtime_collab::BUSY.to_owned())?;
                     // Answered on the owner's next turn, however long its
                     // current one runs (a heavy action or frame): a busy app
                     // is not a gone one. The asker owns the deadline. A
                     // stopped owner drops `reply`.
                     let page = response
                         .await
-                        .map_err(|_| "application action directory is unavailable".to_owned())?;
+                        .map_err(|_| runtime_collab::PUBLISHING.to_owned())?;
                     serde_json::to_string(&page)
                         .map(Answer::Page)
                         .map_err(|error| error.to_string())

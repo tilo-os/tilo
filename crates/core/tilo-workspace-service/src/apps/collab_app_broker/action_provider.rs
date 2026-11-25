@@ -2069,7 +2069,7 @@ impl AppBrokerState {
                 )),
             ) {
                 Ok(()) => response,
-                Err(error) => Pending::ready(Err(bridge_error(error))),
+                Err(error) => Pending::ready(Err(bridge_error("the application", error))),
             };
         }
         self.invoke_eager(caller, own_peer, launch, None, request)

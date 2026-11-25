@@ -1208,17 +1208,21 @@ pub(super) struct WireDirectory {
     record: String,
 }
 
+/// An ask of an app that has no live connection to answer it: it closed, or
+/// a replacement took its place and is publishing its directory again.
+pub(super) const CONNECTION_CLOSED: &str = "the application's connection closed";
+
 impl WireDirectory {
     fn ask(&self, ask: Ask) -> Asked<Answered> {
         let asked = self
             .connection
             .upgrade()
-            .ok_or_else(|| "the application's connection closed".to_owned())
+            .ok_or_else(|| CONNECTION_CLOSED.to_owned())
             .map(|connection| connection.ask(ask));
         Box::pin(async move {
-            asked?
-                .await
-                .map_err(|_| "the application's connection closed".to_owned())?
+            // An app's own word for why it cannot answer yet is passed on
+            // as it gave it: it is what tells a republish from a refusal.
+            asked?.await.map_err(|_| CONNECTION_CLOSED.to_owned())?
         })
     }
 }

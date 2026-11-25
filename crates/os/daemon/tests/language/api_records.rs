@@ -115,23 +115,6 @@ async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
         .to_owned()
 }
 
-/// `key`'s tool `name` with `arguments`, asked again while it fails: an app republishes its
-/// action directory as its record changes, and a call made in that moment answers unavailable.
-async fn tool_soon(key: &host::Key, name: &str, arguments: &Value) -> Value {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let reply = key.tool_structured(name, arguments).await;
-        if reply["isError"] != true {
-            return reply;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{name} {arguments} answers: {reply}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-}
-
 /// Every message Chat lists in the conversation at `path`, read at the path the listing gave
 /// for it: the rows, and the text of every one read.
 async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Value>, String) {
@@ -142,7 +125,8 @@ async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Val
         if let Some(cursor) = &cursor {
             arguments["cursor"] = json!(cursor);
         }
-        let reply = tool_soon(key, "tilo_ls", &arguments).await;
+        let reply = key.tool_structured("tilo_ls", &arguments).await;
+        assert_ne!(reply["isError"], true, "{reply}");
         let listed = &reply["structuredContent"];
         messages.extend(listed["rows"].as_array().cloned().unwrap_or_default());
         cursor = listed["next_cursor"].as_str().map(str::to_owned);
@@ -155,12 +139,9 @@ async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Val
         let at = message["path"]
             .as_str()
             .expect("a listed message has a path");
-        let reply = tool_soon(
-            key,
-            "tilo_read",
-            &json!({"workspace": workspace, "path": at}),
-        )
-        .await;
+        let reply = key
+            .tool_structured("tilo_read", &json!({"workspace": workspace, "path": at}))
+            .await;
         assert_ne!(
             reply["isError"], true,
             "message {index} is read at {at}: {reply}"

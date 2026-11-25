@@ -235,6 +235,9 @@ pub struct TestActionDirectory {
     params: Vec<tilo_actions::ActionParam>,
     query_count: usize,
     resolve_count: usize,
+    /// How many asks are answered as an app publishing a change does before
+    /// its next directory answers them.
+    pub publishing: usize,
 }
 
 impl TestActionDirectory {
@@ -302,6 +305,10 @@ impl wire::DirectorySource for TestActionDirectoryServer {
     ) -> wire::Asked<runtime_collab::ActionDirectoryPage> {
         let mut state = self.state.borrow_mut();
         state.query_count = state.query_count.saturating_add(1);
+        if state.publishing > 0 {
+            state.publishing = state.publishing.saturating_sub(1);
+            return Box::pin(std::future::ready(Err(runtime_collab::PUBLISHING.into())));
+        }
         let page = runtime_collab::ActionDirectoryPage {
             revision: state.revision.clone(),
             rows: vec![state.row()],
@@ -326,6 +333,10 @@ impl wire::DirectorySource for TestActionDirectoryServer {
         }
         let mut state = self.state.borrow_mut();
         state.resolve_count = state.resolve_count.saturating_add(1);
+        if state.publishing > 0 {
+            state.publishing = state.publishing.saturating_sub(1);
+            return Box::pin(std::future::ready(Err(runtime_collab::PUBLISHING.into())));
+        }
         let resolution = match state.resolve_mode {
             // As a current owner does: the revision it resolved at.
             DirectoryResolveMode::Found => runtime_collab::ActionDirectoryResolution::Found {
@@ -625,6 +636,7 @@ pub fn local_directory_fixture_with_authority(
         params: Vec::new(),
         query_count: 0,
         resolve_count: 0,
+        publishing: 0,
     }));
     let directory: Rc<dyn wire::DirectorySource> = Rc::new(TestActionDirectoryServer {
         state: Rc::clone(&directory_state),

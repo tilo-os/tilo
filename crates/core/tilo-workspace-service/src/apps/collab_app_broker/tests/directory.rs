@@ -354,6 +354,72 @@ async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_call_made_while_the_directory_is_republished_is_answered_from_the_next_one() {
+    use tilo_actions::remote::Caller;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = local_directory_fixture();
+            let caller = Caller::local_person("fixture-owner")
+                .in_workspace(fixture.cluster_id.clone())
+                .in_new_execution();
+            let actor = fixture.state.caller_actor(&caller);
+            // The app answers two asks as it does while it publishes a change, then its new
+            // directory answers.
+            fixture.directory_state.borrow_mut().publishing = 2;
+            let query = runtime_collab::ActionDirectoryQuery {
+                peer_id: fixture.peer_id,
+                revision: String::new(),
+                cursor: Vec::new(),
+                needle: String::new(),
+                parent_resource: String::new(),
+                max_results: 32,
+                max_bytes: AppBrokerState::DIRECTORY_MAX_BYTES,
+                max_work: 128,
+                max_depth: 4,
+                resource_name: String::new(),
+            };
+            let page = tilo_test_env::within(
+                "the listing made while the app republishes",
+                fixture.state.query_action_directory_for_actor(
+                    &fixture.directories,
+                    &actor,
+                    &fixture.cluster_id,
+                    &query,
+                ),
+            )
+            .await
+            .expect("the listing is answered from the app's next directory");
+            assert_eq!(page.rows.len(), 1);
+            assert_eq!(
+                fixture.query_count(),
+                3,
+                "two answers from the app publishing, then the directory"
+            );
+
+            fixture.directory_state.borrow_mut().publishing = 1;
+            let resolved = tilo_test_env::within(
+                "the resolution made while the app republishes",
+                fixture.state.resolve_action_directory_for_actor(
+                    &fixture.directories,
+                    &actor,
+                    &fixture.cluster_id,
+                    fixture.peer_id,
+                    ("directory-r1", "workspace:atlas", "open"),
+                    false,
+                ),
+            )
+            .await
+            .expect("the resolution is answered from the app's next directory");
+            assert!(matches!(
+                resolved,
+                runtime_collab::ActionDirectoryResolution::Found { .. }
+            ));
+            assert_eq!(fixture.resolve_count(), 2);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
     tokio::task::LocalSet::new()
