@@ -351,10 +351,10 @@ impl AppBrokerState {
                 let facts = invocation_journal::evidence_facts(&key, &intent)
                     .map_err(ActionCallError::unavailable)?;
                 Some(
-                    crate::apps::action_evidence::mint(facts, &intent).map_err(|_| {
-                        ActionCallError::unavailable(
-                            "action_evidence_unavailable: host signing identity unavailable",
-                        )
+                    crate::apps::action_evidence::mint(facts, &intent).map_err(|why| {
+                        ActionCallError::unavailable(format!(
+                            "action_evidence_unavailable: host signing identity unavailable: {why}"
+                        ))
                     })?,
                 )
             } else {

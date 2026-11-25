@@ -150,6 +150,16 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         let (workspace, actor) = (workspace_id.clone(), actor.clone());
         block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await }).unwrap()
     };
+    // The person's devices record lists this device, as the daemon reads it at its start: the
+    // host signs what it admits only as a device that record holds.
+    let (_, signing) = tilo_identity::trusted_device::unlisted(&workspace_id).unwrap();
+    super::devices_trust().reading(move || {
+        Some(tilo_identity::sources::DevicesSeen::of_host(
+            signing.user_public_key,
+            [signing.device_public_key],
+            [],
+        ))
+    });
     let mut services = membership.services();
     services.native_certificates = Some(Arc::new(FixtureAuthority {
         workspace: uuid::Uuid::parse_str(&workspace_id).unwrap(),
@@ -305,14 +315,20 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let change = provider
         .next_change(&owner, &id)
         .expect("the owner may wait on its invocation");
-    assert_eq!(
-        provider
-            .cancel(&other, &id)
-            .wait_timeout(std::time::Duration::from_secs(30))
-            .ok()
-            .flatten()
-            .expect("the provider answers"),
-        Err(ActionCallError::NotPermitted)
+    // Another execution may not stop it, and is told who may.
+    let stopped = provider
+        .cancel(&other, &id)
+        .wait_timeout(std::time::Duration::from_secs(30))
+        .ok()
+        .flatten()
+        .expect("the provider answers");
+    assert!(
+        matches!(
+            &stopped,
+            Err(ActionCallError::Refused { reason })
+                if reason.starts_with("only the caller who made this invocation")
+        ),
+        "{stopped:?}"
     );
     assert!(matches!(
         provider.invoke(&owner, request.clone()).poll_ready(),

@@ -355,9 +355,8 @@ impl AppBrokerState {
                 let admission = if owner.verified_actor().is_some() {
                     let facts = invocation_journal::evidence_facts(&key, &intent)?;
                     Some(
-                        crate::apps::action_evidence::mint(facts, &intent).map_err(|_| {
-                            "action_evidence_unavailable: host signing identity unavailable"
-                                .to_string()
+                        crate::apps::action_evidence::mint(facts, &intent).map_err(|why| {
+                            format!("action_evidence_unavailable: host signing identity unavailable: {why}")
                         })?,
                     )
                 } else {
