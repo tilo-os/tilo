@@ -447,7 +447,8 @@ pub fn config_dir() -> Option<PathBuf> {
 
 /// The platform's per-user state directory: [`xdg::state_home`] on Linux and
 /// other Unix, `~/Library/Application Support` on macOS (which keeps state
-/// beside data); Windows defines none.
+/// beside data), `%LOCALAPPDATA%` on Windows: state belongs to this computer,
+/// and what roams with the account (`%APPDATA%`) would carry it to others.
 #[must_use]
 pub fn state_dir() -> Option<PathBuf> {
     platform::state()
@@ -680,7 +681,7 @@ mod platform {
         data()
     }
     pub fn state() -> Option<PathBuf> {
-        None
+        data_local()
     }
     pub fn cache() -> Option<PathBuf> {
         data_local()
