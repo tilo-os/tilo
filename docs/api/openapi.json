@@ -84174,12 +84174,15 @@
             ],
             "resource_kind": "tl.so.tilo.tasks.Project",
             "type": "object"
+          },
+          "done": {
+            "type": "boolean"
           }
         },
         "required": [
           "titles"
         ],
-        "description": "Adds every task of `titles` at once, as one change: none of them is made when one cannot be\n(a blank title), so a person's batch is whole or nothing."
+        "description": "Adds every task of `titles` at once, as one change: none of them is made when one cannot be\n(a blank title), so a person's batch is whole or nothing. With `done`, they are work already\nfinished, written down to keep: done, as checking each off would leave it."
       },
       "tl.so.tilo.tasks.set_status_many.Arguments": {
         "type": "object",

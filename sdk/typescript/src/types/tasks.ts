@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@0476bcaffdc4dcc2";
+export const SURFACE = "so.tilo.tasks@b4879eb6dcf9c567";
 
 /** Which kind of project this is: a finite goal whose work ends with it, or an ongoing responsibility that has no end, only what is done next. One of "project", "area". */
 export type Kind = "project" | "area";
@@ -879,10 +879,11 @@ export function tasks(ws: tilo.Workspace, path: string): Tasks {
 
 /** Tasks — `tl.so.tilo.tasks`. */
 export interface TiloTasks extends tilo.Resource {
-  /** Adds every task of `titles` at once, as one change: none of them is made when one cannot be (a blank title), so a person's batch is whole or nothing. */
+  /** Adds every task of `titles` at once, as one change: none of them is made when one cannot be (a blank title), so a person's batch is whole or nothing. With `done`, they are work already finished, written down to keep: done, as checking each off would leave it. */
   new_tasks(args: {
     titles: string[];
     p?: Project;
+    done?: boolean;
   }): Promise<Task[]>;
   /** Puts every chosen task in one column (or project) at once, as one change. */
   set_status_many(args: {
