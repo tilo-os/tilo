@@ -2924,10 +2924,10 @@ fn person_bytes(person: &str) -> Option<[u8; 32]> {
     }
 }
 
-/// Whether the author of `stamp`, a change under one of the platform's own verbs, is the device
-/// or person the invocation belongs to: the change names its invoker (or who it acted for), and
-/// that person is the author device's own, or the change carries their signed call. A change
-/// under no platform verb belongs to whoever wrote it.
+/// Whether the author of `stamp`, a change under one of the platform's own verbs or one of the
+/// history marks, is the device or person the change belongs to: the change names its invoker
+/// (or who it acted for), and that person is the author device's own, or the change carries
+/// their signed call. A change under none of those verbs belongs to whoever wrote it.
 fn platform_write_belongs(
     stamp: Option<&tilo_resource_store::Stamp>,
     author_person: Option<[u8; 32]>,
@@ -2935,7 +2935,11 @@ fn platform_write_belongs(
     let Some(stamp) = stamp else {
         return true;
     };
-    if !tilo_resource_store::PLATFORM_VERBS.contains(&stamp.verb.as_str()) {
+    // The platform's own verbs write any field and content of a declared kind, and the history
+    // marks write nothing at all; both are the platform's, and their invoker is their author.
+    if !tilo_resource_store::PLATFORM_VERBS.contains(&stamp.verb.as_str())
+        && !tilo_resource_store::HISTORY_VERBS.contains(&stamp.verb.as_str())
+    {
         return true;
     }
     let acting = stamp.invoked_by().map(tilo_action_policy::Acting::from);
@@ -3048,7 +3052,11 @@ impl OriginLeave {
             return false;
         };
         // The device named wrote for the person, or, on the device that carried a command for
-        // the caller it certified, it is that device's own write of what they asked for.
+        // the caller it certified, it is that device's own write of what they asked for. That
+        // is deliberately as far as this goes: a person's own device, or a device whose policy
+        // lets it read a shared account's password, could sign in to that account directly, so
+        // writing its data as the origin gives it nothing more. Another member's device is
+        // refused.
         let named_person = tilo_action_policy::Acting::person(person.as_str());
         if access.invoked_by(&named_person).is_none()
             && !(self.carried && device == *proposal.author)
@@ -3146,7 +3154,7 @@ mod origin_tests {
     use tilo_action_policy::{MemberAccess, WorkspacePolicy};
     use tilo_resource_store::{Proposal, Stamp};
 
-    use super::{OriginLeave, RecordPlace};
+    use super::{OriginLeave, RecordPlace, person_bytes, platform_write_belongs};
 
     const PERSON: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -3276,6 +3284,30 @@ mod origin_tests {
             &touched("message", Some("account")),
             "*"
         ));
+    }
+
+    #[test]
+    fn a_history_mark_belongs_to_the_person_it_names() {
+        // checkpoint, describe and link write nothing, so no kind grant judges them: the mark
+        // belongs to the person its stamp names, as a platform verb's write does.
+        for verb in ["checkpoint", "describe", "link"] {
+            let mut mark = stamp(PERSON, DEVICE);
+            mark.verb = verb.to_owned();
+            assert!(
+                platform_write_belongs(Some(&mark), person_bytes(PERSON)),
+                "`{verb}` is its author's own"
+            );
+            assert!(
+                !platform_write_belongs(Some(&mark), person_bytes(OTHER)),
+                "`{verb}` naming another person is refused"
+            );
+            let mut unnamed = mark.clone();
+            unnamed.invoker.clear();
+            assert!(
+                !platform_write_belongs(Some(&unnamed), person_bytes(PERSON)),
+                "a `{verb}` naming nobody is refused"
+            );
+        }
     }
 
     #[test]

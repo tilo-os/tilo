@@ -213,7 +213,39 @@ impl Writer {
         id: &str,
         name: &str,
     ) -> Result<(), String> {
-        let written = self.store.checkpoint(KIND, id, name, &create()).unwrap();
+        let person = self.of.clone();
+        self.mark(
+            workspaces,
+            workspace,
+            id,
+            "checkpoint",
+            name,
+            person.as_ref(),
+        )
+        .await
+    }
+
+    /// Writes the history mark `verb` (`checkpoint`, `describe`, `link`) on the resource `id`,
+    /// stamped `name` and, where one is given, naming `person` as its invoker: what a device
+    /// that forges a mark writes.
+    async fn mark(
+        &mut self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        id: &str,
+        verb: &str,
+        name: &str,
+        person: Option<&tilo_action_policy::PersonId>,
+    ) -> Result<(), String> {
+        let mut stamp = create();
+        stamp.verb = verb.to_owned();
+        stamp.args = vec![name.into(), id.into()];
+        if let Some(person) = person {
+            stamp.invoker = Stamp::by(&tilo_action_policy::Actor::Member(
+                tilo_action_policy::MemberId::person(person.clone()),
+            ));
+        }
+        let written = self.store.mark(KIND, id, &stamp).unwrap();
         let mutation =
             collab_types::DocumentMutation::Incremental(written.change.raw_bytes().to_vec());
         let body = self.seal(workspace, &written.doc, &mutation.encode().unwrap(), false);
@@ -1972,7 +2004,7 @@ async fn viewer(
     workspaces: &Workspaces,
     workspace: &str,
     owner: &tilo_user_identity::DeviceCert,
-) -> SigningKey {
+) -> (SigningKey, tilo_user_identity::DeviceCert) {
     use tilo_server_protocol::workspaces::JoinReply;
     let token = [7_u8; 8];
     let issued = workspaces
@@ -2012,7 +2044,7 @@ async fn viewer(
         )
         .await
         .unwrap();
-    key
+    (key, cert)
 }
 
 /// The checkpoints the workspace's store holds of `document`, by name.
@@ -2045,20 +2077,16 @@ async fn a_viewers_checkpoint_is_refused_by_the_workspaces_write_check() {
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
-    let (editor_key, _) = member_device(&workspaces, &workspace, &cert, 3).await;
-    let mut editor = Writer::new(&workspaces, &workspace, editor_key).await;
+    let (editor_key, editor_cert) = member_device(&workspaces, &workspace, &cert, 3).await;
+    let mut editor = Writer::for_member(&workspaces, &workspace, editor_key, &editor_cert).await;
     let fields = BTreeMap::from([("title".to_owned(), Cell::One(Value::Text("First".into())))]);
     let document = editor
         .put_fields(&workspaces, &workspace, "i-1", fields)
         .await;
 
     // The viewer's device holds the document as the editor wrote it, and names a version of it.
-    let mut reader = Writer::new(
-        &workspaces,
-        &workspace,
-        viewer(&workspaces, &workspace, &cert).await,
-    )
-    .await;
+    let (viewer_key, viewer_cert) = viewer(&workspaces, &workspace, &cert).await;
+    let mut reader = Writer::for_member(&workspaces, &workspace, viewer_key, &viewer_cert).await;
     let held = editor.store.document(&document).unwrap().save();
     reader.store.load(&document, &held).unwrap();
     reader.seq = 1;
@@ -2081,6 +2109,103 @@ async fn a_viewers_checkpoint_is_refused_by_the_workspaces_write_check() {
         ["Reviewed"],
         "an editor's checkpoint is taken"
     );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// The history marks the workspace's store holds of `document`, by verb and the name each says.
+async fn marks(workspaces: &Workspaces, workspace: &str, document: &str) -> Vec<(String, String)> {
+    let bytes = workspaces
+        .resource_document(workspace, APP, document)
+        .await
+        .unwrap()
+        .expect("the store holds the document");
+    let mut store = Store::new();
+    store.load(document, &bytes).unwrap();
+    store
+        .document(document)
+        .unwrap()
+        .get_changes(&[])
+        .into_iter()
+        .filter_map(|change| Stamp::of(&change))
+        .filter(|stamp| tilo_resource_store::HISTORY_VERBS.contains(&stamp.verb.as_str()))
+        .map(|stamp| {
+            let name = stamp
+                .args
+                .first()
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            (stamp.verb, name)
+        })
+        .collect()
+}
+
+/// A history mark is its author's: a device writing a checkpoint, a describe or a link stamped
+/// as another person is refused, while the same mark stamped as its own person is taken. The
+/// marks write nothing, so this is the only author check they have.
+#[tokio::test]
+async fn a_history_mark_naming_another_person_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let (member_key, member) = member_device(&workspaces, &workspace, &cert, 3).await;
+    let mut writer = Writer::for_member(&workspaces, &workspace, member_key, &member).await;
+    let fields = BTreeMap::from([("title".to_owned(), Cell::One(Value::Text("First".into())))]);
+    let document = writer
+        .put_fields(&workspaces, &workspace, "i-1", fields)
+        .await;
+    let against = tilo_action_policy::PersonId::from_root([9; 32]);
+    let own = tilo_action_policy::PersonId::from_root(member.user_public_key);
+    for verb in ["checkpoint", "describe", "link"] {
+        // Each attempt starts from the document the workspace kept, never from the writer's own
+        // copy: a mark built on the one the workspace refused could be refused for that alone.
+        let kept = workspaces
+            .resource_document(&workspace, APP, &document)
+            .await
+            .unwrap()
+            .expect("the store holds the document");
+        writer.store = Store::new();
+        writer.store.load(&document, &kept).unwrap();
+        let _ = writer
+            .mark(
+                &workspaces,
+                &workspace,
+                "i-1",
+                verb,
+                "Forged",
+                Some(&against),
+            )
+            .await;
+        assert!(
+            !marks(&workspaces, &workspace, &document)
+                .await
+                .iter()
+                .any(|(written, name)| written == verb && name == "Forged"),
+            "a {verb} naming another person is refused"
+        );
+        let kept = workspaces
+            .resource_document(&workspace, APP, &document)
+            .await
+            .unwrap()
+            .expect("the store holds the document");
+        writer.store = Store::new();
+        writer.store.load(&document, &kept).unwrap();
+        writer
+            .mark(&workspaces, &workspace, "i-1", verb, "Mine", Some(&own))
+            .await
+            .unwrap_or_else(|error| panic!("a {verb} naming its own person is taken: {error}"));
+        assert!(
+            marks(&workspaces, &workspace, &document)
+                .await
+                .iter()
+                .any(|(written, name)| written == verb && name == "Mine"),
+            "a {verb} naming its own person is taken"
+        );
+    }
     drop(workspaces);
     server.shutdown().await;
 }

@@ -99,9 +99,10 @@ impl VerbGrants {
 }
 
 /// Whether `verb`'s admission is the store's own, never a grant's: the platform's verbs (every
-/// name it writes under, `$create`, `$move`, `$branch`, `$origin` and the outbox's) and the verbs
-/// of history (`checkpoint`, `describe`, `link`) and of migration, which declare what they write
-/// and are judged by it.
+/// name it writes under, `$create`, `$move`, `$branch`, `$origin` and the outbox's), the verb of
+/// migration, which declares what it writes, and the history marks (`checkpoint`, `describe`,
+/// `link`), which write no kind for a grant to be judged on. A mark's author is decided by the
+/// rule that its stamp names them ([`super::platform_write_belongs`]).
 pub(super) fn keeps_its_own_check(verb: &str) -> bool {
     verb.starts_with('$') || matches!(verb, "migrate" | "checkpoint" | "describe" | "link")
 }

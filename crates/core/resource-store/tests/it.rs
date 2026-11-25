@@ -2781,6 +2781,41 @@ mod store {
         );
     }
 
+    /// A verb the workspace grants its author still writes only the kinds its surface declares:
+    /// a change of an issue's field under a verb that writes comments is refused, though the
+    /// same author is allowed that verb at the issue. The store checks the write set whatever
+    /// the grant says.
+    #[test]
+    fn a_granted_verb_writes_no_kind_its_surface_does_not() {
+        use tilo_resource_store::{Verb, Writes};
+        let anyone = |_: &Proposal<'_>| true;
+        let mut holder = Store::new();
+        holder.declare(Schema {
+            types: vec![record_type(ISSUE), record_type("Comment")],
+            verbs: vec![Verb {
+                name: "reply".to_owned(),
+                writes: BTreeMap::from([("Comment".to_owned(), Writes::default())]),
+                ..Verb::default()
+            }],
+            readers: BTreeMap::new(),
+        });
+        let change = issues()
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Draft", "open"),
+                &stamp("reply", "i1"),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                deliver(&change, &mut holder, &anyone).as_slice(),
+                [Refusal::Undeclared(why)] if why.contains("`reply` writes no `Issue`")
+            ),
+            "a granted verb still writes no kind its surface does not"
+        );
+    }
+
     /// A package's root is made by the host as a change of its own, against the package's
     /// surface: the store admits it, since the surface declares the record and that `$create`
     /// writes it. A surface read without its own record refused every app's first change.
