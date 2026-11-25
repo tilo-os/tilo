@@ -1425,7 +1425,7 @@ impl Sync {
         let held_here: BTreeSet<TreeChunk> = heads.keys().copied().collect();
         let mut held_now = held_here.clone();
         held_now.extend(listed);
-        let (due, mut waiting) = self.due(dirty, held_now, &held_here).await;
+        let (due, mut waiting) = self.due(dirty, held_now, &held_here);
         if due.is_empty() {
             self.dirty_since = waiting.then_some(since);
             self.unsent = 0;
@@ -1481,7 +1481,7 @@ impl Sync {
     /// The chunks of `dirty` that can go out now, with the heads each was last handed to the
     /// peer at, and whether any waits instead: whether it is founded here or waits for the
     /// workspace's answer.
-    async fn due(
+    fn due(
         &mut self,
         dirty: Vec<TreeChunk>,
         held_now: BTreeSet<TreeChunk>,

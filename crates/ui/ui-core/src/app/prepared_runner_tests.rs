@@ -745,9 +745,8 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                 APP,
                 WORKSPACE,
                 checkout.id.route(),
+                checkout.kind.as_str(),
                 bytes.clone(),
-                true,
-                None,
             );
             let _ = written(std::time::Duration::ZERO);
             let host = ProbeHarness::over(workspace);

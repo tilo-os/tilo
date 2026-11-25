@@ -445,9 +445,10 @@ impl InstanceViewStore {
     /// The person whose windows these views are, by their root key, when their reader set names
     /// one.
     fn person_root(&self) -> Option<[u8; 32]> {
-        let people = match collab_types::Readers::parse(self.readers.as_deref()?) {
-            Some(collab_types::Readers::People(people)) => people,
-            _ => return None,
+        let Some(collab_types::Readers::People(people)) =
+            collab_types::Readers::parse(self.readers.as_deref()?)
+        else {
+            return None;
         };
         let mut roots = people.into_iter();
         let root = roots.next()?;

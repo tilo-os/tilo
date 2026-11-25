@@ -81,9 +81,8 @@ tilo_test_env::scenario! {
             APP,
             WORKSPACE,
             checkout.id.route(),
+            checkout.kind.as_str(),
             doc.save(),
-            true,
-            None,
         );
         let _ = written(std::time::Duration::ZERO);
         let mut owners = ResourceOwners::writing(workspace);
