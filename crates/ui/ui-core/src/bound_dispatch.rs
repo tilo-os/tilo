@@ -80,7 +80,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 #[cfg(feature = "model")]
 use std::rc::Rc;
-#[cfg(feature = "model")]
+#[cfg(all(feature = "model", feature = "native"))]
 use taffy::NodeId;
 
 #[cfg(feature = "model")]
