@@ -419,3 +419,57 @@ fn a_link_is_taken_once() {
             .is_err()
     );
 }
+
+/// A desktop carries its link on one thread, as the app runtime does. A blocking ask made on that
+/// thread would wait for frames only it could carry, and every ask after it with it: it is
+/// refused at once, and the link goes on answering every other thread.
+#[test]
+fn an_ask_on_the_thread_that_carries_the_link_is_refused_and_the_link_keeps_answering() {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    let runtime = runtime();
+    let daemon = daemon(&runtime);
+    let carrying = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = carrying.handle().clone();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let carrier = std::thread::spawn(move || {
+        carrying.block_on(async move {
+            let _ = stopped.await;
+        });
+    });
+    let secret = daemon.links.make(daemon.person());
+    let socket = daemon.socket.clone();
+    let (opened, link) = std::sync::mpsc::channel();
+    handle.spawn(async move {
+        use tokio::io::AsyncWriteExt as _;
+        let mut link = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
+        opening.extend_from_slice(&secret);
+        link.write_all(&opening).await.unwrap();
+        opened.send(runtime_collab::ShellClient::open(link).0).unwrap();
+    });
+    let shell = DaemonShell::new(Ok(link.recv().unwrap()), handle.clone());
+
+    let on_the_link = shell.clone();
+    let (told, refused) = std::sync::mpsc::channel();
+    handle.spawn(async move {
+        told.send(on_the_link.ask_blocking(ShellCall::Workspaces))
+            .unwrap();
+    });
+    let refused = refused
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("an ask on the link's own thread is answered at once, never left waiting");
+    assert_eq!(refused.unwrap_err(), super::ASKED_ON_THE_LINK);
+
+    assert!(
+        matches!(
+            shell.ask_blocking(ShellCall::Workspaces),
+            Ok(ShellReply::Workspaces(_))
+        ),
+        "the link goes on answering another thread"
+    );
+    drop(stop);
+    carrier.join().unwrap();
+}
