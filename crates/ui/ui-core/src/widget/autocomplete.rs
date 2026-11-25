@@ -648,6 +648,8 @@ pub struct Autocomplete {
     alternate_pending: Option<String>,
     edits: Option<crate::component::Bound<String>>,
     accepted: Option<crate::component::Event>,
+    /// The text as it is edited, fired as [`Autocomplete::on_change`].
+    changed: Option<crate::component::Event>,
     alternate: Option<crate::component::Event>,
     filter_kind: Option<crate::component::Event>,
     adjust_event: Option<crate::component::Event>,
@@ -680,6 +682,7 @@ impl Autocomplete {
             alternate_pending: None,
             edits: None,
             accepted: None,
+            changed: None,
             alternate: None,
             filter_kind: None,
             adjust_event: None,
@@ -913,6 +916,13 @@ impl Autocomplete {
         self.edits = Some(edits);
         self.accepted = Some(accept);
         self
+    }
+
+    /// Report each edit of the field's text to `event`, carrying what the field holds after it: a
+    /// host that reads the query as the person types ([`Self::on_edit`] also says when a choice is
+    /// taken). An edit alone is no choice.
+    pub fn on_change(&mut self, event: crate::component::Event) {
+        self.changed = (!event.is_none()).then_some(event);
     }
 
     pub fn take_outcome(&mut self) -> AutocompleteOutcome {
@@ -1226,8 +1236,11 @@ impl Widget for Autocomplete {
             if let Some(edits) = &self.edits {
                 edits.edited(crate::component::Value::Text(text.clone()));
             }
-            // A letter typed is an edit, which the host hears as the text; only a row or the text
-            // taken is a choice.
+            // A letter typed is an edit, which the host hears as the text and as the edit it made;
+            // only a row or the text taken is a choice.
+            if let Some(changed) = &self.changed {
+                changed.fire(Some(crate::component::Value::Text(text.clone())));
+            }
             if std::mem::take(&mut self.taken) {
                 if let Some(pending) = self.alternate_pending.take() {
                     if let Some(alternate) = &self.alternate {
@@ -2116,6 +2129,58 @@ fn a_view_offered_list_narrows_as_text_is_typed() {
         Suggestion::labelled("bo@example.com", "Bo"),
     ]);
     assert_eq!(ac.suggestions().len(), 2, "an empty field offers them all");
+}
+
+/// Typing into the field reports the text as it is edited, so a host that reads the query as the
+/// person types hears it; an edit alone is no choice, so `accept` stays silent until a row or the
+/// text is taken.
+#[test]
+fn an_edit_reports_the_text_and_no_choice() {
+    use crate::component::{Bound, Event, Intent};
+    use crate::synthetic_input::char_key;
+    use crate::testing::dispatch;
+
+    let queue = crate::Intents::default();
+    let mut ac = Autocomplete::new().with_id("search");
+    ac.on_edit(
+        Bound::default(),
+        Event::View(Intent::new(&queue, "search", "accept")),
+    );
+    ac.on_change(Event::View(Intent::new(&queue, "search", "change")));
+    ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
+    ac.begin_edit();
+    for ch in "cal".chars() {
+        dispatch(&mut ac, &char_key(&ch.to_string()));
+    }
+    let fired: Vec<(String, Option<String>)> = queue
+        .take()
+        .iter()
+        .map(|fired| {
+            let text = match fired.value.as_ref() {
+                Some(crate::component::Value::Text(text)) => Some(text.clone()),
+                _ => None,
+            };
+            (fired.event.clone(), text)
+        })
+        .collect();
+    let changed: Vec<&(String, Option<String>)> = fired
+        .iter()
+        .filter(|(event, _)| event == "change")
+        .collect();
+    assert_eq!(
+        changed.len(),
+        3,
+        "every letter typed is reported as the text: {fired:?}"
+    );
+    assert_eq!(
+        changed.last().and_then(|(_, value)| value.as_deref()),
+        Some("cal"),
+        "the last report is all that was typed: {fired:?}"
+    );
+    assert!(
+        fired.iter().all(|(event, _)| event != "accept"),
+        "a letter typed is no choice: {fired:?}"
+    );
 }
 
 /// A row taken with Shift, Ctrl or Alt reports the row and the way it opens, which a palette

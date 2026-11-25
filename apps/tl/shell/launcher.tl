@@ -43,6 +43,7 @@ view launcher() {
                 kinds: if current { present_kinds } else { [] },
                 chosen: chosen_kinds,
             ) {
+                on change(text): launcher_query(text)
                 on accept(choice): choose_launcher_row(choice, current)
                 on alternate(choice): choose_launcher_row_as(choice, current)
                 on filter_kind(kind): set(chosen_kinds, toggled_kind(chosen_kinds, kind))
@@ -271,6 +272,14 @@ action choose_launcher_row_as(packed: Text, current: Bool) {
         }
     }
     choose_launcher_row(choice, current)
+}
+
+/// The launcher's field was edited: the open search's query is the text it now holds, so the
+/// rows it shows and the search resource an agent or a script reads say what the person typed,
+/// not what they typed before. An empty field asks nothing of the search, which keeps its last
+/// query until the next one is typed.
+action launcher_query(text: Text) {
+    if text != "" { session.search(query: text) }
 }
 
 /// What choosing the row the person reached does, read off the row's value: opening an

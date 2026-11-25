@@ -43,6 +43,10 @@ pub struct AutocompleteProps {
     pub chosen: Vec<String>,
     /// A line shown under the field while there are no rows ("Searching…", "Nothing matches").
     pub status: Option<String>,
+    /// The field's text after each edit: what the host reads as the person types. Carries the
+    /// text alone; taking a row or the text is [`Self::accept`].
+    #[component(event(value = String))]
+    pub change: Event,
     /// The person took a suggestion, or the text they typed: carries what the field holds now.
     #[component(event(value = String))]
     pub accept: Event,
@@ -78,6 +82,7 @@ impl Default for AutocompleteProps {
             kinds: Vec::new(),
             chosen: Vec::new(),
             status: None,
+            change: Event::None,
             accept: Event::None,
             alternate: Event::None,
             filter_kind: Event::None,
@@ -159,6 +164,7 @@ impl Described for Autocomplete {
             kinds,
             chosen,
             status,
+            change,
             accept,
             alternate,
             filter_kind,
@@ -184,6 +190,7 @@ impl Described for Autocomplete {
         field.on_alternate(alternate);
         field.on_filter(filter_kind);
         field.on_adjust(adjust);
+        field.on_change(change);
         if autofocus {
             field.request_focus();
         }
@@ -207,6 +214,7 @@ impl Described for Autocomplete {
         self.on_alternate(props.alternate);
         self.on_filter(props.filter_kind);
         self.on_adjust(props.adjust);
+        self.on_change(props.change);
         self.set_suggestions(
             props
                 .suggestions

@@ -239,6 +239,11 @@
       ],
       "events": [
         {
+          "name": "change",
+          "doc": "The field's text after each edit: what the host reads as the person types. Carries the text alone; taking a row or the text is [`Self::accept`].",
+          "value": "text"
+        },
+        {
           "name": "accept",
           "doc": "The person took a suggestion, or the text they typed: carries what the field holds now.",
           "value": "text"
