@@ -139,7 +139,7 @@ fn expired(now: SystemTime) -> SystemTime {
 /// member holds no key for the record, so that receipt, not a cleartext
 /// checkpoint, is what acknowledges its write.
 ///
-/// A renewal is numbered past the write it renews, so a owner_copy that never saw
+/// A renewal is numbered past the write it renews, so an owner copy that never saw
 /// that write holds the renewal for the history before it and asks its sender for
 /// it. The sender still keeps the original write, unretired, and answers with it
 /// as retained history; the renewal is taken in with it.
