@@ -371,8 +371,9 @@ primary action new_task(
 }
 
 /// Adds every task of `titles` at once, as one change: none of them is made when one cannot be
-/// (a blank title), so a person's batch is whole or nothing.
-action new_tasks(titles: List<Text>, p: Option<Project> = .none) -> List<Task> (
+/// (a blank title), so a person's batch is whole or nothing. With `done`, they are work already
+/// finished, written down to keep: done, as checking each off would leave it.
+action new_tasks(titles: List<Text>, p: Option<Project> = .none, done: Bool = false) -> List<Task> (
     icon: .plus,
     label: "New tasks",
     did: "added tasks",
@@ -381,7 +382,16 @@ action new_tasks(titles: List<Text>, p: Option<Project> = .none) -> List<Task> (
     let made: List<Task> = []
     for title in titles {
         tasks.numbers += 1
-        let one = tasks.items.insert(Task(number: tasks.numbers, title: title.trim(), project: p))
+        let status: Status = if done { .done } else { .backlog }
+        let one = tasks.items.insert(
+            Task(
+                number: tasks.numbers,
+                title: title.trim(),
+                project: p,
+                status: status,
+                done: done,
+            ),
+        )
         made = [made, [one]].flat_map(x -> x)
     }
     made

@@ -75,7 +75,31 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
             .find(|action| !action.scenario && action.settles.as_deref() == Some(field))
             .map(|action| action.id.clone())
     };
-    let settled: Vec<String> = all_flags.iter().filter_map(|id| settler_of(id)).collect();
+    // The settled flags by the names the app writes them under, as a parameter takes them: the
+    // store keeps a field by its id.
+    let named = |id: &str| {
+        meta.types
+            .iter()
+            .filter(|ty| ty.id == item_ty)
+            .flat_map(|ty| &ty.fields)
+            .find(|field| field.id == id)
+            .map(|field| field.name.as_str())
+    };
+    let settled_flags: Vec<&str> = all_flags
+        .iter()
+        .copied()
+        .filter(|id| settler_of(id).is_some())
+        .map(|id| named(id).ok_or_else(|| format!("{app}'s field {id} has no name")))
+        .collect::<Result<_, _>>()?;
+    // An item seeded with its settled flags set is made with them by the maker where it takes
+    // them, as one change for the batch: its code keeps in step what the settler would. Otherwise
+    // each such item is settled by the settler after it is made, one change each.
+    let made_set = maker_args(&maker, Value::List(Vec::new()), &settled_flags).is_some();
+    let settled: Vec<String> = if made_set {
+        Vec::new()
+    } else {
+        all_flags.iter().filter_map(|id| settler_of(id)).collect()
+    };
     let flags: Vec<&str> = all_flags
         .iter()
         .copied()
@@ -102,31 +126,53 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
     while written < n {
         let end = n.min(written.saturating_add(BATCH));
         let numbers = from.saturating_add(written)..from.saturating_add(end);
-        let titles = numbers
-            .clone()
-            .map(|i| Value::Text(format!("Item {i}")))
-            .collect();
-        let made = match host
-            .runtime()
-            .invoke_action(host.viewer(), (maker.as_str(), vec![Value::List(titles)]))
-            .map_err(|error| error.to_string())?
-        {
-            tilolang_runtime::InvokeOutcome::Done(Value::List(made)) => made
-                .into_iter()
-                .map(|item| match item {
-                    Value::Ref(item) => Ok((*item.target).clone()),
-                    other => Err(format!("{app}'s {maker} answered {other:?} for an item")),
-                })
-                .collect::<Result<Vec<ResourceRef>, String>>()?,
-            other => return Err(format!("{app}'s {maker}: {other:?}")),
+        // The items whose settled flags are set (every third) are made apart from the rest when
+        // the maker sets them itself; the two lists keep the items' order within each.
+        let (set_numbers, plain_numbers): (Vec<usize>, Vec<usize>) = if made_set {
+            numbers.clone().partition(|i| i % 3 == 0)
+        } else {
+            (Vec::new(), numbers.clone().collect())
         };
-        if made.len() != end - written {
-            return Err(format!(
-                "{app}'s {maker} made {} items of {}",
-                made.len(),
-                end - written
-            ));
+        let mut made_by_number = std::collections::BTreeMap::new();
+        for (batch, set) in [(plain_numbers, &[][..]), (set_numbers, &settled_flags[..])] {
+            if batch.is_empty() {
+                continue;
+            }
+            let titles = Value::List(
+                batch
+                    .iter()
+                    .map(|i| Value::Text(format!("Item {i}")))
+                    .collect(),
+            );
+            let args = maker_args(&maker, titles, set)
+                .ok_or_else(|| format!("{app}'s {} takes no {set:?}", maker.id))?;
+            let made = match host
+                .runtime()
+                .invoke_action(host.viewer(), (maker.id.as_str(), args))
+                .map_err(|error| error.to_string())?
+            {
+                tilolang_runtime::InvokeOutcome::Done(Value::List(made)) => made,
+                other => return Err(format!("{app}'s {}: {other:?}", maker.id)),
+            };
+            if made.len() != batch.len() {
+                return Err(format!(
+                    "{app}'s {} made {} items of {}",
+                    maker.id,
+                    made.len(),
+                    batch.len()
+                ));
+            }
+            for (i, item) in batch.into_iter().zip(made) {
+                let Value::Ref(item) = item else {
+                    return Err(format!(
+                        "{app}'s {} answered {item:?} for an item",
+                        maker.id
+                    ));
+                };
+                made_by_number.insert(i, (*item.target).clone());
+            }
         }
+        let made: Vec<ResourceRef> = made_by_number.into_values().collect();
         let writes = numbers
             .clone()
             .zip(&made)
@@ -199,7 +245,7 @@ pub fn seed_more(host: &Host, app: &str, from: usize, n: usize, at: &str) -> Res
 fn maker(
     meta: &tilolang_runtime::meta::Meta,
     item: &crate::schema::TypeSchema,
-) -> Result<String, String> {
+) -> Result<tilolang_runtime::meta::ActionMeta, String> {
     use tilolang_runtime::meta::{Ty, parse_ty};
     // A type the package's own metadata writes reads, or the package is broken: say so.
     let read = |text: &str| parse_ty(text, &meta.app);
@@ -224,12 +270,56 @@ fn maker(
             break;
         }
     }
-    found.map(|action| action.id.clone()).ok_or_else(|| {
+    found.cloned().ok_or_else(|| {
         format!(
             "{} has no action that adds many {} at once from their titles",
             meta.app, item.name
         )
     })
+}
+
+/// The arguments of `maker` that make the items titled `titles`, with each flag of `set` given
+/// as `true`: the action's own parameter of that flag's name, which its code keeps what follows
+/// from it in step with. A parameter before the last one given takes its `.none`. `None` when
+/// the maker takes one of `set` under no parameter of its own, or a parameter before it holds
+/// a default other than `.none`, which a seed cannot leave out by position.
+fn maker_args(
+    maker: &tilolang_runtime::meta::ActionMeta,
+    titles: Value,
+    set: &[&str],
+) -> Option<Vec<Value>> {
+    let given = |name: &str| set.contains(&name);
+    if !set.iter().all(|flag| {
+        maker
+            .params
+            .iter()
+            .any(|param| param.name == *flag && param.ty == "Bool")
+    }) {
+        return None;
+    }
+    let last = maker
+        .params
+        .iter()
+        .rposition(|param| param.default.is_none() || given(&param.name))?;
+    let mut titles = Some(titles);
+    maker.params[..=last]
+        .iter()
+        .map(|param| {
+            if param.default.is_none() {
+                titles.take()
+            } else if given(&param.name) {
+                Some(Value::Bool(true))
+            } else if param
+                .default
+                .as_ref()
+                .is_some_and(|default| default.is_none())
+            {
+                Some(Value::Opt(None))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// The collection the app `app`'s items are seeded into: its first root, the root's first

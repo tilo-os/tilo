@@ -414,13 +414,15 @@ d-rs3ubifz-title = Titel
 d-rs3ubifz-remind = Erinnern
 
 d-2rpw5inw = Neue Aufgaben
-    .doc = Fügt alle Aufgaben aus `titles` auf einmal hinzu, als eine Änderung: keine entsteht, wenn eine nicht entstehen kann (ein leerer Titel), also ist die Sammlung einer Person ganz oder gar nicht.
+    .doc = Fügt alle Aufgaben aus `titles` auf einmal hinzu, als eine Änderung: keine entsteht, wenn eine nicht entstehen kann (ein leerer Titel), also ist die Sammlung einer Person ganz oder gar nicht. Mit `done` sind sie schon erledigte Arbeit, festgehalten zum Aufbewahren: erledigt, wie Abhaken jede hinterlässt.
     .did = Aufgaben hinzugefügt
     .w-a-task-needs-a-title = Eine Aufgabe braucht einen Titel
 
 d-2rpw5inw-titles = Titel
 
 d-2rpw5inw-p = P
+
+d-2rpw5inw-done = Erledigt
 
 d-zjuy7y7f = Neues Projekt
     .doc = Beginnt ein Projekt.
