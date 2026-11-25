@@ -329,8 +329,11 @@ impl NavShell {
             let header = self.geometry.header(Column::Inspector);
             if header.height() > 0.0 {
                 let local = self.column_theme(f.theme, Some(Column::Inspector));
-                crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row)
-                    .paint_rule(f.scene, f.transform, &local);
+                crate::widget::window_header::header_row::HeaderRowFace::in_row(
+                    header,
+                    self.inputs.borrow().metrics.row,
+                )
+                .paint_rule(f.scene, f.transform, &local);
             }
         } else {
             crate::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);

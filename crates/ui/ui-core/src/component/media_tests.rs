@@ -11,6 +11,7 @@ use super::testing::*;
 use super::*;
 use crate::component::{Component, Described, PropType};
 use crate::headless::Driver;
+use crate::testing::harness;
 use crate::theme::Theme;
 use crate::widget::{
     CodeEditor, CodeEditorProps, DescribedCards, DropZone, DropZoneProps, Image, ImageProps,

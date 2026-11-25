@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
         let api = part_rect(&h, Part::More(Column::Content));
         assert!(api.width() > 0.0, "the actions wait in the menu's api");
         let (needs, _) =
-            crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+            crate::widget::window_header::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
         assert!(
             (shown.width() - needs).abs() < 1.5,
             "the title says {needs:.0} wide and takes {:.0} ({shown:?})",
@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
         let title = "Launch plan for the autumn release";
         let needs = |title: &str| {
             let (w, _) =
-                crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+                crate::widget::window_header::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
             w
         };
         let actions = || {
@@ -642,7 +642,8 @@ fn a_titles_box_reaches_the_actions_that_follow_it() {
     let title = part_rect(&h, Part::Title(Column::Sidebar));
     let action = part_rect(&h, Part::Action(Column::Sidebar, 0));
     let mut text = TextRenderer::new();
-    let (needs, _) = crate::chrome::header_row::measure_title(&mut text, &theme, "Notes", None);
+    let (needs, _) =
+        crate::widget::window_header::header_row::measure_title(&mut text, &theme, "Notes", None);
     assert!(
         title.width() > needs + 1.0,
         "the title has more than the width of its words: {title:?} for {needs:.1}"
@@ -656,7 +657,7 @@ fn a_titles_box_reaches_the_actions_that_follow_it() {
         text.elide_to_width_style(
             "Notes",
             spare,
-            &crate::chrome::header_row::title_style(&theme)
+            &crate::widget::window_header::header_row::title_style(&theme)
         ) == "Notes",
         "no renderer elides the whole name in a box that wide"
     );

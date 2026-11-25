@@ -7,8 +7,8 @@ use std::rc::Rc;
 use vello::peniko::Color;
 
 use super::{NavItem, NavSection};
-use crate::chrome::NavCount;
 use crate::icons::Icon;
+use crate::widget::nav_list::nav_row::NavCount;
 use crate::widget::{ListModel, RowStatus, Tone};
 
 #[derive(Clone, Debug, Default, PartialEq)]

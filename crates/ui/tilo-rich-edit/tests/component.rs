@@ -1,8 +1,9 @@
 //! The rich text line as a view declares it: read from its props and built as the component.
 
 use tilo_rich_edit::{DeclaredLine, RichTextLineProps};
-use tilo_ui::component::testing::{Node, harness, text};
+use tilo_ui::component::testing::{Node, text};
 use tilo_ui::component::{Component as _, Described as _};
+use tilo_ui::testing::component_harness::harness;
 use tilo_ui::widget::Widget as _;
 use tilo_ui_graph::component::Value;
 

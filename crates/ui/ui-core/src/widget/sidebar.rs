@@ -71,7 +71,7 @@ pub struct SidebarDrawer {
     panel_min_width: Option<AuthoredExtent>,
     /// The rail's destination labels, when it shows captions: the rail then
     /// grows with the text to fit the longest word, as every shared rail does
-    /// ([`crate::chrome::rail_width_fitting`]).
+    /// ([`crate::widget::nav_list::nav_row::rail_width_fitting`]).
     rail_labels: Vec<String>,
     /// A snap asked for before the first [`Self::resolve`], kept until the
     /// layout is known.
@@ -289,7 +289,7 @@ impl SidebarDrawer {
     }
     /// The rail's destination captions: the rail grows with the text, up to its cap, so its
     /// longest word shows whole rather than as a fragment
-    /// ([`crate::chrome::rail_width_fitting`]).
+    /// ([`crate::widget::nav_list::nav_row::rail_width_fitting`]).
     pub fn rail_labels(&mut self, labels: impl IntoIterator<Item = impl Into<String>>) {
         self.rail_labels = labels.into_iter().map(Into::into).collect();
     }
@@ -314,7 +314,7 @@ impl SidebarDrawer {
             f64::from(theme.tokens.metrics.rail_width)
         } else {
             crate::text_render::with_layout_renderer(theme, |text| {
-                crate::chrome::rail_width_fitting(
+                crate::widget::nav_list::nav_row::rail_width_fitting(
                     theme,
                     text,
                     self.rail_labels.iter().map(String::as_str),
@@ -326,7 +326,7 @@ impl SidebarDrawer {
         self.sheet_least_half = f64::from(theme.tokens.metrics.sidebar_min_width);
         self.resize_max_width = f64::from(theme.tokens.metrics.sidebar_max_width) * growth;
         self.resize.set_rect(self.outer, theme);
-        self.sheet_peek = crate::chrome::HeaderRowFace::height(theme);
+        self.sheet_peek = crate::widget::window_header::header_row::HeaderRowFace::height(theme);
         self.sheet_grip = f64::from(theme.tokens.metrics.min_pointer_target);
     }
 
@@ -497,7 +497,11 @@ impl SidebarDrawer {
 
     /// The window's header row across the top of `area`, with this drawer's toggle in it: at
     /// the leading corner for a sidebar, the trailing one for an inspector.
-    pub fn header(&mut self, area: Rect, theme: &Theme) -> crate::chrome::HeaderRowFace {
+    pub fn header(
+        &mut self,
+        area: Rect,
+        theme: &Theme,
+    ) -> crate::widget::window_header::header_row::HeaderRowFace {
         self.header_with_history(area, theme, false)
     }
 
@@ -509,8 +513,8 @@ impl SidebarDrawer {
         area: Rect,
         theme: &Theme,
         history: bool,
-    ) -> crate::chrome::HeaderRowFace {
-        let face = crate::chrome::HeaderRowFace::new(area, theme);
+    ) -> crate::widget::window_header::header_row::HeaderRowFace {
+        let face = crate::widget::window_header::header_row::HeaderRowFace::new(area, theme);
         let face = match self.side {
             SidebarSide::Left => face.with_toggle().with_history_if(history),
             SidebarSide::Right => face.with_history_if(history).with_trailing(),

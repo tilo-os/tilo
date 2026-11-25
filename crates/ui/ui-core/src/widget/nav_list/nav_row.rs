@@ -9,7 +9,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
-use super::shell::{SelectionState, paint_row_selection};
+use crate::chrome::shell::{SelectionState, paint_row_selection};
 use crate::icons::Icon;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -1027,7 +1027,7 @@ pub fn paint_nav_row(
     let lift = if face.lifted() {
         colors.lift_on(ground, 1.0)
     } else if face.state.hover {
-        colors.lift_on(ground, super::shell::HOVER_LIFT_T)
+        colors.lift_on(ground, crate::chrome::shell::HOVER_LIFT_T)
     } else {
         ground
     };

@@ -11,6 +11,7 @@
 use super::testing::*;
 use super::*;
 use crate::headless::Driver;
+use crate::testing::harness;
 use crate::widget::Widget;
 
 fn column(header: &str) -> Node {

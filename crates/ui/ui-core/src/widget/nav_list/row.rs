@@ -11,12 +11,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::model::{NavItemSpec, NavRowData, NavRowKind};
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::{
-    NavRowFace, NavRowStyle, NavSectionFace, SelectionState, nav_badge_column, nav_item_height,
+use super::nav_row::{
+    NavRowFace, NavRowStyle, NavSectionFace, nav_badge_column, nav_item_height,
     nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout, nav_section_height,
     nav_section_layout, paint_nav_row, paint_nav_section,
 };
+use crate::a11y::{AccessNode, AccessState, Role};
+use crate::chrome::SelectionState;
 use crate::icons::Icon;
 use crate::interaction::InteractionEnvironment;
 use crate::text_render::TextRenderer;
@@ -538,11 +539,12 @@ impl NavRow {
                 let layout = nav_row_layout(theme, text, &face);
                 let spare = layout.label_x1 - layout.label_x0;
                 let elided = if paint.rail {
-                    crate::chrome::nav_row::rail_caption_lines(theme, text, label, spare)
+                    crate::widget::nav_list::nav_row::rail_caption_lines(theme, text, label, spare)
                         .last()
                         .is_some_and(|line| line.ends_with('\u{2026}'))
                 } else {
-                    let style = crate::chrome::nav_row::label_measure_style(theme, face.style);
+                    let style =
+                        crate::widget::nav_list::nav_row::label_measure_style(theme, face.style);
                     let (width, _) = text.measure_style(label, None, &style);
                     f64::from(width) > spare + 0.5
                 };
@@ -725,7 +727,7 @@ impl Widget for NavRow {
                 let face = plain_face(spec, Rect::ZERO, "");
                 (
                     label.clone(),
-                    crate::chrome::nav_row_description(&face),
+                    crate::widget::nav_list::nav_row::nav_row_description(&face),
                     spec.checked,
                 )
             }

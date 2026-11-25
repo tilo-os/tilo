@@ -1,9 +1,12 @@
 use super::*;
 use crate::app::driver::Driver;
-use crate::chrome::{NavRowFace, NavSectionFace, SelectionState, paint_nav_row, paint_nav_section};
+use crate::chrome::SelectionState;
 use crate::state::State;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use crate::widget::nav_list::nav_row::{
+    NavRowFace, NavSectionFace, paint_nav_row, paint_nav_section,
+};
 use std::cell::RefCell as Cell2;
 use vello::kurbo::{Affine, Rect};
 use winit::event::ElementState;
@@ -209,7 +212,7 @@ fn spec_face<'a>(
     spec: &'a super::model::NavItemSpec,
     row: Rect,
     label: &'a str,
-) -> crate::chrome::NavRowFace<'a> {
+) -> crate::widget::nav_list::nav_row::NavRowFace<'a> {
     super::NavPaint::default().item_face(spec, row, label)
 }
 
@@ -237,13 +240,13 @@ tilo_test_env::scenario! {
             "untitled items stand at the top level; a titled section heads its items"
         );
         let theme = Theme::dark();
-        let row = crate::chrome::nav_row_height(&theme);
+        let row = crate::widget::nav_list::nav_row::nav_row_height(&theme);
         let inbox = list.row_rect("inbox").expect("inbox shown");
         assert!((inbox.height() - row).abs() < 0.5);
         let work = list.row_rect("work").expect("work shown");
         let section = work.y0 - list.row_rect("sent").expect("sent").y1;
         assert!(
-            (section - crate::chrome::nav_section_height(&theme, false)).abs() < 0.5,
+            (section - crate::widget::nav_list::nav_row::nav_section_height(&theme, false)).abs() < 0.5,
             "a section after the first leads with s3 of space ({section})"
         );
     }
@@ -786,7 +789,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.sections[0].items[0].count,
-            Some(crate::chrome::NavCount::Neutral(3)),
+            Some(crate::widget::nav_list::nav_row::NavCount::Neutral(3)),
             "a place shows what it holds"
         );
         let trailing = list.sections[1]
@@ -1106,7 +1109,7 @@ tilo_test_env::scenario! {
         let h = harness(list, Theme::dark());
         let inbox = h.root::<NavList>().row_rect("inbox").expect("inbox");
         assert!(
-            (inbox.height() - crate::chrome::nav_rail_row_height(&Theme::dark())).abs() < 0.5,
+            (inbox.height() - crate::widget::nav_list::nav_row::nav_rail_row_height(&Theme::dark())).abs() < 0.5,
             "rail tiles hold an icon over a caption"
         );
     }
@@ -1131,9 +1134,9 @@ tilo_test_env::scenario! {
         let plain = list.row_rect("plain").expect("plain");
         let db = list.row_rect("db").expect("db");
         let disk = list.row_rect("disk").expect("disk");
-        assert!((plain.height() - crate::chrome::nav_row_height(&theme)).abs() < 0.5);
+        assert!((plain.height() - crate::widget::nav_list::nav_row::nav_row_height(&theme)).abs() < 0.5);
         assert!(
-            (db.height() - crate::chrome::nav_item_height(&theme, true, false)).abs() < 0.5,
+            (db.height() - crate::widget::nav_list::nav_row::nav_item_height(&theme, true, false)).abs() < 0.5,
             "a secondary line adds a caption line ({})",
             db.height()
         );
@@ -1229,7 +1232,7 @@ tilo_test_env::scenario! {
             .meta("12")
             .count(NavCount::Neutral(3))
             .presence(&people);
-        let layout = crate::chrome::nav_row_layout(&theme, &mut text, &face);
+        let layout = crate::widget::nav_list::nav_row::nav_row_layout(&theme, &mut text, &face);
         let status = layout.status.expect("status dot");
         let count = layout.count.expect("count");
         let meta = layout.meta.expect("meta");
@@ -1244,12 +1247,12 @@ tilo_test_env::scenario! {
         assert!(layout.label_x1 <= layout.presence[0].x0);
         let actions = [Icon::MoreHorizontal];
         let hovered =
-            crate::chrome::nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
+            crate::widget::nav_list::nav_row::nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
         assert!(hovered.status.is_none() && hovered.meta.is_none());
         assert!(hovered.status_label.is_none() && hovered.count.is_none());
         assert!(hovered.presence.is_empty());
         assert_eq!(hovered.actions.len(), 1);
-        let spoken = crate::chrome::nav_row_description(&face).expect("description");
+        let spoken = crate::widget::nav_list::nav_row::nav_row_description(&face).expect("description");
         assert!(
             spoken.contains("Active") && spoken.contains("Needs attention"),
             "{spoken}"
@@ -1309,7 +1312,7 @@ tilo_test_env::scenario! {
         let list = h.root::<NavList>();
         let home = list.row_rect("home").expect("home");
         let subs = list.row_rect("subs").expect("subs");
-        assert!((home.height() - crate::chrome::nav_rail_row_height(&theme)).abs() < 0.5);
+        assert!((home.height() - crate::widget::nav_list::nav_row::nav_rail_row_height(&theme)).abs() < 0.5);
         assert!(
             (subs.height() - home.height()).abs() < 0.5,
             "one word too wide for the rail stays one line"
@@ -1321,7 +1324,7 @@ tilo_test_env::scenario! {
             ("Connections", 60.0),
             ("Connections", 68.0),
         ] {
-            let lines = crate::chrome::rail_caption_lines(&theme, &mut text, label, width);
+            let lines = crate::widget::nav_list::nav_row::rail_caption_lines(&theme, &mut text, label, width);
             assert_eq!(lines.len(), 1, "{label} at {width}: {lines:?}");
             assert!(
                 !lines[0].contains('-'),
@@ -1332,7 +1335,7 @@ tilo_test_env::scenario! {
                 "{label} at {width} shows whole or elided: {lines:?}"
             );
         }
-        let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
+        let lines = crate::widget::nav_list::nav_row::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
         assert_eq!(lines, ["Liked", "songs"], "two words wrap at the space");
 
         use super::RailExtent as _;
@@ -1355,7 +1358,7 @@ tilo_test_env::scenario! {
         text.set_text_scale(big.text_scale);
         let caption = width - 4.0 * f64::from(big.tokens.spacing.s1);
         assert_eq!(
-            crate::chrome::rail_caption_lines(&big, &mut text, "Channels", caption),
+            crate::widget::nav_list::nav_row::rail_caption_lines(&big, &mut text, "Channels", caption),
             ["Channels"]
         );
         let plain = NavList::new(vec![NavSection::untitled(
@@ -1380,14 +1383,14 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let list = h.root::<NavList>();
         assert!(!still_moving(list));
-        let row = crate::chrome::nav_row_height(&theme);
+        let row = crate::widget::nav_list::nav_row::nav_row_height(&theme);
         for id in ["inbox", "sent", "work", "design", "travel"] {
             let rect = list.row_rect(id).expect("row");
             assert!((rect.height() - row).abs() < 0.5, "{id}: {}", rect.height());
         }
         let work = list.row_rect("work").expect("work");
         let gap = work.y0 - list.row_rect("sent").expect("sent").y1;
-        assert!((gap - crate::chrome::nav_section_height(&theme, false)).abs() < 0.5);
+        assert!((gap - crate::widget::nav_list::nav_row::nav_section_height(&theme, false)).abs() < 0.5);
     }
 
     phase sections_changed_after_layout_immediately_share_paint_and_hit_geometry;
@@ -1399,7 +1402,7 @@ tilo_test_env::scenario! {
         assert!(!still_moving(h.root::<NavList>()));
         h.relayout_at((280, 360)).expect("layout");
         let theme = Theme::dark();
-        let row = crate::chrome::nav_row_height(&theme);
+        let row = crate::widget::nav_list::nav_row::nav_row_height(&theme);
         let drafts = h.root::<NavList>().row_rect("drafts").expect("drafts");
         assert!((drafts.height() - row).abs() < 0.5);
     }
@@ -1601,7 +1604,7 @@ tilo_test_env::scenario! {
             actions.borrow().as_slice(),
             [("work".to_owned(), "more".to_owned())]
         );
-        let header_y = work.y0 - crate::chrome::nav_row_height(&Theme::dark()) / 2.0;
+        let header_y = work.y0 - crate::widget::nav_list::nav_row::nav_row_height(&Theme::dark()) / 2.0;
         click(&mut h, work.x1 - s2 - 10.0, header_y);
         assert_eq!(
             sections_seen.borrow().as_slice(),
@@ -1640,7 +1643,7 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
             paint
                 .section_action_rect(&row, header)
                 .expect("the header's action"),
-            crate::chrome::nav_section_layout(
+            crate::widget::nav_list::nav_row::nav_section_layout(
                 &Theme::dark(),
                 &NavSectionFace::new(header, "").action(Icon::Plus),
             )
@@ -1767,13 +1770,13 @@ fn places(
 }
 
 /// The face item `id` paints with, laid out where it paints.
-fn layout_of(list: &NavList, id: &str) -> crate::chrome::NavRowLayout {
+fn layout_of(list: &NavList, id: &str) -> crate::widget::nav_list::nav_row::NavRowLayout {
     let row = list.row_rect(id).expect("row in view");
     let item = spec_of(list, id);
     let theme = Theme::dark();
     let face = spec_face(&item, row, id);
     let mut text = crate::text_render::TextRenderer::new();
-    crate::chrome::nav_row_layout(&theme, &mut text, &face)
+    crate::widget::nav_list::nav_row::nav_row_layout(&theme, &mut text, &face)
 }
 
 #[test]
@@ -2670,7 +2673,7 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     assert!(crate::widget::controls::has_action_control_bindings(
         list_of(&h)
     ));
-    let header_y = work.y0 - crate::chrome::nav_row_height(&Theme::dark()) / 2.0;
+    let header_y = work.y0 - crate::widget::nav_list::nav_row::nav_row_height(&Theme::dark()) / 2.0;
     click_at(&mut h, work.x1 - s2 - 10.0, header_y);
     assert_eq!(take(&mut h), Some(serde_json::json!("folders")));
     assert_eq!(take(&mut h), None);
@@ -2764,7 +2767,7 @@ fn a_zero_count_is_no_count() {
     };
     assert_eq!(
         chosen(NavItem::new("inbox", "Inbox").count(6)).selected_count(),
-        Some(crate::chrome::NavCount::Neutral(6))
+        Some(crate::widget::nav_list::nav_row::NavCount::Neutral(6))
     );
     assert_eq!(
         chosen(NavItem::new("inbox", "Inbox").count(0)).selected_count(),

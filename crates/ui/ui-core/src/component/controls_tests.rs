@@ -10,6 +10,7 @@
 use super::testing::*;
 use super::*;
 use crate::component::{Component, Described, Value};
+use crate::testing::harness;
 use crate::widget::{
     Checkbox, CheckboxProps, Dropdown, DropdownProps, NumberInput, NumberInputProps, Slider,
     SliderProps, Stepper, StepperProps, Toggle, ToggleGroup, ToggleGroupProps, ToggleProps,

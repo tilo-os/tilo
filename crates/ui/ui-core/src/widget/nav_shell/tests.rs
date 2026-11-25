@@ -1224,7 +1224,7 @@ fn choosing_a_destination_in_a_narrow_window_moves_on() {
     settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let g = geometry(&h);
-    let row = crate::chrome::nav_row_height(&Theme::dark());
+    let row = crate::widget::nav_list::nav_row::nav_row_height(&Theme::dark());
     let point = Point::new(60.0, g.body(Column::Sidebar).y0 + row * 1.5);
     let device = winit::event::DeviceId::dummy();
     h.dispatch_to_root(&WindowEvent::CursorMoved {

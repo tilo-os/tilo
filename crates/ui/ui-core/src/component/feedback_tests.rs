@@ -9,6 +9,7 @@
 
 use super::testing::*;
 use super::*;
+use crate::testing::harness;
 use crate::widget::{
     Badge, BadgeProps, Breadcrumb, BreadcrumbProps, DisclosureRow, DisclosureRowProps, StatGroup,
     StatGroupProps, Toolbar, ToolbarProps, Widget,

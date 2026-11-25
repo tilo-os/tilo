@@ -1040,7 +1040,8 @@ mod tests {
     #[test]
     fn a_press_off_a_panel_with_a_dismiss_reports_it_and_one_on_it_does_not() {
         use crate::component::Component;
-        use crate::component::testing::{Node, fired, harness};
+        use crate::component::testing::{Node, fired};
+        use crate::testing::harness;
         let queue = crate::Intents::default();
         let mut node = Node::new("FloatingPanel", "panel", &queue)
             .prop("width", crate::component::Value::Float(200.0))

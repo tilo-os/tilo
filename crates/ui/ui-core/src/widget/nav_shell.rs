@@ -15,7 +15,6 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::LocalState;
-use crate::chrome::HeaderRowMetrics;
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::platform::{HostShortcut, PlatformConventions};
@@ -25,6 +24,7 @@ use crate::time::Instant;
 use crate::tokens::BreakpointTracker;
 use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
+use crate::widget::window_header::header_row::HeaderRowMetrics;
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
     AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavList, SearchField,
@@ -1774,7 +1774,8 @@ impl NavShell {
         if list.is_rail() {
             return None;
         }
-        list.selected_count().map(crate::chrome::NavCount::value)
+        list.selected_count()
+            .map(crate::widget::nav_list::nav_row::NavCount::value)
     }
 
     /// A column's header draws its count only where no visible sidebar already draws it for the
@@ -2876,8 +2877,11 @@ impl NavShell {
                 continue;
             }
             let local = self.column_theme(theme, Some(column));
-            crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row)
-                .paint_rule(scene, transform, &local);
+            crate::widget::window_header::header_row::HeaderRowFace::in_row(
+                header,
+                self.inputs.borrow().metrics.row,
+            )
+            .paint_rule(scene, transform, &local);
         }
         let lead = if g.overview_column.width() > 0.0 {
             g.overview_column

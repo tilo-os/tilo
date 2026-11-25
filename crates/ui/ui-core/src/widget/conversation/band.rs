@@ -4,11 +4,11 @@
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use crate::chrome::nav_row_height;
 use crate::component::{Component, PropType, Type, Value};
 use crate::paint::PaintCtx;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::nav_list::nav_row::nav_row_height;
 
 #[must_use]
 pub fn height(theme: &Theme) -> f64 {

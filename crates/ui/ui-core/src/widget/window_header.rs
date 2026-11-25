@@ -4,7 +4,7 @@
 //! A widget that draws the header row across the top of the window
 //! provides [`WindowHeader`]: [`NavShell`](crate::widget::NavShell) does,
 //! and so does a painted app that lays its top band out with
-//! [`crate::chrome::HeaderRowFace`]. The host offers it the window's own
+//! [`crate::widget::window_header::header_row::HeaderRowFace`]. The host offers it the window's own
 //! controls (today: History) before it builds the app. App windows never add
 //! a second header when the app declines this capability; History remains
 //! available through the platform action, palette and keyboard.
@@ -32,6 +32,8 @@ use super::capability::capability_mut;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
+
+pub mod header_row;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryControl {
@@ -739,7 +741,7 @@ impl HistoryOpener {
         rect: Rect,
     ) {
         if let Some(control) = self.control {
-            crate::chrome::paint_history_control(
+            crate::widget::window_header::header_row::paint_history_control(
                 scene,
                 transform,
                 text,

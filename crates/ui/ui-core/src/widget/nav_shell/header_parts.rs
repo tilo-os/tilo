@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use crate::chrome::header_row;
+use crate::widget::window_header::header_row;
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;

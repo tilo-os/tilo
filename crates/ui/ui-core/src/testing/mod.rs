@@ -5,6 +5,7 @@
 pub mod action_contract;
 #[cfg(test)]
 mod clicks;
+pub mod component_harness;
 mod dispatch;
 #[cfg(all(test, unix))]
 mod executable;
@@ -18,6 +19,8 @@ mod owned_text;
 mod widgets;
 #[cfg(test)]
 pub(crate) use clicks::{clicks, record_click};
+#[cfg(test)]
+pub(crate) use component_harness::harness;
 pub use dispatch::{Dispatch, Dispatched, dispatch};
 #[cfg(all(test, unix))]
 pub use executable::write_executable;

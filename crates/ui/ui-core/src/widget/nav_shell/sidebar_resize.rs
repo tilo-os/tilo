@@ -25,9 +25,10 @@ pub(super) struct Edge {
 impl Metrics {
     /// The header row for a person using `input`: the shell's own buttons
     /// are the minimum target it needs, as an app's buttons are
-    /// ([`crate::chrome::HeaderRowMetrics::resolve_for`]).
+    /// ([`crate::widget::window_header::header_row::HeaderRowMetrics::resolve_for`]).
     fn for_input(mut self, theme: &Theme, input: InteractionEnvironment) -> Self {
-        let row = crate::chrome::HeaderRowMetrics::resolve_for(theme, input);
+        let row =
+            crate::widget::window_header::header_row::HeaderRowMetrics::resolve_for(theme, input);
         self.row = row;
         self.header = row.height;
         self.chip = row.chip;

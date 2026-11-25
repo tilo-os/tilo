@@ -8,8 +8,8 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
+use self::nav_row::{NavCount, nav_row_height};
 use crate::LocalState;
-use crate::chrome::{NavCount, nav_row_height};
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
@@ -1883,7 +1883,7 @@ pub(crate) trait NavigationSource {
 }
 
 /// A rail whose width follows its destinations' words
-/// ([`crate::chrome::rail_width_fitting`]).
+/// ([`crate::widget::nav_list::nav_row::rail_width_fitting`]).
 pub(crate) trait RailExtent {
     fn fitted_rail_width(&self, theme: &crate::Theme) -> Option<f64>;
 }
@@ -1895,7 +1895,7 @@ impl RailExtent for NavList {
         }
         let items = all_items(&self.sections);
         Some(crate::text_render::with_layout_renderer(theme, |text| {
-            crate::chrome::rail_width_fitting(
+            crate::widget::nav_list::nav_row::rail_width_fitting(
                 theme,
                 text,
                 items.iter().map(|item| item.label.as_str()),
@@ -1908,10 +1908,10 @@ impl RailExtent for NavList {
 /// short caption); wide, a list (icon beside the label).
 pub(crate) trait AdaptiveNav {
     /// The width of the list as a rail: its longest word whole, up to the
-    /// rail's cap ([`crate::chrome::sidebar_rail_width_fitting`]).
+    /// rail's cap ([`crate::widget::nav_list::nav_row::sidebar_rail_width_fitting`]).
     fn rail_fit(&self, theme: &crate::Theme) -> f64;
     /// The width at which every label stands whole beside its icon
-    /// ([`crate::chrome::nav_list_width_fitting`]): from here on it is a
+    /// ([`crate::widget::nav_list::nav_row::nav_list_width_fitting`]): from here on it is a
     /// list.
     fn list_fit(&self, theme: &crate::Theme) -> f64;
     fn set_rail(&mut self, rail: bool) -> bool;
@@ -1936,7 +1936,7 @@ impl AdaptiveNav for NavList {
     fn rail_fit(&self, theme: &crate::Theme) -> f64 {
         let items = all_items(&self.sections);
         crate::text_render::with_layout_renderer(theme, |text| {
-            crate::chrome::sidebar_rail_width_fitting(
+            crate::widget::nav_list::nav_row::sidebar_rail_width_fitting(
                 theme,
                 text,
                 items.iter().map(|item| item.label.as_str()),
@@ -1947,7 +1947,7 @@ impl AdaptiveNav for NavList {
     fn list_fit(&self, theme: &crate::Theme) -> f64 {
         let items = all_items(&self.sections);
         crate::text_render::with_layout_renderer(theme, |text| {
-            crate::chrome::nav_list_width_fitting(
+            crate::widget::nav_list::nav_row::nav_list_width_fitting(
                 theme,
                 text,
                 items.iter().map(|item| item.label.as_str()),
@@ -2327,6 +2327,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
 mod bound;
 mod feed;
 mod model;
+pub mod nav_row;
 mod row;
 pub use feed::NavFeed;
 

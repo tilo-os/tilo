@@ -11,9 +11,6 @@
 use std::collections::BTreeMap;
 
 use super::{Bound, BoundValue, Element, Event, Fired, Intent, LocalState, Source, Value};
-use crate::headless::Driver;
-use crate::theme::Theme;
-use crate::widget::Widget;
 
 /// An instance as a test gives it: values by prop, the events it handles queued on `queue`, and the
 /// components in its parts.
@@ -131,11 +128,6 @@ pub fn text(value: &str) -> Value {
 /// A value naming the resource `id`.
 pub fn resource(id: &str) -> Value {
     Value::Resource(id.to_owned())
-}
-
-/// The widget at a desktop-sized window, laid out in the light theme.
-pub fn harness<W: Widget + 'static>(root: W) -> Driver {
-    Driver::for_root(crate::State::new(), root, (900, 600), Theme::light())
 }
 
 /// The event `event` of the instance `key`, as the queue holds it.

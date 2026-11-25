@@ -33,7 +33,7 @@ selection at the trailing edge. Its sidebar lists destinations with a
 the widths, the breakpoints, the drawer, the push stack, the regions and the
 motion; the app passes none of them. A painted app that cannot host widgets
 uses the headless `ui::widget::SidebarDrawer` with the same metrics and
-paints its rows with `ui::chrome::paint_nav_row`. No other sidebar, split or
+paints its rows with `ui::widget::nav_list::nav_row::paint_nav_row`. No other sidebar, split or
 row painter exists.
 
 **The header row.** Windows have no title bar. The shell draws one header
@@ -56,7 +56,7 @@ switcher with no title is the header's leading fill
 (`content_header_leading`). An app's own page stack (browse history, a
 drill-down) gets the shell's Back chip (`with_back`), the same chip a
 narrow window's push stack uses. A painted app lays the same row out with
-`chrome::HeaderRowFace` and takes the window's History control through
+`widget::window_header::header_row::HeaderRowFace` and takes the window's History control through
 `widget::WindowHeader`; there is one header-row geometry.
 
 **History is the window's, at the trailing edge of the header row.** Where
@@ -871,7 +871,7 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
 - Sidebar, master/detail, drawer, push screens, column headers → `NavShell`;
   a list of destinations → `NavList` (a painted app: `SidebarDrawer` +
-  `chrome::paint_nav_row` / `paint_nav_section`); a selected or hovered row →
+  `widget::nav_list::nav_row::paint_nav_row` / `paint_nav_section`); a selected or hovered row →
   `chrome::paint_row_selection`. Never a private sidebar row painter,
   selection fill or collapse chip.
 
@@ -1526,7 +1526,7 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   while an event is routed takes effect at the next build. A part whose
   overlay holds the pointer (a popover a header button owns) hears pointer
   events before the columns.
-- **The header row is one face** (`chrome::HeaderRowFace`): `header_height`;
+- **The header row is one face** (`widget::window_header::header_row::HeaderRowFace`): `header_height`;
   leading chips (toggle, Back) and trailing chips (inspector toggle,
   History) of `min_pointer_target` in the `s3` inset, `s2` apart; the title
   at the content gutter (`rhythm.group`) when no chip leads; the rule under

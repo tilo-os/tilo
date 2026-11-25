@@ -27,7 +27,6 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::HeaderRowMetrics;
 use crate::component::{Component, Described, Event, PartViews};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -38,6 +37,7 @@ use crate::widget::arrange::{Align, At, Fit, Layers, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabBar, TabStrip};
 use crate::widget::window_controls::WindowControls;
+use crate::widget::window_header::header_row::HeaderRowMetrics;
 use crate::widget::{
     Decorator, Element, IconSize, IconWidget, Spacer, Text, Widget, WindowBar, WindowBarPart,
 };
