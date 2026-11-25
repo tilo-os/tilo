@@ -494,7 +494,6 @@ impl AccessNode {
     }
 
     /// Show `icon` before its words ([`Self::icon`]).
-    #[must_use]
     pub fn with_icon(mut self, icon: Option<crate::icons::Icon>) -> Self {
         self.icon = icon;
         self
