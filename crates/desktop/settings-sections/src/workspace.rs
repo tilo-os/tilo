@@ -54,6 +54,9 @@ pub trait Stores: Send + Sync {
 struct Pending {
     sections: Vec<(String, Map<String, Value>)>,
     origin: ChangeOrigin,
+    /// Whether taking it back is known: what a change read back from
+    /// [`WorkspaceSettings::kept_in`]'s file replaced is gone with the run that made it.
+    undoable: bool,
 }
 
 #[derive(Default)]
@@ -97,6 +100,19 @@ impl State {
             }
         }
         self.view = view;
+    }
+
+    /// Note `sections` as one change `origin` made. No workspace holds it yet: it waits, and
+    /// the changes it waits over are what taking it back restores.
+    fn keep(&mut self, sections: Vec<(String, Map<String, Value>)>, origin: ChangeOrigin) {
+        for (section, values) in &sections {
+            settings_store::merge_section(&mut self.view, section, values.clone());
+        }
+        self.pending.push(Pending {
+            sections,
+            origin,
+            undoable: true,
+        });
     }
 }
 
@@ -165,6 +181,7 @@ impl WorkspaceSettings {
             state.pending.push(Pending {
                 sections,
                 origin: ChangeOrigin::default(),
+                undoable: false,
             });
             state.rebuild();
         }
@@ -409,16 +426,44 @@ impl WorkspaceSettings {
         moved
     }
 
+    /// Take back (`undo`) the last change kept on the device, while no workspace holds the
+    /// settings: it is a step of whoever made it, as one the store holds. Only the newest change
+    /// of the section, and only a change of theirs, is taken back — an older one would undo a
+    /// later one with it. A change read back from the waiting file names no history, so none of
+    /// it is taken back. Whether there was one.
+    fn step_kept(&self, section: &str, app: Option<&str>, undo: bool, invokers: &[String]) -> bool {
+        if !undo {
+            return false;
+        }
+        {
+            let mut state = self.state.lock_recover();
+            let Some(pending) = state.pending.last() else {
+                return false;
+            };
+            let theirs = pending
+                .origin
+                .actor
+                .as_deref()
+                .is_some_and(|actor| invokers.iter().any(|invoker| invoker == actor));
+            let touches = pending.sections.iter().any(|(name, values)| {
+                name == section && app.is_none_or(|app| values.contains_key(app))
+            });
+            if !theirs || !touches || !pending.undoable {
+                return false;
+            }
+            state.pending.pop();
+            // What the step wrote is gone; what it was made over stays.
+            state.rebuild();
+        }
+        // What waits no longer holds the step, and readers hear the change.
+        self.queued();
+        true
+    }
+
     fn write(&self, sections: Vec<(String, Map<String, Value>)>, origin: &ChangeOrigin) {
         {
             let mut state = self.state.lock_recover();
-            for (section, values) in &sections {
-                settings_store::merge_section(&mut state.view, section, values.clone());
-            }
-            state.pending.push(Pending {
-                sections,
-                origin: origin.clone(),
-            });
+            state.keep(sections, origin.clone());
         }
         self.queued();
     }
@@ -595,6 +640,8 @@ fn set_on(
             Map::from_iter([(field.to_owned(), value.clone())]),
         )],
         origin: origin.clone(),
+        // Written to another device's workspace now: nothing of it waits here to be taken back.
+        undoable: false,
     };
     let made = held.iter().map(|_| address.clone()).collect();
     let kept = match held {
@@ -767,11 +814,7 @@ impl SettingsSource for WorkspaceSettings {
                 _ => Map::new(),
             };
             let values = change(&current);
-            settings_store::merge_section(&mut state.view, name, values.clone());
-            state.pending.push(Pending {
-                sections: vec![(name.to_owned(), values)],
-                origin: origin.clone(),
-            });
+            state.keep(vec![(name.to_owned(), values)], origin.clone());
         }
         self.queued();
         Ok(())
@@ -812,13 +855,7 @@ impl SettingsSource for WorkspaceSettings {
             if !unchanged {
                 return Ok(ConditionalUpdate::Superseded);
             }
-            for (section, values) in &sections {
-                settings_store::merge_section(&mut state.view, section, values.clone());
-            }
-            state.pending.push(Pending {
-                sections,
-                origin: origin.clone(),
-            });
+            state.keep(sections, origin.clone());
         }
         self.queued();
         Ok(ConditionalUpdate::Stored)
@@ -832,7 +869,11 @@ impl SettingsSource for WorkspaceSettings {
         invokers: &[String],
     ) -> std::io::Result<bool> {
         self.sync();
-        let stores = self.stores().ok_or_else(unattached)?;
+        let Some(stores) = self.stores() else {
+            // No workspace holds the settings yet: what waits on the device is taken back
+            // here, so a change is undoable from the moment it is made.
+            return Ok(self.step_kept(section, app, undo, invokers));
+        };
         let address = placement::address(section, app, &stores.device());
         let Some((invocation, verb)) = step_of(&self.history_of(section, app)?, undo, invokers)
         else {

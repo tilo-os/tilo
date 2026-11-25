@@ -176,10 +176,6 @@ fn uninstall_theme_package(store: &std::path::Path) {
 #[test]
 fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
     let _home = tilo_test_env::TestHome::new().expect("a home");
-    // The person's settings as a workspace keeps them, with their history: a session whose
-    // daemon holds no workspace yet would keep the change on the device, and an undo of it
-    // takes a step the store keeps.
-    let _settings = settings_sections::in_memory::scoped();
     // This device's own store, which its session reads, holding only the theme package: the
     // session's shell stands in where the store holds none.
     let store = package_store::layout::default_user_root().expect("the device's store");

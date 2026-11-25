@@ -379,6 +379,61 @@ fn a_sections_own_verb_is_a_change_the_store_admits() {
     );
 }
 
+/// A setting kept on the device while no workspace holds it yet is a step of whoever made it:
+/// the person takes it back there, before any store has seen it, and someone else's is not
+/// theirs to take back.
+#[test]
+fn a_setting_kept_before_a_workspace_is_attached_is_its_makers_to_undo() {
+    let settings = WorkspaceSettings::new();
+    let person = ChangeOrigin::action("settings.appearance/set-mode").by(PERSON);
+    settings
+        .update_section_by("appearance", object(json!({ "mode": "dark" })), &person)
+        .expect("kept");
+    settings
+        .update_section_by(
+            "appearance",
+            object(json!({ "high_contrast": true })),
+            &person,
+        )
+        .expect("kept");
+    assert_eq!(mode(&settings), Some(json!("dark")));
+    assert!(
+        !settings
+            .step("appearance", None, true, &[AGENT.to_owned()])
+            .expect("no store is no failure"),
+        "nothing of the agent's is there to take back"
+    );
+    assert_eq!(mode(&settings), Some(json!("dark")));
+    assert!(
+        settings
+            .step("appearance", None, true, &[PERSON.to_owned()])
+            .expect("taken back"),
+        "the person's last kept step is theirs"
+    );
+    assert_eq!(
+        settings
+            .load()
+            .get("appearance")
+            .and_then(|held| held.get("high_contrast")),
+        None,
+        "the step taken back wrote the contrast, not the mode"
+    );
+    assert_eq!(mode(&settings), Some(json!("dark")));
+    assert!(
+        settings
+            .step("appearance", None, true, &[PERSON.to_owned()])
+            .expect("taken back"),
+        "their step before it is theirs too"
+    );
+    assert_eq!(mode(&settings), None, "and the mode it wrote is gone");
+    assert!(
+        !settings
+            .step("appearance", None, true, &[PERSON.to_owned()])
+            .expect("nothing more"),
+        "nothing more of theirs"
+    );
+}
+
 /// The settings channel's write of a read-only field is refused where it is admitted, and the
 /// section keeps its value: the appearance's `theme_package` is written by the action that
 /// applies a theme, never by an app's record change naming it.
