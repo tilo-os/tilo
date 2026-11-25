@@ -617,17 +617,15 @@ impl Workspaces {
             return;
         }
         hosted.holders.named |= names_this;
-        let keeping: Vec<[u8; 32]> = named
-            .iter()
-            .map(|holder| holder.device_certificate.device_public_key)
-            .collect();
         // The device that handed the workspace over is dialled beside the
         // holders even where the governance names it nowhere: a device keeping
         // no store of it (the owner's computer adding a server).
-        let handed = hosted
-            .handed_by
-            .clone()
-            .filter(|handed| !keeping.contains(&handed.device_certificate.device_public_key));
+        let handed = hosted.handed_by.clone().filter(|handed| {
+            !named.iter().any(|holder| {
+                holder.device_certificate.device_public_key
+                    == handed.device_certificate.device_public_key
+            })
+        });
         named.extend(handed);
         let links = hosted.holders.links.clone();
         hosted.holders.sessions.retain(|device, _| {
