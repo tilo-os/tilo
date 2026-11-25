@@ -986,6 +986,14 @@ impl Daemon {
         self.workspaces.copies()
     }
 
+    /// The record content of this device's workspaces: where the bytes of their records' files
+    /// are kept and asked for. `None` before the device's content store is open.
+    pub(crate) fn record_content(
+        &self,
+    ) -> Option<Arc<tilo_workspace_service::content::RouteContent>> {
+        self.workspaces.record_content_service()
+    }
+
     /// Whether this device runs what waits for a device that keeps a person's root.
     #[cfg(test)]
     #[must_use]
