@@ -1532,6 +1532,8 @@ struct SomeoneReading {
     bot: bool,
     #[serde(default)]
     automatic: bool,
+    #[serde(default)]
+    call: String,
 }
 
 fn people_reading(session: &Session) -> PeopleReading {
@@ -1594,11 +1596,17 @@ fn people_labels(session: &Session, label: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a control named `said` is the one named `label`: a row carries the lines it draws under
-/// the name with the name, so the name is one of the parts it reads as ("Agent, Fieldwork, In
-/// Notes" is Fieldwork's row).
+/// Whether a control named `said` is the one named `label`: a row carries the lines it draws with
+/// the name it goes by, and software another word before it, so the name is one of the parts it
+/// reads as ("Agent Fieldwork, In Notes" is Fieldwork's row).
 fn says_that(said: &str, label: &str) -> bool {
-    said == label || said.split(", ").any(|part| part == label)
+    said == label
+        || said.split(", ").any(|part| {
+            part == label
+                || part
+                    .strip_suffix(label)
+                    .is_some_and(|before| before.ends_with(' ') && !before.trim_end().contains(' '))
+        })
 }
 
 /// Where the people list's single control labelled `label` stands, in the session's coordinates.
@@ -1763,13 +1771,11 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     until(&mut session, |session| {
         people_reading(session).following == key
     });
-    assert!(
+    until(&mut session, |session| {
         session
             .shell_control("Stop following Mia Clayton")
-            .is_some(),
-        "her row now offers the way to stop: {:?}",
-        session.accessible_labels()
-    );
+            .is_some()
+    });
     press(&mut session, "Stop following Mia Clayton");
     until(&mut session, |session| {
         people_reading(session).following.is_empty()
@@ -1780,11 +1786,9 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     until(&mut session, |session| {
         people_reading(session).waved_to == key
     });
-    assert!(
-        says(&session, "You waved at Mia Clayton"),
-        "the row says the wave went: {:?}",
-        session.accessible_labels()
-    );
+    until(&mut session, |session| {
+        says(session, "You waved at Mia Clayton")
+    });
     until(&mut session, |session| {
         people_reading(session).waved_to.is_empty()
     });
@@ -1840,7 +1844,13 @@ fn a_face_in_a_call_wears_the_sweeping_ring_on_its_row() {
         .encode(),
     );
     set_the_people(&session, vec![mia]);
-    until(&mut session, |session| says(session, "In voice"));
+    until(&mut session, |session| {
+        people_reading(session)
+            .rows
+            .iter()
+            .any(|row| row.call == "voice")
+    });
+    settle(&mut session);
     let calling = keep(&mut session, "shell-people-row-in-call");
     assert_eq!(
         people_place(&session, "Mia Clayton"),
@@ -1878,6 +1888,7 @@ fn a_line_software_wrote_wears_the_mark_on_its_row() {
     until(&mut session, |session| {
         people_reading(session).rows.iter().any(|row| row.automatic)
     });
+    settle(&mut session);
     let written = keep(&mut session, "shell-people-row-written-for-them");
     let (inside, _) = changed_in(&theirs, &written, row);
     assert!(
@@ -1959,11 +1970,12 @@ fn a_row_nobody_named_says_when_they_joined() {
         vec![someone_unnamed(&early), someone_unnamed(&late)],
     );
     open_who_is_here(&mut session);
+    let unnamed = ui::presence::unnamed_person_label();
     let said = crate::common::wait_for(
         &mut session,
         "both unnamed rows to say when they joined",
         |session| {
-            let rows = people_labels(session, "Someone");
+            let rows = people_labels(session, &unnamed);
             (rows.len() == 2).then_some(rows)
         },
     );

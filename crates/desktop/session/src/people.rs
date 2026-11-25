@@ -1246,7 +1246,7 @@ impl Panel {
             }
             // No call to join from here (a call is Chat's, in an app window),
             // and nothing else to do: the roster kept the press.
-            PeopleHit::JoinCall(_) | PeopleHit::Absorb => {}
+            PeopleHit::Absorb => {}
         }
     }
 
