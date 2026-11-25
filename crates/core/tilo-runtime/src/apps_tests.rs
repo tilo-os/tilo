@@ -1393,8 +1393,8 @@ int main(void) {
     let probe = package.payload_root.join("probe");
     std::fs::set_permissions(&probe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    let collab = UnixListener::bind(root.join(COLLAB_SOCKET)).unwrap();
-    let _identity = UnixListener::bind(root.join(IDENTITY_SOCKET)).unwrap();
+    let collab = UnixListener::bind(root.join(crate::COLLAB_SOCKET)).unwrap();
+    let _identity = UnixListener::bind(root.join(crate::IDENTITY_SOCKET)).unwrap();
     let apps = apps(&store, &root, Vec::new());
     let launch = apps.start(VIEWER, WORKSPACE).unwrap();
     assert!(apps.attest_process(launch.pid, VIEWER, WORKSPACE));

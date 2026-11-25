@@ -112,6 +112,19 @@ pub fn task_runtimes() -> Result<(String, String), String> {
         })
 }
 
+/// A task's host, and the programs it compiles, are the session's work, which only a Linux
+/// device runs.
+///
+/// # Errors
+/// Every time: this device starts no task's host.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn task_runtimes() -> Result<(String, String), String> {
+    Err(
+        "this device starts no task's host: a task runs where its workspace's session does"
+            .to_owned(),
+    )
+}
+
 /// The tilolang apps installed here, each by its id: what an instance tells another app it uses
 /// by.
 pub(super) fn installed_apps() -> std::collections::BTreeMap<String, String> {
