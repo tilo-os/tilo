@@ -640,6 +640,26 @@ impl Workspaces {
                 if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
                     tracing::warn!(%name, %error, "the host did not keep what its link admitted");
                 }
+                // The writes that waited in the copy for what this frame brought were taken in
+                // with it, and are kept and told as each would have been had it come in order:
+                // a record's first write that came before the change it builds on is read, and
+                // its content asked for, once it lands, not when its next write comes.
+                let released = frame
+                    .report
+                    .as_ref()
+                    .map(tilo_peer_state::AdmissionReport::released)
+                    .unwrap_or_default();
+                for released in released {
+                    if !matches!(released.message, NeighbourMsg::AppDocument { .. }) {
+                        continue;
+                    }
+                    let Ok(body) = postcard::to_allocvec(&released.message) else {
+                        continue;
+                    };
+                    if let Err(error) = workspaces.absorb(&name, released.author, &body).await {
+                        tracing::warn!(%name, %error, "the host did not keep a write its link let in");
+                    }
+                }
             }
         });
     }
