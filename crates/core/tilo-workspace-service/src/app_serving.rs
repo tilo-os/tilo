@@ -980,8 +980,7 @@ impl ActionProvider for HostOperations {
                 &certificate.user_public_key,
             )));
         }
-        let caller =
-            tilo_peer_state::key_caller::caller_of_key_here(&certificate);
+        let caller = tilo_peer_state::key_caller::caller_of_key_here(&certificate);
         let server = Arc::clone(&self.server);
         let (completer, answer) = tilo_actions::remote::pending();
         self.runtime.spawn(async move {

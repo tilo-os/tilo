@@ -993,10 +993,7 @@ async fn an_agents_key_asks_before_deleting_a_workspace_and_deletes_only_on_yes(
         "the person was asked: {refused:?}"
     );
     assert_eq!(declining.asked().len(), 1, "one question, one answer");
-    assert!(
-        workspaces.owns(&person, &workspace),
-        "a no deletes nothing"
-    );
+    assert!(workspaces.owns(&person, &workspace), "a no deletes nothing");
 
     let approving = Answering::approving();
     let again = delete_request(&workspace);
@@ -1068,7 +1065,9 @@ async fn a_signed_agents_invocation_asks_before_deleting_a_workspace() {
         )
         .expect("the agent's key signs its call"),
     ));
-    let waits = settled(operations.invoke(&caller(&agent), deleting)).await.unwrap();
+    let waits = settled(operations.invoke(&caller(&agent), deleting))
+        .await
+        .unwrap();
     assert!(
         !matches!(waits.status, ReceiptStatus::Completed { .. }),
         "deleting waits for its person: {waits:?}"
