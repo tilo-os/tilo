@@ -30,8 +30,9 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_search::SHOW_PEOPLE;
+use tilo_desktop_search::providers::AppEntry;
 use tilo_session::sync::{Client, Event, OwnPresence};
-use tilo_session::{AppActions, AppSocket, Launches, Lists, Options, Session};
+use tilo_session::{AppActions, AppLists, AppSocket, Launches, Lists, Options, Session};
 use tilo_session_core::desktop::verbs::{
     CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE,
 };
@@ -820,7 +821,7 @@ fn assert_ada_card(session: &Session) {
         );
     }
     assert!(
-        !session.shell_says("People"),
+        !session.shell_says("People here now"),
         "the card stands in the roster's place: the roster is gone, {labels:?}"
     );
 }
@@ -882,6 +883,16 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     let host = Rc::new(Host::default());
     let mut session = crate::common::headless(Options {
         apps: Some(host.clone() as Rc<dyn AppActions>),
+        // Chat stands on this device, as its lists name it: the card offers a conversation only
+        // where the app that holds one is here.
+        lists: Lists::fixed(AppLists {
+            applications: vec![AppEntry {
+                id: CHAT.to_owned(),
+                title: "Chat".to_owned(),
+                category: None,
+            }],
+            ..AppLists::default()
+        }),
         ..Options::default()
     });
 
@@ -891,7 +902,7 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     // Who is here stands open, listing the people here.
     press_faces(&mut session);
     until(&mut session, "the roster lists who is here", |session| {
-        session.shell_says("People")
+        session.shell_says("People here now")
     });
     assert!(
         session.shell_control("Framework 16").is_none(),
@@ -970,14 +981,21 @@ fn a_persons_card_offers_everyone_here() {
         session.accessible_labels()
     );
     press_named(&mut session, "Back to everyone");
+    // The card leaves before what is read of the roster: the choice reaches the session's
+    // reading, and the shell draws the roster of it on a later frame.
     until(
         &mut session,
         "the roster stands in the card's place",
-        |session| session.shell_says("People"),
+        |session| session.shell_control("Back to everyone").is_none(),
     );
     assert!(
-        !session.shell_says("Who is here"),
+        session.shell_control("Back to everyone").is_none(),
         "the card gave way to the roster: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.shell_says("People here now"),
+        "the roster stands in the card's place: {:?}",
         session.accessible_labels()
     );
     assert!(
@@ -1067,7 +1085,7 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
     shot(&mut session, capture);
 
     assert!(
-        session.shell_says("Who is here"),
+        session.shell_says("People"),
         "one card, the same surface another person's opens in: {:?}",
         session.accessible_labels()
     );
