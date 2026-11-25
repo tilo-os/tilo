@@ -1098,10 +1098,20 @@ impl Decorator for WindowFrame {
             let node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                 .with_optional_name(Some(name.clone()));
             // Why it cannot be pressed now, if it says: read beside its name, never instead.
-            match &self.description {
+            let node = match &self.description {
                 Some(why) => node.with_description(why.clone()),
                 None => node,
+            };
+            // The window's bar, named for the window as its frame is: where a press takes the
+            // window and where a gesture that moves the strip aims, whatever its tabs report.
+            if self.bar.area() > 0.0 {
+                return node.with_children(vec![
+                    crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                        .with_optional_name(Some(name.clone()))
+                        .with_bounds(self.bar),
+                ]);
             }
+            node
         })
     }
 }

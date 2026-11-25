@@ -838,6 +838,8 @@ impl Shell {
             let Some((x, y, width, height)) = part.control_bounds(&name) else {
                 continue;
             };
+            // What the place's name names is its bar — its pill, or the bar its frame reports —
+            // and the row scroll is what stands under it.
             let (x, y) = (x + width / 2.0, y + height / 2.0);
             if !part.accepts_pointer(x, y) {
                 continue;
