@@ -808,8 +808,10 @@ impl Shell {
     }
 
     /// Three fingers carrying the strip shown, as `scroll` of them: the row the shell draws the
-    /// strip in scrolls under the front window, as two fingers over it would scroll it, and glides
-    /// on when they lift. The pointer stays at `pointer` for everything else the part shows.
+    /// strip in scrolls under the front window's bar, as two fingers over it would scroll it, and
+    /// glides on when they lift. The bar is the shell's wherever the window's content comes from —
+    /// a well the app draws into, or a view the shell composes — so the one aim moves the row for
+    /// every window. The pointer stays at `pointer` for everything else the part shows.
     pub(crate) fn carry_strip(
         &self,
         handle: &tilo_session_core::desktop::state::DesktopHandle,
@@ -828,24 +830,29 @@ impl Shell {
                 .find(|held| held.id == group)
                 .map(|held| held.active_tab)
         });
-        let Some(well) = front.and_then(|tab| self.wells.as_ref()?.well(&tab.to_string())) else {
+        let Some(name) = front.and_then(|tab| self.link.place_name(&tab.to_string())) else {
             return;
         };
-        let (x, y) = (well.center().x, well.center().y);
-        let Some((_, part)) = self
-            .parts
-            .iter()
-            .find(|(_, part)| part.borrow().accepts_pointer(x, y))
-        else {
+        for (_, part) in &self.parts {
+            let mut part = part.borrow_mut();
+            if part.placement().is_none() {
+                continue;
+            }
+            let Some((x, y, width, height)) = part.control_bounds(&name) else {
+                continue;
+            };
+            let (x, y) = (x + width / 2.0, y + height / 2.0);
+            if !part.accepts_pointer(x, y) {
+                continue;
+            }
+            part.pointer_motion(x, y);
+            part.pointer_axis(scroll);
+            if part.accepts_pointer(pointer.0, pointer.1) {
+                part.pointer_motion(pointer.0, pointer.1);
+            } else {
+                part.pointer_leave();
+            }
             return;
-        };
-        let mut part = part.borrow_mut();
-        part.pointer_motion(x, y);
-        part.pointer_axis(scroll);
-        if part.accepts_pointer(pointer.0, pointer.1) {
-            part.pointer_motion(pointer.0, pointer.1);
-        } else {
-            part.pointer_leave();
         }
     }
 

@@ -206,6 +206,19 @@ pub struct SessionLink {
 }
 
 impl SessionLink {
+    /// What the place `key` is called, as the layout the session published names it: the words its
+    /// frame and its tab carry for a person and for assistive technology, which a gesture that
+    /// moves the strip aims at.
+    pub fn place_name(&self, key: &str) -> Option<String> {
+        let layout = self.layout.borrow();
+        let place = layout
+            .as_ref()?
+            .places
+            .iter()
+            .find(|place| place.key == key)?;
+        (!place.name.is_empty()).then(|| place.name.clone())
+    }
+
     /// The session published `reading`, the person's layout as it stands now: the shell
     /// writes it on its next frame when it differs from the last. Whether it did.
     pub fn publish_layout(&self, reading: LayoutReading) -> bool {
