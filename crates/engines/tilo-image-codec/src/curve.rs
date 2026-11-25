@@ -48,7 +48,13 @@ pub fn normalised(points: &[f64]) -> Vec<CurvePoint> {
     sorted(points)
 }
 
-fn sorted(mut points: Vec<CurvePoint>) -> Vec<CurvePoint> {
+fn sorted(points: Vec<CurvePoint>) -> Vec<CurvePoint> {
+    // A point that is not a number cannot be drawn or baked: it is no point at all.
+    let mut points: Vec<CurvePoint> = points
+        .into_iter()
+        .filter(|point| point.x.is_finite() && point.y.is_finite())
+        .map(|point| CurvePoint::new(point.x, point.y))
+        .collect();
     points.sort_by(|a, b| a.x.total_cmp(&b.x));
     // Endpoints: keep the person's own if they placed one there, else add.
     if points.first().is_none_or(|point| point.x > 1e-9) {
