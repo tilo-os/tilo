@@ -116,7 +116,7 @@ impl DaemonProfile {
         let deadline = Instant::now()
             .checked_add(LAUNCHER_START_CAP)
             .context("the start's deadline")?;
-        let mut unanswered = String::from("its status was never asked");
+        let mut unanswered: String;
         loop {
             match status(self.path()) {
                 Ok(status)
@@ -283,13 +283,22 @@ impl Drop for DaemonProfile {
             }
         }
         if let Some(mut daemon) = self.daemon.take() {
-            // It was asked to end above; one that does not, or never started, is killed rather
-            // than waited on: a failed test must not become the run's timeout.
+            // It was asked to end above; one that does not, or never started, is named and
+            // killed rather than waited on: a failed test must not become the run's timeout.
+            let pid = daemon.id();
             let deadline = Instant::now()
                 .checked_add(ENDING)
                 .unwrap_or_else(Instant::now);
             while matches!(daemon.try_wait(), Ok(None)) && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(25));
+            }
+            if matches!(daemon.try_wait(), Ok(None)) {
+                eprintln!(
+                    "the daemon (pid {pid}) serving {} did not end within {ENDING:?}: killing \
+                     it\n{}",
+                    self.path().display(),
+                    self.log()
+                );
             }
             let _ = daemon.kill();
             let _ = daemon.wait();
