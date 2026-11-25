@@ -11,10 +11,7 @@ use crate::shell_staged::{Called, SHELL, ada, staged};
 /// The shell staged as its scenario "a call to change before approving": Scout's alarm at 07:00
 /// waiting for Ada, whose form offers its time, its label and whether it rings on weekdays only.
 fn shell() -> (Host, Called) {
-    staged(
-        "a call to change before approving",
-        &["studio/invocations/alarm-2"],
-    )
+    staged("a call to change before approving")
 }
 
 /// The questions waiting, as the notification centre lists them.

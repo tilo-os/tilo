@@ -294,8 +294,9 @@ fn a_decline_ends_the_call_for_its_caller() {
     );
 }
 
-/// Only Ada answers what asks Ada: not Bo, not her own agent acting for her, and not the
-/// device her agent's connection came in on.
+/// Only Ada answers what asks Ada: not Bo, not her own agent acting for her, not an app's code
+/// running as her (the confirmation is the system's), and not the device her agent's connection
+/// came in on.
 #[test]
 fn nobody_but_the_person_asked_answers() {
     let host = host();
@@ -305,7 +306,13 @@ fn nobody_but_the_person_asked_answers() {
         .unwrap();
     let bo = Caller::authenticated(BO, [4; 32]).in_workspace(WORKSPACE);
     let her_agent = Caller::delegated_agent("helper", ADA, [3; 32]).in_workspace(WORKSPACE);
-    for (who, by) in [("Bo", bo), ("her agent", her_agent), ("the asker", scout())] {
+    let her_app = ada().through_app("so.tilo.notes");
+    for (who, by) in [
+        ("Bo", bo),
+        ("her agent", her_agent),
+        ("an app as her", her_app),
+        ("the asker", scout()),
+    ] {
         assert_eq!(
             refusal(resolve(&host, &at, &by, Offer::Approve, None)),
             tilo_actions::remote::asked::NOT_YOURS,

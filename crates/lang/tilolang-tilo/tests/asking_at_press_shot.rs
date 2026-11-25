@@ -10,9 +10,6 @@ use tilolang_runtime::{UiNode, Value};
 
 use crate::shell_staged::StagedWindow;
 
-/// The asked record the scenario leaves waiting, whose own `resolve` answers the confirm.
-const ASKED: &[&str] = &["studio/invocations/share-1"];
-
 /// The scenario staged: Notes' Share, pressed at (640, 212) in its window, waits for Ada.
 const SCENARIO: &str = "a press that needs a yes";
 
@@ -58,7 +55,7 @@ fn texts(tree: &UiNode) -> Vec<String> {
 fn a_press_that_needs_a_yes_in_both_themes() {
     let mut dark = ui::Theme::dark();
     dark.reduce_motion = true;
-    let mut shell = StagedWindow::staged(SCENARIO, ASKED, (1280, 800), dark);
+    let mut shell = StagedWindow::staged(SCENARIO, (1280, 800), dark);
     // The confirm is what the capture is of: it stands at the press, showing whom the call would
     // give the note to, in the tree the window is sent.
     let tree = shell.instance.root_tree().expect("the window's tree");
@@ -89,7 +86,6 @@ fn a_question_nothing_here_started_in_both_themes() {
     dark.reduce_motion = true;
     let mut shell = StagedWindow::staged(
         "a call that writes another record",
-        &["studio/invocations/mail-1", "studio/invocations/alarm-3"],
         (1280, 800),
         dark,
     );

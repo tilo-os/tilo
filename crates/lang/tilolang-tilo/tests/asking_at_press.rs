@@ -12,7 +12,7 @@ use crate::shell_staged::{Called, SHELL, ada, staged};
 /// The shell staged as its scenario "a press that needs a yes": Notes' Share, pressed at
 /// (640, 212) in the Notes window, waits for Ada.
 fn shell() -> (Host, Called) {
-    staged("a press that needs a yes", &["studio/invocations/share-1"])
+    staged("a press that needs a yes")
 }
 
 /// The desktop as the shell draws the person's layout.
@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
     {
         // A session publishes no verb on an asked record: the record is the workspace's, and
         // its answer goes to the dispatch as the host's own action on it, its yes as its no.
-        let (host, called) = staged("a press that needs a yes", &[]);
+        let (host, called) = staged("a press that needs a yes");
         let desktop = desktop(&host);
         desktop
             .press(&confirm_button(&desktop, "Share"))
@@ -182,15 +182,15 @@ mod focus {
 
     /// The shell staged as its scenario `scenario`, its desktop in a window that takes the
     /// keyboard as it opens.
-    fn staged(scenario: &str, asked: &[&str]) -> StagedWindow {
+    fn staged(scenario: &str) -> StagedWindow {
         let mut theme = ui::Theme::dark();
         theme.reduce_motion = true;
-        StagedWindow::staged(scenario, asked, (1280, 800), theme)
+        StagedWindow::staged(scenario, (1280, 800), theme)
     }
 
     #[test]
     fn a_press_that_needs_a_yes_opens_on_the_answer_that_was_pressed() {
-        let shell = staged("a press that needs a yes", &["studio/invocations/share-1"]);
+        let shell = staged("a press that needs a yes");
         let tree = shell.instance.root_tree().expect("the window's tree");
         let [confirm] = tree.of_kind("ui.Popover")[..] else {
             panic!("one confirm stands at the press: {tree:#?}");
@@ -216,10 +216,7 @@ mod focus {
 
     #[test]
     fn an_agents_question_opens_on_the_way_out() {
-        let shell = staged(
-            "a call that writes another record",
-            &["studio/invocations/mail-1", "studio/invocations/alarm-3"],
-        );
+        let shell = staged("a call that writes another record");
         assert_eq!(
             shell.holds_keyboard().as_deref(),
             Some("Don't allow"),
@@ -229,17 +226,55 @@ mod focus {
 }
 
 /// Every call the shell made, each the record's `resolve` with the resolution it gave: all that
-/// reached the workspace, which runs the asked call only on an approve.
+/// reached the workspace, which runs the asked call only on an approve. Each goes to the record
+/// the scenario leaves waiting (`share-1` in `studio`: a record is kept under its invocation's id,
+/// the last step of the id the scenario stages), answered by the invocations provider of the
+/// workspace its address names, as the session sends it: nothing here publishes `resolve`, as
+/// nothing does there.
 fn answers(called: &Called) -> Vec<String> {
     called
         .0
         .borrow()
         .iter()
         .map(|call| {
-            let Invocation::Action { action, args, .. } = call else {
+            let Invocation::Action {
+                action,
+                args,
+                target,
+                ..
+            } = call
+            else {
                 panic!("the shell called only the record's resolve: {call:?}");
             };
             assert_eq!(action.as_str(), "resolve", "{call:?}");
+            let record = target.as_ref().expect("the call names the record it answers");
+            assert!(
+                tilolang::is_invocation_type(&record.ty),
+                "the call is on an asked record: {call:?}"
+            );
+            assert_eq!(
+                record.id_string(),
+                "studio/share-1",
+                "the asked record is the one answered: {call:?}"
+            );
+            let sent = tilolang_tilo::call::Callees::default()
+                .call(call)
+                .unwrap_or_else(|_| panic!("the record's call is sent: {call:?}"));
+            assert_eq!(
+                (
+                    &sent["provider"],
+                    &sent["workspace"],
+                    &sent["resource"],
+                    &sent["action"]
+                ),
+                (
+                    &serde_json::json!(tilo_actions::remote::workspace_invocations::PROVIDER),
+                    &serde_json::json!("studio"),
+                    &serde_json::json!("share-1"),
+                    &serde_json::json!("resolve"),
+                ),
+                "the workspace's invocations provider answers it: {sent}"
+            );
             match args.iter().find(|(name, _)| name == "resolution") {
                 Some((_, Value::Text(resolution))) => resolution.clone(),
                 other => panic!("a resolution: {other:?}"),
