@@ -16,6 +16,8 @@ app gets on a real system:
              but lavapipe
   actions    each app publishes its actions; a "New ..." action changes the
              app's record (its history gains the change)
+  history    the workspace's History lists that change of Tasks' record, a record the
+             workspace's store keeps under an id of its own
   hosts      each app's window holds none of its data (TILO_TILOLANG_HOSTED): its
              instance runs in a tilolang host, and the apps of one publisher in one
              workspace share one host process, handed every window's instance
@@ -922,6 +924,23 @@ def check_actions(session: Session) -> dict:
     return out
 
 
+def check_history(session: Session) -> dict:
+    """The workspace's History lists a change the workspace's store keeps: the task "New task"
+    made, a change of Tasks' own record, which the store names by its kind and an id of its own,
+    is a row of the feed, said as Tasks did it."""
+    tasks = app_id("tasks")
+
+    def tasks_rows():
+        feed = value_of(session.invoke("tilo.activity", "workspace.activity", "feed", {}))
+        rows = [entry for entry in feed.get("entries", [])
+                if entry.get("change")
+                and ((entry.get("step") or {}).get("app") or {}).get("id") == tasks]
+        return rows or None
+
+    rows = until("Tasks' change in the workspace's History", tasks_rows, 30)
+    return {"rows": len(rows), "summaries": [row.get("summary") for row in rows[:3]]}
+
+
 def value_of(answer: dict | str):
     try:
         return answer["Completed"]["output"]["value"]
@@ -1182,6 +1201,7 @@ def apps_phases(summary: dict, session: Session, out: Path) -> bool:
         # host, so no app waits on a host and each shows its own state.
         ("hosted-here", lambda: check_hosted_here(session, summary["checks"]["launch"], out)),
         ("actions", lambda: check_actions(session)),
+        ("history", lambda: check_history(session)),
         ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
         ("activation", lambda: check_activation(session)),
         ("read", lambda: check_read(session)),

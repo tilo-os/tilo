@@ -14,6 +14,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{DeviceKeys, Workspaces};
 use crate::documents::OpenedWith;
+use tilo_actions::remote::{ListedResource, ResourceAddress};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::DocumentRead;
 
@@ -97,13 +98,13 @@ impl Workspaces {
         )
     }
 
-    /// The records `workspace`'s store holds, by their app and id, for its listings.
-    fn stored_routes(&self, workspace: &str) -> Vec<(String, String)> {
+    /// The records `workspace`'s store holds, by their app, id and kind, for its listings.
+    fn stored_routes(&self, workspace: &str) -> Vec<ListedResource> {
         let Some(held) = self.inner.readings.held(workspace) else {
             return Vec::new();
         };
         let store = held.store.lock_recover();
-        stored_routes_in(&store, &self.inner.host.surfaces)
+        stored_routes_in(&store, &self.inner.host.surfaces, workspace)
     }
 
     /// Whether `app`'s `resource` of `workspace` reads for this service's own device now, decided
@@ -157,49 +158,57 @@ impl Workspaces {
     /// # Errors
     ///
     /// This service holds no such workspace.
-    pub(crate) fn own_listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    pub(crate) fn own_listing(&self, workspace: &str) -> Result<Vec<ListedResource>, String> {
         use tilo_actions::remote::{KEY_GRANTS, PRESENCE};
+        let mut listed = self.own_documents(workspace)?;
+        let document = |app: &str, record: String| {
+            ListedResource::document(ResourceAddress {
+                workspace: workspace.to_owned(),
+                app: app.to_owned(),
+                record,
+            })
+        };
+        listed.push(document(PRESENCE, String::new()));
         let held = self
             .inner
             .readings
             .held(workspace)
             .ok_or("this service does not hold the workspace")?;
-        let stored = self.stored_routes(workspace);
-        Ok(held.replica.read(|peer| {
-            // The documents of the workspace's store are listed by the records they hold.
-            let mut listed: Vec<(String, String)> = crate::documents::listing(peer)
+        listed.extend(held.replica.read(|peer| {
+            peer.governance()
+                .workspace_grants()
                 .into_iter()
-                .filter(|(_, document)| !collab_types::is_store_document(document))
-                .collect();
-            listed.extend(stored);
-            listed.push((PRESENCE.to_owned(), String::new()));
-            listed.extend(
-                peer.governance()
-                    .workspace_grants()
-                    .into_iter()
-                    .map(|grant| (KEY_GRANTS.to_owned(), grant.id)),
-            );
-            listed
-        }))
+                .map(|grant| document(KEY_GRANTS, grant.id))
+                .collect::<Vec<_>>()
+        }));
+        Ok(listed)
     }
 
     /// Every document `workspace` holds here, by its app and route: what is stored of it, which
-    /// a copy of the workspace takes.
+    /// a copy of the workspace takes. The documents of the workspace's store are listed by the
+    /// records they hold, each with its kind.
     ///
     /// # Errors
     ///
     /// This service holds no such workspace.
-    pub(crate) fn own_documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    pub(crate) fn own_documents(&self, workspace: &str) -> Result<Vec<ListedResource>, String> {
         let held = self
             .inner
             .readings
             .held(workspace)
             .ok_or("this service does not hold the workspace")?;
-        let mut listed: Vec<(String, String)> = held
+        let mut listed: Vec<ListedResource> = held
             .replica
             .read(crate::documents::listing)
             .into_iter()
             .filter(|(_, document)| !collab_types::is_store_document(document))
+            .map(|(app, record)| {
+                ListedResource::document(ResourceAddress {
+                    workspace: workspace.to_owned(),
+                    app,
+                    record,
+                })
+            })
             .collect();
         listed.extend(self.stored_routes(workspace));
         Ok(listed)
@@ -438,12 +447,20 @@ fn stored_read_in(
 fn stored_routes_in(
     store: &tilo_resource_store::Store,
     surfaces: &collab_types::app_surface::Surfaces,
-) -> Vec<(String, String)> {
+    workspace: &str,
+) -> Vec<ListedResource> {
     let index = store.index();
     let mut routes = Vec::new();
     for (app, kind) in surfaces.kinds() {
         for id in index.ids_of(&kind) {
-            routes.push((app.clone(), id.to_owned()));
+            routes.push(ListedResource {
+                address: ResourceAddress {
+                    workspace: workspace.to_owned(),
+                    app: app.clone(),
+                    record: id.to_owned(),
+                },
+                kind: Some(kind.clone()),
+            });
         }
     }
     routes

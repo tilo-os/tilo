@@ -177,10 +177,19 @@ fn members(
     })
 }
 
-fn listed(listing: Result<Vec<DocumentKey>, String>) -> Result<Vec<DocumentKey>, ActionCallError> {
-    listing.map_err(|reason| ActionCallError::Unavailable {
-        reason: format!("the workspace's records are not read: {reason}"),
-    })
+fn listed(
+    listing: Result<Vec<tilo_actions::remote::ListedResource>, String>,
+) -> Result<Vec<DocumentKey>, ActionCallError> {
+    listing
+        .map(|listed| {
+            listed
+                .into_iter()
+                .map(|listed| (listed.address.app, listed.address.record))
+                .collect()
+        })
+        .map_err(|reason| ActionCallError::Unavailable {
+            reason: format!("the workspace's records are not read: {reason}"),
+        })
 }
 
 /// Where a record stands after `read`: its revision, with the record whole when it was read

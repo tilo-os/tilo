@@ -95,8 +95,8 @@ impl DocumentPort for EnginePort {
                 .reads
                 .listing(workspace)?
                 .into_iter()
-                .filter(|(held, _)| held == app)
-                .map(|(_, record)| (record, DocumentRead::Held))
+                .filter(|listed| listed.address.app == app)
+                .map(|listed| (listed.address.record, DocumentRead::Held))
                 .collect());
         };
         reads

@@ -202,7 +202,8 @@ impl Fixture {
             &mut self.tree,
             vec![DetachedRecordHistory {
                 app: TERMINAL_APP.to_owned(),
-                checkout: self.checkout.clone(),
+                kind: self.checkout.kind.clone(),
+                id: self.checkout.id.as_str().to_owned(),
                 tree_chunks: Vec::new(),
                 document: Some(self.doc.clone()),
             }],
@@ -538,7 +539,8 @@ tilo_test_env::scenario! {
             &mut tree,
             vec![DetachedRecordHistory {
                 app: NOTES.to_owned(),
-                checkout: ui::DocumentCheckout::package_primary(ui::ResourceType::new(NOTES_KIND)),
+                kind: ui::ResourceType::new(NOTES_KIND),
+                id: ui::DocumentId::package_primary().as_str().to_owned(),
                 tree_chunks: Vec::new(),
                 document: Some(doc),
             }],
@@ -874,7 +876,8 @@ impl Connection {
             .iter()
             .map(|(app, checkout, doc)| DetachedRecordHistory {
                 app: app.clone(),
-                checkout: checkout.clone(),
+                kind: checkout.kind.clone(),
+                id: checkout.id.as_str().to_owned(),
                 tree_chunks: Vec::new(),
                 document: (!self
                     .closed

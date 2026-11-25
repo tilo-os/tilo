@@ -83,12 +83,14 @@ pub trait DeviceDocuments: collab_types::signer::MaybeSendSync + 'static {
         }
     }
 
-    /// Every document `workspace` holds, by its app and route.
+    /// Every document `workspace` holds, by its app and route: a record of the workspace's store
+    /// by its id, with its kind.
     ///
     /// # Errors
     ///
     /// The service is not open or holds no such workspace.
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
+    fn listing(&self, workspace: &str)
+    -> Result<Vec<tilo_actions::remote::ListedResource>, String>;
 
     /// Whether the service holds anything of `app`'s `resource` in `workspace`.
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool;

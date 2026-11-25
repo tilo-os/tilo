@@ -418,7 +418,7 @@ impl ResourceReads for DeviceRecords {
         caller: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<tilo_actions::remote::ListedResource>> {
         reads_answer(async move {
             if app != DEVICE_SETTINGS
                 || !self
@@ -443,10 +443,12 @@ impl ResourceReads for DeviceRecords {
             });
             Ok(names
                 .into_iter()
-                .map(|name| ResourceAddress {
-                    workspace: workspace.to_owned(),
-                    app: DEVICE_SETTINGS.to_owned(),
-                    record: name,
+                .map(|name| {
+                    tilo_actions::remote::ListedResource::document(ResourceAddress {
+                        workspace: workspace.to_owned(),
+                        app: DEVICE_SETTINGS.to_owned(),
+                        record: name,
+                    })
                 })
                 .collect())
         })

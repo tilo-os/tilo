@@ -50,7 +50,8 @@ impl RecordChanges {
             match self.reads.listing(&workspace) {
                 Ok(records) => {
                     self.swept.lock_recover().insert(workspace.clone());
-                    for (app, record) in records {
+                    for listed in records {
+                        let (app, record) = (listed.address.app, listed.address.record);
                         self.changes.note(&workspace, &app, &record, true);
                     }
                 }

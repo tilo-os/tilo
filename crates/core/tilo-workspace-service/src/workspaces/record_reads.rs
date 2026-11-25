@@ -79,7 +79,7 @@ pub trait DeviceJobReads: Send + Sync {
         caller: &Caller,
         workspace: &str,
         app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError>;
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, ActionCallError>;
 
     /// Wake `wake` when job `address` moves.
     ///
@@ -968,7 +968,7 @@ impl RecordReads {
         caller: &Caller,
         workspace: &str,
         app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, ActionCallError> {
         let workspaces = self
             .workspaces
             .as_ref()
@@ -990,14 +990,9 @@ impl RecordReads {
             .map_err(|reason| ActionCallError::Unavailable { reason })?;
         Ok(listed
             .into_iter()
-            .filter(|(of, _)| app.is_empty() || of == app)
-            .map(|(app, record)| ResourceAddress {
-                workspace: workspace.to_owned(),
-                app,
-                record,
-            })
-            .filter(|address| {
-                self.decides(&state, caller, address, ActionKind::Read)
+            .filter(|listed| app.is_empty() || listed.address.app == app)
+            .filter(|listed| {
+                self.decides(&state, caller, &listed.address, ActionKind::Read)
                     .is_ok()
             })
             .collect())
@@ -1202,7 +1197,7 @@ impl ResourceReads for RecordReads {
         caller: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<tilo_actions::remote::ListedResource>> {
         Box::pin(async move {
             if app == DEVICE_JOBS
                 && let Some(route) = self.jobs_route(&ResourceAddress {

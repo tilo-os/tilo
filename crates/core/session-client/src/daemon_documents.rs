@@ -593,8 +593,15 @@ impl DeviceDocuments for DaemonDocuments {
         answered_is(asked, resource)
     }
 
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        Ok(listed(&self.0.read_blocking(listing(workspace))?))
+    fn listing(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
+        Ok(tilo_actions::remote::ListedResource::read_listing(
+            workspace,
+            "",
+            &self.0.read_blocking(listing(workspace))?,
+        ))
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
@@ -649,22 +656,6 @@ pub fn listing(workspace: &str) -> ResourceReadRequest {
     let mut listing = whole(workspace, "", "");
     listing.answer = tilo_actions::remote::ReadAnswer::Listing;
     listing
-}
-
-/// The resources a [`listing`] read answered, by their app and route.
-#[must_use]
-pub fn listed(readings: &serde_json::Value) -> Vec<(String, String)> {
-    readings["records"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|listed| {
-            Some((
-                listed["app"].as_str()?.to_owned(),
-                listed["record"].as_str()?.to_owned(),
-            ))
-        })
-        .collect()
 }
 
 /// A yes or no the daemon answered about `resource`; no where it could not say.

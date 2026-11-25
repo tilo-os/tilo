@@ -158,7 +158,7 @@ pub use line::{Carry, CarryAnswer, carry_answer_line, carry_line, carry_request}
 pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
-    DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies,
+    DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, ListedResource,
     RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     RESOURCE_WRITE_REFUSED, ReadingAnswer, ReadsAnswer, ResourceAddress, ResourceAsk,
     ResourceChange, ResourceChanges, ResourceCopy, ResourceReadings, ResourceReads, ResourceWake,

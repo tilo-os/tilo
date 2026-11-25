@@ -953,7 +953,7 @@ impl ResourceReads for CheckJobs {
         caller: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<tilo_actions::remote::ListedResource>> {
         reads_answer(async move {
             if app != JOBS || workspace != self.space {
                 return Err(tilo_actions::remote::ActionCallError::Unavailable {
@@ -967,10 +967,12 @@ impl ResourceReads for CheckJobs {
             });
             Ok(names
                 .into_iter()
-                .map(|job| ResourceAddress {
-                    workspace: workspace.to_owned(),
-                    app: JOBS.to_owned(),
-                    record: job,
+                .map(|job| {
+                    tilo_actions::remote::ListedResource::document(ResourceAddress {
+                        workspace: workspace.to_owned(),
+                        app: JOBS.to_owned(),
+                        record: job,
+                    })
                 })
                 .collect())
         })

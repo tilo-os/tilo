@@ -363,8 +363,9 @@ pub trait Records {
         let _ = (app, workspace, record);
         None
     }
-    /// Everything `workspace` holds here, by app and route.
-    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+    /// Everything `workspace` holds here, by app and route: a record of the workspace's store by
+    /// its id, with its kind.
+    fn held(&self, workspace: &str) -> Vec<tilo_actions::remote::ListedResource> {
         let _ = workspace;
         Vec::new()
     }
@@ -436,11 +437,19 @@ impl Records for Memory {
         AutoCommit::load(bytes).ok()
     }
 
-    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+    fn held(&self, workspace: &str) -> Vec<tilo_actions::remote::ListedResource> {
         let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         held.keys()
             .filter(|(_, held_in, _)| held_in == workspace)
-            .map(|(app, _, route)| (app.clone(), route.clone()))
+            .map(|(app, _, route)| {
+                tilo_actions::remote::ListedResource::document(
+                    tilo_actions::remote::ResourceAddress {
+                        workspace: workspace.to_owned(),
+                        app: app.clone(),
+                        record: route.clone(),
+                    },
+                )
+            })
             .collect()
     }
 
@@ -531,7 +540,7 @@ impl Records for Held {
         }
     }
 
-    fn held(&self, workspace: &str) -> Vec<(String, String)> {
+    fn held(&self, workspace: &str) -> Vec<tilo_actions::remote::ListedResource> {
         self.reads
             .listing(workspace)
             .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace is not listed"))

@@ -175,19 +175,22 @@ mod desktop_workspace_activity {
             let inputs = vec![
                 DetachedRecordHistory {
                     app: "app-a".into(),
-                    checkout: checkout.clone(),
+                    kind: checkout.kind.clone(),
+                    id: checkout.id.as_str().to_owned(),
                     tree_chunks: Vec::new(),
                     document: Some(resource.clone()),
                 },
                 DetachedRecordHistory {
                     app: "app-b".into(),
-                    checkout: checkout.clone(),
+                    kind: checkout.kind.clone(),
+                    id: checkout.id.as_str().to_owned(),
                     tree_chunks: Vec::new(),
                     document: Some(resource),
                 },
                 DetachedRecordHistory {
                     app: "missing".into(),
-                    checkout,
+                    kind: checkout.kind.clone(),
+                    id: checkout.id.as_str().to_owned(),
                     tree_chunks: Vec::new(),
                     document: None,
                 },
@@ -238,7 +241,7 @@ mod desktop_workspace_activity {
             use automerge::{ActorId, transaction::CommitOptions};
             use tilo_actions::{ActionContext, ChangeKind};
             use crate::desktop::activity::*;
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+            use ui::resource::{DocumentId, ResourceType};
             let mut tree = design();
             let posted = ActionContext::for_resource("chat.channel:c", "chat.channel", "general")
                 .with_app("so.tilo.chat", "Chat")
@@ -281,7 +284,8 @@ mod desktop_workspace_activity {
                 &mut tree,
                 vec![DetachedRecordHistory {
                     app: "so.tilo.chat".into(),
-                    checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("chat")),
+                    kind: ResourceType::new("chat"),
+                    id: DocumentId::for_tab(1).as_str().to_owned(),
                     tree_chunks: Vec::new(),
                     document: Some(resource),
                 }],
@@ -317,7 +321,7 @@ mod desktop_workspace_activity {
             use tilo_actions::published::{Offer, PublishedAction};
             use tilo_actions::{ActionContext, ActionKey, Described, Did};
             use crate::desktop::activity::*;
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+            use ui::resource::{DocumentId, ResourceType};
             let publish = |action: &str, label: &str, did: &str| {
                 let mut published = PublishedAction::offered(
                     &Offer {
@@ -371,10 +375,8 @@ mod desktop_workspace_activity {
                     &mut tree,
                     vec![DetachedRecordHistory {
                         app: "so.tilo.notes".into(),
-                        checkout: DocumentCheckout::new(
-                            DocumentId::for_tab(1),
-                            ResourceType::new("notes.note"),
-                        ),
+                        kind: ResourceType::new("notes.note"),
+                        id: DocumentId::for_tab(1).as_str().to_owned(),
                         tree_chunks: Vec::new(),
                         document: Some(note),
                     }],
@@ -404,7 +406,7 @@ mod desktop_workspace_activity {
             use automerge::transaction::CommitOptions;
             use tilo_actions::{ActionContext, ActionKey, Described, Did, EncodedAction};
             use crate::desktop::activity::*;
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+            use ui::resource::{DocumentId, ResourceType};
             let made = |app: &str, kind: &str, verb: &str, title: &str, at_ms: u64| {
                 let mut doc = AutoCommit::new();
                 doc.put(ROOT, "title", title).unwrap();
@@ -433,10 +435,10 @@ mod desktop_workspace_activity {
             .enumerate()
             .map(|(tab, (app, kind, verb, title, at))| DetachedRecordHistory {
                 app: app.into(),
-                checkout: DocumentCheckout::new(
-                    DocumentId::for_tab(u64::try_from(tab).unwrap() + 1),
-                    ResourceType::new(kind),
-                ),
+                kind: ResourceType::new(kind),
+                id: DocumentId::for_tab(u64::try_from(tab).unwrap() + 1)
+                    .as_str()
+                    .to_owned(),
                 tree_chunks: Vec::new(),
                 document: Some(made(app, kind, verb, title, at)),
             })
@@ -657,7 +659,7 @@ mod desktop_workspace_activity {
             use automerge::transaction::CommitOptions;
             use tilo_actions::{ActionContext, ActionKey, Described, Did};
             use crate::desktop::activity::*;
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+            use ui::resource::{DocumentId, ResourceType};
             let did = |app: &str, kind: &str, verb: &str| {
                 Described::new(Did::verb(ActionKey::new(app, kind, verb), []))
             };
@@ -688,10 +690,8 @@ mod desktop_workspace_activity {
                 );
                 records.push(DetachedRecordHistory {
                     app: context.app.as_ref().unwrap().id.clone(),
-                    checkout: DocumentCheckout::new(
-                        DocumentId::for_tab(u64::from(tab) + 1),
-                        ResourceType::new(context.resource.as_ref().unwrap().kind.clone()),
-                    ),
+                    kind: ResourceType::new(context.resource.as_ref().unwrap().kind.clone()),
+                    id: DocumentId::for_tab(u64::from(tab) + 1).as_str().to_owned(),
                     tree_chunks: Vec::new(),
                     document: Some(document),
                 });
@@ -719,14 +719,15 @@ mod desktop_workspace_activity {
         phase workspace_activity_unsettled_refresh_retains_only_current_admission_rows;
         {
             use crate::desktop::activity::*;
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+            use ui::resource::{DocumentId, ResourceType};
             let mut tree = design();
             let mut resource = AutoCommit::new();
             resource.put(ROOT, "value", "settled").unwrap();
             resource.commit();
             let input = DetachedRecordHistory {
                 app: "app".into(),
-                checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("test")),
+                kind: ResourceType::new("test"),
+                id: DocumentId::for_tab(1).as_str().to_owned(),
                 tree_chunks: Vec::new(),
                 document: Some(resource),
             };
@@ -765,7 +766,7 @@ mod desktop_workspace_activity {
             use automerge::{ActorId, transaction::CommitOptions};
             use tilo_actions::{ActionContext, ActionKey, Described, Did};
             use crate::desktop::activity::*;
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+            use ui::resource::{DocumentId, ResourceType};
             let mut tree = design();
             let did = |app: &str, kind: &str, action: &str, item: &str| {
                 ActionContext::for_resource(kind, kind, kind)
@@ -810,20 +811,22 @@ mod desktop_workspace_activity {
                 vec![
                     DetachedRecordHistory::new(
                         "so.tilo.notes",
-                        DocumentCheckout::new(pages.part(0), ResourceType::new("notes.page")),
+                        ResourceType::new("notes.page"),
+                        pages.part(0).as_str(),
                         Some(part),
                     ),
                     DetachedRecordHistory::new(
                         "so.tilo.notes",
-                        DocumentCheckout::new(
-                            DocumentId::derived("pages", &DocumentId::for_tab(4)).part(0),
-                            ResourceType::new("notes.page"),
-                        ),
+                        ResourceType::new("notes.page"),
+                        DocumentId::derived("pages", &DocumentId::for_tab(4))
+                            .part(0)
+                            .as_str(),
                         Some(elsewhere),
                     ),
                     DetachedRecordHistory::new(
                         "so.tilo.chat",
-                        DocumentCheckout::new(pages.part(0), ResourceType::new("chat.conversation")),
+                        ResourceType::new("chat.conversation"),
+                        pages.part(0).as_str(),
                         Some(chat),
                     ),
                 ],

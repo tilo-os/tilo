@@ -163,7 +163,7 @@ impl DetailAction {
 /// marker in the workspace tree itself.
 #[derive(Clone, Debug, PartialEq)]
 struct IndexedAgentSession {
-    source_record: Option<DocumentId>,
+    source_record: Option<String>,
     session: AgentSession,
 }
 
@@ -482,7 +482,7 @@ pub struct WorkspaceActivityPane {
     /// Records the last task undo did not reach, as sentences naming each: reported beside the run,
     /// never left out of it.
     unreverted: Vec<String>,
-    open_agent_records: HashSet<DocumentId>,
+    open_agent_records: HashSet<String>,
     /// What a deep link last asked the feed to show, and how many it asked.
     focus: Option<tilo_actions::remote::workspace_activity::Focus>,
     focus_serial: u64,
@@ -913,7 +913,7 @@ impl WorkspaceActivityPane {
                     // is an address, not a name.
                     let label = titles
                         .iter()
-                        .find(|target| target.id == id.as_str())
+                        .find(|target| target.id == *id)
                         .and_then(|target| ui::human_label(&target.label, &target.id))
                         .or(app_label.as_deref())
                         .map_or_else(|| t("overview-untitled"), str::to_owned);
@@ -956,7 +956,7 @@ impl WorkspaceActivityPane {
         let origin_matches = match origin {
             Some(origin) => origin.record().map_or_else(
                 || indexed.source_record.is_none(),
-                |id| step.record.is_empty() || id.as_str() == step.record,
+                |id| step.record.is_empty() || id == step.record,
             ),
             None => indexed.source_record.is_none(),
         };
@@ -1220,13 +1220,7 @@ impl WorkspaceActivityPane {
     /// a document this host admitted is that record, named as the history names it — a record's
     /// own id, or a package's record of the workspace, which travels as its primary.
     fn record_id_is_open(&self, record: &str) -> bool {
-        let primary = DocumentId::package_primary();
-        let id = if record == primary.as_str() {
-            Some(primary)
-        } else {
-            DocumentId::parse(record)
-        };
-        id.is_some_and(|id| self.open_agent_records.contains(&id))
+        self.open_agent_records.contains(record)
     }
 
     /// Whether one record of the selected run can be undone on its own from the task view.
@@ -1934,7 +1928,7 @@ impl WorkspaceActivityPane {
         self.open_agent_records = ordered
             .iter()
             .filter(|record| record.document.is_some())
-            .map(|record| record.checkout.id.clone())
+            .map(|record| record.id.clone())
             .collect();
         let mut indexed = ui::read_invocations(tree.document())
             .into_iter()
@@ -1944,7 +1938,7 @@ impl WorkspaceActivityPane {
             })
             .collect::<Vec<_>>();
         for record in ordered {
-            let id = &record.checkout.id;
+            let id = &record.id;
             let Some(document) = &record.document else {
                 continue;
             };

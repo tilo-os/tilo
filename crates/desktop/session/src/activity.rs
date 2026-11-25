@@ -115,7 +115,8 @@ impl DevicesRecord {
         let (_, doc, checkout) = loaded.as_ref()?;
         Some(DetachedRecordHistory::new(
             DEVICES.0,
-            checkout.clone(),
+            checkout.kind.clone(),
+            checkout.id.as_str(),
             Some(doc.clone()),
         ))
     }
@@ -994,17 +995,16 @@ fn read_workspace_records(
             .collect();
         read.push(DetachedRecordHistory {
             app: fs_protocol::tree::FILES_APP.to_owned(),
-            checkout: DocumentCheckout::new(
-                document_id,
-                ResourceType::new(fs_protocol::tree::TREE_KIND),
-            ),
+            kind: ResourceType::new(fs_protocol::tree::TREE_KIND),
+            id: document_id.as_str().to_owned(),
             tree_chunks,
             document: Some(document),
         });
     }
     // Every resource the workspace holds, as the workspace lists them: an app keeps them whether
     // or not its own document indexes them.
-    for (package, route) in held.held(workspace) {
+    for listed in held.held(workspace) {
+        let (package, route) = (listed.address.app, listed.address.record);
         if !seen.insert((package.clone(), route.clone())) {
             continue;
         }
@@ -1014,7 +1014,10 @@ fn read_workspace_records(
         // The app's own document of the workspace keeps its index. It is a resource of its own
         // (Notes' notebook, Chat's chat) once anything was done in it: keeping the index alone is
         // no one's work. Only the changes' messages are read.
-        let checkout = if route.is_empty() {
+        let named = if let Some(kind) = listed.kind {
+            // A record the workspace's store keeps is named as the store names it.
+            Some((ResourceType::new(kind), route))
+        } else if route.is_empty() {
             let acted = document
                 .committed_document()
                 .get_changes_meta(&[])
@@ -1030,32 +1033,29 @@ fn read_workspace_records(
                         )
                     })
                 });
-            acted.then(|| DocumentCheckout::package_primary(ResourceType::new(package.as_str())))
+            acted.then(|| {
+                (
+                    ResourceType::new(package.as_str()),
+                    DocumentId::package_primary().as_str().to_owned(),
+                )
+            })
         } else {
-            stored_checkout(&route).or_else(|| ui::resource::identity(&document))
+            ui::resource::identity(&document)
+                .map(|checkout| (checkout.kind, checkout.id.as_str().to_owned()))
         };
-        let Some(checkout) = checkout else {
+        let Some((kind, id)) = named else {
             continue;
         };
         noted(document.get_actor());
         read.push(DetachedRecordHistory {
             app: package,
-            checkout,
+            kind,
+            id,
             tree_chunks: Vec::new(),
             document: Some(document),
         });
     }
     read
-}
-
-/// The record whose content the workspace's store keeps in the document `route`: its kind and id
-/// as the store founded it, which the document's address names. `None` for any other document.
-fn stored_checkout(route: &str) -> Option<DocumentCheckout> {
-    let (kind, id) = tilo_resource_store::content_resource(route)?;
-    Some(DocumentCheckout::new(
-        DocumentId::parse(id)?,
-        ResourceType::new(kind),
-    ))
 }
 
 /// What the model asks of the session, over the one state this activity keeps.
@@ -1288,7 +1288,7 @@ mod tests {
         let read = read_workspace_records(&kept, workspace, &noted);
         let budget = read
             .iter()
-            .find(|record| record.checkout.id == id)
+            .find(|record| record.id == id.as_str())
             .expect("the workspace holds the record");
         assert!(budget.document.is_some(), "and its document is read");
     }
@@ -1325,9 +1325,7 @@ mod tests {
         let read = tilo_test_env::wait_for("the workspace's history reads the note", || {
             let read = read_workspace_records(&held, KITCHEN, &noted);
             read.into_iter().find(|record| {
-                record.app == NOTES
-                    && record.checkout.kind.as_str() == note.kind
-                    && record.checkout.id.route() == note.record
+                record.app == NOTES && record.kind.as_str() == note.kind && record.id == note.record
             })
         });
         assert!(read.document.is_some(), "and its document is read");

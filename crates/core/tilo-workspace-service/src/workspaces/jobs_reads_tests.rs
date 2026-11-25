@@ -48,12 +48,14 @@ impl DeviceJobReads for OwnJobs {
         _: &Caller,
         workspace: &str,
         _: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        Ok(vec![ResourceAddress {
-            workspace: workspace.to_owned(),
-            app: DEVICE_JOBS.to_owned(),
-            record: "own-job".to_owned(),
-        }])
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, ActionCallError> {
+        Ok(vec![tilo_actions::remote::ListedResource::document(
+            ResourceAddress {
+                workspace: workspace.to_owned(),
+                app: DEVICE_JOBS.to_owned(),
+                record: "own-job".to_owned(),
+            },
+        )])
     }
 
     fn watch(
@@ -106,7 +108,7 @@ impl ResourceReads for OwnJobs {
         caller: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<tilo_actions::remote::ListedResource>> {
         Box::pin(std::future::ready(DeviceJobReads::list(
             self, caller, workspace, app,
         )))

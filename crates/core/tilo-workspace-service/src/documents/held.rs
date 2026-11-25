@@ -193,11 +193,27 @@ impl DeviceDocuments for HeldDocuments {
         })
     }
 
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    fn listing(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
         if !self.holds_workspace(workspace) {
             return Err("this device holds no such workspace".to_owned());
         }
-        Ok(self.replica.read(super::listing))
+        Ok(self
+            .replica
+            .read(super::listing)
+            .into_iter()
+            .map(|(app, record)| {
+                tilo_actions::remote::ListedResource::document(
+                    tilo_actions::remote::ResourceAddress {
+                        workspace: workspace.to_owned(),
+                        app,
+                        record,
+                    },
+                )
+            })
+            .collect())
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
@@ -439,7 +455,9 @@ mod tests {
             holder
                 .listing(WORKSPACE)
                 .expect("the workspace is held")
-                .contains(&(DESKTOP_APP.to_owned(), DESKTOP_DOCUMENT.to_owned()))
+                .iter()
+                .any(|listed| listed.address.app == DESKTOP_APP
+                    && listed.address.record == DESKTOP_DOCUMENT)
         );
 
         // Its own device's write is committed through the same core a service writes through.

@@ -143,7 +143,10 @@ impl DeviceDocuments for ServiceDocuments {
         on_its_own(async move { workspaces.own_readable(&workspace, (&app, &resource)).await })
     }
 
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    fn listing(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
         let workspaces = self
             .0
             .copies()

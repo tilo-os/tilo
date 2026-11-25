@@ -615,7 +615,12 @@ mod tests {
             record.commit();
             let checkout = ui::DocumentCheckout::new(DocumentId::for_tab(1), ui::ResourceType::new("test"));
             let input = |app: &str, document| {
-                crate::desktop::activity::DetachedRecordHistory::new(app, checkout.clone(), document)
+                crate::desktop::activity::DetachedRecordHistory::new(
+                    app,
+                    checkout.kind.clone(),
+                    checkout.id.as_str(),
+                    document,
+                )
             };
             let mut pane = native_pane();
             pane.refresh(&mut tree);
@@ -797,7 +802,8 @@ mod tests {
     ) -> Vec<crate::desktop::activity::DetachedRecordHistory> {
         vec![crate::desktop::activity::DetachedRecordHistory::new(
             "org.tilo.Writer",
-            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("document")),
+            ui::ResourceType::new("document"),
+            record.as_str(),
             records.read(record, Clone::clone),
         )]
     }
@@ -886,7 +892,8 @@ mod tests {
         let read = |record: &mut automerge::AutoCommit| {
             crate::desktop::activity::DetachedRecordHistory::new(
                 "so.tilo.notes",
-                ui::DocumentCheckout::package_primary(ui::ResourceType::new("so.tilo.notes")),
+                ui::ResourceType::new("so.tilo.notes"),
+                ui::DocumentId::package_primary().as_str(),
                 Some(automerge::AutoCommit::load(&record.save()).unwrap()),
             )
         };

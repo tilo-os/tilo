@@ -279,7 +279,10 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     assert_eq!(documents.workspaces(), vec![WORKSPACE.to_owned()]);
     let listed = documents.listing(WORKSPACE).unwrap();
     assert!(
-        listed.contains(&("so.tilo.desktop".to_owned(), "layout".to_owned())),
+        listed
+            .iter()
+            .any(|listed| listed.address.app == "so.tilo.desktop"
+                && listed.address.record == "layout"),
         "{listed:?}"
     );
     // A workspace the daemon does not keep is refused as the daemon says it.

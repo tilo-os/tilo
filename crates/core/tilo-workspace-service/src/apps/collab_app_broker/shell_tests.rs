@@ -134,7 +134,7 @@ impl DeviceDocuments for NoDocuments {
     ) -> Result<DocumentRead, String> {
         Ok(DocumentRead::Absent)
     }
-    fn listing(&self, _: &str) -> Result<Vec<(String, String)>, String> {
+    fn listing(&self, _: &str) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
         Ok(Vec::new())
     }
     fn holds(&self, _: &str, _: &str, _: &str) -> bool {

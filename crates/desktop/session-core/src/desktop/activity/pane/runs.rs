@@ -324,7 +324,7 @@ impl WorkspaceActivityPane {
             .map(|projected| &projected.origin)
         {
             Some(super::super::index::HistoryOrigin::AppRecord { app, id, .. }) => {
-                (app.clone(), id.as_str().to_owned())
+                (app.clone(), id.clone())
             }
             _ => (
                 entry
@@ -705,7 +705,7 @@ impl WorkspaceActivityPane {
             let held = self
                 .detached_records
                 .iter()
-                .find(|held| held.app == app && held.checkout.id.as_str() == record)
+                .find(|held| held.app == app && held.id == record)
                 .and_then(|held| held.document.clone())?;
             copies.insert(key.clone(), held);
         }

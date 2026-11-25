@@ -1587,7 +1587,10 @@ impl tilo_peer_state::workspace_documents::DeviceDocuments for Opening {
             && self.inner.readable(workspace, app, resource)
     }
 
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    fn listing(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
         self.inner.listing(workspace)
     }
 
@@ -1889,7 +1892,10 @@ impl tilo_peer_state::workspace_documents::DeviceDocuments for Busy {
         self.inner.readable(workspace, app, resource)
     }
 
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    fn listing(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
         self.wait();
         self.inner.listing(workspace)
     }

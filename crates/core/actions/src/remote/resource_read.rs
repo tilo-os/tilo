@@ -40,6 +40,52 @@ pub struct ResourceAddress {
     pub record: String,
 }
 
+/// A record a listing names: where it is, and the kind the workspace's store keeps it as. A
+/// document that is no record of the store (the workspace's tree, a device's settings) names no
+/// kind.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ListedResource {
+    pub address: ResourceAddress,
+    pub kind: Option<String>,
+}
+
+impl ListedResource {
+    /// `address`, a document that is no record of the workspace's store.
+    #[must_use]
+    pub fn document(address: ResourceAddress) -> Self {
+        Self {
+            address,
+            kind: None,
+        }
+    }
+
+    /// The records a listing of `workspace` answered ([`answer_read`]), each of `app` where it
+    /// names none.
+    #[must_use]
+    pub fn read_listing(workspace: &str, app: &str, listing: &serde_json::Value) -> Vec<Self> {
+        let text = |record: &serde_json::Value, key: &str| {
+            record
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        listing
+            .get("records")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|record| Self {
+                address: ResourceAddress {
+                    workspace: workspace.to_owned(),
+                    app: text(record, "app").unwrap_or_else(|| app.to_owned()),
+                    record: text(record, "record").unwrap_or_default(),
+                },
+                kind: text(record, "kind"),
+            })
+            .collect()
+    }
+}
+
 /// The app a device's own settings are read under ([`device_record_space`]): the record
 /// `keymap` there is `devices/<device>/settings/keymap`.
 pub const DEVICE_SETTINGS: &str = "settings";
@@ -277,7 +323,7 @@ pub trait ResourceReads: Send + Sync {
         caller: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<ListedResource>> {
         let _ = (caller, workspace, app);
         unavailable()
     }
@@ -719,7 +765,8 @@ async fn serve_readings<Reads: ResourceReads + ?Sized>(
 }
 
 /// The resources of `workspace` `caller` may read of `app` (every app's, empty), as a listing
-/// answers them: `{"records": [{"app", "record"}]}`.
+/// answers them: `{"records": [{"app", "record", "kind"}]}`, `kind` only for a record the
+/// workspace's store keeps.
 async fn listing<Reads: ResourceReads + ?Sized>(
     reads: &Reads,
     caller: &Caller,
@@ -730,7 +777,14 @@ async fn listing<Reads: ResourceReads + ?Sized>(
         .list(caller, workspace, app)
         .await?
         .into_iter()
-        .map(|address| serde_json::json!({"app": address.app, "record": address.record}))
+        .map(|listed| {
+            let mut entry =
+                serde_json::json!({"app": listed.address.app, "record": listed.address.record});
+            if let Some(kind) = listed.kind {
+                entry["kind"] = kind.into();
+            }
+            entry
+        })
         .collect();
     Ok(serde_json::json!({ "records": listed }).to_string())
 }

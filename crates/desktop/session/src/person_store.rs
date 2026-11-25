@@ -8,7 +8,7 @@
 use runtime_collab::wire::shell::{ShellCall, ShellReply};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_session_client::daemon_documents::{
-    DaemonShell, DaemonWritesFeed, document_read, listed, listing, whole,
+    DaemonShell, DaemonWritesFeed, document_read, listing, whole,
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::{Answer, Authoring, Moved, PersonStore};
@@ -74,7 +74,15 @@ impl PersonStore for DaemonPersonStore {
     }
 
     fn routes(&self) -> Answer<'_, Result<Vec<(String, String)>, String>> {
-        Box::pin(async move { Ok(listed(&self.shell.read(listing(&self.workspace)).await?)) })
+        Box::pin(async move {
+            let listing = self.shell.read(listing(&self.workspace)).await?;
+            Ok(
+                tilo_actions::remote::ListedResource::read_listing(&self.workspace, "", &listing)
+                    .into_iter()
+                    .map(|listed| (listed.address.app, listed.address.record))
+                    .collect(),
+            )
+        })
     }
 
     fn document<'a>(

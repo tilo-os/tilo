@@ -145,8 +145,13 @@ fn lens_of(key: Option<&str>) -> LensSelection {
 }
 
 /// Whether `id` is one of `resources`, or a part of a chain or a chunk of a resource among them.
-fn kept_by(id: &DocumentId, resources: &[String]) -> bool {
-    let mut id = id.clone();
+fn kept_by(id: &str, resources: &[String]) -> bool {
+    if resources.iter().any(|resource| resource == id) {
+        return true;
+    }
+    let Some(mut id) = DocumentId::parse(id) else {
+        return false;
+    };
     loop {
         if resources.iter().any(|resource| resource == id.as_str()) {
             return true;
@@ -914,10 +919,7 @@ impl WorkspaceActivityPane {
                                     || item.id.strip_prefix("file:") == Some(resource)
                             })
                         }) || self.projected_origins.get(&entry.id).is_some_and(|origin| {
-                            origin
-                                .origin
-                                .record()
-                                .is_some_and(|id| id.as_str() == resource)
+                            origin.origin.record().is_some_and(|id| id == resource)
                         })
                     })
                     .map(|entry| entry.id)

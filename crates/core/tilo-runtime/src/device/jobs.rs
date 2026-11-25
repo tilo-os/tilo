@@ -459,7 +459,7 @@ impl DeviceJobs {
         caller: &Caller,
         workspace: &str,
         app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, ActionCallError> {
         if app != DEVICE_JOBS || workspace != device_record_space(&self.device) {
             return Err(unavailable());
         }
@@ -471,10 +471,12 @@ impl DeviceJobs {
         Ok(jobs
             .into_iter()
             .filter(|job| self.admits(caller, job).is_ok())
-            .map(|job| ResourceAddress {
-                workspace: workspace.to_owned(),
-                app: DEVICE_JOBS.to_owned(),
-                record: job,
+            .map(|job| {
+                tilo_actions::remote::ListedResource::document(ResourceAddress {
+                    workspace: workspace.to_owned(),
+                    app: DEVICE_JOBS.to_owned(),
+                    record: job,
+                })
             })
             .collect())
     }
@@ -529,7 +531,7 @@ impl ResourceReads for DeviceJobs {
         caller: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<tilo_actions::remote::ListedResource>> {
         Box::pin(std::future::ready(self.list_jobs(caller, workspace, app)))
     }
 
@@ -569,7 +571,7 @@ impl tilo_workspace_service::workspaces::DeviceJobReads for DeviceJobs {
         caller: &Caller,
         workspace: &str,
         app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+    ) -> Result<Vec<tilo_actions::remote::ListedResource>, ActionCallError> {
         self.list_jobs(caller, workspace, app)
     }
 

@@ -598,7 +598,8 @@ pub(crate) fn detached_records(
             let document = records.read(&id, automerge::AutoCommit::clone);
             Some(super::DetachedRecordHistory {
                 app: RECORD_APP.to_owned(),
-                checkout,
+                kind: checkout.kind.clone(),
+                id: checkout.id.as_str().to_owned(),
                 tree_chunks: Vec::new(),
                 document,
             })

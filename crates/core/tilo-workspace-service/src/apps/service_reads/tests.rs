@@ -7,7 +7,9 @@ use automerge::transaction::Transactable as _;
 use super::*;
 use crate::apps::route::CrdtRoute;
 use crate::workspace_documents::DocumentRead;
-use crate::workspaces::fixtures::{TestHost, device_cert, governor, test_host, write_record};
+use crate::workspaces::fixtures::{
+    TestHost, device_cert, governor, record_kind, test_host, write_record,
+};
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
 const APP: &str = "so.tilo.notes";
@@ -317,8 +319,13 @@ async fn a_device_reads_what_changed_since_its_heads() {
     ));
     let workspaces = server.workspaces();
     assert_eq!(
-        workspaces.own_documents(&workspace).unwrap(),
-        vec![(APP.to_owned(), RESOURCE.to_owned())]
+        workspaces
+            .own_documents(&workspace)
+            .unwrap()
+            .into_iter()
+            .map(|listed| (listed.address.app, listed.address.record, listed.kind))
+            .collect::<Vec<_>>(),
+        vec![(APP.to_owned(), RESOURCE.to_owned(), Some(record_kind(APP)))]
     );
     assert!(workspaces.held_workspaces().contains(&workspace));
     assert_eq!(

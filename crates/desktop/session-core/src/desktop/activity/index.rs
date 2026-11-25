@@ -13,7 +13,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::ArtifactKind;
 use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
-use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+use ui::resource::ResourceType;
 use ui::time::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
@@ -29,9 +29,10 @@ pub const MAX_INDEXED_RECORDS: usize = 512;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HistoryOrigin {
     Layout,
+    /// A record of `app`, named as the workspace's store names it: its id and its kind.
     AppRecord {
         app: String,
-        id: DocumentId,
+        id: String,
         kind: ResourceType,
     },
 }
@@ -43,13 +44,13 @@ impl HistoryOrigin {
             // A tuple of strings always encodes; the empty fallback is unreachable.
             Self::AppRecord { app, id, kind } => format!(
                 "app-record:{}",
-                serde_json::to_string(&(app, id.as_str(), kind.as_str())).unwrap_or_default()
+                serde_json::to_string(&(app, id, kind.as_str())).unwrap_or_default()
             ),
         }
     }
 
     /// The record this row came from, if it is not the workspace document.
-    pub fn record(&self) -> Option<&DocumentId> {
+    pub fn record(&self) -> Option<&str> {
         match self {
             Self::Layout => None,
             Self::AppRecord { id, .. } => Some(id),
@@ -69,7 +70,9 @@ impl HistoryOrigin {
 #[derive(Clone)]
 pub struct DetachedRecordHistory {
     pub app: String,
-    pub checkout: DocumentCheckout,
+    /// The record's kind and id, as the workspace's store names it.
+    pub kind: ResourceType,
+    pub id: String,
     pub document: Option<AutoCommit>,
     /// A workspace tree's chunk records, each read on its own beside the tree's own record in
     /// `document`; empty for every other record.
@@ -79,12 +82,14 @@ impl DetachedRecordHistory {
     /// A record read as one document: every record but a workspace's tree.
     pub fn new(
         app: impl Into<String>,
-        checkout: DocumentCheckout,
+        kind: ResourceType,
+        id: impl Into<String>,
         document: Option<AutoCommit>,
     ) -> Self {
         Self {
             app: app.into(),
-            checkout,
+            kind,
+            id: id.into(),
             document,
             tree_chunks: Vec::new(),
         }
@@ -93,8 +98,8 @@ impl DetachedRecordHistory {
     pub fn origin(&self) -> HistoryOrigin {
         HistoryOrigin::AppRecord {
             app: self.app.clone(),
-            id: self.checkout.id.clone(),
-            kind: self.checkout.kind.clone(),
+            id: self.id.clone(),
+            kind: self.kind.clone(),
         }
     }
 
@@ -106,7 +111,6 @@ impl DetachedRecordHistory {
     /// every other record is a document of one app's, and every step in it is that record's.
     fn holds(&self, entry: &HistoryEntry) -> bool {
         let Some(app) = self
-            .checkout
             .kind
             .as_str()
             .strip_prefix("tl.")
@@ -284,7 +288,7 @@ impl WorkspaceHistoryQuery {
 pub struct FeedCoverage {
     pub referenced_records: usize,
     pub indexed_resources: usize,
-    pub unavailable_resources: Vec<DocumentCheckout>,
+    pub unavailable_resources: Vec<HistoryOrigin>,
     pub capped_records: usize,
     pub excluded_apps: Vec<String>,
 }
@@ -489,7 +493,7 @@ impl WorkspaceHistoryIndex {
             let doc = match record.document.as_mut() {
                 Some(doc) if doc.pending_ops() == 0 => doc,
                 _ => {
-                    coverage.unavailable_resources.push(record.checkout.clone());
+                    coverage.unavailable_resources.push(record.origin());
                     // Keep the last settled rendering while this admitted owner is busy, but never
                     // carry rows from an owner absent from the new admission. Unavailable
                     // documents cannot establish seen heads.
@@ -517,7 +521,7 @@ impl WorkspaceHistoryIndex {
             // A folder's files are not actions: a record's own steps say
             // nothing of them. Their changes are the versions it holds, one
             // row per file and session, as Files' own history lists them.
-            let folder = if record.checkout.kind.as_str() == fs_protocol::tree::TREE_KIND {
+            let folder = if record.kind.as_str() == fs_protocol::tree::TREE_KIND {
                 folder_rows(doc, &record.tree_chunks, &self.authors, limit)
             } else {
                 Vec::new()
@@ -526,7 +530,7 @@ impl WorkspaceHistoryIndex {
             let rows = described(
                 HistorySource::new()
                     .with_authors(self.authors.clone())
-                    .with_artifact_kind(artifact_kind(&record.checkout.kind))
+                    .with_artifact_kind(artifact_kind(&record.kind))
                     .with_max_entries(limit)
                     .without_resource_genesis()
                     .entries_since(doc, &mut log),

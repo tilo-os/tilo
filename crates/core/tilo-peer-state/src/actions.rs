@@ -2440,7 +2440,7 @@ impl ResourceReads for RemoteDevice {
         _: &'a Caller,
         workspace: &'a str,
         app: &'a str,
-    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+    ) -> ReadsAnswer<'a, Vec<tilo_actions::remote::ListedResource>> {
         let listing = self.read_there(read_of(
             &ResourceAddress {
                 workspace: workspace.to_owned(),
@@ -2456,28 +2456,9 @@ impl ResourceReads for RemoteDevice {
                         reason: format!("the listing does not read: {error}"),
                     }
                 })?;
-            Ok(listing
-                .get("records")
-                .and_then(serde_json::Value::as_array)
-                .map(|records| {
-                    records
-                        .iter()
-                        .map(|record| ResourceAddress {
-                            workspace: workspace.to_owned(),
-                            app: record
-                                .get("app")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or(app)
-                                .to_owned(),
-                            record: record
-                                .get("record")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default())
+            Ok(tilo_actions::remote::ListedResource::read_listing(
+                workspace, app, &listing,
+            ))
         })
     }
 
