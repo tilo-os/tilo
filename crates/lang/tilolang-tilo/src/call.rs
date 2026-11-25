@@ -136,7 +136,7 @@ fn invocation_record_call(invocation: &Invocation) -> Option<Result<Json, String
     else {
         return None;
     };
-    if target.ty != tilolang::INVOCATION_TYPE {
+    if !tilolang::is_invocation_type(&target.ty) {
         return None;
     }
     let mut arguments = serde_json::Map::new();
@@ -757,6 +757,36 @@ mod tests {
             from: None,
             asks: false,
             shows: Vec::new(),
+        }
+    }
+
+    /// A view's answer to an asked record, `host.resolve(resource(key, of: host.Invocation))`,
+    /// goes to the workspace's invocations provider on that record, whichever name of the host's
+    /// invocation type its address carries: the store's id, or the name another package gives it.
+    #[test]
+    fn an_answer_to_an_asked_record_goes_to_the_workspaces_invocations() {
+        for ty in [tilolang::INVOCATION_TYPE, "tilo.host#Invocation"] {
+            let invocation = Invocation::Action {
+                app: tilolang::HOST_APP.into(),
+                action: "resolve".to_owned(),
+                name: "resolve".to_owned(),
+                args: vec![("resolution".to_owned(), Value::text("approve"))],
+                class: EffectClass::Undoable,
+                destructive: false,
+                author: None,
+                target: tilolang_runtime::value::ResourceRef::parse_id("studio/share-1", ty),
+                from: None,
+                asks: false,
+                shows: Vec::new(),
+            };
+            let call = invocation_record_call(&invocation)
+                .unwrap_or_else(|| panic!("{ty}: an answer to an asked record is its call"))
+                .unwrap();
+            assert_eq!(call["provider"], "tilo.invocations", "{ty}");
+            assert_eq!(call["workspace"], "studio", "{ty}");
+            assert_eq!(call["resource"], "share-1", "{ty}");
+            assert_eq!(call["action"], "resolve", "{ty}");
+            assert_eq!(call["arguments"]["resolution"], "approve", "{ty}");
         }
     }
 
