@@ -846,9 +846,11 @@ impl PersonState {
         let older = record
             .read(tilo_resource::evolution::needs_migrate::<P>)
             .ok_or_else(|| "the record cannot be read".to_owned())?;
+        let id = record.checkout().id.route().to_owned();
         if older
             && let Err(error) = record.edit(false, |doc| {
-                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+                collab_types::document::founding::bring_up_resource::<P>(&id, doc)
+                    .map_err(|error| error.to_string())
             })
         {
             return Err(format!(

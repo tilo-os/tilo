@@ -249,7 +249,7 @@ impl TurnTeam {
             .map_err(|error| error.to_string())?
             .ok_or("the workspace keeps no agents")?;
         let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-        crate::agents::opened::<WorkspaceAgents>(&mut doc)
+        crate::agents::opened::<WorkspaceAgents>(&document, &mut doc)
     }
 
     /// Apply `invoke` on the list as `caller`'s turn acts: its agent, for the person who asked,

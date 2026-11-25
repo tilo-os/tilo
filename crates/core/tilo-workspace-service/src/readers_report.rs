@@ -167,6 +167,7 @@ mod tests {
                 live: None,
                 founding: Vec::new(),
                 origin: None,
+                version: 1,
             }],
             ..Schema::default()
         });

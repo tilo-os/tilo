@@ -65,7 +65,7 @@ pub struct ResourceKind {
     opens_as_item: fn(&str) -> bool,
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
-    migrate: fn(&mut Doc) -> Result<bool, ModelError>,
+    rewrite: fn(&mut Doc, u32) -> Result<(), ModelError>,
     needs_migrate: fn(&Doc) -> bool,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
     lands: fn(&Doc, &EncodedAction) -> Option<Place>,
@@ -135,10 +135,10 @@ fn no_initialize(_doc: &mut Doc) -> Result<(), ModelError> {
 
 #[allow(
     clippy::unnecessary_wraps,
-    reason = "a kind's migration answers as a type's migration does, whether or not it changes anything"
+    reason = "a kind's rewrite answers as a type's migration does, whether or not it changes anything"
 )]
-fn no_migrate(_doc: &mut Doc) -> Result<bool, ModelError> {
-    Ok(false)
+fn no_rewrite(_doc: &mut Doc, _from: u32) -> Result<(), ModelError> {
+    Ok(())
 }
 
 fn no_needs_migrate(_doc: &Doc) -> bool {
@@ -320,7 +320,7 @@ impl ResourceKind {
             opens_as_item: opens_as_item::<R>,
             register: crate::group::register::<R>,
             initialize: R::initialize,
-            migrate: crate::evolution::migrate::<R>,
+            rewrite: R::migrate,
             needs_migrate: crate::evolution::needs_migrate::<R>,
             encode: encode::<R>,
             lands: lands::<R>,
@@ -363,7 +363,7 @@ impl ResourceKind {
             opens_as_item: no_item,
             register: no_register,
             initialize: no_initialize,
-            migrate: no_migrate,
+            rewrite: no_rewrite,
             needs_migrate: no_needs_migrate,
             encode: no_encode,
             lands: no_lands,
@@ -606,18 +606,17 @@ impl ResourceKind {
         (self.initialize)(doc)
     }
 
-    /// Bring `doc` up to this kind's version with its own migration
-    /// ([`crate::evolution::migrate`]), and to this build's version key.
-    /// Returns whether it changed anything.
+    /// The app's own rewrite of a record of this kind from the version it stood at
+    /// ([`crate::evolution::rewrite`]), which follows its derived steps.
     ///
     /// # Errors
-    /// Returns the migration's error; `doc` is left as it was.
-    pub fn migrate(&self, doc: &mut Doc) -> Result<bool, ModelError> {
-        (self.migrate)(doc)
+    /// Returns the migration's error.
+    pub fn rewrite(&self, doc: &mut Doc, from: u32) -> Result<(), ModelError> {
+        (self.rewrite)(doc, from)
     }
 
-    /// Whether [`Self::migrate`] would change `doc`: it is older than this
-    /// kind, or still keeps its version under a key this one replaced.
+    /// Whether `doc` is older than this kind: its chain of steps stops short of
+    /// this kind's version.
     #[must_use]
     pub fn needs_migrate(&self, doc: &Doc) -> bool {
         (self.needs_migrate)(doc)

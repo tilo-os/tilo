@@ -120,6 +120,7 @@ pub fn schema() -> Schema {
             live: None,
             founding: Vec::new(),
             origin: None,
+            version: 1,
         }],
         verbs: [BRING, REMOVE]
             .into_iter()

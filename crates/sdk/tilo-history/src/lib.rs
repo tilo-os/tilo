@@ -823,7 +823,7 @@ impl<'a> Reader<'a> {
             }
             (HistoryOp::Redo, None) => self.framework_message("history-redo-steps", &args),
             (HistoryOp::Restore, _) => self.framework_message("history-restore", &args),
-            (HistoryOp::Migrate { to }, _) => {
+            (HistoryOp::Migrate { to, .. }, _) => {
                 args.set("to", *to);
                 self.framework_message("history-migrate", &args)
             }

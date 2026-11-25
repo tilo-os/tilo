@@ -54,6 +54,12 @@ pub const PLATFORM_VERBS: [&str; 6] = collab_types::Stamp::PLATFORM_VERBS;
 /// platform's own, and the two a step back or a version brought back writes under.
 pub const RESERVED_VERBS: [&str; 6] = collab_types::Stamp::RESERVED_VERBS;
 
+/// The verb that brings a record to a storage version of its type: the step its kind and id
+/// derive for that version ([`collab_types::document::founding::migrate`]), and no other change.
+/// It writes only the version key. Every schema has it, as it has the move, and no app declares
+/// it.
+pub const MIGRATE_VERB: &str = tilo_actions::stamp::Stamp::MIGRATE_VERB;
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
@@ -89,6 +95,12 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
             Verb {
                 name: ORIGIN_VERB.to_owned(),
                 origins: true,
+                ..Verb::default()
+            },
+            // Admitted by its derived step alone ([`crate::Store`] checks it before any verb's
+            // write-set), so as a verb it admits nothing.
+            Verb {
+                name: MIGRATE_VERB.to_owned(),
                 ..Verb::default()
             },
         ])
@@ -173,6 +185,10 @@ pub struct Type {
     /// The outside service kind the type declares (`imap.message`), for a type whose records
     /// an origin keeps in step with a service. `None` for a type no origin writes.
     pub origin: Option<String>,
+    /// The storage version a resource of it stands at: its chain of derived steps after the
+    /// founding reaches it ([`collab_types::document::founding::chain`]), and the migration verb
+    /// admits each step up to it and no other.
+    pub version: u32,
 }
 
 /// One indexed field of a resource type.
@@ -323,6 +339,7 @@ impl Schema {
                     ty_of.live.clone_from(&live);
                     ty_of.founding = collab_types::document::founding::containers(surface);
                     ty_of.origin.clone_from(&origin);
+                    ty_of.version = surface.version;
                 }
                 ty_of
             })
@@ -397,9 +414,10 @@ impl Schema {
     /// fields another table lists) that `name` starts with.
     /// The verbs of history ([`HISTORY_VERBS`]), the verbs the platform writes under
     /// ([`PLATFORM_VERBS`]), the move ([`MOVE_VERB`]), the creation ([`CREATE_VERB`]), the branch
-    /// ([`BRANCH_VERB`]) and the origin's write ([`ORIGIN_VERB`]) are declared in every schema.
-    /// The origin's write is the platform's alone: a surface that names it declares nothing under
-    /// it, so no app action is admitted by the name.
+    /// ([`BRANCH_VERB`]), the migration ([`MIGRATE_VERB`]) and the origin's write
+    /// ([`ORIGIN_VERB`]) are declared in every schema. The origin's write is the platform's alone:
+    /// a surface that names it declares nothing under it, so no app action is admitted by the
+    /// name.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
         self.verbs
             .iter()
@@ -636,6 +654,7 @@ impl Type {
             live: None,
             founding: Vec::new(),
             origin: None,
+            version: 1,
         }
     }
 

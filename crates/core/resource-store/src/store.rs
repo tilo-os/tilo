@@ -51,7 +51,7 @@ use collab_types::touch::READERS;
 
 use crate::admit::{Admit, Proposal, Received, Refusal, Stamp};
 use crate::index::{Change, Commit, CommitHook as _, Index};
-use crate::schema::Schema;
+use crate::schema::{MIGRATE_VERB, Schema};
 
 mod past;
 mod readers;
@@ -85,6 +85,18 @@ pub const CHANGED: &str = "$changed.";
 #[must_use]
 pub fn content_id(readers: &str, kind: &str, id: &str) -> String {
     format!("{}/{kind}/{id}~0", collab_types::reader_set_name(readers))
+}
+
+/// The storage version a change of the migration verb, `stamp`, names, and whether it is the app's
+/// rewrite for it rather than the derived step: `None` when it names none.
+fn migration_of(stamp: &Stamp) -> Option<(u32, bool)> {
+    match &stamp.context.as_deref()?.what {
+        Some(tilo_actions::Did::History(step)) => match step.op {
+            tilo_actions::HistoryOp::Migrate { to, rewrite } => Some((to, rewrite)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The kind and id of the resource whose content the document `doc` holds ([`content_id`]);
@@ -1354,20 +1366,22 @@ impl Store {
         self.rules.contains_key(kind)
     }
 
-    /// The change every holder makes alike to found the content of the resource `id` of `kind`:
-    /// the containers its type declares ([`collab_types::document::founding`]), none for a kind
-    /// that declares none. `None` for a kind this store declares no type of.
+    /// The changes every holder makes alike to found the content of the resource `id` of `kind`:
+    /// the founding of the containers its type declares ([`collab_types::document::founding`]),
+    /// none for a kind that declares none, and the steps to the version its type stands at
+    /// ([`collab_types::document::founding::chain`]). `None` for a kind this store declares no
+    /// type of.
     ///
     /// # Errors
-    /// When the type's containers cannot be founded ([`collab_types::document::founding::structure`]).
+    /// When the founding or a step cannot be made ([`collab_types::document::founding::chain`]).
     pub fn founding(
         &self,
         kind: &str,
         id: &str,
-    ) -> Result<Option<AmChange>, automerge::AutomergeError> {
+    ) -> Result<Option<Vec<AmChange>>, automerge::AutomergeError> {
         self.schema
             .get(kind)
-            .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
+            .map(|ty| collab_types::document::founding::chain(kind, id, ty.version, &ty.founding))
             .transpose()
     }
 
@@ -2504,8 +2518,47 @@ impl Store {
                 )))
             };
         }
-        let index = &self.index;
         let stamp = Stamp::of(&received.change);
+        // The migration verb's two forms. A record's step to a storage version is admitted only
+        // as the one its kind and id derive for that version, up to the version its type stands
+        // at: the step every holder makes, whoever sends it. The app's rewrite of its content for
+        // a version is decided as any write of the record's, by who may write it, and its verb
+        // declares no write-set of its own.
+        let migration = content_resource(doc_id).zip(
+            stamp
+                .as_ref()
+                .filter(|stamp| stamp.verb == MIGRATE_VERB)
+                .map(migration_of),
+        );
+        if let Some(((kind, id), named)) = migration {
+            let ty = std::iter::once(&self.schema)
+                .chain(schema)
+                .find_map(|schema| schema.get(kind));
+            let version = ty.map_or(0, |ty| ty.version);
+            let Some((to, rewrite)) = named.filter(|(to, _)| (1..=version).contains(to)) else {
+                return Err(Refusal::Undeclared(format!(
+                    "a migration of `{id}` to no storage version its kind stands at"
+                )));
+            };
+            if !rewrite {
+                let derived = ty
+                    .map(|ty| collab_types::document::founding::migrate(kind, id, to, &ty.founding))
+                    .transpose()
+                    .map_err(|error| {
+                        Refusal::Undeclared(format!(
+                            "the step `{kind}` derives to version {to} cannot be made: {error}"
+                        ))
+                    })?;
+                return if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
+                    Ok(())
+                } else {
+                    Err(Refusal::Undeclared(format!(
+                        "a step of `{id}` to version {to} that is not the one its kind derives"
+                    )))
+                };
+            }
+        }
+        let index = &self.index;
         for schema in std::iter::once(&self.schema).chain(schema) {
             crate::admit::declared(
                 schema,
@@ -2515,14 +2568,16 @@ impl Store {
                 &|kind, id| self.rule_places_apart(kind, id, &writes),
             )
             .map_err(Refusal::Undeclared)?;
-            crate::admit::within_verb(
-                schema,
-                &touched,
-                &writes,
-                stamp.as_ref(),
-                received.change.len(),
-            )
-            .map_err(Refusal::Undeclared)?;
+            if migration.is_none() {
+                crate::admit::within_verb(
+                    schema,
+                    &touched,
+                    &writes,
+                    stamp.as_ref(),
+                    received.change.len(),
+                )
+                .map_err(Refusal::Undeclared)?;
+            }
         }
         self.judge_readers(doc_id, readers, &touched, &received.change)?;
         let admitted = admit.admit(&Proposal {

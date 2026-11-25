@@ -187,8 +187,9 @@ impl Stamp {
     /// it on its surface.
     pub const TYPE_VERB: &str = "type";
 
-    /// The verb of a change that brings a record to its model's current storage version, which
-    /// each kind that migrates declares on its surface.
+    /// The verb of a change that brings a record to a storage version of its model: the step its
+    /// kind and id derive, or the app's rewrite that follows it. Every store has it, and no
+    /// surface declares it.
     pub const MIGRATE_VERB: &str = "migrate";
 
     /// The verb of a change that founds a record in a branch of its workspace: the fork's

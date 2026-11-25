@@ -459,7 +459,8 @@ impl<C: ChildResource> ChildrenState<C> {
                 return Err("migrated once the store takes writes".into());
             }
             self.workspace.store.migrate(&record, |doc| {
-                tilo_resource::evolution::migrate::<C>(doc).map_err(|error| error.to_string())
+                collab_types::document::founding::bring_up_resource::<C>(record.route(), doc)
+                    .map_err(|error| error.to_string())
             })?;
         }
         let reader = self

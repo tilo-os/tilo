@@ -660,7 +660,19 @@ mod tests {
             .unwrap();
         doc.commit();
         let mut old = doc.fork();
-        assert!(evolution::migrate::<AccountList>(&mut old).unwrap());
+        assert!(
+            evolution::rewrite(
+                (
+                    <AccountList as tilo_resource::Resource>::KIND,
+                    "record",
+                    <AccountList as tilo_resource::Resource>::VERSION
+                ),
+                evolution::stored_version(&old),
+                &|doc, from| <AccountList as tilo_resource::Resource>::migrate(doc, from),
+                &mut old,
+            )
+            .unwrap()
+        );
         let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
         assert_eq!(accounts.accounts.len(), 2);
         let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
@@ -714,7 +726,19 @@ mod tests {
             .unwrap();
         doc.commit();
         let mut old = doc.fork();
-        assert!(evolution::migrate::<AccountList>(&mut old).unwrap());
+        assert!(
+            evolution::rewrite(
+                (
+                    <AccountList as tilo_resource::Resource>::KIND,
+                    "record",
+                    <AccountList as tilo_resource::Resource>::VERSION
+                ),
+                evolution::stored_version(&old),
+                &|doc, from| <AccountList as tilo_resource::Resource>::migrate(doc, from),
+                &mut old,
+            )
+            .unwrap()
+        );
         assert_eq!(evolution::stored_version(&old), 4);
         let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
         assert_eq!(accounts.accounts.len(), 1);

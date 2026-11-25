@@ -170,10 +170,6 @@ params = [
 id = "type"
 kind = "undoable"
 
-[[resources.verbs]]
-id = "migrate"
-kind = "undoable"
-
 [[resources.types]]
 name = "Ink"
 fields = [
@@ -305,10 +301,6 @@ params = [
 
 [[resources.verbs]]
 id = "type"
-kind = "undoable"
-
-[[resources.verbs]]
-id = "migrate"
 kind = "undoable"
 
 [[resources.types]]
@@ -459,10 +451,6 @@ params = [
 
 [[resources.verbs]]
 id = "type"
-kind = "undoable"
-
-[[resources.verbs]]
-id = "migrate"
 kind = "undoable"
 
 [[resources.types]]
@@ -857,10 +845,6 @@ params = [
 id = "type"
 kind = "undoable"
 
-[[resources.verbs]]
-id = "migrate"
-kind = "undoable"
-
 [[resources.types]]
 name = "PowerActionPref"
 cases = [
@@ -1060,10 +1044,6 @@ params = [
   { name = "at", type = "text", required = true, schema = { type = "string" } },
 ]
 
-[[resources.verbs]]
-id = "migrate"
-kind = "undoable"
-
 [[resources]]
 kind = "settings.notifications"
 label = "Notifications"
@@ -1215,10 +1195,6 @@ params = [
 id = "type"
 kind = "undoable"
 
-[[resources.verbs]]
-id = "migrate"
-kind = "undoable"
-
 [[resources.types]]
 name = "SystemSoundEvents"
 fields = [
@@ -1292,10 +1268,6 @@ params = [
 
 [[resources.verbs]]
 id = "type"
-kind = "undoable"
-
-[[resources.verbs]]
-id = "migrate"
 kind = "undoable"
 
 [[resources]]
@@ -1579,10 +1551,6 @@ fields = [
 
 [[resources.verbs]]
 id = "type"
-kind = "undoable"
-
-[[resources.verbs]]
-id = "migrate"
 kind = "undoable"
 
 [[resources]]

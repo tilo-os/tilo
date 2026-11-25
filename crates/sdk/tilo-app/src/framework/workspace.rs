@@ -666,7 +666,7 @@ impl<P: Resource> WorkspaceResource<P> {
             opened,
             P::KIND,
             tilo_resource::evolution::needs_migrate::<P>,
-            tilo_resource::evolution::migrate::<P>,
+            collab_types::document::founding::bring_up_resource::<P>,
         )?;
         let reader = record
             .read(tilo_resource::Reader::<P>::read)
@@ -939,7 +939,7 @@ fn opened_at_version(
     opened: Result<StoredResource, ui_core::resource::ResourceOpenError>,
     kind: &'static str,
     needs_migrate: fn(&tilo_resource::Doc) -> bool,
-    migrate: fn(&mut tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>,
+    migrate: fn(&str, &mut tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>,
 ) -> Result<StoredResource, Unopened> {
     let stored = match opened {
         Ok(stored) => stored,
@@ -952,9 +952,11 @@ fn opened_at_version(
             return Err(Unopened::Failed);
         }
     };
+    let id = stored.checkout().id.route().to_owned();
     if stored.read(needs_migrate).ok_or(Unopened::InUse)?
-        && let Err(error) =
-            stored.edit(false, |doc| migrate(doc).map_err(|error| error.to_string()))
+        && let Err(error) = stored.edit(false, |doc| {
+            migrate(&id, doc).map_err(|error| error.to_string())
+        })
     {
         tracing::warn!(kind, %error, "the workspace's resource did not migrate");
     }

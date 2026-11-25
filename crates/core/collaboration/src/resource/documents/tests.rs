@@ -214,15 +214,15 @@ tilo_test_env::scenario! {
     // Two members of a workspace each create the record the workspace derives for
     // them, before either has heard of the other's: the same record, from
     // the same initial content. Their documents merge into one record whose
-    // content has one value at every key, not two competing roots.
+    // content has one value at every key, not two competing roots: its
+    // containers come with its founding and its version with the steps after
+    // it, which both derive alike.
     {
         let initialize = |doc: &mut AutoCommit| {
             for key in ["pages", "tags"] {
                 doc.put_object(ROOT, key, ObjType::Map)
                     .map_err(|e| e.to_string())?;
             }
-            doc.put(ROOT, "schema_version", 1_u64)
-                .map_err(|e| e.to_string())?;
             Ok(())
         };
         let checkout = DocumentCheckout::new(
@@ -259,17 +259,36 @@ tilo_test_env::scenario! {
         let mut merged = AutoCommit::load(&created[0]).unwrap();
         let mut other = AutoCommit::load(&created[1]).unwrap();
         tilo_automerge::ApplyIncoming::merge_incoming(&mut merged, &mut other).unwrap();
-        for key in ["pages", "tags", "schema_version"] {
+        for key in ["pages", "tags", tilo_resource::evolution::VERSION_KEY] {
             assert_eq!(
                 merged.get_all(ROOT, key).unwrap().len(),
                 1,
                 "{key} has one value once both members' records meet"
             );
         }
+        assert_eq!(tilo_resource::evolution::stored_version(&merged), 1);
+        // Who the record is is the store's: the document holds the one founding its route
+        // derives, and the steps after it, which both members made alike.
+        let chain = collab_types::document::founding::chain(
+            "notebook",
+            checkout.id.route(),
+            1,
+            &[
+                ("pages".to_owned(), ObjType::Map),
+                ("tags".to_owned(), ObjType::Map),
+            ],
+        )
+        .unwrap();
+        for link in &chain {
+            assert!(
+                merged.get_change_by_hash(&link.hash()).is_some(),
+                "the record keeps its one founding and its steps"
+            );
+        }
         assert_eq!(
-            identity(&merged).map(|found| found.id),
-            Some(checkout.id.clone()),
-            "the record keeps its one identity"
+            merged.get_changes(&[]).len(),
+            chain.len(),
+            "the founding and its steps once: the members' first values are its containers"
         );
         // Each member still writes as itself after the shared creation.
         let actors: std::collections::BTreeSet<_> = [&created[0], &created[1]]

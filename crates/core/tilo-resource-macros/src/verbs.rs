@@ -2003,15 +2003,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     });
-    // A type that registers a migration declares the framework's `migrate` verb in its
-    // surface; one that registers none does not.
-    let migrates = if options.migrate.is_some() {
-        quote! {
-            const MIGRATES: bool = true;
-        }
-    } else {
-        quote!()
-    };
     let load = options.load.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -2448,7 +2439,6 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             const APP_ID: &'static str = #app_id;
             const RESOURCE_TABLE: ::core::option::Option<&'static #krate::table::ModelTable> =
                 ::core::option::Option::Some(<Self as #krate::Model>::TABLE);
-            #migrates
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
 
@@ -2484,7 +2474,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             fn initialize(doc: &mut #krate::Doc) -> ::core::result::Result<(), #krate::ModelError> {
                 let initial: Self = #initial;
                 <Self as #krate::Fields>::write_fields(&initial, doc, &#krate::__private::ROOT)?;
-                #krate::evolution::write_version(doc, <Self as #krate::Resource>::VERSION)
+                #krate::evolution::write_initial_version(doc, <Self as #krate::Resource>::VERSION)
             }
 
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {

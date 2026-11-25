@@ -2810,20 +2810,20 @@ fn later(wait: Duration) -> Instant {
     now.checked_add(wait).unwrap_or(now)
 }
 
-/// The record `doc` holds, read as this build's `R` once it is brought up to
-/// `R`'s storage version by the app's own migration
-/// ([`tilo_resource::evolution::migrate`]). A workspace an older server or older
+/// The record `id` that `doc` holds, read as this build's `R` once it is brought up to
+/// `R`'s storage version by its derived steps and the app's own migration
+/// ([`collab_types::document::founding::bring_up_resource`]). A workspace an older server or older
 /// devices wrote is read, never refused: a newer server starts on an older
 /// server's state. The migration deletes nothing and rewrites no id, and it
 /// is the same change every device migrating the record makes.
 ///
 /// # Errors
 /// The migration failed, or the migrated record does not read as `R`.
-pub fn opened<R>(doc: &mut automerge::AutoCommit) -> Result<R::State, String>
+pub fn opened<R>(id: &str, doc: &mut automerge::AutoCommit) -> Result<R::State, String>
 where
     R: tilo_resource::Resource,
 {
-    tilo_resource::evolution::migrate::<R>(doc)
+    collab_types::document::founding::bring_up_resource::<R>(id, doc)
         .map_err(|error| format!("bring the record up to version {}: {error}", R::VERSION))?;
     R::read(doc).map_err(|error| error.to_string())
 }

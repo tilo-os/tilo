@@ -76,8 +76,15 @@ fn entries_of(kinds: &Kinds, app_id: &str, doc: &Doc) -> Vec<IndexEntry> {
     let mut found = Vec::new();
     for kind in kinds.iter().filter(|kind| kind.app_id() == Some(app_id)) {
         let mut read = doc.clone();
-        if kind.needs_migrate(&read) && kind.migrate(&mut read).is_err() {
-            continue;
+        // Read at this build's version, in memory: the app's rewrite and the version it reaches,
+        // never committed, since the document is the app's to bring up.
+        if kind.needs_migrate(&read) {
+            let from = tilo_resource::evolution::stored_version(&read);
+            if kind.rewrite(&mut read, from).is_err()
+                || tilo_resource::evolution::write_version(&mut read, kind.version()).is_err()
+            {
+                continue;
+            }
         }
         let Ok(entries) = kind.search(&read) else {
             // The document holds another kind: its own type answers for it.

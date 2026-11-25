@@ -9,7 +9,6 @@ pub mod transfer;
 pub use documents::*;
 
 use automerge::transaction::Transactable;
-use std::collections::BTreeMap;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 pub use collab_types::document::{
@@ -179,7 +178,9 @@ fn scope_primary(doc: &mut AutoCommit, workspace: &str) -> bool {
 /// kind the same: never what surfaces this process happens to have been named. Clones share it.
 #[derive(Clone, Default)]
 pub struct RecordTypes(
-    std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<String, Vec<(String, ObjType)>>>>,
+    std::rc::Rc<
+        std::cell::RefCell<std::collections::BTreeMap<String, (Vec<(String, ObjType)>, u32)>>,
+    >,
 );
 
 impl RecordTypes {
@@ -187,7 +188,10 @@ impl RecordTypes {
     pub fn declare(&self, surface: &tilo_actions::surface::Surface) {
         self.0.borrow_mut().insert(
             surface.kind.clone(),
-            collab_types::document::founding::of_kind(surface),
+            (
+                collab_types::document::founding::of_kind(surface),
+                surface.version,
+            ),
         );
     }
 
@@ -206,6 +210,16 @@ impl RecordTypes {
     /// The containers records of `kind` found with, once its type was declared here.
     #[must_use]
     pub fn founding(&self, kind: &str) -> Option<Vec<(String, ObjType)>> {
+        self.0
+            .borrow()
+            .get(kind)
+            .map(|(containers, _)| containers.clone())
+    }
+
+    /// The containers records of `kind` found with and the storage version their chain of steps
+    /// reaches ([`collab_types::document::founding::chain`]), once its type was declared here.
+    #[must_use]
+    pub fn chain(&self, kind: &str) -> Option<(Vec<(String, ObjType)>, u32)> {
         self.0.borrow().get(kind).cloned()
     }
 }
@@ -227,7 +241,7 @@ impl RecordTypes {
 pub fn content_genesis(
     doc: &mut AutoCommit,
     checkout: &DocumentCheckout,
-    founding: Option<&[(String, ObjType)]>,
+    founding: Option<(&[(String, ObjType)], u32)>,
     (by, initialize): (
         &tilo_action_policy::Acting,
         impl FnOnce(&mut AutoCommit) -> Result<(), String>,
@@ -253,15 +267,32 @@ pub fn content_genesis(
         )));
     }
     let mut made = AutoCommit::new().with_actor(doc.get_actor().clone());
-    let founding = collab_types::document::founding::structure(
-        kind,
-        checkout.id.route(),
-        founding.unwrap_or_default(),
-    )
-    .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
-    ApplyIncoming::apply_incoming(&mut made, vec![founding])
+    // The founding and the steps to the type's version, which every holder derives alike; a kind
+    // whose type is not declared founds with no container and steps to no version.
+    let (containers, version) = founding.unwrap_or_default();
+    let chain =
+        collab_types::document::founding::chain(kind, checkout.id.route(), version, containers)
+            .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+    ApplyIncoming::apply_incoming(&mut made, chain)
         .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+    // What the record starts with is made alike wherever its creator makes it: under an actor
+    // derived from the record and who creates it, at time zero, on the chain. Two of a person's
+    // devices creating the same record write one change; two people write one each.
+    let writer = made.get_actor().clone();
+    made.set_actor(tilo_resource::genesis::actor(
+        checkout.id.route(),
+        kind,
+        &format!(
+            "initial content by {}",
+            tilo_actions::stamp::Stamp::by(&by.by)
+        ),
+    ));
     for key in first.keys(ROOT).collect::<Vec<_>>() {
+        // A record's version is its chain's alone, wherever its type is declared: what the
+        // initializer says of it is no second writer of it.
+        if founding.is_some() && key == tilo_resource::evolution::VERSION_KEY {
+            continue;
+        }
         let Some((value, from)) = first.get(ROOT, key.as_str()).map_err(failed)? else {
             continue;
         };
@@ -275,15 +306,19 @@ pub fn content_genesis(
                     Some((Value::Object(held), into)) if held == ty => into,
                     _ => made.put_object(ROOT, key.as_str(), ty).map_err(failed)?,
                 };
-                copy_across(&first, &from, &mut made, &into).map_err(failed)?;
+                collab_types::document::split::copy_across(&first, &from, &mut made, &into)
+                    .map_err(failed)?;
             }
         }
     }
     if made.pending_ops() != 0 {
         made.commit_with(
-            automerge::transaction::CommitOptions::default().with_message(initial_content_by(by)),
+            automerge::transaction::CommitOptions::default()
+                .with_message(initial_content_by(by))
+                .with_time(0),
         );
     }
+    made.set_actor(writer);
     *doc = made;
     Ok(())
 }
@@ -298,308 +333,6 @@ pub(crate) fn initial_content_by(by: &tilo_action_policy::Acting) -> String {
         .with_change(tilo_actions::ChangeKind::External)
         .change_message()
         .unwrap_or_default()
-}
-
-/// Bring together a record whose root containers its devices each made of their own before its
-/// founding was the same everywhere: of every container `founding` names, the copies a merge left
-/// conflicting at the root, where it shows one and hides the rest with the items added to them.
-/// The items of each hidden copy are copied into the shown one, which every device picks alike: a
-/// map's entries it lacks by key (an item's id), and a list's elements it holds fewer of than the
-/// hidden copy does, an element naming an `id` held once by it.
-///
-/// The change is the same on every device that holds the same history: made at time zero by an
-/// actor derived from the record (`kind`, `id`), the containers it brings together and the heads
-/// it is made on, which are its only dependencies, and named as the app `app`'s own edit of its
-/// record, the same everywhere. Two devices doing it at once from one history
-/// make one change, which a merge keeps once; two doing it from different histories make two, of
-/// which a list keeps an element naming an `id` once all the same. Opened again, a record brought
-/// together is not changed. Whether this changed anything.
-///
-/// # Errors
-/// The record could not be written.
-pub fn merge_split_containers(
-    doc: &mut AutoCommit,
-    kind: &str,
-    id: &str,
-    founding: &[(String, ObjType)],
-    app: &str,
-) -> Result<bool, ResourceOpenError> {
-    let failed =
-        |error: automerge::AutomergeError| ResourceOpenError::Initialization(error.to_string());
-    let mut split = Vec::new();
-    for (field, container) in founding {
-        let Some((Value::Object(_), shown)) = doc.get(ROOT, field.as_str()).map_err(failed)? else {
-            continue;
-        };
-        let hidden: Vec<automerge::ObjId> = doc
-            .get_all(ROOT, field.as_str())
-            .map_err(failed)?
-            .into_iter()
-            .filter(|(value, held)| {
-                matches!(value, Value::Object(ty) if ty == container) && *held != shown
-            })
-            .map(|(_, held)| held)
-            .collect();
-        if !hidden.is_empty() {
-            split.push((*container, shown, hidden));
-        }
-    }
-    if split.is_empty() {
-        return Ok(false);
-    }
-    let heads = doc.get_heads();
-    let mut named: Vec<String> = split
-        .iter()
-        .flat_map(|(_, shown, hidden)| std::iter::once(shown).chain(hidden))
-        .map(ToString::to_string)
-        .collect();
-    named.sort();
-    let mut on: Vec<String> = heads.iter().map(ToString::to_string).collect();
-    on.sort();
-    let actor = tilo_resource::genesis::actor(
-        id,
-        kind,
-        &format!("merge {} on {}", named.join(","), on.join(",")),
-    );
-    let mut merging = doc.fork();
-    merging.set_actor(actor);
-    for (container, shown, hidden) in &split {
-        for stray in hidden {
-            match container {
-                ObjType::Map | ObjType::Table => {
-                    for key in merging.keys(stray).collect::<Vec<_>>() {
-                        if merging.get(shown, key.as_str()).map_err(failed)?.is_none() {
-                            copy_value(
-                                &mut merging,
-                                stray,
-                                key.as_str().into(),
-                                shown,
-                                Place::Key(&key),
-                            )
-                            .map_err(failed)?;
-                        }
-                    }
-                }
-                ObjType::List => {
-                    let mut held: BTreeMap<String, usize> = BTreeMap::new();
-                    for at in 0..merging.length(shown) {
-                        *held
-                            .entry(fingerprint(&merging, shown, at.into()))
-                            .or_default() += 1;
-                    }
-                    for at in 0..merging.length(stray) {
-                        let print = fingerprint(&merging, stray, at.into());
-                        match held.get_mut(&print) {
-                            Some(count) if *count > 0 => *count -= 1,
-                            _ => {
-                                let end = merging.length(shown);
-                                copy_value(
-                                    &mut merging,
-                                    stray,
-                                    at.into(),
-                                    shown,
-                                    Place::Index(end),
-                                )
-                                .map_err(failed)?;
-                            }
-                        }
-                    }
-                }
-                ObjType::Text => {}
-            }
-        }
-        if *container == ObjType::List {
-            once_by_id(&mut merging, shown).map_err(failed)?;
-        }
-    }
-    if merging.pending_ops() == 0 {
-        return Ok(false);
-    }
-    merging.commit_with(
-        automerge::transaction::CommitOptions::default()
-            // The store derives it for the app whose record this is, on every device alike: the
-            // same bytes made apart merge as one change. Naming the app keeps that, and names
-            // who made it.
-            .with_message(tilo_actions::ActionContext::whole_edit_by(
-                &tilo_actions::Acting::by_app(app),
-            ))
-            .with_time(0),
-    );
-    let merged = merging
-        .get_last_local_change()
-        .ok_or_else(|| ResourceOpenError::Initialization("the merge made no change".into()))?;
-    ApplyIncoming::apply_incoming(doc, vec![merged])
-        .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
-    Ok(true)
-}
-
-/// The `id` the list element at `at` of `list` names, when it is a map naming one.
-fn element_id(doc: &AutoCommit, list: &automerge::ObjId, at: usize) -> Option<String> {
-    let Ok(Some((Value::Object(ObjType::Map), element))) = doc.get(list, at) else {
-        return None;
-    };
-    match doc.get(&element, "id") {
-        Ok(Some((Value::Scalar(id), _))) => Some(
-            id.as_str()
-                .map_or_else(|| format!("{:?}", id.as_ref()), str::to_owned),
-        ),
-        _ => None,
-    }
-}
-
-/// Keep each element of `list` that names an `id` once: the first holding it.
-fn once_by_id(
-    doc: &mut AutoCommit,
-    list: &automerge::ObjId,
-) -> Result<(), automerge::AutomergeError> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut at = 0;
-    while at < doc.length(list) {
-        match element_id(doc, list, at) {
-            Some(id) if seen.contains(&id) => doc.delete(list, at)?,
-            Some(id) => {
-                seen.insert(id);
-                at += 1;
-            }
-            _ => at += 1,
-        }
-    }
-    Ok(())
-}
-
-/// Where [`copy_value`] puts what it copies.
-enum Place<'a> {
-    Key(&'a str),
-    Index(usize),
-}
-
-/// What the value at `prop` of `obj` holds, the same wherever it is held: what tells one list
-/// element from another when two copies of a list are brought together.
-fn fingerprint(doc: &AutoCommit, obj: &automerge::ObjId, prop: automerge::Prop) -> String {
-    match doc.get(obj, prop) {
-        Ok(Some((Value::Scalar(value), _))) => format!("{:?}", value.as_ref()),
-        Ok(Some((Value::Object(ObjType::Text), id))) => {
-            format!("text:{:?}", doc.text(&id).unwrap_or_default())
-        }
-        Ok(Some((Value::Object(ObjType::List), id))) => {
-            let items: Vec<String> = (0..doc.length(&id))
-                .map(|at| fingerprint(doc, &id, at.into()))
-                .collect();
-            format!("list:{items:?}")
-        }
-        Ok(Some((Value::Object(_), id))) => {
-            if let Ok(Some((Value::Scalar(named), _))) = doc.get(&id, "id") {
-                return format!("id:{:?}", named.as_ref());
-            }
-            let entries: Vec<(String, String)> = doc
-                .keys(&id)
-                .map(|key| {
-                    let print = fingerprint(doc, &id, key.as_str().into());
-                    (key, print)
-                })
-                .collect();
-            format!("map:{entries:?}")
-        }
-        Ok(None) => String::new(),
-        Err(error) => {
-            tracing::warn!(%error, "a value of the record could not be fingerprinted");
-            String::new()
-        }
-    }
-}
-
-/// Copy the value at `prop` of `from` to `place` in `to`, whole: a container is made anew with
-/// everything it holds.
-fn copy_value(
-    doc: &mut AutoCommit,
-    from: &automerge::ObjId,
-    prop: automerge::Prop,
-    to: &automerge::ObjId,
-    place: Place<'_>,
-) -> Result<(), automerge::AutomergeError> {
-    let Some((value, id)) = doc.get(from, prop)? else {
-        return Ok(());
-    };
-    let made = match (value, place) {
-        (Value::Scalar(value), Place::Key(key)) => {
-            doc.put(to, key, value.into_owned())?;
-            return Ok(());
-        }
-        (Value::Scalar(value), Place::Index(at)) => {
-            doc.insert(to, at, value.into_owned())?;
-            return Ok(());
-        }
-        (Value::Object(ty), Place::Key(key)) => doc.put_object(to, key, ty)?,
-        (Value::Object(ty), Place::Index(at)) => doc.insert_object(to, at, ty)?,
-    };
-    match doc.object_type(&id)? {
-        ObjType::Text => {
-            let text = doc.text(&id)?;
-            doc.splice_text(&made, 0, 0, &text)?;
-        }
-        ObjType::List => {
-            for at in 0..doc.length(&id) {
-                copy_value(doc, &id, at.into(), &made, Place::Index(at))?;
-            }
-        }
-        ObjType::Map | ObjType::Table => {
-            for key in doc.keys(&id).collect::<Vec<_>>() {
-                copy_value(doc, &id, key.as_str().into(), &made, Place::Key(&key))?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Copy what the container `from` of `source` holds into the container `into` of `doc`, of the
-/// same type: a map's entries, a list's elements after those `into` holds, a text's characters.
-fn copy_across(
-    source: &AutoCommit,
-    from: &automerge::ObjId,
-    doc: &mut AutoCommit,
-    into: &automerge::ObjId,
-) -> Result<(), automerge::AutomergeError> {
-    let made = |doc: &mut AutoCommit, value: Value<'_>, place: Place<'_>| {
-        Ok::<_, automerge::AutomergeError>(match (value, place) {
-            (Value::Scalar(value), Place::Key(key)) => {
-                doc.put(into, key, value.into_owned())?;
-                None
-            }
-            (Value::Scalar(value), Place::Index(at)) => {
-                doc.insert(into, at, value.into_owned())?;
-                None
-            }
-            (Value::Object(ty), Place::Key(key)) => Some(doc.put_object(into, key, ty)?),
-            (Value::Object(ty), Place::Index(at)) => Some(doc.insert_object(into, at, ty)?),
-        })
-    };
-    match source.object_type(from)? {
-        ObjType::Text => {
-            let text = source.text(from)?;
-            let end = doc.length(into);
-            doc.splice_text(into, end, 0, &text)?;
-        }
-        ObjType::List => {
-            for at in 0..source.length(from) {
-                if let Some((value, held)) = source.get(from, at)? {
-                    let end = doc.length(into);
-                    if let Some(child) = made(doc, value, Place::Index(end))? {
-                        copy_across(source, &held, doc, &child)?;
-                    }
-                }
-            }
-        }
-        ObjType::Map | ObjType::Table => {
-            for key in source.keys(from).collect::<Vec<_>>() {
-                if let Some((value, held)) = source.get(from, key.as_str())? {
-                    if let Some(child) = made(doc, value, Place::Key(&key))? {
-                        copy_across(source, &held, doc, &child)?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Make `doc` the resource as it is created: its identity and the app's `initialize`d content in one
@@ -665,6 +398,7 @@ pub fn genesis(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collab_types::document::split::{element_id, merge_split_containers};
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const KIND: &str = "files.tree";
@@ -696,11 +430,13 @@ mod tests {
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<AutoCommit, ResourceOpenError> {
         let mut doc = AutoCommit::new().with_actor(writer.clone());
-        let founding = types.founding(checkout.kind.as_str());
+        let founding = types.chain(checkout.kind.as_str());
         content_genesis(
             &mut doc,
             checkout,
-            founding.as_deref(),
+            founding
+                .as_ref()
+                .map(|(containers, version)| (containers.as_slice(), *version)),
             (
                 &tilo_action_policy::Acting::by_app("test.founding"),
                 initialize,
@@ -783,17 +519,21 @@ mod tests {
                 .map(|change| change.raw_bytes().to_vec())
                 .collect::<Vec<_>>()
         };
-        let derived = collab_types::document::founding::structure(
+        let derived = collab_types::document::founding::chain(
             LIST,
             "",
+            1,
             &[("items".to_owned(), ObjType::List)],
         )
         .expect("a list founds with its items");
         let unnamed = found();
         assert_eq!(
             unnamed,
-            [derived.raw_bytes().to_vec()],
-            "the store's own derivation"
+            derived
+                .iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>(),
+            "the store's own derivation: the founding and its step to the type's version"
         );
         collab_types::app_surface::register_built_in(
             "so.tilo.test-founding",
@@ -851,7 +591,11 @@ mod tests {
             founding(&mut unnamed),
             "one founding, byte for byte"
         );
-        assert_eq!(founding(&mut named).len(), 1, "the founding is one change");
+        assert_eq!(
+            founding(&mut named).len(),
+            2,
+            "the founding is one change, and its step to the type's version another"
+        );
 
         add(&mut unnamed, "eggs");
         add(&mut named, "milk");
@@ -1062,8 +806,9 @@ mod tests {
         );
     }
 
-    /// An app's own record founds on the change the store derives for the record its route
-    /// names, the empty one: the store refuses any other founding of it.
+    /// An app's own record founds on the changes the store derives for the record its route
+    /// names, the empty one, and its step to the type's version: the store refuses any other
+    /// founding or step of it.
     #[test]
     fn an_apps_own_record_founds_as_the_store_derives_it_for_its_route() {
         let kind = ResourceType::new(LIST);
@@ -1074,12 +819,13 @@ mod tests {
             |_| Ok(()),
         )
         .expect("the record is founded");
-        let derived = collab_types::document::founding::structure(
+        let derived = collab_types::document::founding::migrate(
             LIST,
             "",
+            1,
             &[("items".to_owned(), ObjType::List)],
         )
-        .expect("a list founds with its items");
+        .expect("a list founds with its items and steps to its version");
         assert_eq!(made.get_heads(), [derived.hash()]);
     }
 

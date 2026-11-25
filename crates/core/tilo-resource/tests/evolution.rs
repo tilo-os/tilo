@@ -76,8 +76,8 @@ tilo_test_env::scenario! {
         assert_eq!((unreadable.stored, unreadable.expected), (1, 2));
         assert!(Contact::read(&doc).is_err());
 
-        assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
-        assert!(!evolution::migrate::<Contact>(&mut doc).unwrap(), "once");
+        assert!(crate::rewrite::<Contact>(&mut doc));
+        assert!(!crate::rewrite::<Contact>(&mut doc), "once");
         let contact = evolution::read_checked::<Contact>(&doc).unwrap();
         assert_eq!(
             (contact.given.as_str(), contact.family.as_str()),
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
     {
         let mut doc = old_document();
         let before = doc.get_heads();
-        assert!(evolution::migrate::<Contact>(&mut doc).unwrap());
+        assert!(crate::rewrite::<Contact>(&mut doc));
         let snapshot = doc.fork_at(&before).unwrap();
         assert_eq!(evolution::stored_version(&snapshot), 1);
         assert_eq!(ContactV1::read(&snapshot).unwrap().name, "Ada Lovelace");
@@ -118,8 +118,8 @@ tilo_test_env::scenario! {
     {
         let mut left = old_document();
         let mut right = left.fork();
-        evolution::migrate::<Contact>(&mut left).unwrap();
-        evolution::migrate::<Contact>(&mut right).unwrap();
+        crate::rewrite::<Contact>(&mut left);
+        crate::rewrite::<Contact>(&mut right);
         assert_eq!(left.get_heads(), right.get_heads());
         tilo_automerge::ApplyIncoming::merge_incoming(&mut left, &mut right).unwrap();
         assert_eq!(left.get_heads().len(), 1);
@@ -295,22 +295,18 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The framework's own content verbs are part of the surface: a record whose fields a person
-/// types into declares `type`, and one that registers a migration declares `migrate` too.
+/// The framework's own content verb is part of the surface: a record whose fields a person types
+/// into declares `type`. A storage migration is the store's own verb, which no surface declares,
+/// whether or not the type registers a migration.
 #[test]
 fn the_surface_declares_the_framework_content_verbs_the_kind_takes() {
     let surface = Contact::surface();
-    let migrate = surface
-        .verbs
-        .iter()
-        .find(|verb| verb.id == "migrate")
-        .expect("Contact registers a migration");
-    assert_eq!(migrate.kind, ActionKind::Undoable);
     assert!(surface.verb("type").is_some(), "its names are typed into");
+    assert!(
+        surface.verb("migrate").is_none(),
+        "the store's migration verb is no surface's"
+    );
     let first = ContactV1::surface();
     assert!(first.verb("type").is_some());
-    assert!(
-        first.verb("migrate").is_none(),
-        "ContactV1 registers no migration"
-    );
+    assert!(first.verb("migrate").is_none());
 }

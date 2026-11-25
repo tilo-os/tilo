@@ -352,11 +352,14 @@ impl Workspaces {
             // it is founded with the action, or not at all.
             let writes = if founding {
                 // Founded under the verb of the first change that names one: a record's derived
-                // founding names none, and a record opened empty is founded as created.
+                // founding names none, its steps to its version are the store's own, and a record
+                // opened empty is founded as created.
                 let mut stamp = parsed
                     .iter()
                     .filter_map(Stamp::of)
-                    .find(|stamp| !stamp.verb.is_empty())
+                    .find(|stamp| {
+                        !stamp.verb.is_empty() && stamp.verb != tilo_resource_store::MIGRATE_VERB
+                    })
                     .unwrap_or_else(|| Stamp {
                         verb: tilo_resource_store::CREATE_VERB.to_owned(),
                         ..Stamp::default()
@@ -681,7 +684,7 @@ impl Workspaces {
                     .founding(kind, record)
                     .map_err(|error| error.to_string())?
                 {
-                    tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, [founding])
+                    tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, founding)
                         .map_err(|error| error.to_string())?;
                 }
                 (doc, Vec::new())

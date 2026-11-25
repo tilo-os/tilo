@@ -40,7 +40,8 @@ pub use index::{Change, Commit, CommitHook, Index};
 pub use port::{LocalPort, Port};
 pub use schema::{
     BRANCH_VERB, CREATE_VERB, Expected, FIELD_EDIT, Field, FieldKind, HISTORY_VERBS, MAX_MARK_ARGS,
-    MOVE_VERB, ORIGIN_VERB, PLATFORM_VERBS, RESERVED_VERBS, Schema, Type, Verb, Writes,
+    MIGRATE_VERB, MOVE_VERB, ORIGIN_VERB, PLATFORM_VERBS, RESERVED_VERBS, Schema, Type, Verb,
+    Writes,
 };
 pub use store::{
     CHANGED, CREATED, Live, RecordReader, Review, Source, Store, StoreError, UPDATED, Written,

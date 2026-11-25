@@ -547,11 +547,6 @@ id = "type"
 kind = "undoable"
 writes = ["record", "files"]
 
-[[resources.verbs]]
-id = "migrate"
-kind = "undoable"
-writes = ["record", "files"]
-
 [[resources.types]]
 name = "Access"
 cases = [

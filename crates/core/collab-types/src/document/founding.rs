@@ -79,3 +79,267 @@ pub fn structure(
     doc.get_change_by_hash(&hash)
         .ok_or(automerge::AutomergeError::MissingHash(hash))
 }
+
+/// The derived founding of the record `id` of `kind` ([`structure`]) followed by the steps that
+/// bring it to each version up to `version` ([`tilo_resource::evolution::step`]): the chain every
+/// holder of a record at `version` stands on. Each step follows the one before it, the first the
+/// founding, so two holders that wrote their own changes meanwhile still make it byte for byte
+/// alike.
+///
+/// # Errors
+/// When the founding or a step cannot be made ([`structure`]).
+pub fn chain(
+    kind: &str,
+    id: &str,
+    version: u32,
+    containers: &[(String, ObjType)],
+) -> Result<Vec<automerge::Change>, automerge::AutomergeError> {
+    let founding = structure(kind, id, containers)?;
+    let mut doc = AutoCommit::new();
+    doc.apply_changes([founding.clone()])?;
+    let mut chain = vec![founding];
+    for version in 1..=version {
+        let step = tilo_resource::evolution::step(kind, id, version, &doc)?;
+        doc.apply_changes([step.clone()])?;
+        chain.push(step);
+    }
+    Ok(chain)
+}
+
+/// The step that brings the record `id` of `kind` to `version`, on the chain [`chain`] derives:
+/// the one change a store admits under the migration verb for that version, and the one every
+/// holder writes.
+///
+/// # Errors
+/// When the chain cannot be made ([`chain`]), or `version` is no version a record steps to (0).
+pub fn migrate(
+    kind: &str,
+    id: &str,
+    version: u32,
+    containers: &[(String, ObjType)],
+) -> Result<automerge::Change, automerge::AutomergeError> {
+    chain(kind, id, version, containers)?
+        .pop()
+        .filter(|_| version > 0)
+        .ok_or(automerge::AutomergeError::Fail)
+}
+
+/// Bring the record `id` of `kind`, the app `app`'s, to `version`, in the one way every holder
+/// does: a record made before its founding was derived (two devices' own root containers) takes
+/// the founding and has what its devices made apart brought together
+/// ([`super::split::merge_split_containers`]); then the chain of steps up to `version`
+/// ([`chain`]) is written where it is not yet, and last the app's own `rewrite` of its content
+/// from the version the record stood at ([`tilo_resource::evolution::rewrite`]). Whether this
+/// changed anything.
+///
+/// # Errors
+/// When the founding, a step or the merge cannot be made, or the app's rewrite fails; `doc` is
+/// left with what was written before it.
+pub fn bring_up(
+    (kind, id, app): (&str, &str, &str),
+    version: u32,
+    containers: &[(String, ObjType)],
+    rewrite: &dyn Fn(&mut AutoCommit, u32) -> Result<(), tilo_resource::ModelError>,
+    doc: &mut AutoCommit,
+) -> Result<bool, tilo_resource::ModelError> {
+    let from = tilo_resource::evolution::stored_version(doc);
+    let mut changed = found((kind, id, app), containers, doc)?;
+    let chain = chain(kind, id, version, containers)?;
+    let missing: Vec<automerge::Change> = chain
+        .into_iter()
+        .filter(|link| doc.get_change_by_hash(&link.hash()).is_none())
+        .collect();
+    changed |= !missing.is_empty();
+    doc.apply_changes(missing)?;
+    if from < version || tilo_resource::evolution::stored_version(doc) < version {
+        changed |= tilo_resource::evolution::rewrite((kind, id, version), from, rewrite, doc)?;
+    }
+    Ok(changed)
+}
+
+/// Give the record `id` of `kind`, the app `app`'s, its derived founding when it was made without
+/// one (two devices' own root containers, before every holder derived it), and bring together
+/// what its devices made apart ([`super::split::merge_split_containers`]): once, the first part
+/// of [`bring_up`], and all a store that reads no type's version does on opening a record.
+/// Whether this changed anything.
+///
+/// # Errors
+/// When the founding or the merge cannot be made.
+pub fn found(
+    (kind, id, app): (&str, &str, &str),
+    containers: &[(String, ObjType)],
+    doc: &mut AutoCommit,
+) -> Result<bool, automerge::AutomergeError> {
+    let founding = structure(kind, id, containers)?;
+    if doc.get_change_by_hash(&founding.hash()).is_some() {
+        return Ok(false);
+    }
+    doc.apply_changes([founding])?;
+    super::split::merge_split_containers(doc, kind, id, containers, app)?;
+    Ok(true)
+}
+
+/// [`bring_up`] of the record `id` of the resource type `R`, by the containers and version its
+/// surface declares and its own migration (`#[resource(migrate = ..)]`).
+///
+/// # Errors
+/// As [`bring_up`].
+pub fn bring_up_resource<R: tilo_resource::Resource>(
+    id: &str,
+    doc: &mut AutoCommit,
+) -> Result<bool, tilo_resource::ModelError> {
+    bring_up(
+        (R::KIND, id, R::APP_ID),
+        R::VERSION,
+        &of_kind(&tilo_resource::surface::surface_of::<R>()),
+        &|doc: &mut AutoCommit, from: u32| R::migrate(doc, from),
+        doc,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "tests")]
+
+    use std::collections::BTreeMap;
+
+    use automerge::transaction::Transactable as _;
+    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
+    use tilo_resource::evolution::{VERSION_KEY, stored_version};
+
+    const KIND: &str = "test.founding.chain";
+    const ID: &str = "groceries";
+    const APP: &str = "test.app";
+
+    fn containers() -> Vec<(String, ObjType)> {
+        vec![("items".to_owned(), ObjType::Map)]
+    }
+
+    /// A record founded at `version` on a device of its own, with `wrote` written under `key` of
+    /// its items as that device's change.
+    fn device(version: u32, actor: u8, key: &str, wrote: &str) -> AutoCommit {
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from([actor; 16]));
+        doc.apply_changes(super::chain(KIND, ID, version, &containers()).unwrap())
+            .unwrap();
+        let (_, items) = doc.get(ROOT, "items").unwrap().unwrap();
+        doc.put(&items, key, wrote).unwrap();
+        doc.commit();
+        doc
+    }
+
+    fn unchanged(_: &mut AutoCommit, _: u32) -> Result<(), tilo_resource::ModelError> {
+        Ok(())
+    }
+
+    fn items(doc: &AutoCommit) -> Vec<String> {
+        let (_, items) = doc.get(ROOT, "items").unwrap().unwrap();
+        doc.keys(&items).collect()
+    }
+
+    #[test]
+    fn two_devices_with_their_own_writes_step_a_record_up_byte_for_byte_alike() {
+        let mut here = device(1, 1, "milk", "2 l");
+        let mut there = device(1, 2, "eggs", "6");
+        let (before_here, before_there) = (here.get_heads(), there.get_heads());
+        assert!(super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged, &mut here).unwrap());
+        assert!(
+            super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged, &mut there).unwrap()
+        );
+        let bytes = |changes: Vec<automerge::Change>| -> Vec<Vec<u8>> {
+            changes
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect()
+        };
+        let stepped_here = bytes(here.get_changes(&before_here));
+        let stepped_there = bytes(there.get_changes(&before_there));
+        // Each device wrote the steps to versions 2 and 3 and nothing else, and both wrote the
+        // same bytes: the derived ones, whatever each device's own writes were.
+        assert_eq!(stepped_here, stepped_there);
+        assert_eq!(
+            stepped_here,
+            bytes(
+                super::chain(KIND, ID, 3, &containers())
+                    .unwrap()
+                    .split_off(2)
+            )
+        );
+        for (to, step) in (2..=3).zip(
+            super::chain(KIND, ID, 3, &containers())
+                .unwrap()
+                .split_off(2),
+        ) {
+            assert_eq!(
+                super::migrate(KIND, ID, to, &containers()).unwrap().hash(),
+                step.hash()
+            );
+        }
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
+        assert_eq!(stored_version(&here), 3);
+        assert_eq!(items(&here), ["eggs", "milk"]);
+        // Brought up already: nothing more.
+        assert!(
+            !super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged, &mut here).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_rewrite_two_devices_make_apart_keeps_each_item_once() {
+        // Version 1 kept the record's tags as one JSON string; version 2 keeps them as a map. Each
+        // device wrote an item of its own on the version 1 record before either brought it up.
+        let mut here = device(1, 1, "milk", "2 l");
+        here.put(ROOT, "tags", r#"{"red":"warm","blue":"cold"}"#)
+            .unwrap();
+        here.commit();
+        let mut there = here.fork().with_actor(automerge::ActorId::from([2; 16]));
+        let (_, kept) = there.get(ROOT, "items").unwrap().unwrap();
+        there.put(&kept, "eggs", "6").unwrap();
+        there.commit();
+        let retype = |doc: &mut AutoCommit, from: u32| {
+            assert_eq!(from, 1);
+            tilo_resource::evolution::retype_json::<BTreeMap<String, String>>(doc, &ROOT, "tags")
+                .map(drop)
+        };
+        super::bring_up((KIND, ID, APP), 2, &containers(), &retype, &mut here).unwrap();
+        super::bring_up((KIND, ID, APP), 2, &containers(), &retype, &mut there).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
+        let (_, tags) = here.get(ROOT, "tags").unwrap().unwrap();
+        let mut held: Vec<String> = here.keys(&tags).collect();
+        held.sort();
+        assert_eq!(held, ["blue", "red"]);
+        assert_eq!(items(&here), ["eggs", "milk"]);
+        assert_eq!(stored_version(&here), 2);
+    }
+
+    #[test]
+    fn a_record_made_before_its_founding_was_derived_is_founded_once_and_brought_together() {
+        // Two devices each made the record's container of their own, and added to it.
+        let made = |actor: u8, key: &str| {
+            let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from([actor; 16]));
+            let items = doc.put_object(ROOT, "items", ObjType::Map).unwrap();
+            doc.put(&items, key, "kept").unwrap();
+            doc.commit();
+            doc
+        };
+        let mut here = made(1, "milk");
+        let mut there = made(2, "eggs");
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
+        let mut again = here.fork();
+        assert!(super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged, &mut here).unwrap());
+        assert!(
+            super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged, &mut again).unwrap()
+        );
+        // Every holder converts it alike.
+        assert_eq!(here.get_heads(), again.get_heads());
+        let founding = super::structure(KIND, ID, &containers()).unwrap();
+        assert!(here.get_change_by_hash(&founding.hash()).is_some());
+        let mut held = items(&here);
+        held.sort();
+        assert_eq!(held, ["eggs", "milk"]);
+        assert_eq!(stored_version(&here), 2);
+        assert!(here.get(ROOT, VERSION_KEY).unwrap().is_some());
+        assert!(
+            !super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged, &mut here).unwrap()
+        );
+    }
+}

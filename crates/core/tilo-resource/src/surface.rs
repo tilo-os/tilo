@@ -6,8 +6,8 @@
 //! language compiles its actions and types against.
 
 pub use tilo_actions::surface::{
-    CONTENT_VERBS, FieldSurface, FieldType, MIGRATE_VERB, NamedType, ParamSurface, ReturnsSurface,
-    Surface, TYPE_VERB, TypeCase, TypeField, TypeSet, VerbSurface,
+    CONTENT_VERBS, FieldSurface, FieldType, NamedType, ParamSurface, ReturnsSurface, Surface,
+    TYPE_VERB, TypeCase, TypeField, TypeSet, VerbSurface,
 };
 
 pub mod file;
@@ -198,12 +198,11 @@ fn fields_of(shape: Shape, prefix: &str, types: &mut TypeSet, out: &mut Vec<Fiel
 /// The surface of `R`, from its declarations and stored shape.
 #[must_use]
 pub fn surface_of<R: Resource>() -> Surface {
-    surface_in(vocabulary::<R>(), R::VERSION, R::MIGRATES)
+    surface_in(vocabulary::<R>(), R::VERSION)
 }
 
-/// [`surface_of`] the resource `vocabulary`, stored at `version`, with migrations when
-/// `migrates` says the type registers one.
-fn surface_in(vocabulary: &crate::Vocabulary, version: u32, migrates: bool) -> Surface {
+/// [`surface_of`] the resource `vocabulary`, stored at `version`.
+fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
     let mut fields = Vec::new();
     let mut types = TypeSet::new();
     let shape = (vocabulary.shape)();
@@ -219,15 +218,13 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32, migrates: bool) -> S
     for decl in vocabulary.declarations().iter() {
         verbs.push(verb_of(decl, &mut types));
     }
-    // The content the framework writes itself: direct edits with no finer action, and the
-    // migrations a record's type registers. A kind whose every field is read-only has neither.
-    if let Some(shape) = shape {
-        if edits_content(shape) {
-            verbs.push(framework_verb(TYPE_VERB, units_of(shape)));
-        }
-        if migrates {
-            verbs.push(framework_verb(MIGRATE_VERB, units_of(shape)));
-        }
+    // The content the framework writes itself: direct edits with no finer action. A kind whose
+    // every field is read-only has none. A storage migration is the store's own verb, which no
+    // surface declares.
+    if let Some(shape) = shape
+        && edits_content(shape)
+    {
+        verbs.push(framework_verb(TYPE_VERB, units_of(shape)));
     }
     Surface {
         kind: vocabulary.kind.to_owned(),

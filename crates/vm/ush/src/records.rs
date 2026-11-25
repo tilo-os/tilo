@@ -290,8 +290,12 @@ impl Records {
         let Some(mut held) = self.read(key)? else {
             return Ok(None);
         };
-        if tilo_resource::evolution::migrate::<Environment>(&mut held.doc)
-            .map_err(|e| RecordError::Model(e.to_string()))?
+        let record = self.document_id(key)?;
+        if collab_types::document::founding::bring_up_resource::<Environment>(
+            &record,
+            &mut held.doc,
+        )
+        .map_err(|e| RecordError::Model(e.to_string()))?
         {
             self.write(key, &mut held.doc, Some(held.heads.as_slice()))?;
             held.heads = held.doc.get_heads();
@@ -392,11 +396,14 @@ impl Records {
         let record = self.document_id(key)?;
         let containers = collab_types::document::founding::of_kind(&Environment::surface());
         let mut doc = Doc::new();
-        let founding =
-            collab_types::document::founding::structure(Environment::KIND, &record, &containers)
-                .map_err(|e| model(&e))?;
-        tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, vec![founding])
-            .map_err(|e| model(&e))?;
+        let founding = collab_types::document::founding::chain(
+            Environment::KIND,
+            &record,
+            Environment::VERSION,
+            &containers,
+        )
+        .map_err(|e| model(&e))?;
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, founding).map_err(|e| model(&e))?;
         Environment::initialize(&mut doc).map_err(|e| model(&e))?;
         doc.commit_with(
             automerge::transaction::CommitOptions::default().with_message(

@@ -3,7 +3,7 @@
 //! A record stores the schema version it was written at under one key
 //! ([`VERSION_KEY`], read by [`stored_version`]); `#[resource(version = N,
 //! migrate = path)]` declares the current one and how to bring an older
-//! document up to it ([`migrate`]). A document that does not read as the
+//! document up to it ([`rewrite`], after its derived steps). A document that does not read as the
 //! model is [`Unreadable`]: views show why and actions report it, and stale
 //! state is never shown as current.
 
@@ -54,12 +54,68 @@ pub fn write_version(doc: &mut Doc, version: u32) -> Result<(), ModelError> {
     write_version_at(doc, &ROOT, version)
 }
 
+/// The version a new document of a resource at `version` starts at, written by its initializer
+/// only when nothing wrote one: a record founded with its chain of steps has its version from the
+/// chain alone, one writer of it on every device. A document made without a record's id has no
+/// chain, and its initializer writes it ([`write_version`]).
+pub fn write_initial_version(doc: &mut Doc, version: u32) -> Result<(), ModelError> {
+    if doc.get(ROOT, VERSION_KEY)?.is_some() {
+        return Ok(());
+    }
+    write_version(doc, version)
+}
+
 /// [`write_version`] of the document whose root is `at`.
 pub fn write_version_at(doc: &mut Doc, at: &ObjId, version: u32) -> Result<(), ModelError> {
     if version > 1 || doc.get(at, VERSION_KEY)?.is_some() {
         doc.put(at, VERSION_KEY, ScalarValue::Uint(u64::from(version)))?;
     }
     Ok(())
+}
+
+/// The step that brings the record `id` of `kind` to `version`: the change every holder makes
+/// alike, under an actor derived from the record and the version alone, at time zero, writing the
+/// version key and nothing else. `before` holds exactly the link it follows, the record's founding
+/// for the first version and the step to the version before otherwise, so the chain a record
+/// stands on is one every holder derives (`collab_types::document::founding::chain`), however
+/// its content went on meanwhile.
+///
+/// # Errors
+/// When `before` holds no heads to step from, or the step cannot be committed.
+pub fn step(
+    kind: &str,
+    id: &str,
+    version: u32,
+    before: &Doc,
+) -> Result<automerge::Change, automerge::AutomergeError> {
+    let mut doc = before.clone().with_actor(crate::genesis::actor(
+        id,
+        kind,
+        &format!("version {version}"),
+    ));
+    doc.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(version)))?;
+    let context = tilo_actions::ActionContext {
+        change: tilo_actions::ChangeKind::Housekeeping,
+        ..tilo_actions::ActionContext::for_resource(id, kind, kind).with_described(
+            tilo_actions::Described::new(tilo_actions::Did::history(
+                tilo_actions::HistoryOp::Migrate {
+                    to: version,
+                    rewrite: false,
+                },
+                0,
+                None,
+            )),
+        )
+    };
+    let mut options = CommitOptions::default().with_time(0);
+    if let Some(message) = context.change_message() {
+        options = options.with_message(message);
+    }
+    let hash = doc
+        .commit_with(options)
+        .ok_or(automerge::AutomergeError::Fail)?;
+    doc.get_change_by_hash(&hash)
+        .ok_or(automerge::AutomergeError::MissingHash(hash))
 }
 
 /// Whether `doc` holds `R` at the version the app reads.
@@ -85,59 +141,59 @@ fn check_version_at(version: u32, doc: &Doc) -> Result<(), ModelError> {
     }
 }
 
-/// Bring `doc` up to `R`'s version with its migration, and to this build's
-/// version key: once, as one housekeeping change made by an actor and at a
-/// time derived from the resource kind, the versions and the heads it starts
-/// from, so two devices migrating the same document produce the same change.
-/// Returns whether it changed anything.
-///
-/// # Errors
-/// Returns the migration's error; `doc` is left as it was.
-pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
-    migrate_with(
-        (R::KIND, R::LABEL, R::VERSION),
-        &|doc: &mut Doc, from: u32| R::migrate(doc, from),
-        doc,
-    )
-}
-
-/// Whether [`migrate`] would change `doc`: it is older than `R`.
+/// Whether `doc` is older than `R`: its chain of steps stops short of `R`'s version, so it is
+/// brought up (`collab_types::document::founding::bring_up`) before it is read.
 #[must_use]
 pub fn needs_migrate<R: Resource>(doc: &Doc) -> bool {
     stored_version(doc) < R::VERSION
 }
 
-/// [`migrate`] of the resource of the kind, label and storage version
-/// `resource`, whose migration is `migration`.
-fn migrate_with(
-    (kind, label, to): (&str, &str, u32),
+/// The app's own rewrite of the record `id` of `kind` for `version`, from the version `from` it
+/// stood at, by `migration` (its `#[resource(migrate = ..)]`): once, as one housekeeping change
+/// after the record's step to `version`, made by an actor and at a time derived from the record,
+/// the version and the heads it starts from, so two holders rewriting the same history make the
+/// same change. It is decided as any write of the record's. A rewrite rewrites by key and never
+/// inserts list elements, so two holders rewriting apart converge on one item each. Whether it
+/// changed anything.
+///
+/// # Errors
+/// Returns the migration's error; `doc` is left as it was.
+pub fn rewrite(
+    (kind, id, version): (&str, &str, u32),
+    from: u32,
     migration: &dyn Fn(&mut Doc, u32) -> Result<(), ModelError>,
     doc: &mut Doc,
 ) -> Result<bool, ModelError> {
-    let from = stored_version(doc);
-    if from >= to {
-        return Ok(false);
-    }
     let mut heads = doc.get_heads();
     heads.compact_sort();
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo-resource/migration/v1");
-    hasher.update(kind.as_bytes());
-    hasher.update(&from.to_le_bytes());
-    hasher.update(&to.to_le_bytes());
-    for head in &heads {
-        hasher.update(&head.0);
-    }
-    let actor =
-        automerge::ActorId::from(hasher.finalize().as_bytes().get(..16).unwrap_or_default());
+    let mut on: Vec<String> = heads.iter().map(ToString::to_string).collect();
+    on.sort();
+    let actor = crate::genesis::actor(
+        id,
+        kind,
+        &format!("rewrite to version {version} on {}", on.join(",")),
+    );
     let mut migrated = doc.fork_at(&heads)?.with_actor(actor);
-    migration(&mut migrated, from)?;
-    migrated.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(to)))?;
+    if from < version {
+        migration(&mut migrated, from)?;
+    }
+    // A record whose version key was written beside its chain (by an initializer, or a migration
+    // made before its steps were derived) reads that write against the step's: the rewrite,
+    // which follows both, says the version once.
+    if stored_version(&migrated) < version {
+        migrated.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(version)))?;
+    }
+    if migrated.pending_ops() == 0 {
+        return Ok(false);
+    }
     let context = tilo_actions::ActionContext {
         change: tilo_actions::ChangeKind::Housekeeping,
-        ..tilo_actions::ActionContext::for_resource(kind, kind, label).with_described(
+        ..tilo_actions::ActionContext::for_resource(id, kind, kind).with_described(
             tilo_actions::Described::new(tilo_actions::Did::history(
-                tilo_actions::HistoryOp::Migrate { to },
+                tilo_actions::HistoryOp::Migrate {
+                    to: version,
+                    rewrite: true,
+                },
                 0,
                 None,
             )),

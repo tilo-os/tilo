@@ -235,7 +235,7 @@ impl Workspaces {
             .get(..16)
             .unwrap_or_default()
             .to_owned();
-        let read = opened(Some(bytes))
+        let read = opened(workspace, Some(bytes))
             .and_then(|resource| state(&resource))
             .ok();
         if read.is_none() {
@@ -271,7 +271,7 @@ impl Workspaces {
         let path = self.learned_at(workspace)?;
         let acts_for = hex::encode(person);
         let one_at_a_time = CHANGING.lock_recover();
-        let resource = opened(read(&path)?)?;
+        let resource = opened(workspace, read(&path)?)?;
         let mut resource = match by {
             Some(agent) => resource.as_agent_for(agent, &acts_for),
             None => resource.as_author(&acts_for),
@@ -459,13 +459,15 @@ fn state<A>(resource: &Replica<Learned, A>) -> Result<Learned, String> {
     resource.state().map_err(|error| error.to_string())
 }
 
-/// The resource `bytes` hold, or a new one where nothing was learned yet.
-fn opened(bytes: Option<Vec<u8>>) -> Result<Replica<Learned>, String> {
+/// The resource `bytes` hold of what was learned in `workspace`, or a new one where nothing was
+/// learned yet.
+fn opened(workspace: &str, bytes: Option<Vec<u8>>) -> Result<Replica<Learned>, String> {
     let Some(bytes) = bytes else {
         return Ok(Replica::new());
     };
     let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    tilo_resource::evolution::migrate::<Learned>(&mut doc).map_err(|error| error.to_string())?;
+    collab_types::document::founding::bring_up_resource::<Learned>(workspace, &mut doc)
+        .map_err(|error| error.to_string())?;
     Ok(Replica::from_doc(doc))
 }
 

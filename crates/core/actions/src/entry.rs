@@ -329,10 +329,22 @@ pub enum HistoryOp {
     Checkpoint {
         name: String,
     },
-    /// The document was brought to the storage version `to`.
+    /// The document was brought to the storage version `to`: the step every holder derives
+    /// alike, or, with `rewrite`, the app's own rewrite of its content for that version, which
+    /// follows the step and is decided as any write of the record's.
     Migrate {
         to: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        rewrite: bool,
     },
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The item an action addressed, with its label at the time: one line that

@@ -581,7 +581,7 @@ impl ResourceSet {
 
     /// Bring together the root containers of `doc`, the record `want` names, that devices made
     /// each of their own before its founding was the same everywhere
-    /// ([`super::merge_split_containers`]), by the type this store founds its kind by.
+    /// ([`collab_types::document::founding::found`]), by the type this store founds its kind by.
     fn merge_split(
         &self,
         doc: &mut AutoCommit,
@@ -592,13 +592,12 @@ impl ResourceSet {
             // that declares the kind, so every holder derives the same bytes.
             let app = collab_types::app_surface::app_of_kind(want.kind.as_str())
                 .unwrap_or_else(|| self.app_id.to_string());
-            super::merge_split_containers(
-                doc,
-                want.kind.as_str(),
-                want.id.route(),
+            collab_types::document::founding::found(
+                (want.kind.as_str(), want.id.route(), &app),
                 &founding,
-                &app,
-            )?;
+                doc,
+            )
+            .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
         }
         Ok(())
     }
@@ -610,12 +609,14 @@ impl ResourceSet {
         // It is held from now on.
         self.answered.borrow_mut().remove(&want.id);
         let mut doc = AutoCommit::new().with_actor(self.writer.clone());
-        let founding = self.types.founding(want.kind.as_str());
-        // Only the derived founding is written here, nobody's change.
+        let founding = self.types.chain(want.kind.as_str());
+        // Only the derived founding and its steps are written here, nobody's change.
         content_genesis(
             &mut doc,
             want,
-            founding.as_deref(),
+            founding
+                .as_ref()
+                .map(|(containers, version)| (containers.as_slice(), *version)),
             (
                 &tilo_action_policy::Acting::by_app(self.app_id.clone()),
                 |_| Ok(()),
@@ -1250,14 +1251,16 @@ impl ResourceReservation {
                 .ok_or(ResourceOpenError::Busy)?;
             (
                 set.writer.clone(),
-                set.types.founding(self.checkout.kind.as_str()),
+                set.types.chain(self.checkout.kind.as_str()),
             )
         };
         let mut doc = AutoCommit::new().with_actor(writer);
         content_genesis(
             &mut doc,
             &self.checkout,
-            founding.as_deref(),
+            founding
+                .as_ref()
+                .map(|(containers, version)| (containers.as_slice(), *version)),
             (by, initialize),
         )?;
         seed(&mut doc).map_err(ResourceOpenError::Initialization)?;
@@ -1843,7 +1846,7 @@ impl ResourceStore {
     /// before it makes one ([`content_genesis`]).
     ///
     /// A record of the kind open here already is brought together as one opened from now on is
-    /// ([`super::merge_split_containers`]).
+    /// ([`collab_types::document::founding::found`]).
     pub fn declare_type(
         &self,
         kind: &str,
@@ -1870,7 +1873,11 @@ impl ResourceStore {
                 continue;
             }
             if let Some(doc) = parked.doc.as_mut() {
-                match super::merge_split_containers(doc, kind, id.route(), &founding, &app) {
+                match collab_types::document::founding::found(
+                    (kind, id.route(), &app),
+                    &founding,
+                    doc,
+                ) {
                     Ok(changed) => merged |= changed,
                     Err(error) => {
                         tracing::warn!(record = %id, %error, "a record's split containers were not brought together");

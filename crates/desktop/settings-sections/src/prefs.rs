@@ -2870,7 +2870,19 @@ mod power_storage_tests {
             .unwrap();
         doc.commit();
         let mut old = doc.fork();
-        assert!(evolution::migrate::<PowerPrefs>(&mut old).unwrap());
+        assert!(
+            evolution::rewrite(
+                (
+                    <PowerPrefs as ui::tilo_resource::Resource>::KIND,
+                    "record",
+                    <PowerPrefs as ui::tilo_resource::Resource>::VERSION
+                ),
+                evolution::stored_version(&old),
+                &|doc, from| <PowerPrefs as ui::tilo_resource::Resource>::migrate(doc, from),
+                &mut old,
+            )
+            .unwrap()
+        );
         let power = evolution::read_checked::<PowerPrefs>(&old).unwrap();
         assert_eq!(power.suspend_minutes, 15);
         assert_eq!(

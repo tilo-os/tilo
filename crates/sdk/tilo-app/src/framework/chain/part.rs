@@ -330,7 +330,8 @@ fn read_part<P: Chained>(
             return Err("the part is migrated once the store takes writes".into());
         }
         store.migrate(part, |doc| {
-            tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+            collab_types::document::founding::bring_up_resource::<P>(part.route(), doc)
+                .map_err(|error| error.to_string())
         })?;
     }
     let reader = store

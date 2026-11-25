@@ -1062,6 +1062,7 @@ mod store {
                 live: None,
                 founding: Vec::new(),
                 origin: None,
+                version: 1,
             }],
             ..Schema::default()
         });
@@ -1140,6 +1141,7 @@ mod store {
             live: None,
             founding: Vec::new(),
             origin: None,
+            version: 1,
         }
     }
 
@@ -1234,6 +1236,7 @@ mod store {
                 live: Some(vec![Filter::Is("state".to_owned(), "playing".into())]),
                 founding: Vec::new(),
                 origin: None,
+                version: 1,
             }],
             ..Schema::default()
         });
@@ -3014,6 +3017,114 @@ mod store {
         ));
     }
 
+    /// A record's step to a storage version names the store's migration verb, which no app
+    /// declares: any member's copy of it is admitted only when it is the step its kind and id
+    /// derive for that version, up to the version its type stands at. The app's rewrite of its
+    /// content for a version names the same verb and is decided as any write of the record's, by
+    /// who may write it. A write naming no verb stays refused.
+    #[test]
+    fn a_migration_is_the_derived_step_or_a_rewrite_by_who_may_write() {
+        use automerge::transaction::Transactable as _;
+        use tilo_resource_store::{MOVE_VERB, Refusal, content_id};
+        let schema = Schema::from_surface(&super::tracker_surface());
+        let containers = schema.get("Comment").unwrap().founding.clone();
+        let mut there = issues();
+        there.declare(schema);
+        let anyone = |_: &Proposal<'_>| true;
+        let nobody = |_: &Proposal<'_>| false;
+        let empty = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::new(),
+        };
+        let placed = issues()
+            .put("Comment", "c1", empty, &stamp(MOVE_VERB, "i1"))
+            .unwrap();
+        send(&placed, &mut there);
+        let made = |doc: &mut automerge::AutoCommit, options| {
+            let hash = doc.commit_with(options).unwrap();
+            doc.get_change_by_hash(&hash).unwrap().clone()
+        };
+        let content = |change: automerge::Change| Written {
+            doc: content_id(MEMBERS, "Comment", "c1"),
+            readers: MEMBERS.to_owned(),
+            change,
+        };
+        let chain =
+            collab_types::document::founding::chain("Comment", "c1", 1, &containers).unwrap();
+        let [founding, step] = <[automerge::Change; 2]>::try_from(chain.clone()).unwrap();
+        assert_eq!(
+            step.hash(),
+            collab_types::document::founding::migrate("Comment", "c1", 1, &containers)
+                .unwrap()
+                .hash()
+        );
+        assert_eq!(deliver(&[content(founding)], &mut there, &anyone), []);
+        // The derived step is admitted, whoever sends it.
+        assert_eq!(deliver(&[content(step.clone())], &mut there, &nobody), []);
+        let mut held = automerge::AutoCommit::new();
+        held.apply_changes(chain).unwrap();
+        // A step of another making, though it names the verb and the version, is refused.
+        let mut forged = held.fork();
+        forged.put(automerge::ROOT, "text", "Forged").unwrap();
+        let forged = made(
+            &mut forged,
+            automerge::transaction::CommitOptions::default()
+                .with_message(step.message().unwrap().to_owned())
+                .with_time(0),
+        );
+        assert!(matches!(
+            deliver(&[content(forged)], &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("not the one its kind derives")
+        ));
+        // A step to a version the type does not stand at is refused.
+        let beyond =
+            collab_types::document::founding::migrate("Comment", "c1", 2, &containers).unwrap();
+        assert!(matches!(
+            deliver(&[content(beyond)], &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("no storage version")
+        ));
+        // The app's rewrite for the version is decided by who may write the record.
+        let rewrite = tilo_actions::ActionContext {
+            change: tilo_actions::ChangeKind::Housekeeping,
+            ..tilo_actions::ActionContext::for_resource("c1", "Comment", "Comment").with_described(
+                tilo_actions::Described::new(tilo_actions::Did::history(
+                    tilo_actions::HistoryOp::Migrate {
+                        to: 1,
+                        rewrite: true,
+                    },
+                    0,
+                    None,
+                )),
+            )
+        };
+        let mut rewritten = held.fork();
+        rewritten.put(automerge::ROOT, "text", "Ada").unwrap();
+        let rewrite_change = made(
+            &mut rewritten,
+            automerge::transaction::CommitOptions::default()
+                .with_message(rewrite.change_message().unwrap())
+                .with_time(0),
+        );
+        assert_eq!(
+            deliver(&[content(rewrite_change.clone())], &mut there, &nobody),
+            [Refusal::NotPermitted]
+        );
+        assert_eq!(deliver(&[content(rewrite_change)], &mut there, &anyone), []);
+        // A write of the record's content naming no verb stays refused.
+        let mut unnamed = held.fork();
+        unnamed.put(automerge::ROOT, "text", "Grace").unwrap();
+        let unnamed = made(
+            &mut unnamed,
+            automerge::transaction::CommitOptions::default(),
+        );
+        assert!(matches!(
+            deliver(&[content(unnamed)], &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("verb")
+        ));
+    }
+
     /// A checkpoint, a description and a link are verbs every schema has: a change that writes
     /// nothing, by someone who may write the document, saying little. One that writes, says too
     /// much, comes from someone who may not write, or names a verb nobody declared is refused.
@@ -3145,6 +3256,7 @@ mod store {
                 live: None,
                 founding: Vec::new(),
                 origin: None,
+                version: 1,
             }],
             ..Schema::default()
         };
@@ -3687,6 +3799,7 @@ mod store {
             live: None,
             founding: Vec::new(),
             origin: None,
+            version: 1,
         };
         let mut store = Store::new();
         store.declare(Schema {
@@ -4171,6 +4284,7 @@ mod outside_effects {
                     live: None,
                     founding: Vec::new(),
                     origin: None,
+                    version: 1,
                 },
                 Type {
                     name: EFFECT.to_owned(),
@@ -4192,6 +4306,7 @@ mod outside_effects {
                     live: None,
                     founding: Vec::new(),
                     origin: None,
+                    version: 1,
                 },
             ],
             verbs: vec![Verb {
@@ -4355,6 +4470,7 @@ mod outside_effects {
                     live: None,
                     founding: Vec::new(),
                     origin: None,
+                    version: 1,
                 },
                 Type {
                     name: "Ruled".to_owned(),
@@ -4363,6 +4479,7 @@ mod outside_effects {
                     live: None,
                     founding: Vec::new(),
                     origin: None,
+                    version: 1,
                 },
             ],
             verbs: Vec::new(),
