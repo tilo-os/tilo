@@ -60,12 +60,17 @@ check's findings and tests one by one against the base's verdict of the same key
 that is red on main for one lint does not hide a second, new one here. What t cannot place -
 the base has no stored verdict, or the two failures cannot be told apart - is judged against
 main's board at that base: the item failing since a commit the base contains, a failed test by
-name, a finding one by one against main's own log. A check that generates committed files (the
-fleet, the SDK's types) fails naming the files not current, so it is judged by those files: one
-main is stale in too is inherited, one this push newly made stale is refused, naming it and
-`t fix <check>`. A dependants' compile that fails in a package whose build reads nothing the
-push changes is main's too. A push that passes on reds says which, and whose they are; a board
-that cannot be read refuses.
+name, a finding one by one against main's own log. A check's build lints the workspace packages
+it builds on, so its failure can name a finding in a dependency - a session's check failing on
+the runtime it builds on, with the file nowhere in the push. That red is main's when the board
+holds it at the base under the dependency's own check or the family's run, compared finding by
+finding; where that log is gone, the board's red at the base stands for a finding whose file
+the push does not change. A check that generates committed files (the fleet, the SDK's types)
+fails naming the files not current, so it is judged by those files: one main is stale in too is
+inherited, one this push newly made stale is refused, naming it and `t fix <check>`. A
+dependants' compile that fails in a package whose build reads nothing the push changes is
+main's too. A push that passes on reds says which, and whose they are; a board that cannot be
+read refuses.
 
 A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
 remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
@@ -1071,8 +1076,17 @@ def blame_words(result: dict) -> str:
         if isinstance(said, dict):
             since = str(said.get("since") or "")
             owner = said.get("claimed_by")
-            says = f"main has failed it since {since[:12]}" if since else "main has it too"
-            return f"{says}, claimed by {owner}" if owner else f"{says}, unclaimed"
+            # A finding in a package the check builds on is red under that
+            # package's check or its family's run, so the red may not be the
+            # failing check's own.
+            of = said.get("check")
+            subject = "it" if not of or of == result.get("check") else of
+            says = (f"main has failed {subject} since {since[:12]}" if since
+                    else f"main has {subject} too")
+            words = f"{says}, claimed by {owner}" if owner else f"{says}, unclaimed"
+            if said.get("unread"):
+                words += ("; main's log is gone, but the push changes no file the finding names")
+            return words
         if "uncompared" in blame:
             return "main's failure and this one can't be told apart one by one: it may be yours"
     return {
@@ -1118,6 +1132,12 @@ def is_ancestor(root: Path, commit: str, of: str) -> bool | None:
 def finding_key(finding: str) -> str:
     """A finding without the count t adds for a repeated lint in one file (`unused_imports a.rs (2)`)."""
     return re.sub(r" \(\d+\)$", "", finding.strip())
+
+
+def finding_file(finding: str) -> str:
+    """The file a finding names (`clippy::arithmetic_side_effects crates/a/src/lib.rs`), or empty."""
+    _lint, _, path = finding_key(finding).partition(" ")
+    return path.strip()
 
 
 def stale_files(text: str) -> set[str]:
@@ -1223,10 +1243,40 @@ def main_board(root: Path) -> list[dict] | None:
 
 
 def item_blame(item: dict) -> dict:
-    """A board item as a Blame, so a red passed on the board is said like t's own."""
+    """A board item as a Blame, so a red passed on the board is said like t's own.
+
+    `check` names the item's check, which is the failing check's unless the red
+    was found under the package it builds on; `log_unread` says the board's own
+    log is gone, so only the board's red and the unchanged files stand for it.
+    """
     claim = item.get("claim") or {}
-    return {"inherited": {"since": item.get("first_bad") or "",
-                          "claimed_by": claim.get("session") or claim.get("note")}}
+    inherited = {"since": item.get("first_bad") or "",
+                 "claimed_by": claim.get("session") or claim.get("note")}
+    if item.get("check"):
+        inherited["check"] = item["check"]
+    if item.get("log_unread"):
+        inherited["unread"] = True
+    return {"inherited": inherited}
+
+
+def item_covers_check(item: dict, check: str, covering: bool) -> bool:
+    """Whether a board item's red is of `check`, or covers it when asked.
+
+    A check's build lints the workspace packages it builds on, so its failure
+    can name a finding in a dependency; main's board records such a red under
+    the dependency's own item, or under the family's run, whose `checks` names
+    every per-package check it ran. Covering matches those too. The finding is
+    still compared one by one, so a red of another check cannot hide a new one.
+    """
+    named = item.get("check") or ""
+    if named == check:
+        return True
+    if not covering:
+        return False
+    if check in (item.get("checks") or ()):
+        return True
+    family, _, package = check.partition("/")
+    return bool(package) and named.partition("/")[0] == family
 
 
 class Board:
@@ -1243,6 +1293,7 @@ class Board:
                  texts: dict[str, str | None] | None = None,
                  ancestor: "Callable[[str, str], bool | None] | None" = None):
         self.root = root
+        self.push = push
         self.base = push.comparisons[0][0] if push.comparisons else None
         self._items = items
         self._logs = logs or {}
@@ -1272,14 +1323,18 @@ class Board:
             self._texts[log] = answer.stdout if answer.returncode == 0 else None
         return self._texts[log]
 
-    def items_at_base(self, check: str) -> tuple[list[dict], str]:
-        """Main's items for `check` whose red the base contains, or why it cannot be said."""
+    def items_at_base(self, check: str, covering: bool = False) -> tuple[list[dict], str]:
+        """Main's items for `check` whose red the base contains, or why it cannot be said.
+
+        `covering` also takes the items of the packages the check builds on, for
+        a finding that package's build named (`item_covers_check`).
+        """
         items = self.items()
         if items is None:
             return [], "main's board cannot be read, so whose failure this is cannot be told"
         if self.base is None:
             return [], "this push has no base to compare main's board with"
-        named = [item for item in items if item.get("check") == check]
+        named = [item for item in items if item_covers_check(item, check, covering)]
         if not named:
             return [], f"main's board names no red for {check}"
         at_base = []
@@ -1326,38 +1381,58 @@ class Board:
         """Main's item this failure is, at the push's base, or why it cannot be inherited.
 
         A failed test is compared by name, a finding (a lint and its file) one by one against
-        main's log, so a check red on main for one lint does not hide a new one here. A failure
-        naming neither is the whole check's, and inherits another whole one of the same check.
+        main's log, so a check red on main for one lint does not hide a new one here. A finding
+        is sought among the reds of the checks the failing one builds on too: a session check's
+        build lints the runtime it builds on, and main's board names that red under the
+        runtime's check or the family's run. Where every such log is gone, the board's red at
+        the base stands for a finding the push's own files do not name. A failure naming
+        neither test nor finding is the whole check's, and inherits another whole one of the
+        same check.
         """
         check = result.get("check")
-        at_base, why = self.items_at_base(check)
-        if not at_base:
-            return None, why
         tests = [test for test in result.get("failed_tests") or [] if test]
         findings = [finding_key(finding) for finding in result.get("findings") or [] if finding]
         if tests:
+            at_base, why = self.items_at_base(check)
+            if not at_base:
+                return None, why
             on_main = {item.get("test") for item in at_base if item.get("test")}
             missing = [test for test in tests if test not in on_main]
             if missing:
                 return None, "new: " + ", ".join(missing)
             return at_base[0], ""
         if findings:
+            at_base, why = self.items_at_base(check, covering=True)
+            if not at_base:
+                return None, why
             theirs: set[str] = set()
+            unread: list[dict] = []
             for item in at_base:
                 if item.get("test"):
                     continue
                 on_main = self.findings(str(item.get("log") or ""))
                 if on_main is None:
-                    return None, f"main's log for {check} cannot be read"
-                theirs |= on_main
+                    unread.append(item)
+                else:
+                    theirs |= on_main
             missing = [finding for finding in findings if finding not in theirs]
-            if missing:
-                return None, "new: " + ", ".join(missing)
-            return at_base[0], ""
+            if not missing:
+                return at_base[0], ""
+            if unread and self.files_untouched(missing):
+                return {**unread[0], "log_unread": True}, ""
+            return None, "new: " + ", ".join(missing)
+        at_base, why = self.items_at_base(check)
+        if not at_base:
+            return None, why
         for item in at_base:
             if not item.get("test"):
                 return item, ""
         return None, f"main's {check} red names a test this failure does not"
+
+    def files_untouched(self, findings: Iterable[str]) -> bool:
+        """Whether every finding names a file this push leaves as it is."""
+        paths = [finding_file(finding) for finding in findings]
+        return all(path and path not in self.push.files for path in paths)
 
 
 def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,

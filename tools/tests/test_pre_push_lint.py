@@ -975,11 +975,12 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("refusing the push", result.stderr)
 
     def board(self, since, check="clippy/fixture-native", test=None, log="deadbeef",
-              owner=None) -> str:
+              owner=None, checks=None) -> str:
         """Main's board naming `check` red since `since`, as `t main --json` prints it."""
         claim = {"session": owner, "note": None} if owner else None
         return json.dumps({"head": since, "items": [
-            {"check": check, "test": test, "first_bad": since, "log": log, "claim": claim,
+            {"check": check, "test": test, "checks": checks or [], "first_bad": since,
+             "log": log, "claim": claim,
              "culprit": since, "family": None, "id": f"{check}@{since[:12]}",
              "last_good": None, "qualified": False}]})
 
@@ -1027,6 +1028,44 @@ class PrePushLintTests(unittest.TestCase):
                            t_board=self.board(self.base), t_log=main_log)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pushing past 1 red main already has:", result.stderr)
+
+    def test_a_finding_in_a_package_the_check_builds_on_and_main_is_red_on_passes(self):
+        # The session's push lints its own crate, whose build lints the runtime it
+        # builds on; the finding is the runtime's, and main's board names that red
+        # under the family's run rather than the session's check.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=48))
+        self.commit("feat: answer 48")
+        main_log = json.dumps({"reason": "compiler-message", "message": {
+            "code": {"code": "clippy::arithmetic_side_effects"},
+            "spans": [{"is_primary": True, "file_name": "fake-binding/src/lib.rs"}]}})
+        result = self.push(t_outcome="fail", t_unknown="clippy/fixture-native",
+                           t_findings=["clippy::arithmetic_side_effects fake-binding/src/lib.rs"],
+                           t_excerpt="error: arithmetic operation that can potentially ...",
+                           t_board=self.board(self.base, check="clippy",
+                                              checks=["clippy/fixture-native", "clippy/other"]),
+                           t_log=main_log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushing past 1 red main already has:", result.stderr)
+        self.assertIn("clippy/fixture-native: main has failed clippy since "
+                      f"{self.base[:12]}, unclaimed", result.stderr)
+
+    def test_a_finding_in_a_built_on_package_whose_board_log_is_gone_passes(self):
+        # Main's log is pruned, but its board shows the family red since before
+        # the base and the push changes no file the finding names.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=49))
+        self.commit("feat: answer 49")
+        result = self.push(t_outcome="fail", t_unknown="clippy/fixture-native",
+                           t_findings=["clippy::arithmetic_side_effects fake-binding/src/lib.rs"],
+                           t_excerpt="error: arithmetic operation that can potentially ...",
+                           t_board=self.board(self.base, check="clippy",
+                                              checks=["clippy/fixture-native", "clippy/other"]),
+                           t_log_status=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pushing past 1 red main already has:", result.stderr)
+        self.assertIn("main's log is gone, but the push changes no file the finding names",
+                      result.stderr)
 
     def test_a_t_that_cannot_run_the_checks_refuses_the_push(self):
         self.with_t()
@@ -1406,8 +1445,8 @@ class InheritedRedTests(unittest.TestCase):
         return {"check": "clippy/x", "test": None, "first_bad": since, "log": "l",
                 "claim": {"session": "someone", "note": None}, **extra}
 
-    def board(self, module, items, logs=None, texts=None, ancestor=None):
-        return module.Board(ROOT, module.Push(set(), [(self.BASE, self.BASE)], [], []),
+    def board(self, module, items, logs=None, texts=None, ancestor=None, files=None):
+        return module.Board(ROOT, module.Push(set(files or ()), [(self.BASE, self.BASE)], [], []),
                             items=items, logs=logs, texts=texts, ancestor=ancestor)
 
     def test_the_board_inherits_a_whole_check_red_at_the_base(self):
@@ -1435,6 +1474,66 @@ class InheritedRedTests(unittest.TestCase):
                                   "findings": ["unused_imports b.rs (2)"]})
         self.assertIsNotNone(found)
         self.assertEqual(why, "")
+
+    def test_the_board_inherits_a_finding_a_dependency_was_red_for(self):
+        # A session check's build lints the runtime it builds on, and main's
+        # board names that red under the runtime's check, not the session's.
+        module = pre_push_lint()
+        family = self.item("a" * 40, check="clippy",
+                           checks=["clippy/x", "clippy/runtime"])
+        board = self.board(module, [family],
+                           logs={"l": {"clippy::arithmetic_side_effects runtime/src/lib.rs"}},
+                           ancestor=lambda since, of: True)
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["clippy::arithmetic_side_effects runtime/src/lib.rs"]})
+        self.assertIsNotNone(found)
+        self.assertEqual(why, "")
+        self.assertEqual(module.blame_words({"check": "clippy/x", "blame": module.item_blame(found)}),
+                         f"main has failed clippy since {('a' * 40)[:12]}, claimed by someone")
+
+    def test_the_board_inherits_a_finding_another_check_of_the_family_was_red_for(self):
+        module = pre_push_lint()
+        other = self.item("a" * 40, check="clippy/runtime")
+        board = self.board(module, [other], logs={"l": {"dead_code runtime/src/lib.rs"}},
+                           ancestor=lambda since, of: True)
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["dead_code runtime/src/lib.rs"]})
+        self.assertIsNotNone(found)
+        self.assertEqual(why, "")
+
+    def test_a_finding_whose_board_log_is_gone_is_main_s_if_the_push_leaves_its_file(self):
+        # Main's own log may be pruned; the board still shows the check red since
+        # before the base, and the push changes no file the finding names.
+        module = pre_push_lint()
+        family = self.item("a" * 40, check="clippy", checks=["clippy/x", "clippy/runtime"])
+        board = self.board(module, [family], logs={"l": None}, ancestor=lambda since, of: True,
+                           files={"x/src/lib.rs"})
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["dead_code runtime/src/lib.rs"]})
+        self.assertIsNotNone(found)
+        self.assertEqual(why, "")
+        self.assertIn("main's log is gone",
+                      module.blame_words({"check": "clippy/x", "blame": module.item_blame(found)}))
+
+    def test_a_finding_whose_board_log_is_gone_is_refused_when_the_push_names_its_file(self):
+        module = pre_push_lint()
+        family = self.item("a" * 40, check="clippy", checks=["clippy/x", "clippy/runtime"])
+        board = self.board(module, [family], logs={"l": None}, ancestor=lambda since, of: True,
+                           files={"runtime/src/lib.rs"})
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["dead_code runtime/src/lib.rs"]})
+        self.assertIsNone(found)
+        self.assertEqual(why, "new: dead_code runtime/src/lib.rs")
+
+    def test_another_family_s_red_does_not_stand_for_the_finding(self):
+        module = pre_push_lint()
+        other = self.item("a" * 40, check="test/runtime")
+        board = self.board(module, [other], logs={"l": {"dead_code runtime/src/lib.rs"}},
+                           ancestor=lambda since, of: True)
+        found, why = board.judge({"check": "clippy/x", "outcome": "fail",
+                                  "findings": ["dead_code runtime/src/lib.rs"]})
+        self.assertIsNone(found)
+        self.assertIn("names no red", why)
 
     def test_the_board_refuses_a_red_whose_commit_is_not_here(self):
         module = pre_push_lint()
