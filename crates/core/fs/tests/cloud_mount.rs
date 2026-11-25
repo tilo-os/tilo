@@ -907,8 +907,10 @@ impl tilo_fs::cloud::Ask for TestAsk {
         use tilo_fs::cloud::Asked;
         let mut state = self.state.lock().unwrap();
         match (target.provider.as_str(), target.address.action.as_str()) {
+            // The daemon lists a workspace it keeps here: only those it can enter are asked
+            // for their accounts.
             ("tilo.account", "list") => Ok(serde_json::json!({
-                "workspaces": [{"id": "workspace-1"}]
+                "workspaces": [{"id": "workspace-1", "kept_here": true}]
             })),
             ("tilo.accounts", "cloud-accounts") => Ok(serde_json::json!({
                 "accounts": state
@@ -956,6 +958,7 @@ impl tilo_fs::cloud::Ask for TestAsk {
                     .and_then(accounts::SyncHealth::from_word)
                     .unwrap_or_default();
                 state.reports.push((id.to_owned(), health));
+                drop(state);
                 Ok(serde_json::Value::Null)
             }
             (_, action) => Err(Asked::Refused(format!("no such action: {action}"))),
