@@ -2923,7 +2923,7 @@ mod a11y_tree_tests;
 
 #[cfg(test)]
 #[path = "flow_cache_tests.rs"]
-mod flow_cache_tests;
+mod cache_flow_tests;
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

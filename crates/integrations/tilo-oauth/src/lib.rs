@@ -34,6 +34,10 @@ use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(test)]
+#[cfg(feature = "client")]
+#[path = "flow_tests.rs"]
+mod authorization_flow_tests;
 #[cfg(feature = "client")]
 pub mod client;
 pub mod described;
@@ -41,9 +45,6 @@ pub mod described;
 pub mod device;
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
-#[cfg(test)]
-#[cfg(feature = "client")]
-mod flow_tests;
 pub mod loopback;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

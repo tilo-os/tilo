@@ -26,6 +26,8 @@ push_only = """
 # it; the `flows` check in t.toml runs one flow's tests at a time, so a flow
 # still being built stays red without turning its package's own test check
 # red. Every run that names no filter of its own leaves them out.
+# A module whose name merely starts with `flow_` (`flow_tests`) would match too
+# and run nowhere, so no other test module is named that way.
 flows = """
 test(/^flow_[a-z0-9_]+::/) or test(/::flow_[a-z0-9_]+::/)
 """
