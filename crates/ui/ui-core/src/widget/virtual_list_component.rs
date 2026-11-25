@@ -2916,7 +2916,7 @@ mod tests {
     /// collection an app reads page by page holds no row until its first page comes.
     struct Arriving {
         keys: Rc<RefCell<Vec<String>>>,
-        arriving: Rc<Cell<bool>>,
+        landed: Rc<Cell<bool>>,
         told: Cell<bool>,
     }
 
@@ -2962,7 +2962,7 @@ mod tests {
         }
 
         fn take_changes(&mut self) -> Vec<ListModelChange<String>> {
-            if self.arriving.get() && !self.told.replace(true) {
+            if self.landed.get() && !self.told.replace(true) {
                 vec![ListModelChange::Reset]
             } else {
                 Vec::new()
@@ -2970,7 +2970,7 @@ mod tests {
         }
 
         fn has_changes(&self) -> bool {
-            self.arriving.get() && !self.told.get()
+            self.landed.get() && !self.told.get()
         }
     }
 
@@ -2982,7 +2982,7 @@ mod tests {
         let arriving = Rc::new(Cell::new(false));
         let rendered: SharedRows = Rc::new(RefCell::new(Arriving {
             keys: Rc::clone(&keys),
-            arriving: Rc::clone(&arriving),
+            landed: Rc::clone(&arriving),
             told: Cell::new(false),
         }));
         let props = VirtualListProps {
