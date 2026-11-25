@@ -269,15 +269,16 @@ fn a_task_is_given_only_to_a_member_or_the_one_giving_it() {
             other => panic!("{action} is refused: {other:?}"),
         }
     };
-    assert_eq!(
-        refused("assign", give(&who("cy"))),
-        "cy is not in this workspace",
-        "a task is not given to someone the workspace does not hold"
+    // The refusal is the trap the rule raises; its reason is the sentence.
+    let given = refused("assign", give(&who("cy")));
+    assert!(
+        given.contains("cy is not in this workspace"),
+        "a task is not given to someone the workspace does not hold: {given}"
     );
-    assert_eq!(
-        refused("new_task", adding(&who("cy"))),
-        "cy is not in this workspace",
-        "a task is not made for someone the workspace does not hold"
+    let made = refused("new_task", adding(&who("cy")));
+    assert!(
+        made.contains("cy is not in this workspace"),
+        "a task is not made for someone the workspace does not hold: {made}"
     );
     assert_eq!(items(&ada).len(), 1, "and the refused task is not kept");
     call(&ada, "assign", give(&who("bo")));
