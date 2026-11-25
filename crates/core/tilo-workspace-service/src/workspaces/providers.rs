@@ -335,21 +335,41 @@ impl Providers {
             })
             .map(|registered| Arc::clone(&registered.answers))
             .collect();
-        let mut page = CataloguePage {
-            revision: "placed".to_owned(),
-            exhausted: true,
-            ..CataloguePage::default()
-        };
-        // One page holds them all: a cursor into it asks for nothing more.
-        if !query.cursor.is_empty() {
-            return page;
-        }
+        // Every row each provider offers, read page by page to its end, then paged here as one
+        // listing: a page this answers holds what fits a frame, and its cursor reaches the rest.
+        let mut rows = Vec::new();
+        let mut providers = Vec::new();
+        let mut revisions = Vec::new();
         for answers in answers {
-            let mut answer = answers.query(caller, query.clone());
-            if let PendingPoll::Ready(Ok(listed)) = answer.poll_ready() {
-                page.rows.extend(listed.rows);
-                page.providers.extend(listed.providers);
+            let mut asked = CatalogueQuery {
+                cursor: Vec::new(),
+                revision: None,
+                max_results: u32::MAX,
+                ..query.clone()
+            };
+            loop {
+                let PendingPoll::Ready(Ok(listed)) =
+                    answers.query(caller, asked.clone()).poll_ready()
+                else {
+                    break;
+                };
+                rows.extend(listed.rows);
+                providers.extend(listed.providers);
+                revisions.push(listed.revision.clone());
+                if listed.exhausted || listed.next_cursor.is_empty() {
+                    break;
+                }
+                asked.cursor = listed.next_cursor;
+                asked.revision = Some(listed.revision);
             }
+        }
+        let revision = format!(
+            "placed:{}",
+            blake3::hash(revisions.join("\n").as_bytes()).to_hex()
+        );
+        let mut page = CataloguePage::from_rows(revision, rows, query);
+        if query.cursor.is_empty() {
+            page.providers = providers;
         }
         page
     }

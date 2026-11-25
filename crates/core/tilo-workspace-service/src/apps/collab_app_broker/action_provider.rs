@@ -1873,8 +1873,11 @@ impl AppBrokerState {
             page.providers = providers;
         }
         // What the registered providers publish at fixed addresses, as the packages an app's code
-        // compiles its calls of them against.
-        if let Some(provided) = self.provided() {
+        // compiles its calls of them against: once, on a listing's first page, and not again on
+        // every page after it.
+        if query.cursor.is_empty()
+            && let Some(provided) = self.provided()
+        {
             page.packages = provided.packages();
         }
         Pending::ready(Ok(page))

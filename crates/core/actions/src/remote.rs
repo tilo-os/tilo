@@ -123,9 +123,10 @@ pub use providers::{
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, MAX_BY_RESOURCE_PAGE, MAX_CATALOGUE_PAGE, Offered,
-    ProvidedPackage, ProvidedResource, ResourceViewLocator, RowVisibility, ViewResourceQuery,
-    compact, expand, rows_weight, truncate_resources, truncate_rows,
+    CatalogueResource, CatalogueRow, MAX_BY_RESOURCE_PAGE, MAX_CATALOGUE_PAGE,
+    MAX_CATALOGUE_PAGE_BYTES, Offered, ProvidedPackage, ProvidedResource, ResourceViewLocator,
+    RowVisibility, ViewResourceQuery, compact, expand, rows_weight, truncate_bytes,
+    truncate_resources, truncate_rows,
 };
 pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged, What};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
@@ -3396,6 +3397,103 @@ mod tests {
         match answer.poll_ready() {
             PendingPoll::Ready(value) => value,
             PendingPoll::Waiting | PendingPoll::Abandoned => panic!("the provider answers at once"),
+        }
+    }
+
+    /// A provider offering more actions than one frame holds: twelve thousand,
+    /// each described at length, as a large app's surface publishes them.
+    #[derive(Clone)]
+    struct HugeCatalogue;
+
+    const HUGE_CATALOGUE: usize = 12_000;
+
+    impl ActionProvider for HugeCatalogue {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            let rows = (0..HUGE_CATALOGUE)
+                .map(|n| {
+                    let mut row = catalogue_row(&format!("note:{n}"), &format!("archive-{n}"));
+                    if let Some(action) = row.action.as_mut() {
+                        action.description = Some("Moves the note out of the list. ".repeat(8));
+                    }
+                    row
+                })
+                .collect();
+            Pending::ready(Ok(CataloguePage::from_rows("1".into(), rows, &query)))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            _request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
+    }
+
+    /// A caller paging a catalogue larger than a frame, through the provider's
+    /// answer and the frame each page travels in, reads every action once, and
+    /// no frame is over the limit: a page ends at its size as well as its count,
+    /// whatever count was asked for, plain or a resource at a time.
+    #[test]
+    fn a_catalogue_larger_than_a_frame_travels_in_pages_that_each_fit_one() {
+        for by_resource in [false, true] {
+            let mut query = CatalogueQuery {
+                max_results: u32::MAX,
+                by_resource,
+                ..CatalogueQuery::default()
+            };
+            let mut listed = Vec::new();
+            let mut pages = 0usize;
+            loop {
+                let asked = RemoteActionMessage::CatalogueRequest {
+                    correlation: 1,
+                    query: query.clone(),
+                };
+                let answer =
+                    now(serve(&HugeCatalogue, &alice(), asked).expect("a request is answered"));
+                let bytes = RemoteActionFrame::new(answer)
+                    .encode()
+                    .expect("every page fits one frame");
+                assert!(bytes.len() <= MAX_REMOTE_ACTION_FRAME_BYTES);
+                let RemoteActionMessage::CatalogueResponse {
+                    result: Ok(page), ..
+                } = RemoteActionFrame::decode(&bytes).unwrap().message
+                else {
+                    panic!("a catalogue request is answered with its page");
+                };
+                pages += 1;
+                listed.extend(
+                    expand(page.rows)
+                        .into_iter()
+                        .filter_map(|row| row.action.map(|action| action.address.action)),
+                );
+                if page.exhausted {
+                    break;
+                }
+                query.cursor = page.next_cursor;
+                query.revision = Some(page.revision);
+            }
+            assert!(pages > 1, "the catalogue is larger than one frame");
+            let expected: Vec<String> = (0..HUGE_CATALOGUE)
+                .map(|n| format!("archive-{n}"))
+                .collect();
+            assert_eq!(listed, expected, "every action is listed once, in order");
         }
     }
 

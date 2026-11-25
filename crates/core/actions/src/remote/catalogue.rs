@@ -18,6 +18,12 @@ use super::RemoteActionTarget;
 /// Largest page a provider returns, whatever a query asks for.
 pub const MAX_CATALOGUE_PAGE: u32 = 256;
 
+/// The most bytes a page's rows take, encoded, whatever their count: half a
+/// frame ([`super::MAX_REMOTE_ACTION_FRAME_BYTES`]), so the page goes out as
+/// one with the publishers and packages beside it. A page that reaches it ends
+/// there and its cursor goes on from the first row it left out.
+pub const MAX_CATALOGUE_PAGE_BYTES: usize = super::MAX_REMOTE_ACTION_FRAME_BYTES / 2;
+
 /// The most rows a page of a listing taken a resource at a time
 /// ([`CatalogueQuery::by_resource`]) answers: a resource's rows travel as one
 /// there, so a page this long still holds a couple of hundred resources.
@@ -340,6 +346,27 @@ pub fn truncate_resources(rows: &mut Vec<CatalogueRow>, count: usize) -> bool {
     let cutting = cut < rows.len();
     rows.truncate(cut);
     cutting
+}
+
+/// `rows` cut after the last of them that keeps their encoding within `budget`
+/// bytes, and whether any were cut. The first row always stays, so a page
+/// always moves its listing on. Each row is counted whole, as it is sent
+/// outside a listing taken a resource at a time, which a resource's rows sent
+/// as one ([`compact`]) never exceed.
+pub fn truncate_bytes(rows: &mut Vec<CatalogueRow>, budget: usize) -> bool {
+    let mut spent = 0usize;
+    let cut = rows.iter().enumerate().position(|(at, row)| {
+        // A comma between rows, and the row as serde writes it.
+        let size =
+            serde_json::to_vec(row).map_or(usize::MAX, |bytes| bytes.len().saturating_add(1));
+        spent = spent.saturating_add(size);
+        at > 0 && spent > budget
+    });
+    let Some(cut) = cut else {
+        return false;
+    };
+    rows.truncate(cut);
+    true
 }
 
 /// `rows` with each resource's consecutive action rows sent as one row
@@ -712,6 +739,8 @@ impl CataloguePage {
         query: &CatalogueQuery,
         more: bool,
     ) -> Self {
+        let mut rows = rows;
+        let more = truncate_bytes(&mut rows, MAX_CATALOGUE_PAGE_BYTES) || more;
         let next = query.offset().saturating_add(rows_weight(&rows));
         // A listing taken a resource at a time is sent so; its cursor still
         // counts the rows each resource stands for.
