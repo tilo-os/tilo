@@ -1658,12 +1658,22 @@ pub struct Hosted {
 enum Ran {
     /// It ran, and this is what it answers.
     Done(tilo_actions::ActionOutput),
-    /// It waits on a child call it made: the call's id, and the run that waits on it (`None`
-    /// when no run does, the call itself being the served invocation's work).
+    /// It waits on a child call it made: the call's id, the run that waits on it (`None`
+    /// when no run does, the call itself being the served invocation's work), and the action
+    /// whose result the run's value is answered as when it ends.
     Waits {
         call: String,
         run: Option<tilolang_tilo::runtime::ids::RunId>,
+        action: Option<ServedAction>,
     },
+}
+
+/// The action a waiting run is a run of, by its app and its id: what the run's value is answered
+/// as once it ends, as the action's declared result, the same as a run that never waited.
+#[derive(Clone)]
+struct ServedAction {
+    app: String,
+    action: String,
 }
 
 /// A child call this instance sent, and what waits on its answer.
@@ -1682,6 +1692,8 @@ struct Child {
     /// The asked record the call waits in, once the dispatch said a person is asked about it:
     /// the served invocation said so once, naming it.
     asked: Option<String>,
+    /// The action the waiting run is a run of, when the served invocation ends with it.
+    action: Option<ServedAction>,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -2690,7 +2702,7 @@ impl Hosted {
             // another app or on a person, which answers nobody here.
             Ok(InvokeOutcome::Done(_) | InvokeOutcome::Asked(_)) => None,
             Ok(InvokeOutcome::Waits { run, call }) => {
-                self.waiting(call, Some(run), None, None);
+                self.waiting(call, Some(run), None, None, None);
                 None
             }
             Ok(other) => {
@@ -3169,8 +3181,9 @@ impl Hosted {
             Ok(Ran::Done(output)) if self.checks.continues(id, invocation, &output) => None,
             Ok(Ran::Done(output)) => Some(InvocationUpdate::Succeeded { invocation, output }),
             // What it calls answers later: the invocation ends with the run, not now.
-            Ok(Ran::Waits { call, run }) => {
-                self.waiting(call, run, Some((id, invocation)), person.map(str::to_owned));
+            Ok(Ran::Waits { call, run, action }) => {
+                let served = Some((id, invocation));
+                self.waiting(call, run, served, person.map(str::to_owned), action);
                 None
             }
             Err(error) => {
@@ -3234,6 +3247,7 @@ impl Hosted {
         run: Option<tilolang_tilo::runtime::ids::RunId>,
         served: Option<(u64, tilo_actions::InvocationId)>,
         person: Option<String>,
+        action: Option<ServedAction>,
     ) {
         // The invocation this run serves outlives this host: it is recorded with the run, so a
         // host starting over the store answers it if the run cannot go on.
@@ -3250,6 +3264,7 @@ impl Hosted {
                 served,
                 person,
                 asked: None,
+                action,
             },
         );
     }
@@ -3440,7 +3455,9 @@ impl Hosted {
             ReceiptStatus::Accepted => return false,
         };
         match (child.run, child.served) {
-            (Some(run), served) => self.resume(&run, served, child.person, answer),
+            (Some(run), served) => {
+                self.resume(&run, served, (child.person, child.action), answer);
+            }
             // The call itself is the served invocation's work: its answer ends it.
             (None, Some((id, invocation))) => {
                 let update = match receipt.status {
@@ -3474,7 +3491,7 @@ impl Hosted {
         &mut self,
         run: &tilolang_tilo::runtime::ids::RunId,
         served: Option<(u64, tilo_actions::InvocationId)>,
-        person: Option<String>,
+        (person, action): (Option<String>, Option<ServedAction>),
         answer: Invoked,
     ) {
         let Some(host) = self.instance.host() else {
@@ -3499,15 +3516,33 @@ impl Hosted {
             Ok(RunOutcome::Done(value)) => {
                 self.instance.commit_planned();
                 if let Some((id, invocation)) = served {
-                    let output = output_of(&self.spec.app, &value);
-                    // A check the run started before it waited is still the invocation's work.
-                    if !self.checks.continues(id, invocation, &output) {
-                        let update = InvocationUpdate::Succeeded { invocation, output };
-                        self.answer_invocation(id, update);
+                    // The run's value is the action's answer, as its declared result, as it is
+                    // for a run that never waited.
+                    let output = match &action {
+                        Some(action) => host
+                            .action_output(&action.app, &action.action, &value)
+                            .map_err(|error| Refused::new("action_failed", error)),
+                        // A run whose action is not named answers only that it ended.
+                        None => Ok(tilo_actions::ActionOutput::default()),
+                    };
+                    match output {
+                        // A check the run started before it waited is still the invocation's
+                        // work.
+                        Ok(output) if self.checks.continues(id, invocation, &output) => {}
+                        Ok(output) => {
+                            let update = InvocationUpdate::Succeeded { invocation, output };
+                            self.answer_invocation(id, update);
+                        }
+                        Err(refused) => {
+                            self.checks.abandon(invocation);
+                            self.answer_invocation(id, failed(invocation, refused));
+                        }
                     }
                 }
             }
-            Ok(RunOutcome::Waits { run, call }) => self.waiting(call, Some(run), served, person),
+            Ok(RunOutcome::Waits { run, call }) => {
+                self.waiting(call, Some(run), served, person, action);
+            }
             Err(error) => {
                 self.instance.commit_planned();
                 if let Some((id, invocation)) = served {
@@ -3742,6 +3777,10 @@ impl Hosted {
                 return Ok(Ran::Waits {
                     call: waiting.call,
                     run: waiting.run,
+                    action: Some(ServedAction {
+                        app: action.app.clone(),
+                        action: action.action_id.clone(),
+                    }),
                 });
             }
             // The answer names the characters it wrote: the window draws them in the writer's
@@ -4059,7 +4098,7 @@ impl Hosted {
             }
             // It calls another app and waits on the answer: the run goes on when it comes. A
             // press answers nobody, so nothing is answered for it.
-            Ok(Ran::Waits { call, run }) => self.waiting(call, run, None, None),
+            Ok(Ran::Waits { call, run, .. }) => self.waiting(call, run, None, None, None),
             Err(refused) => self.instance.failed(refused.message),
         }
         // What the press queued outside the workspace waits in the outbox, and the instance
@@ -4403,21 +4442,6 @@ fn callees_of(
     }
     callees.provide(provided);
     callees
-}
-
-/// What the action whose run `value` returned answers: the resource it made, if any, as the
-/// invocation answers it.
-fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
-    match value {
-        Value::Ref(made) => tilo_actions::ActionOutput {
-            value: None,
-            resources: vec![tilolang_tilo::publish::resource_id(
-                app,
-                &made.target.id_string(),
-            )],
-        },
-        _ => tilo_actions::ActionOutput::default(),
-    }
 }
 
 /// What a view or an action of this window asks of another app's api: the app, the resource,

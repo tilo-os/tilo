@@ -386,8 +386,7 @@ impl Runtime {
     pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
         let app = meta.app.clone();
         // An app this runtime runs already keeps its package: its code is what its own actions
-        // and views run, and a description handed here (the actions a workspace offers, which
-        // code calls by address) must not stand in for it.
+        // and views run, and a description handed here must not stand in for it.
         if let Some(running) = self.core.registry.borrow().running_package_of(&app) {
             return Ok(running.hash.clone());
         }

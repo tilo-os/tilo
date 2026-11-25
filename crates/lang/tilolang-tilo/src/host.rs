@@ -396,6 +396,8 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .map(Value::Float)
             .ok_or_else(|| "number out of range".to_owned()),
         (Ty::Duration, _) => duration_value(json),
+        // A JSON document is taken as it was given, whatever its shape.
+        (Ty::Json, _) => Ok(Value::Json(Box::new(json.clone()))),
         // A union of documents: the reference's kind says which of them it is.
         (Ty::Union(keys), _) => union_value(host, meta, json, keys),
         _ => from_json(json),
