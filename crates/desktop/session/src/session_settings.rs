@@ -151,9 +151,10 @@ impl SessionSettings {
         if self.reading.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (settings, wake, reading) = (
+        let (settings, wake, finished, reading) = (
             Arc::clone(&self.settings),
             Arc::clone(wake),
+            Arc::clone(&self.reading),
             Arc::clone(&self.reading),
         );
         let spawned = std::thread::Builder::new()
@@ -163,7 +164,7 @@ impl SessionSettings {
                 if settings.refresh() {
                     wake();
                 }
-                reading.store(false, Ordering::Release);
+                finished.store(false, Ordering::Release);
             });
         if let Err(error) = spawned {
             reading.store(false, Ordering::Release);
