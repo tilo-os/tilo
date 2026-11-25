@@ -565,7 +565,7 @@ pub fn verify_carried(
 fn claimed_verbs(claim: &collab_types::claim::ChangeClaim) -> Vec<&tilo_actions::ActionKey> {
     claim
         .action
-        .members()
+        .record_members()
         .into_iter()
         .filter_map(|member| match member {
             collab_types::claim::ClaimedAction::Verb { action, .. } => Some(action),
@@ -607,7 +607,7 @@ pub fn carried_effect(
 fn claim_edits_records(claim: &collab_types::claim::ChangeClaim) -> bool {
     claim
         .action
-        .members()
+        .record_members()
         .into_iter()
         .all(|member| matches!(member, collab_types::claim::ClaimedAction::Edit { .. }))
 }
@@ -620,7 +620,7 @@ fn declares_kinds(
     claim: &collab_types::claim::ChangeClaim,
 ) -> bool {
     let effects = tilo_actions::remote::declared_effects(target);
-    let members = claim.action.members();
+    let members = claim.action.record_members();
     !members.is_empty()
         && members.into_iter().all(|member| match member {
             collab_types::claim::ClaimedAction::Edit { kind, .. } => effects
@@ -634,7 +634,7 @@ fn declares_kinds(
 fn claim_names_kind(claim: &collab_types::claim::ChangeClaim, kind: &str) -> bool {
     claim
         .action
-        .members()
+        .record_members()
         .into_iter()
         .any(|member| match member {
             collab_types::claim::ClaimedAction::Verb { action, .. } => action.kind == kind,

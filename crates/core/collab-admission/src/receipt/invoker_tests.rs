@@ -452,3 +452,86 @@ fn a_sealed_write_by_an_app_is_decided_by_the_apps_grant_not_its_signer() {
         "a write that names no one is no one's to admit"
     );
 }
+
+/// A visitor's write at the workspace's entry, as the store writes it: a change stamped with the
+/// verb it was written under. Receivers decide it as that verb, which the entry opens to any key,
+/// sealed or opened alike: leaving an address is admitted, and the same visitor's other edits of
+/// the entry's record (a verb the entry keeps for its members, or an edit naming no verb) are
+/// refused, though the owner's device signed every one of them.
+#[test]
+fn a_visitors_store_write_is_decided_as_the_verb_it_was_written_under() {
+    use tilo_action_policy::{Actor, EntryPolicy, VISITOR_ENTRY_APP};
+    let visitor = Actor::Visitor(hex::encode([9; 32]));
+    let mut policy = policy(None);
+    policy.grants.extend(
+        EntryPolicy {
+            invitation_only: true,
+            wait_list_max: 8,
+            ..EntryPolicy::default()
+        }
+        .visitor_grants(WORKSPACE),
+    );
+    let signer = person(&policy, "owner");
+    let entry = WrittenDocument {
+        workspace: WORKSPACE,
+        app: VISITOR_ENTRY_APP,
+        document: "requests",
+    };
+    let write = |verb: &str| {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "address", "ada@example.com").unwrap();
+        let stamp = collab_types::Stamp {
+            verb: verb.to_owned(),
+            invoker: collab_types::Stamp::by(&visitor),
+            invocation: "i-1".to_owned(),
+            ..collab_types::Stamp::default()
+        };
+        doc.commit_with(CommitOptions::default().with_message(stamp.message()));
+        let op = collab_types::op::SignedOp::new_unsigned(
+            collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
+                .encode()
+                .unwrap(),
+            collab_types::document_artifact_id(VISITOR_ENTRY_APP, WORKSPACE, "requests"),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id(VISITOR_ENTRY_APP, WORKSPACE, "requests"),
+            collab_types::role::OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        let (sealed, _) = sealed(&op);
+        (op, sealed)
+    };
+    let decided = |op: &collab_types::op::SignedOp| {
+        let cx = Context::at_secs(1);
+        let allows = |invoker: Option<&Acting>, node: &TreePath, kind: ActionKind| {
+            ChangeAuthor::answer(&signer, invoker, node, kind, &cx) == Answer::Allow
+        };
+        decide_opened(
+            (op, None),
+            &entry,
+            (None, None, None),
+            None,
+            &Surfaces::default(),
+            &allows,
+            (None, Some(&signer.acting)),
+        )
+    };
+    let (clear, sealed) = write("join");
+    assert_eq!(
+        sealed.claims[0].action.store_verb(),
+        Some("join"),
+        "the claim names the verb the change was written under"
+    );
+    assert_eq!(decided(&sealed), Ok(Receipt::Admit), "leaving an address");
+    assert_eq!(decided(&clear), Ok(Receipt::Admit), "leaving an address, opened");
+    for other in ["remove", "$put", ""] {
+        let (clear, sealed) = write(other);
+        for op in [&sealed, &clear] {
+            assert!(
+                matches!(decided(op), Err(ReceiptRefusal::NotGranted { .. })),
+                "a visitor's {other:?} on the entry is refused: {:?}",
+                decided(op)
+            );
+        }
+    }
+}

@@ -924,7 +924,21 @@ fn a_change_over_records_of_two_kinds_is_decided_by_the_surface_of_each() {
 fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
     let change = store_change("tl.notes.Note");
     let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()).unwrap();
-    let opened = |change: &automerge::Change, read: &ChangeClaim, kind: &str| {
+    // A store's change claims the verb it was written under beside the kinds of its records.
+    let naming = |verb: Option<&str>, kind: &str| {
+        let edit = ClaimedAction::whole_resource_edit(kind.to_owned());
+        match verb {
+            Some(verb) => ClaimedAction::Group(vec![
+                ClaimedAction::Verb {
+                    action: tilo_actions::ActionKey::new("", "", verb),
+                    item: None,
+                },
+                edit,
+            ]),
+            None => edit,
+        }
+    };
+    let opened = |change: &automerge::Change, read: &ChangeClaim, claimed: ClaimedAction| {
         let op = collab_types::op::SignedOp::new_unsigned(
             Vec::new(),
             collab_types::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
@@ -935,7 +949,7 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
             1,
         )
         .with_claims(vec![ChangeClaim {
-            action: ClaimedAction::whole_resource_edit(kind.to_owned()),
+            action: claimed,
             ..read.clone()
         }]);
         check_opened_mutation(
@@ -943,11 +957,22 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
             &collab_types::op::DocumentMutation::Incremental(change.raw_bytes().to_vec()),
         )
     };
-    assert_eq!(opened(&change, &read, "tl.notes.Note"), Ok(()));
+    assert_eq!(read.action.store_verb(), Some("new"));
+    assert_eq!(
+        opened(&change, &read, naming(Some("new"), "tl.notes.Note")),
+        Ok(())
+    );
     assert!(matches!(
-        opened(&change, &read, "tl.notes.Folder"),
+        opened(&change, &read, naming(Some("new"), "tl.notes.Folder")),
         Err(ReceiptRefusal::Misclaimed(_))
     ));
+    // Nor may its claim name another verb than the one it was written under, or none.
+    for verb in [Some("remove"), None] {
+        assert!(matches!(
+            opened(&change, &read, naming(verb, "tl.notes.Note")),
+            Err(ReceiptRefusal::Misclaimed(_))
+        ));
+    }
     assert_eq!(
         collab_types::claim::store_record_kinds(
             "*/tl.notes#0",
@@ -967,9 +992,9 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
     let native = parse_changes(&doc.save()).unwrap().remove(0);
     let native_read =
         ChangeClaim::of_change(native.hash().0, native.message(), Vec::new()).unwrap();
-    assert_eq!(opened(&native, &native_read, ""), Ok(()));
+    assert_eq!(opened(&native, &native_read, naming(None, "")), Ok(()));
     assert!(matches!(
-        opened(&native, &native_read, "tl.notes.Note"),
+        opened(&native, &native_read, naming(None, "tl.notes.Note")),
         Err(ReceiptRefusal::Misclaimed(_))
     ));
 }

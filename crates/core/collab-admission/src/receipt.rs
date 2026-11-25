@@ -10,7 +10,7 @@ use collab_types::receipt::{
     check_store_kinds, label, unread_claims, written_node,
 };
 use collab_types::{DocumentMutation, OpKind, SignedOp};
-use tilo_action_policy::{Acting, ActionKind};
+use tilo_action_policy::{Acting, ActionKind, TreePath};
 
 /// Decide a received op on `record`: a compaction as a write of the record
 /// (or the workspace's `compact` governance action), a redaction as the workspace's
@@ -101,7 +101,8 @@ fn names_what_it_read(
 ) -> bool {
     claimed == read
         || (store
-            && *read == ClaimedAction::whole_resource_edit(String::new())
+            && *read == ClaimedAction::store_write(read.store_verb().unwrap_or_default())
+            && claimed.store_verb() == read.store_verb()
             && collab_types::claim::whole_edit_kinds(claimed)
                 .is_some_and(|kinds| !kinds.is_empty() && made.is_subset(&kinds)))
 }
@@ -475,22 +476,36 @@ fn decide_as_document_edit(
     allows: &Allows<'_>,
     (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
-    let node = written_node(document);
+    let record = written_node(document);
     // A change that carries a resource store's stamp names its invoker there;
     // one whose stamp names none is refused, as any change that names nobody,
     // unless an import step said whose it is. A framework change that names no one is its
     // signer's, and a checkpoint carries its writes' own.
-    let mut invokers: Vec<Option<Acting>> = Vec::new();
+    // Each is decided at the record, or, for a resource store's change, at the verb it was
+    // written under: a grant on that verb alone admits it, and admits no other edit.
+    let at_verb = |verb: Option<&str>| match verb {
+        Some(verb) => record.clone().action(verb),
+        None => record.clone(),
+    };
+    let mut invokers: Vec<(Option<Acting>, TreePath)> = Vec::new();
     match changes {
         Some(changes) => {
             for change in changes {
-                invokers.push(match (crate::claim::maker_of(change), imported) {
+                let verb = ChangeClaim::of_change(
+                    change.hash().0,
+                    change.message(),
+                    Vec::new(),
+                )
+                .ok()
+                .and_then(|claim| claim.action.store_verb().map(str::to_owned));
+                let invoker = match (crate::claim::maker_of(change), imported) {
                     (crate::claim::Maker::Named, _) => collab_types::claim::invoker_of(change),
                     (crate::claim::Maker::Derived, _) => None,
                     (crate::claim::Maker::Signer, _) => signer.cloned(),
                     (crate::claim::Maker::Nobody, Some(person)) => Some(person.clone()),
                     (crate::claim::Maker::Nobody, None) => return Err(ReceiptRefusal::NoInvoker),
-                });
+                };
+                invokers.push((invoker, at_verb(verb.as_deref())));
             }
         }
         // Who made a write this receiver cannot read is who its claims name: signed with the
@@ -499,7 +514,8 @@ fn decide_as_document_edit(
         // the signer's person had made it.
         None => {
             for claim in claims {
-                invokers.push(match (&claim.invoker, &claim.action) {
+                let node = at_verb(claim.action.store_verb());
+                let invoker = match (&claim.invoker, &claim.action) {
                     (Some(invoker), _) => Some(Acting::clone(invoker)),
                     // A record's founding, which every device derives alike, names no one.
                     (
@@ -513,26 +529,27 @@ fn decide_as_document_edit(
                         Some(person) => Some(person.clone()),
                         None => return Err(ReceiptRefusal::NoInvoker),
                     },
-                });
+                };
+                invokers.push((invoker, node));
             }
         }
     }
     if invokers.is_empty() {
-        invokers.push(None);
+        invokers.push((None, record.clone()));
     }
-    if invokers
+    if let Some((_, node)) = invokers
         .iter()
-        .all(|invoker| allows(invoker.as_ref(), &node, ActionKind::Undoable))
+        .find(|(invoker, node)| !allows(invoker.as_ref(), node, ActionKind::Undoable))
     {
-        if let Some(changes) = changes {
-            check_genesis_first(changes, holding)?;
-        }
-        Ok(Receipt::Admit)
-    } else {
         Err(ReceiptRefusal::NotGranted {
             node: node.to_string(),
             kind: ActionKind::Undoable,
         })
+    } else {
+        if let Some(changes) = changes {
+            check_genesis_first(changes, holding)?;
+        }
+        Ok(Receipt::Admit)
     }
 }
 

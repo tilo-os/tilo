@@ -292,6 +292,59 @@ impl ClaimedAction {
         }
     }
 
+    /// What a resource store's change claims, written under the stamp's verb `verb`: the verb,
+    /// with an edit of the records it writes whole, whose kinds only the store that holds them
+    /// names ([`name_record_kinds`]). A change is decided as the verb it was written under, so a
+    /// grant on one verb alone (a visitor's leaving an address at the entry) admits that verb and
+    /// no other edit of the record. A verb the store keeps for itself (`$create`, `$put`) and a
+    /// stamp naming none claim the edit alone, decided as an edit of the record.
+    #[must_use]
+    pub fn store_write(verb: &str) -> Self {
+        let edit = Self::whole_resource_edit(String::new());
+        if verb.is_empty() || verb.starts_with('$') {
+            return edit;
+        }
+        Self::Group(vec![
+            Self::Verb {
+                action: ActionKey::new("", "", verb),
+                item: None,
+            },
+            edit,
+        ])
+    }
+
+    /// The verb a resource store's change was written under, as [`Self::store_write`] claims it:
+    /// `None` for any other claim.
+    #[must_use]
+    pub fn store_verb(&self) -> Option<&str> {
+        let Self::Group(members) = self else {
+            return None;
+        };
+        let mut verbs = members.iter().filter_map(|member| match member {
+            Self::Verb { action, item: None } if action.app.is_empty() && action.kind.is_empty() => {
+                Some(action.action.as_str())
+            }
+            _ => None,
+        });
+        let verb = verbs.next()?;
+        let whole = |member: &Self| matches!(member, Self::Edit { path, .. } if path.is_empty());
+        (verbs.next().is_none() && members.iter().filter(|member| !whole(member)).count() == 1)
+            .then_some(verb)
+    }
+
+    /// [`Self::members`] without the verb a resource store's change names beside its edits
+    /// ([`Self::store_write`]): what it writes, as a call it was made for is checked against it.
+    /// The verb is checked against that call by every device that opens the change and reads its
+    /// stamp.
+    #[must_use]
+    pub fn record_members(&self) -> Vec<&Self> {
+        let verb = self.store_verb().is_some();
+        self.members()
+            .into_iter()
+            .filter(|member| !(verb && matches!(member, Self::Verb { .. })))
+            .collect()
+    }
+
     /// Every verb or field edit the action is made of: itself, or the
     /// members of a group.
     pub fn members(&self) -> Vec<&Self> {
@@ -387,8 +440,9 @@ impl ChangeClaim {
                     .signed
                     .as_deref()
                     .map(|signed| Box::new(signed.signed.clone()));
+                let action = ClaimedAction::store_write(&read.verb);
                 stamp = Some(read);
-                ClaimedAction::whole_resource_edit(String::new())
+                action
             }
         };
         Ok(Self {
@@ -588,8 +642,14 @@ pub fn whole_edit_kinds(action: &ClaimedAction) -> Option<std::collections::BTre
         ClaimedAction::Edit { kind, path } if path.is_empty() => Some(kind.clone()),
         _ => None,
     };
+    let verb = action.store_verb().is_some();
     match action {
-        ClaimedAction::Group(members) => members.iter().map(whole).collect(),
+        // A store's change names the verb it was written under beside the kinds it edits.
+        ClaimedAction::Group(members) => members
+            .iter()
+            .filter(|member| !(verb && matches!(member, ClaimedAction::Verb { .. })))
+            .map(whole)
+            .collect(),
         single => whole(single).map(|kind| std::iter::once(kind).collect()),
     }
     .map(|kinds: std::collections::BTreeSet<String>| {
@@ -644,19 +704,29 @@ fn content_kind(record: &str) -> Option<&str> {
 /// Name in each claim of `claims` that edits its record whole the kinds `kinds` holds for its
 /// change ([`store_record_kinds`]).
 pub fn name_record_kinds(claims: &mut [ChangeClaim], kinds: &RecordKinds) {
-    let whole = ClaimedAction::whole_resource_edit(String::new());
     for claim in claims {
-        let Some(written) = kinds.get(&claim.change).filter(|_| claim.action == whole) else {
+        let verb = claim.action.store_verb().map(str::to_owned);
+        let unnamed = ClaimedAction::store_write(verb.as_deref().unwrap_or_default());
+        let Some(written) = kinds.get(&claim.change).filter(|_| claim.action == unnamed) else {
             continue;
         };
         let mut edits: Vec<ClaimedAction> = written
             .iter()
             .map(|kind| ClaimedAction::whole_resource_edit(kind.clone()))
             .collect();
-        claim.action = if edits.len() == 1 {
-            edits.remove(0)
-        } else {
-            ClaimedAction::Group(edits)
+        claim.action = match verb {
+            Some(verb) => {
+                edits.insert(
+                    0,
+                    ClaimedAction::Verb {
+                        action: ActionKey::new("", "", verb),
+                        item: None,
+                    },
+                );
+                ClaimedAction::Group(edits)
+            }
+            None if edits.len() == 1 => edits.remove(0),
+            None => ClaimedAction::Group(edits),
         };
     }
 }

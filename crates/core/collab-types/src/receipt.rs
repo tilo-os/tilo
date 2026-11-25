@@ -345,7 +345,9 @@ pub fn label(action: &ClaimedAction) -> String {
     match action {
         ClaimedAction::Verb { action, .. } => action.to_string(),
         ClaimedAction::Edit { path, .. } => format!("a field edit at {}", unit_label(path)),
-        ClaimedAction::Group(_) => "a group".into(),
+        ClaimedAction::Group(_) => action
+            .store_verb()
+            .map_or_else(|| "a group".into(), str::to_owned),
         ClaimedAction::History(op) => format!("{op:?}"),
         ClaimedAction::Framework(change) => format!("{change:?}"),
     }
@@ -424,12 +426,25 @@ pub fn check_claims(
         if queues || in_outbox(&claim.units) {
             footprint.extend(outboxes.iter().cloned());
         }
+        // A store's change is decided as the verb it was written under, which the store judged
+        // when it wrote it: its edits of whole records bound what it may write, and grant nothing
+        // beside the verb.
+        let store_verb = claim.action.store_verb();
         for member in claim.action.members() {
-            let kind = match published_kind(document, surface, member)? {
+            let store_member = store_verb.is_some();
+            let kind = match member {
+                ClaimedAction::Verb { .. } if store_member => ActionKind::Undoable,
+                _ => published_kind(document, surface, member)?,
+            };
+            let kind = match kind {
                 _ if queues => ActionKind::Outside,
                 ActionKind::Outside if queued_nothing => ActionKind::Undoable,
                 kind => kind,
             };
+            if store_member && !matches!(member, ClaimedAction::Verb { .. }) {
+                footprint.extend(surface.footprint(member));
+                continue;
+            }
             let node = claim_node(document, surface, member);
             if !allows(claim.invoker.as_deref(), &node, kind) {
                 return Err(ReceiptRefusal::NotGranted {
