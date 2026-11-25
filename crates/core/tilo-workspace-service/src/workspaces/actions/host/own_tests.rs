@@ -940,6 +940,189 @@ async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() 
     server.shutdown().await;
 }
 
+/// An agent's key deleting a workspace of its person's, as the host builds its caller from the
+/// key's certificate: it waits for the person's yes, a no deletes nothing, and a yes deletes.
+#[tokio::test]
+async fn an_agents_key_asks_before_deleting_a_workspace_and_deletes_only_on_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let own_signing = SigningKey::from_bytes(&rand::random());
+    let own_key = certified(&root, &own_signing, DeviceCapabilities::server_key_grant());
+    let created = create_own(&host, &own_key, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    join(workspaces, &created, (&own_signing, &own_key)).await;
+    let agent = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    // The caller the host builds for the key's certificate in process, as `ask_own` asks.
+    let as_agent = crate::service::local_caller(&agent);
+
+    let deleting = delete_request(&workspace);
+    let waits = settled(host.as_host(&agent).invoke(&as_agent, deleting.clone()))
+        .await
+        .unwrap();
+    assert!(
+        !matches!(waits.status, ReceiptStatus::Completed { .. }),
+        "deleting waits for its person: {waits:?}"
+    );
+    assert!(
+        workspaces.owns(&person, &workspace),
+        "nothing is deleted before a yes"
+    );
+
+    let declining = Answering::declining();
+    let refused = answered(
+        workspaces,
+        (None, Some(&agent)),
+        &as_agent,
+        &deleting,
+        Ok(waits),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(ActionCallError::ConfirmationRequired(_))),
+        "the person was asked: {refused:?}"
+    );
+    assert_eq!(declining.asked().len(), 1, "one question, one answer");
+    assert!(
+        workspaces.owns(&person, &workspace),
+        "a no deletes nothing"
+    );
+
+    let approving = Answering::approving();
+    let again = delete_request(&workspace);
+    let waits = settled(host.as_host(&agent).invoke(&as_agent, again.clone()))
+        .await
+        .unwrap();
+    let done = answered(
+        workspaces,
+        (None, Some(&agent)),
+        &as_agent,
+        &again,
+        Ok(waits),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(done.status, ReceiptStatus::Completed { .. }),
+        "the yes deletes the workspace: {done:?}"
+    );
+    assert_eq!(approving.asked().len(), 1, "one question, one answer");
+    assert!(
+        !workspaces.owns(&person, &workspace),
+        "the yes deletes the workspace"
+    );
+    server.shutdown().await;
+}
+
+/// The same call signed straight to the host's action service, as an agent's own device asks it:
+/// the host reads the certificate the signature carries, and the delete waits for the person's
+/// yes instead of going through.
+#[tokio::test]
+async fn a_signed_agents_invocation_asks_before_deleting_a_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let own_signing = SigningKey::from_bytes(&rand::random());
+    let own_key = certified(&root, &own_signing, DeviceCapabilities::server_key_grant());
+    let created = create_own(&host, &own_key, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    join(workspaces, &created, (&own_signing, &own_key)).await;
+    let agent_signing = SigningKey::from_bytes(&rand::random());
+    let agent = certified(
+        &root,
+        &agent_signing,
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let operations = crate::app_serving::HostOperations::new(
+        std::sync::Arc::new(super::super::HostActionServer {
+            governance: host,
+            apps: None,
+        }),
+        std::sync::Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        workspaces.downgrade(),
+    );
+    let mut deleting = delete_request(&workspace);
+    deleting.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(
+            "",
+            &deleting,
+            &agent,
+            &agent_signing,
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the agent's key signs its call"),
+    ));
+    let waits = settled(operations.invoke(&caller(&agent), deleting)).await.unwrap();
+    assert!(
+        !matches!(waits.status, ReceiptStatus::Completed { .. }),
+        "deleting waits for its person: {waits:?}"
+    );
+    let asked = tilo_actions::remote::asked::AskedRecords::asked_of(
+        &*workspaces.asked_records().unwrap(),
+        &person,
+    );
+    assert!(
+        asked.iter().any(|asked| asked.workspace == workspace),
+        "the question waits for the person: {asked:?}"
+    );
+    assert!(
+        workspaces.owns(&person, &workspace),
+        "nothing is deleted before a yes"
+    );
+    server.shutdown().await;
+}
+
+/// The host's page administration is its person's own: an agent's key asked to change a
+/// member's role through it is refused, whatever its certificate reaches.
+#[tokio::test]
+async fn an_agents_key_changes_no_members_role_through_the_hosts_administration() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let agent = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let request = tilo_server_protocol::workspaces::WorkspacesRequest::EditRoles {
+        workspace: home,
+        request_id: rand::random(),
+        change: tilo_action_policy::Change::SetRole {
+            person: hex::encode([9u8; 32]),
+            role: Role::Editor,
+        },
+    };
+    let refused = workspaces
+        .admit_page(&agent, &crate::service::local_caller(&agent), &request)
+        .await;
+    assert!(
+        refused.is_err(),
+        "an agent's key changes no member's role: {refused:?}"
+    );
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     let dir = tempfile::tempdir().unwrap();

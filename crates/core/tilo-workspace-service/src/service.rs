@@ -923,11 +923,12 @@ impl WorkspaceService {
     }
 }
 
-/// The caller an in-process device is to the service's [`WorkspaceService::actions`].
+/// The caller an in-process device is to the service's [`WorkspaceService::actions`]: its
+/// person, or the agent its certificate grants, as every host that admits a key builds it
+/// ([`tilo_peer_state::key_caller::caller_of_key_here`]).
 #[must_use]
 pub fn local_caller(cert: &DeviceCert) -> tilo_actions::remote::Caller {
-    tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
-        .in_process()
+    tilo_peer_state::key_caller::caller_of_key_here(cert).in_process()
 }
 
 /// Where an embedder whose router is built before any workspace is placed on it
