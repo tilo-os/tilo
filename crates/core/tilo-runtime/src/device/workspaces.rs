@@ -630,6 +630,12 @@ impl ServiceWorkspaces {
             .is_some_and(|copy| copy.member)
     }
 
+    /// Whether this device keeps `workspace` now: its member copy, or the workspace it governs
+    /// here. Read synchronously, as [`Self::holds`] is.
+    pub(crate) fn keeps_now(&self, workspace: WorkspaceId) -> bool {
+        self.copies().copy_now(workspace).is_some()
+    }
+
     /// Whether this device keeps `workspace`: its member copy, or the workspace founded here.
     pub(crate) async fn keeps(&self, workspace: WorkspaceId) -> bool {
         copy_of(self.copies(), workspace).await.is_some()

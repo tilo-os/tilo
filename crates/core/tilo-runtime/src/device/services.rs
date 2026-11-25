@@ -5794,7 +5794,7 @@ impl RuntimeActionProvider {
         // This device keeps the workspace itself: what its host keeps for the person is
         // answered here, by the provider its workspace service registered for it.
         if let Some(id) = WorkspaceId::parse(workspace)
-            && self.workspaces.holds(id)
+            && self.workspaces.keeps_now(id)
             && let Some(registered) = self
                 .workspaces
                 .copies()

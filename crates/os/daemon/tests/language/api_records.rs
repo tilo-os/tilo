@@ -420,7 +420,8 @@ fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
 /// beside it.
 #[test]
 fn keys_reading_a_workspace_list_its_runs_newest_first() {
-    host::run(|host| async move {
+    // Writer is the app the letters are written in: the device installs it to write them.
+    host::run_with(&["word-processor"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Jane Doe's agent");
         let reviewer = host.key("Reviewer's agent");
@@ -464,7 +465,7 @@ fn keys_reading_a_workspace_list_its_runs_newest_first() {
 /// device does not leave the workspace unable to run them.
 #[test]
 fn a_handed_workspace_runs_its_keys_commands_after_a_restart() {
-    host::run(|host| async move {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Ada's agent");
         terminal_runs(&agent, &workspace, "before-restart").await;

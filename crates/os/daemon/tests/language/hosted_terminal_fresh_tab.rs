@@ -32,7 +32,9 @@ fn genesis_of(bytes: &[u8]) -> Vec<automerge::ChangeHash> {
 /// its shell and founds the tab's record, so what the device writes there later merges.
 #[test]
 fn a_members_terminal_on_a_fresh_tab_gets_its_shell() {
-    host::run(|host| async move {
+    // The device runs Terminal, so its host serves the workspace's shells and founds the tab's
+    // session record.
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let workspace = host.workspace().to_owned();
         let laptop = host.member("laptop", &workspace).await;
 

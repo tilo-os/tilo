@@ -275,10 +275,18 @@ pub fn also_trace(layer: AlsoTraced) {
 /// directory's: what [`run`] does everywhere but in that process.
 fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     use std::os::unix::fs::PermissionsExt as _;
-    // A short path: the daemon's sockets are named below it.
+    // A short path: the launcher names its service sockets below this one, and a Unix socket's
+    // path has a small bound. The test environment's own temporary directory is deep enough to
+    // pass it, so this is made at the filesystem's root's temporary directory instead.
+    let short = std::path::Path::new("/tmp");
+    let base = if short.is_dir() {
+        short.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
     let root = tempfile::Builder::new()
         .prefix("tilo-h-")
-        .tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap())
+        .tempdir_in(base)
         .unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let place = |name: &str| {

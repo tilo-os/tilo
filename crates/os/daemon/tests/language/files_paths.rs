@@ -753,7 +753,8 @@ async fn asked(
 /// name the served workspace's own tree not at all.
 #[test]
 fn workspace_tree_requests_naming_another_workspace_are_refused() {
-    host::run(|host| async move {
+    // Writer's record is read as the app lays it out: the device installs it.
+    host::run_with(&["word-processor"], |host| async move {
         let served = host.workspace().to_owned();
         let other = host
             .daemon()
