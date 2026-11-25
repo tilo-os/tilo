@@ -92,9 +92,11 @@ fn headless_focus_order_enumerates_history_once() {
         crate::font_catalog::fixture_renderer(),
         crate::permissions::MemberId::person("fixture"),
     );
-    // The driver reads the order its last frame computed, so a frame is what recomputes it.
-    visits.set(0);
+    // A frame also reads History for its sync, routes and publication; the order's own
+    // recomputation is what is counted here.
     frame.relayout();
+    visits.set(0);
+    frame.app_mut().refresh_focus_order();
     let order = frame.focus_order();
     assert!(order.len() >= 2_000, "all live rows remain focusable");
     assert_eq!(visits.get(), 1, "one History enumeration per recomputation");

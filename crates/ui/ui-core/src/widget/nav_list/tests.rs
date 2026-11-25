@@ -1677,7 +1677,9 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
         bounds.width() + 0.5 >= finger && bounds.height() + 0.5 >= finger,
         "the button says where it is pressed: {bounds:?}"
     );
-    click_at(&mut h, target.x0 + 2.0, target.center().y);
+    // A finger presses it: a mouse's press would say the person took up a fine pointer, whose
+    // targets are the squares they paint.
+    h.tap_at(target.x0 + 2.0, target.center().y);
     assert_eq!(
         seen.borrow().as_slice(),
         [("folders".to_owned(), "new-folder".to_owned())]
