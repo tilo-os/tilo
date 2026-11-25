@@ -36,6 +36,12 @@ profile_env() {
   # and this device's key where TILO_IDENTITY_ROOT names: one identity for the
   # profile, not two.
   export TILO_IDENTITY_ROOT="$root/config/tilo/identity"
+  # The profile's own device daemon serves it by name. Unnamed, a daemon on Tilo
+  # OS is the system unit's, whose profile and sockets belong to the system's
+  # account, and this one, run as the guest's user, could keep neither. Named,
+  # its sockets are a private directory under $XDG_RUNTIME_DIR/tilo, and the
+  # CLI and the session started with this environment ask it there.
+  export TILO_RUNTIME_PROFILE="$root/daemon"
   # The profile's own bus answers no Secret Service, so its secrets (the
   # channels' group keys a sealed write needs among them) go to the sealed
   # file store a headless machine uses, as dist/dev/nested-session.sh and the
@@ -52,10 +58,33 @@ profile_env() {
 
 prepare() {
   local dir
-  for dir in runtime config data state cache home logs secrets; do
+  for dir in runtime config data state cache home logs secrets daemon; do
     mkdir -p "$root/$dir"
   done
-  chmod 700 "$root/runtime" "$root/secrets"
+  chmod 700 "$root/runtime" "$root/secrets" "$root/daemon"
+}
+
+# The profile's device daemon, started once and kept for the profile's life: it
+# makes the person, and the session and every command the cycle runs in the
+# profile are its callers. Bounded: a daemon that never answers answers the
+# cycle's question nowhere.
+start_daemon() {
+  if [ -s "$root/daemon.pid" ] && kill -0 "$(<"$root/daemon.pid")" 2>/dev/null; then
+    return 0
+  fi
+  setsid "$(guest_bin tilo-runtime)" >> "$root/logs/daemon.log" 2>&1 < /dev/null &
+  printf '%s\n' "$!" > "$root/daemon.pid"
+  local socket
+  for _ in $(seq 1 360); do
+    for socket in "$XDG_RUNTIME_DIR"/tilo/profile-*/native.sock; do
+      [ -S "$socket" ] && return 0
+    done
+    kill -0 "$(<"$root/daemon.pid")" 2>/dev/null || break
+    sleep 0.5
+  done
+  tail -n 40 "$root/logs/daemon.log" >&2 || true
+  echo "the owner profile's daemon did not answer" >&2
+  return 1
 }
 
 start_bus() {
@@ -99,24 +128,13 @@ start_bus() {
 # its files sit in the tree the CLI and the session both read.
 mint_identity() {
   [ -f "$TILO_IDENTITY_ROOT/device-private/keypair.bin" ] && return 0
-  # A person is made by the device's daemon alone: it runs for the founding,
-  # then lets the device go to the session. Both are bounded: a login that
-  # waits on something answers the cycle's question nowhere.
-  local daemon made=0
-  setsid "$(guest_bin tilo-runtime)" >> "$root/logs/daemon.log" 2>&1 < /dev/null &
-  daemon=$!
-  for _ in $(seq 1 360); do
-    [ -S "$XDG_RUNTIME_DIR/tilo/native.sock" ] && break
-    sleep 0.5
-  done
+  # A person is made by the device's daemon alone. Bounded: a login that waits
+  # on something answers the cycle's question nowhere.
   timeout 180 "$tilo_bin" login --new-identity --name "plan cycle owner" \
-    > "$root/logs/identity.log" 2>&1 && made=1
-  kill -- "-$daemon" 2>/dev/null || true
-  wait "$daemon" 2>/dev/null || true
-  if [ "$made" != 1 ]; then
+    > "$root/logs/identity.log" 2>&1 || {
     tail -n 40 "$root/logs/identity.log" "$root/logs/daemon.log" >&2 || true
     return 1
-  fi
+  }
 }
 
 case "$mode" in
@@ -129,6 +147,7 @@ case "$mode" in
     if [ -s "$root/session.pid" ] && kill -0 "$(<"$root/session.pid")" 2>/dev/null; then
       exit 0
     fi
+    start_daemon
     mint_identity
     : > "$root/logs/session.log"
     setsid "$session_bin" --backend headless --size 1280x800 \
@@ -152,6 +171,10 @@ case "$mode" in
     if [ -s "$root/session.pid" ]; then
       kill -- "-$(cat "$root/session.pid")" 2>/dev/null || true
       rm -f "$root/session.pid"
+    fi
+    if [ -s "$root/daemon.pid" ]; then
+      kill -- "-$(cat "$root/daemon.pid")" 2>/dev/null || true
+      rm -f "$root/daemon.pid"
     fi
     ;;
   control)
