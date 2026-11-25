@@ -221,7 +221,7 @@ impl AppProcess {
 
 /// Where a grant that lets an app read `item` stands in `workspace`'s policy: what "Approve and
 /// grant" on an asked release writes, the release being addressed at the item.
-fn read_node(workspace: &str, item: &ItemRef) -> TreePath {
+pub(super) fn read_node(workspace: &str, item: &ItemRef) -> TreePath {
     TreePath::workspace(workspace)
         .app(person_vault::PROVIDER)
         .kind(person_vault::ITEM_KIND)
@@ -291,19 +291,62 @@ pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static
 }
 
 impl Workspaces {
-    /// Whether a grant of `workspace`'s lets `app` read `item`.
+    /// Whether a grant of `workspace`'s lets `app` read `item`, spending it where it was given
+    /// once.
     pub(super) async fn app_reads(&self, workspace: &str, app: &str, item: &ItemRef) -> bool {
+        self.app_granted(
+            workspace,
+            app,
+            &read_node(workspace, item),
+            ActionKind::Read,
+        )
+        .await
+    }
+
+    /// Whether a grant of `workspace`'s lets `app`, acting by itself, take an action of `kind` at
+    /// `node`. A grant given for one use ([`tilo_action_policy::Lifetime::Once`]) that the answer
+    /// rests on is taken back as it is used, so the next use is asked again.
+    pub(super) async fn app_granted(
+        &self,
+        workspace: &str,
+        app: &str,
+        node: &TreePath,
+        kind: ActionKind,
+    ) -> bool {
         let Some(policy) = self.policy_of(workspace).await else {
             return false;
         };
         let decision = decide(
             policy.grants.iter(),
             &[Grantee::app(app)],
-            &read_node(workspace, item),
-            ActionKind::Read,
+            node,
+            kind,
             &Context::at(tilo_clock::unix_now_ms()),
         );
-        decision.answer == Answer::Allow && decision.grant().is_some()
+        let Some(grant) = decision
+            .grant()
+            .filter(|_| decision.answer == Answer::Allow)
+        else {
+            return false;
+        };
+        if grant.lifetime == tilo_action_policy::Lifetime::Once {
+            let change = tilo_action_policy::Change::Revoke(grant.id.clone());
+            if let Err(error) = self
+                .commit_own_change(
+                    workspace,
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                        change,
+                    },
+                    None,
+                )
+                .await
+            {
+                // A use given once that cannot be taken back is not taken.
+                tracing::warn!(app, %error, "a grant given once could not be taken back");
+                return false;
+            }
+        }
+        true
     }
 
     /// Vouch that `process` is `app`'s held connection in `workspace`, on this device, and that

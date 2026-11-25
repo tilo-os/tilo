@@ -69,9 +69,7 @@ use std::path::Path;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{
-    ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy, decide,
-};
+use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;
@@ -1350,17 +1348,13 @@ impl Workspaces {
         item: &ItemId,
         places: &[Place],
     ) -> bool {
-        let Some(policy) = self.policy_of(workspace).await else {
-            return false;
-        };
-        let decision = decide(
-            policy.grants.iter(),
-            &[Grantee::app(app)],
+        self.app_granted(
+            workspace,
+            app,
             &use_node(workspace, target, item, places),
             ActionKind::Outside,
-            &Context::at(tilo_clock::unix_now_ms()),
-        );
-        decision.answer == Answer::Allow && decision.grant().is_some()
+        )
+        .await
     }
 
     /// Ask `app`'s person whether it may call the service `call` names with `item`, as an asked

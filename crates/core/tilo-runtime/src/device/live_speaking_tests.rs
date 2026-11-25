@@ -14,6 +14,7 @@ use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
 
 const GRANTED_JOIN_TEST: &str = "device::live_speaking::tests::an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_key";
+const ONCE_JOIN_TEST: &str = "device::live_speaking::tests::a_join_given_once_joins_the_call_once";
 const SHELL_ENDED_TEST: &str =
     "device::live_speaking::tests::a_shell_that_ends_leaves_the_person_out_of_the_call";
 
@@ -255,6 +256,83 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
     for line in lines.lock().unwrap().iter() {
         assert!(!line.contains("key"), "{line}");
     }
+}
+
+/// A join given once ([`tilo_action_policy::Lifetime::Once`]) admits the app's join once: the
+/// device's dispatch spends the grant as it admits the call, and the app's next join is decided
+/// afresh and refused.
+#[test]
+fn a_join_given_once_joins_the_call_once() {
+    let Some(root) = isolated_root(ONCE_JOIN_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().expect("the person's workspace");
+    let id = WorkspaceId::parse(&workspace).expect("a workspace id");
+    let live = Arc::clone(daemon.live().expect("the daemon runs its live session"));
+    until(
+        "the daemon taking part in its workspace's live session",
+        || live.call_session(id).is_some(),
+    );
+    let session = live.call_session(id).unwrap();
+    let _entered = tilo_rt::app().handle().enter();
+    let at = crate::seats::AppAt {
+        app: APP.to_owned(),
+        workspace: workspace.clone(),
+        pid: std::process::id(),
+    };
+    let lane = || {
+        let out = Arc::new(|_: String| {}) as tilo_live::app_call::Out;
+        tilo_live::app_call::AppLane::new(daemon.app_call_setup(&at), out)
+    };
+
+    let person = hex::encode(live.person());
+    let once = tilo_action_policy::Grant::new(
+        "discord-joins-once",
+        tilo_action_policy::Grantee::app(APP),
+        tilo_action_policy::TreePath::workspace(&workspace).app(super::PROVIDER),
+        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person),
+    )
+    .with_lifetime(tilo_action_policy::Lifetime::Once);
+    tilo_rt::app()
+        .block_on(live.workspaces().copies().commit_own_change(
+            &workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(once),
+            },
+            None,
+        ))
+        .expect("the runtime runs the change")
+        .expect("the owner's grant is committed");
+
+    let first = lane();
+    let joined = result_of(first.take(&carry(1)));
+    assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
+    assert_eq!(
+        session.speaker().call().map(|call| call.call.channel),
+        Some(CALL.to_owned()),
+        "the join given once is taken"
+    );
+    until("the grant given once spent", || {
+        tilo_rt::app()
+            .block_on(live.workspaces().copies().policy_of(&workspace))
+            .expect("the runtime reads the policy")
+            .is_some_and(|policy| {
+                !policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id.as_str() == "discord-joins-once")
+            })
+    });
+    drop(first);
+
+    let refused = result_of(lane().take(&carry(2)));
+    assert!(
+        refused.pointer("/Err/Refused/reason").is_some(),
+        "the next join is decided afresh and refused: {refused}"
+    );
 }
 
 /// The connection the daemon serves an app it started at `at`, as the line wire's client the

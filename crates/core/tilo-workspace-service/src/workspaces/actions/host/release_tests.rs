@@ -1294,3 +1294,62 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
         assert!(files_holding(dir.path(), secret.as_bytes()).is_empty());
     }
 }
+
+/// A read given once ([`tilo_action_policy::Lifetime::Once`]) releases the item once: the grant
+/// is taken back as it is used, and the next release asks the person again.
+#[tokio::test]
+async fn a_read_given_once_releases_the_item_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let token = kept(&service, workspace_id, &owner, (GATEWAY, TOKEN)).await;
+    workspaces.run_connections(Arc::new(Bridge));
+    takes_turn_in(
+        workspaces,
+        &workspace,
+        &Turn::connection(BRIDGE, Vec::new()),
+        AT_ONCE,
+    )
+    .await
+    .expect("this device takes the bridge's connection");
+    let connection = AppProcess::connection(BRIDGE);
+
+    let once = tilo_action_policy::Grant::new(
+        "bridge-reads-once",
+        tilo_action_policy::Grantee::app(BRIDGE),
+        release::read_node(&workspace, &token),
+        tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Read),
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
+    )
+    .with_lifetime(tilo_action_policy::Lifetime::Once);
+    workspaces
+        .put_workspace_grants(&workspace, &owner, [0x71; 32], vec![once])
+        .await
+        .expect("the person's grant is written");
+
+    let released: Released = workspaces
+        .release_to((BRIDGE, &workspace), &connection, &release_of(&token))
+        .await
+        .expect("the read given once releases the item");
+    assert_eq!(released.secret, TOKEN);
+    let policy = workspaces.policy_of(&workspace).await.unwrap();
+    assert!(
+        !policy
+            .grants
+            .iter()
+            .any(|grant| grant.id.as_str() == "bridge-reads-once"),
+        "the grant is spent by its one use"
+    );
+    assert_eq!(
+        refusal(
+            workspaces
+                .release_to((BRIDGE, &workspace), &connection, &release_of(&token))
+                .await
+        ),
+        release::asked_first(BRIDGE),
+        "the next release asks again"
+    );
+}
