@@ -133,6 +133,18 @@ tilo_test_env::scenario! {
             Some("Three"),
             "the bar shows what arrived, not what it showed"
         );
+        // What the bar keeps in its closed More menu stands nowhere: a reader, an agent and a
+        // press by name find no control for it until the menu is open.
+        let names: Vec<_> = h
+            .controls()
+            .into_iter()
+            .filter_map(|control| control.name)
+            .collect();
+        assert!(
+            names.iter().any(|name| name == "Three")
+                && !names.iter().any(|name| name == "Five" || name == "Six"),
+            "the closed menu's actions are no controls: {names:?}"
+        );
     }
 
     phase every_column_title_changes_in_place_and_a_bound_title_follows_its_state;

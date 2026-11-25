@@ -149,9 +149,12 @@ impl NavShell {
 
     /// What the host meets for `part`: the part, or a stand-in while its
     /// push screen is not in front, so a walk that pairs children with the
-    /// tree's nodes never reaches an inert column.
+    /// tree's nodes never reaches an inert column. An action the row folded
+    /// into its More menu is a stand-in too: it stands nowhere on screen, so
+    /// a reader, an agent and the window's controls meet it only as the
+    /// menu's item while the menu is open.
     pub(super) fn exposed(&self, part: Part) -> Option<&dyn Widget> {
-        if self.part_inert(part) {
+        if self.part_inert(part) || self.part_hidden(part) {
             return Some(&INERT_PART);
         }
         self.part(part)
