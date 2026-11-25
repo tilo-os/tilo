@@ -290,9 +290,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "view-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-runtime) and binary(it) and "
-                  "(test(app_views::) or test(keeping_pages::) or test(chat::) or "
-                  "test(hosted_turns::))",
+                [("package(tilo-daemon) and binary(it) and "
+                  "(test(language::app_views::) or test(language::keeping_pages::) or "
+                  "test(language::chat::) or test(language::hosted_turns::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the apps whose views its tests lay out",
             )
@@ -327,9 +327,10 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                      "lounge-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "test(node_workspace::)": "page-bundle",
-                                 "package(tilo-runtime) and binary(it) and "
-                                 "(test(app_views::) or test(keeping_pages::) or "
-                                 "test(chat::) or test(hosted_turns::))":
+                                 "package(tilo-daemon) and binary(it) and "
+                                 "(test(language::app_views::) or "
+                                 "test(language::keeping_pages::) or test(language::chat::) or "
+                                 "test(language::hosted_turns::))":
                                      "view-siblings",
                                  # The values only some packages' tests need, for those packages:
                                  # given to the run's environment, each would key every build
@@ -338,8 +339,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-test-env)": "swtpm",
                                  "package(tilo-pdf) or "
                                  "package(tilo-thumbnail)": "pdf-sandbox",
-                                 "package(tilo-runtime) and binary(it) and "
-                                 "test(throughput::)": "throughput"})
+                                 "package(tilo-daemon) and binary(it) and "
+                                 "test(language::throughput::)": "throughput"})
 
     def test_the_deep_profile_gives_its_tests_more_property_cases(self) -> None:
         # t.toml's `test-deep` tests its packages with more proptest cases, through a profile of
