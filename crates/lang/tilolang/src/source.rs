@@ -576,13 +576,20 @@ fn compile_in_order_as(
             .iter()
             .find(|(of, _)| source.header().0.as_deref() == Some(of.as_str()))
             .map(|(_, id)| id.as_str());
-        let compiled =
+        let mut compiled =
             compile_package_source_for(&source, &ids, &imports, app, rng).map_err(|diags| {
                 BuildError::Diagnostics {
                     dir: dir.clone(),
                     diags,
                 }
             })?;
+        // A package compiled as another id is still the package its sources declare: what imports
+        // it names that id, and finds it under the one it runs as.
+        if let Some(declared) = source.header().0.as_deref()
+            && app.is_some_and(|app| app != declared)
+        {
+            compiled.meta.previously.push(declared.to_owned());
+        }
         out.push(BuiltPackage {
             dir,
             source,

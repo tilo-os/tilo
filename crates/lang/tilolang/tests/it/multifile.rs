@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use tilolang::cli::format_package;
 use tilolang::source::{
-    BuildError, Stamp, catalogue_path, compile_dirs, compile_package, dependency_order,
-    ids_current, search_of,
+    BuildError, Stamp, catalogue_path, compile_dirs, compile_package, compile_package_for,
+    dependency_order, ids_current, search_of,
 };
 use tilolang::{Compiled, Diagnostic, IdsLock, PackageSource, SeededEntropy};
 
@@ -985,4 +985,59 @@ view main(n: Notebook) {
 
 fn names<'a>(items: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
     items.collect()
+}
+
+/// A package compiled as another id — a development build's, which is the device's own — is still
+/// the package its sources declare to what imports it: `use` names the declared id and finds the
+/// module under the id it runs as.
+#[test]
+fn a_package_compiled_as_another_id_is_importable_by_the_one_its_sources_declare() {
+    let scratch = Scratch::new("compiled-as");
+    scratch.package(
+        "dep",
+        &[(
+            "app.tl",
+            "app so.test.dep \"Dep\"\n\ntype Thing {\n    value: Int merge counter\n}\n",
+        )],
+    );
+    let app = scratch.package(
+        "app",
+        &[(
+            "app.tl",
+            "app so.test.sample \"App\"\n\nuse so.test.dep as dep\n\nview shown(d: dep.Thing) {\n    text(\"{d.value}\")\n}\n",
+        )],
+    );
+    let compile_as = [
+        (
+            "so.test.dep".to_owned(),
+            "so.test.dep.dev.0123456789abcdef".to_owned(),
+        ),
+        (
+            "so.test.sample".to_owned(),
+            "so.test.sample.dev.0123456789abcdef".to_owned(),
+        ),
+    ];
+    let built = compile_package_for(
+        &app,
+        std::slice::from_ref(&scratch.0),
+        &[],
+        &compile_as,
+        &mut SeededEntropy(0),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let dep = built
+        .iter()
+        .find(|built| built.dir.ends_with("dep"))
+        .expect("the dependency is compiled");
+    assert_eq!(dep.compiled.meta.app, "so.test.dep.dev.0123456789abcdef");
+    assert_eq!(
+        dep.compiled.meta.previously,
+        ["so.test.dep".to_owned()],
+        "the id its sources declare, which imports it by"
+    );
+    assert_eq!(
+        built.last().map(|built| built.compiled.meta.app.as_str()),
+        Some("so.test.sample.dev.0123456789abcdef"),
+        "the app itself is the id it runs as"
+    );
 }
