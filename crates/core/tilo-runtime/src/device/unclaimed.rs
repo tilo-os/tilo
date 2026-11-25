@@ -122,7 +122,7 @@ impl Founding {
         })?;
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
-            let ticket = tickets.issue_as_person(person, kind).await?;
+            let ticket = tickets.issue_first(person, kind).await?;
             let ticket = ticket.get("ticket").cloned().unwrap_or(Value::Null);
             issued.push(serde_json::json!({ "kind": kind, "ticket": ticket }));
         }

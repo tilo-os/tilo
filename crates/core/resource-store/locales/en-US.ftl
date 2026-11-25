@@ -5,6 +5,7 @@ tilo-app-history-edit-redo = Redo
 tilo-app-history-edit-restore = Restore version
 tilo-app-history-edit-restore-reviewed = Restore reviewed items
 tilo-app-history-edit-checkpoint = Checkpoint
+tilo-app-history-edit-name = Name changes
 tilo-app-history-history = History
 tilo-app-history-diff = Compare versions
 tilo-app-history-review-restore = Review restoration

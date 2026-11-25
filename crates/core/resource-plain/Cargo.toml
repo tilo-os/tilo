@@ -16,6 +16,10 @@ path = "src/lib.rs"
 # A leaf: the toolkit reads these without Tilo's model, and `tilo-resource` publishes them.
 [dependencies]
 serde.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32: an app's model
+# module links this crate, and the hack's `getrandom/wasm_js` breaks its custom backend.
 workspace-hack = { version = "0.1" }
 
 [lints]

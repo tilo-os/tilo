@@ -1,6 +1,7 @@
 //! Built-in screen reader. Narrates the semantic tree ([`crate::a11y::AccessNode`])
 //! through an offline TTS stack.
 
+pub use settings_model::accessibility::ScreenReaderSettings;
 use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance};
 
 use vello::kurbo::Point;
@@ -386,8 +387,8 @@ impl ScreenReader {
         self.speaker.set_voice(voice);
     }
 
-    /// Speak at the rate and in the voice the person chose in Settings.
-    pub fn configure(&mut self, settings: &settings_store::accessibility::ScreenReaderSettings) {
+    /// Speak at the rate and in the voice the person chose in Settings ([`settings`]).
+    pub fn configure(&mut self, settings: &ScreenReaderSettings) {
         self.set_rate(settings.rate);
         if let Some(voice) = settings.voice.engine_voice() {
             self.set_voice(voice);
@@ -796,6 +797,15 @@ fn widget_reading_order(root: &dyn Widget) -> Vec<ReadingItem> {
         .into_iter()
         .map(|node| ReadingItem { id: None, node })
         .collect()
+}
+
+/// The screen reader as the person set it up in this process's settings: off, at the engine's
+/// rate and in the system voice where there are none.
+#[must_use]
+pub fn settings() -> ScreenReaderSettings {
+    ScreenReaderSettings::from_section(&crate::settings_source::load_section(
+        settings_model::accessibility::SECTION,
+    ))
 }
 
 #[cfg(test)]

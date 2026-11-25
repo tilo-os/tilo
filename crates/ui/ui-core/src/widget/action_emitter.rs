@@ -76,6 +76,19 @@ impl<I> ActionEmitter<I> {
         Ok(())
     }
 
+    /// Queues a person's press on a control whose action is not available to them: the dispatch
+    /// refuses it and says why, where a dropped press would leave them guessing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `input` cannot be encoded against the action's
+    /// declared parameter contract.
+    pub fn press_refused(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
+        let invocation = self.binding.invoke(input)?;
+        let _ = self.pending.emit(invocation);
+        Ok(())
+    }
+
     pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending.take()
     }
@@ -85,8 +98,13 @@ impl<I> ActionEmitter<I> {
     }
 
     pub fn refresh_availability(&mut self, allowed: &HashSet<tilo_actions::ActionAddress>) {
-        self.available = allowed.contains(self.binding.address());
-        if !self.available {
+        let was = std::mem::replace(
+            &mut self.available,
+            allowed.contains(self.binding.address()),
+        );
+        // What was asked while it could run is withdrawn with it; a refused press stays for the
+        // dispatch to say why.
+        if was && !self.available {
             self.pending.clear();
         }
     }

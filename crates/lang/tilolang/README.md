@@ -456,6 +456,19 @@ another time. Its action takes the record (`ring(r)`) or a root (`root Board`) a
 The workspace's origin runs them: once per period or instant across the workspace's devices, once
 for a period or time that passed while every device was off, and never by polling.
 
+An `at` trigger whose moment belongs to one device says so with `on` and a `Text` field of the
+record holding that device's id, empty for every device of the person's:
+
+```
+trigger alarm_rings(a: Alarm) at a.at on a.rings_on: ring_alarm(a)
+```
+
+Each device named arms its own wakeup for the instant, showing what the action tells there, so an
+alarm rings on a phone that is offline or asleep. The origin still runs the trigger once, and a
+device that rang it already does not show the same notice again when it arrives. The action of
+such a trigger may use `notify` and `time` only (E149): the device runs it ahead to learn what it
+tells, and takes that run back.
+
 **Effects.** An action whose body reads what a replay cannot compute again says so:
 `uses time` after its parameters, comma-separated when it reads more (`uses web, random`).
 Reading the clock or the person's zone anywhere in the body — `now`, `today`, a time of no

@@ -1104,6 +1104,14 @@ pub fn android_manifest(
         android:version="0x401000" android:required="true" />
 
 {permissions}
+    <!-- A notification the app arms for later rings as an alarm at its moment
+         (TiloAlarms, AlarmManager.setAlarmClock), full screen, and is armed again after a
+         reboot. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- TextToSpeech binds the engine by this action, which API 30's package visibility hides
          unless it is queried. -->
     <queries>
@@ -1139,6 +1147,16 @@ pub fn android_manifest(
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Rings the notifications the app armed for later, and arms them again after a
+             reboot. -->
+        <receiver
+            android:name="so.tilo.android.TiloAlarms"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- "Open with": serves only descriptors the app shared, read-only, to the app granted
              the one URI. -->
@@ -3052,6 +3070,11 @@ type = "gui"
             assert!(!without.contains("DOCUMENTS_PROVIDER"));
             assert!(xml.contains("android.permission.POST_NOTIFICATIONS"));
             assert!(!xml.contains("android.permission.INTERNET"));
+            assert!(
+                xml.contains(r#"android:name="so.tilo.android.TiloAlarms""#),
+                "the app's alarms ring through their receiver"
+            );
+            assert!(xml.contains("android.permission.USE_EXACT_ALARM"));
             // No push reaches an app that did not declare it, and an app that did takes its
             // distributor's messages and taps.
             assert!(!xml.contains("so.tilo.android.TiloPush"));

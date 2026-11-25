@@ -313,9 +313,9 @@ impl Departures {
                 });
             }
         }
-        let hold = departure();
+        let kept_for = departure();
         self.leaving
-            .retain(|_, left| now.saturating_duration_since(left.since) < hold);
+            .retain(|_, left| now.saturating_duration_since(left.since) < kept_for);
         let control = control.map(Self::control_of);
 
         // What each live window reads now, and what a window opening now was asked for from.
@@ -324,12 +324,12 @@ impl Departures {
         let rows = &reading.rows;
         let places = &reading.places;
         for (index, strip) in reading.strips.iter_mut().enumerate() {
-            let held = was.get(&strip.key);
-            let control = held.map_or_else(
+            let previous = was.get(&strip.key);
+            let control = previous.map_or_else(
                 || control.clone().unwrap_or_default(),
-                |held| held.control.clone(),
+                |previous| previous.control.clone(),
             );
-            let since = held.map_or(now, |held| held.since);
+            let since = previous.map_or(now, |previous| previous.since);
             // Only a window that just opened is drawn coming out of its control: a frame a
             // rebuild replaces later grows where it stands, as every window's does.
             strip.control = if now.saturating_duration_since(since) < arrival() {
@@ -373,19 +373,20 @@ impl Departures {
             strip.leaving = true;
             // Its frame goes back into the control the person opened it from, however long ago
             // that was.
-            strip.control = left.was.control.clone();
+            strip.control.clone_from(&left.was.control);
             let at = left.was.index.min(reading.strips.len());
             reading.strips.insert(at, strip);
-            let mut place_at = reading
+            let place_at = reading
                 .places
                 .iter()
                 .position(|place| place.strip == left.was.strip.key)
                 .unwrap_or(reading.places.len());
-            for place in &left.was.places {
+            for (offset, place) in left.was.places.iter().enumerate() {
                 let mut place = place.clone();
                 place.leaving = true;
-                reading.places.insert(place_at, place);
-                place_at += 1;
+                reading
+                    .places
+                    .insert(place_at.saturating_add(offset), place);
             }
             if !reading.rows.iter().any(|row| row.key == left.was.row.key) {
                 let at = left.was.row_index.min(reading.rows.len());

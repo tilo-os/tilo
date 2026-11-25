@@ -2660,6 +2660,7 @@ impl<P: Chained> Chain<P> {
                 by: None,
                 to: None,
                 step: None,
+                chosen: None,
             },
         };
         let undone = self

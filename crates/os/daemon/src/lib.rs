@@ -39,6 +39,9 @@ pub fn capabilities() -> Capabilities {
         radio_wakes: Some(os_actions::network_wake::wifi_magic_packet),
         #[cfg(not(target_os = "linux"))]
         radio_wakes: None,
+        // A computer's session shows an app's moment as the notice the workspace sends; the
+        // daemon of an app that runs it in its own process (a phone's) mounts the platform's.
+        alarms: None,
     }
 }
 

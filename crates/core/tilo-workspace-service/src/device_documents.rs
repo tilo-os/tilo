@@ -142,6 +142,16 @@ impl DeviceDocuments for ServiceDocuments {
         };
         workspaces.held_workspaces()
     }
+
+    fn member_changes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_peer_state::workspace_documents::MemberChange>, String> {
+        self.0
+            .copies()
+            .ok_or("this device's workspace service holds no workspaces")?
+            .member_changes(workspace)
+    }
 }
 
 /// [`DeviceWrites`] over the service's own copy of the workspaces it holds: what a device's own

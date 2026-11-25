@@ -50,6 +50,8 @@ tilo-paths.workspace = true
 tilo-seal = { path = "../tilo-seal" }
 tilo-secrets.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+# Where this device is, read here and answered as the device's own action (src/device/location.rs).
+tilo-location = { path = "../../platform/tilo-location" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }

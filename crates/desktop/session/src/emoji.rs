@@ -6,9 +6,10 @@
 //! one place the session writes text the person did not type — commits each pick through the
 //! compositor's text input, and says where the focused field's caret stands so the card opens
 //! against it.
-//! How often each emoji was used is the toolkit's own, kept on the device ([`ui::emoji_catalogue`]):
-//! the card counts a pick as it is made, and a field that keeps its content secret takes that
-//! count back.
+//! How often each emoji was used is the toolkit's own, kept in the person's settings resource
+//! ([`ui::emoji_catalogue`]): the card counts a pick as it is made, and a field that keeps its
+//! content secret takes that count back. It is the person's, so every device of theirs opens the
+//! picker with the emoji they use most, not with what one machine happened to see.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -37,10 +38,41 @@ pub(crate) struct Emoji {
     pending: RefCell<Option<Pending>>,
 }
 
+/// How often a person used each emoji, kept in their settings: the record every device of theirs
+/// reads and writes, in place of a file on one machine.
+struct PersonUses;
+
+impl ui::emoji_catalogue::UsesStore for PersonUses {
+    fn load(&self) -> Vec<ui::emoji_catalogue::Used> {
+        settings_store::source()
+            .and_then(|source| settings_store::emoji::used(&source.load()))
+            .and_then(|used| {
+                serde_json::from_str(&used)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the emoji the person used do not read; counted afresh");
+                    })
+                    .ok()
+            })
+            .unwrap_or_default()
+    }
+
+    fn save(&self, used: &[ui::emoji_catalogue::Used]) {
+        let Ok(used) = serde_json::to_string(used) else {
+            return;
+        };
+        let origin = settings_store::ChangeOrigin::local("emoji.used");
+        tilo_failure::ignored!(
+            "the picker's emoji counts are a convenience: a write that does not reach the \
+             person's settings leaves them as they were, and the next pick writes again",
+            settings_store::emoji::keep(&used, &origin).ok()
+        );
+    }
+}
+
 impl Emoji {
-    /// Mount the card's session half, keeping how often emoji were used on this device.
+    /// Mount the card's session half, keeping the emoji's counts in the person's settings.
     pub(crate) fn mount() -> Self {
-        ui::emoji_catalogue::keep_uses_on_the_device();
+        ui::emoji_catalogue::keep_uses_in(Box::new(PersonUses));
         Self {
             link: EmojiLink::default(),
             pending: RefCell::new(None),
@@ -122,5 +154,38 @@ impl Emoji {
                 .find(|display| display.contains(caret.center()))
         });
         EmojiPlace { viewport, caret }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The picker's recents are the person's settings: what one device's settings say is what
+    /// every device's picker opens with, and a pick is written back there rather than to a file
+    /// on this machine.
+    #[test]
+    fn the_pickers_recents_are_the_persons_settings() {
+        let held = serde_json::Map::from_iter([(
+            settings_store::emoji::SECTION.to_owned(),
+            serde_json::json!({ "recent": ["🎉"] }),
+        )]);
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(held, |_| Ok(())));
+        let _scoped =
+            settings_store::scoped_source(Some(std::sync::Arc::clone(&source)
+                as std::sync::Arc<dyn settings_store::SettingsSource>));
+        ui::emoji_catalogue::keep_recents_in(Box::new(PersonRecents));
+        assert_eq!(
+            ui::emoji_catalogue::recents(),
+            ["🎉"],
+            "the picker reads the settings, not this device's own list"
+        );
+
+        ui::emoji_catalogue::record_recent("🚀");
+        assert_eq!(
+            settings_store::emoji::recent(&source.load()),
+            ["🚀", "🎉"],
+            "a pick is written to the person's settings, newest first"
+        );
     }
 }

@@ -37,6 +37,9 @@ pub mod compare;
 pub mod descriptions;
 pub mod detail;
 pub mod digest;
+/// The history verbs on a document without app types.
+pub mod document_edit;
+pub use document_edit::DocumentHistoryEdit;
 pub mod facets;
 /// A folder's own changes, read from the documents of the tree its files are.
 pub mod folder;

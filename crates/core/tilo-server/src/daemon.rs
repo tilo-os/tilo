@@ -907,9 +907,10 @@ impl Server {
 
     /// Tell the host that the device `cert` certifies is an agent: verify
     /// its root-signed delegation against the person it acts for and confine the
-    /// device to the delegated workspaces from its next envelope on, then put it
-    /// on the roster of each workspace this server governs that the delegation
-    /// names, as an approved grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
+    /// device to the delegated workspaces from its next envelope on, then have
+    /// the agent, signing with `signer`, write its own row on the member list of each
+    /// workspace this server governs that the delegation names, as an approved
+    /// grant does ([`crate::workspaces::Workspaces::reconcile_agent`]).
     /// Once this returns, those workspaces admit it. Replaces an earlier
     /// delegation of the same device.
     ///
@@ -926,15 +927,21 @@ impl Server {
     )]
     pub async fn register_agent(
         &self,
-        cert: &tilo_user_identity::DeviceCert,
+        (cert, signer): (
+            &tilo_user_identity::DeviceCert,
+            &dyn collab_types::signer::DeviceSigner,
+        ),
         delegation: tilo_server_protocol::delegation::Delegation,
     ) -> Result<(), String> {
         register_agent_in(&self.web.server.agents, cert, &delegation)?;
+        // Only a build with agents lists them in workspaces, where the agent signs its own row.
+        #[cfg(not(feature = "agents"))]
+        let _ = signer;
         // The governed workspaces it names put it on their rosters.
         #[cfg(feature = "agents")]
         if let Some(workspaces) = self.workspaces() {
             workspaces
-                .reconcile_agent(cert.device_public_key, Some(cert))
+                .reconcile_agent(cert.device_public_key, Some((cert, signer)))
                 .await;
         }
         Ok(())

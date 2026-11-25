@@ -124,6 +124,9 @@ pub struct TriggerInfo {
     pub ty: String,
     pub args: Vec<TriggerArg>,
     pub when: TriggerWhen,
+    /// The `Text` field naming the device the action's effect lands on (`on t.device`): empty in
+    /// a record means every device of the person's.
+    pub device: Option<FieldId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -632,6 +635,7 @@ impl Env {
                 on: None,
                 key: a.key.clone(),
                 group: a.group.clone(),
+                export: a.export.clone(),
                 did: a.did.clone(),
                 did_many: a.did_many.clone(),
                 search: a.search.clone(),
@@ -2002,7 +2006,7 @@ impl Resolver<'_> {
             };
             let present = match item {
                 Item::Action(a) => {
-                    let mut p = self.presentation(a, &params);
+                    let mut p = self.presentation(a, &params, &result);
                     if a.presents_state() {
                         match params.first() {
                             Some(target) => {
@@ -2276,7 +2280,12 @@ impl Resolver<'_> {
         })
     }
 
-    fn presentation(&mut self, a: &ast::ActionDecl, params: &[ParamInfo]) -> Presentation {
+    fn presentation(
+        &mut self,
+        a: &ast::ActionDecl,
+        params: &[ParamInfo],
+        result: &Ty,
+    ) -> Presentation {
         let target = params.first().and_then(|p| match &p.ty {
             Ty::Record(key) => self.env.type_info(key).cloned(),
             _ => None,
@@ -2292,6 +2301,7 @@ impl Resolver<'_> {
             on: None,
             key: None,
             group: None,
+            export: None,
             did: None,
             did_many: None,
             search: None,
@@ -2372,6 +2382,38 @@ impl Resolver<'_> {
                     "E090",
                     opt.value.span,
                     "`group:` takes the run's name in quotes, without `{ }`: `group: \"Reply\"`",
+                ),
+                // `export: "Markdown"`: the format this action writes its resource in. The system's
+                // one Export… lists each format an app publishes, and saves the file the action
+                // answers, so the action takes the resource and answers a `File`.
+                ("export", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    let said = plain_text(&opt.value).unwrap_or_default();
+                    if said.trim().is_empty() {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`export:` names the format the action writes, as the person reads it: `export: \"Markdown\"`",
+                        );
+                    } else if !matches!(result, Ty::File) {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "an export action answers a file: `action export_markdown(n: Note) -> File (export: \"Markdown\")`",
+                        );
+                    } else if params.is_empty() {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "an export action takes the resource it exports as its first parameter: `export_markdown(n: Note)`",
+                        );
+                    } else {
+                        out.export = Some(said);
+                    }
+                }
+                ("export", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`export:` takes the format in quotes, without `{ }`: `export: \"Markdown\"`",
                 ),
                 // `did: "moved this"`: what the action did, said after who did it ("Ana moved this").
                 ("did", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
@@ -2468,7 +2510,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:`, `opens:`, `shows:`, `takes:` and `settles:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `export:`, `did:`, `search:`, `opens:`, `shows:`, `takes:` and `settles:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

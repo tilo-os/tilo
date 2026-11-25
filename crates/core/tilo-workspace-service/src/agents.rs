@@ -235,24 +235,9 @@ impl WorkspaceActionProvider {
         self
     }
 
-    fn serve(
-        &self,
-        caller: &Caller,
-        mut message: RemoteActionMessage,
-    ) -> Pending<RemoteActionMessage> {
+    fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
         // What a tool call asks of the workspace's action service is counted for its step.
         let asking = steps::asking(&message);
-        // What the agent asks of the workspace it asks under its own key.
-        if let RemoteActionMessage::Invoke(request) = &mut message
-            && let Err(reason) = self.actions.sign_for(self.workspace, caller, request)
-        {
-            return Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
-                invocation: request.invocation,
-                status: ReceiptStatus::Rejected {
-                    error: ActionCallError::Refused { reason },
-                },
-            }));
-        }
         let answer = self.actions.serve(caller, message).unwrap_or_else(|| {
             Pending::ready(RemoteActionMessage::CatalogueResponse {
                 correlation: 0,
@@ -300,6 +285,16 @@ impl ActionProvider for WorkspaceActionProvider {
             if context.purpose.is_none() {
                 context.purpose = Some(purpose.clone());
             }
+        }
+        // What the agent asks, of the workspace or of a provider the turn answers itself, it asks
+        // under its own key, so what the call writes keeps the call the agent signed.
+        if let Err(reason) = self.actions.sign_for(self.workspace, caller, &mut request) {
+            return Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused { reason },
+                },
+            }));
         }
         if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
             && let Some(ended) = &self.ended
@@ -414,11 +409,8 @@ impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
     ) -> Searched {
         use tilo_actions::remote::search;
         let request = search::Query::request(InvocationId::new(), needle, within);
-        self.serve(caller, RemoteActionMessage::Invoke(request))
-            .map(|answer| match answer {
-                RemoteActionMessage::Receipt(receipt) => search::found(receipt),
-                _ => Err(unavailable()),
-            })
+        self.invoke(caller, request)
+            .map(|answer| answer.and_then(search::found))
     }
 }
 

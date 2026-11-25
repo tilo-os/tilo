@@ -281,12 +281,11 @@ impl Driver {
 
 // ---- the models a worker woke ----
 
-/// The queue of owner models a worker woke for the components this tree hosts, and the save status
-/// each owner was last told: what an idle host services between frames.
+/// The queue of owner models a worker woke for the components this tree hosts: what an idle host
+/// services between frames.
 #[derive(Default)]
 pub(super) struct OwnerWakes {
     queue: Option<crate::owner_wake::OwnerWakeQueue>,
-    told: HashMap<uuid::Uuid, crate::resource::ResourceSaveStatus>,
 }
 
 impl Driver {
@@ -325,14 +324,10 @@ impl Driver {
         }
         if batch.all_save_progress_only() {
             while let Some(work) = batch.front() {
-                let owner = work.registration();
-                let told = self.wakes.told.get(&owner);
-                if let Some(status) = crate::bound_dispatch::service_owner_save_progress(
+                if crate::bound_dispatch::service_owner_save_progress(
                     self.app.root_widget.as_mut(),
                     work,
-                    told,
                 )? {
-                    self.wakes.told.insert(owner, status);
                     self.surface.redraw.set(true);
                 }
                 batch.complete_front();
@@ -634,9 +629,13 @@ impl<'a> Walk<'a> {
         });
         composed.focusable = widget.is_focusable();
         composed.appears_from = widget.appears_from().map(|point| [point.x, point.y]);
-        if pictured
-            || children.is_empty()
-                && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect)
+        // A live picture is decoded by the host that shows it: no still of the widget's paint is
+        // made for it, so a page carries the stream itself.
+        composed.live = widget.live_picture();
+        if composed.live.is_none()
+            && (pictured
+                || children.is_empty()
+                    && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect))
         {
             composed.picture = Some(Picture::default());
         }

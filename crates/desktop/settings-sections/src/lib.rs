@@ -12,6 +12,7 @@ pub mod continuity;
 pub mod control_hints;
 pub mod desktop;
 pub mod device_vpn;
+pub mod emoji;
 pub mod identity;
 #[cfg(any(test, feature = "test-support"))]
 pub mod in_memory;
@@ -243,6 +244,7 @@ sections!(
     desktop::SharedDisplayPrefs,
     desktop::AutomaticDisplayPrefs,
     desktop::PendingDisplayChange,
+    emoji::EmojiUses,
     osk::OskSourceSettings,
     device_vpn::DeviceVpnPrefs,
     identity::IdentityPrefs,

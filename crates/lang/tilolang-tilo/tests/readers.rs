@@ -122,6 +122,7 @@ fn agent(person: Option<&str>) -> Caller {
         actor: Actor::from(MemberId::agent("helper")),
         agent: true,
         on_behalf_of: person.map(str::to_owned),
+        handed: false,
         app: None,
     }
 }

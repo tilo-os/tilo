@@ -100,8 +100,23 @@ impl Feeds {
                 .map_err(|reason| ActionCallError::Unavailable {
                     reason: format!("the workspace's records are not read: {reason}"),
                 })?;
+        // The workspace's members are a part of its governance, not a document it lists: each
+        // change of them its governance names is a change of their resource.
+        let members =
+            reads
+                .member_changes(workspace)
+                .map_err(|reason| ActionCallError::Unavailable {
+                    reason: format!("the workspace's members are not read: {reason}"),
+                })?;
         let mut logs = self.logs.lock_recover();
         let log = logs.entry(workspace.to_owned()).or_default();
+        log.take_in_named(
+            &members_resource(),
+            &members
+                .into_iter()
+                .map(|change| (change.change, change.message, change.time))
+                .collect::<Vec<_>>(),
+        );
         // One read a record: the revision and the bytes it stands at are one answer.
         let held = std::cell::RefCell::new(None);
         log.take_in(
@@ -123,3 +138,15 @@ impl Feeds {
         Ok(page)
     }
 }
+
+/// The resource a workspace's members are: the Workspace package's `members` root, which every
+/// member reads.
+fn members_resource() -> DocumentKey {
+    (
+        tilo_action_policy::agent_answers::WORKSPACE_APP.to_owned(),
+        MEMBERS_RESOURCE.to_owned(),
+    )
+}
+
+/// The id of the resource a workspace's members are, as its package and every view name it.
+pub(crate) const MEMBERS_RESOURCE: &str = "workspace/members";

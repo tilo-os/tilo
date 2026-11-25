@@ -669,7 +669,7 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
     )
     .unwrap();
     t.server
-        .register_agent(&agent.cert, delegation)
+        .register_agent((&agent.cert, &agent.sk), delegation)
         .await
         .unwrap();
     // Registering the agent puts it on the roster of the workspace its delegation

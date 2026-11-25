@@ -1,12 +1,21 @@
 //! What settings are, as data: where a typed setting lives and how far it travels
 //! ([`Scope`], [`SettingsSchema`]), which kind of device reads it ([`DeviceClass`]), the names a
-//! theme is chosen by ([`theme`]) and the sections every app reads ([`text_assistance`]).
+//! theme is chosen by ([`theme`]), the sections every app reads ([`text_assistance`],
+//! [`appearance`], [`accessibility`], [`day_schedule`], [`control_hints`],
+//! [`personal_dictionary`]) and the document a host installs for its process to read
+//! ([`source`]).
 //!
-//! It holds no store and draws nothing, so it builds for WebAssembly: `settings-store` keeps the
-//! document, the toolkit reads and draws it.
+//! It keeps no file and draws nothing, so it builds for WebAssembly: `settings-store` keeps the
+//! person's document and its typed keys, the toolkit reads and draws it.
 
+pub mod accessibility;
+pub mod appearance;
+pub mod control_hints;
+pub mod day_schedule;
 mod device_class;
+pub mod personal_dictionary;
 mod schema;
+pub mod source;
 pub mod text_assistance;
 pub mod theme;
 

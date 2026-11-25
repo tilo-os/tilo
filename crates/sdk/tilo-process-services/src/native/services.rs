@@ -13,7 +13,8 @@
 //!   session's notifier (a host running apps on a foreign desktop reads the portal instead, with
 //!   the `host-portals` feature this SDK build leaves off);
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
-//! - location: `tilo_location::system()`;
+//! - location: none here; the device answers it as its own action, and a host that can ask
+//!   installs it with [`ProcessServices::with_location`];
 //! - screen capture: the XDG `ScreenCast` portal on Linux (with the `portal`
 //!   feature, which the SDK turns on only there).
 //!

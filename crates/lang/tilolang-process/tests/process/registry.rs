@@ -34,9 +34,13 @@ action look() -> Int {
 
 action poke(address: Text, arguments: json.Value) -> Text {
     let made = actions.call(address: address, arguments: arguments)
-    if made.status == .ended { "ended" }
-    else if made.status == .waiting { "waiting" }
-    else { made.status.label() }
+    if made.status == .ended {
+        "ended"
+    } else if made.status == .waiting {
+        "waiting"
+    } else {
+        made.status.label()
+    }
 }
 "#;
 

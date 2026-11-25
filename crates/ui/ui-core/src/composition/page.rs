@@ -263,6 +263,8 @@ enum Shows {
     Structure,
     /// A picture of its paint, with what acts in it over it.
     Paint,
+    /// A live picture the host decodes into the element's own canvas, as a call's tile shows.
+    Call,
     /// The window of the place it names, which the page's host fills.
     Well,
 }
@@ -393,6 +395,58 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
 /// Whether a node is drawn and says nothing more of itself: a picture or a canvas with no parts.
 fn drawn(node: &AccessNode) -> bool {
     matches!(node.role, Role::Image | Role::Canvas) && node.children.is_empty()
+}
+
+/// What a call's tile holds on a page: the canvas the host decodes the call's stream into, the
+/// face that stands there until a picture arrives, and the name it wears with what the person
+/// shows (their microphone off, the screen they share). The host marks the tile while it draws
+/// frames (`data-picture`), which takes the face away, and its state while the person talks or
+/// is muted (`data-speaking`, `data-muted`).
+fn call_into(element: &mut Element, node: &Composed) {
+    element.attr("class", "tilo-call");
+    if let Some(live) = node.live.as_deref() {
+        element.attr("data-live", &escape(live));
+    }
+    let name = node
+        .semantics
+        .as_ref()
+        .and_then(|access| access.title.as_deref())
+        .filter(|name| !name.trim().is_empty());
+    if let Some(name) = name {
+        let mut face = Element::new("span");
+        face.attr("class", "tilo-call-face");
+        face.attr("aria-hidden", "true");
+        face.own
+            .push_str(&escape(&crate::widget::initials_for_name(name)));
+        element.children.push(face);
+    }
+    let mut picture = Element::new("canvas");
+    picture.attr("class", "tilo-call-picture");
+    picture.attr("aria-hidden", "true");
+    element.children.push(picture);
+    if let Some(name) = name {
+        let mut pill = Element::new("span");
+        pill.attr("class", "tilo-call-name");
+        pill.attr("aria-hidden", "true");
+        let screen = node
+            .live
+            .as_deref()
+            .is_some_and(|live| live.ends_with("/screen"));
+        if screen {
+            pill.own
+                .push_str(&crate::icons::glyph_svg(crate::icons::Icon::ScreenShare));
+        }
+        let mut muted = Element::new("span");
+        muted.attr("class", "tilo-call-muted");
+        muted
+            .own
+            .push_str(&crate::icons::glyph_svg(crate::icons::Icon::MicOff));
+        pill.children.push(muted);
+        let mut words = Element::new("span");
+        words.own.push_str(&escape(name));
+        pill.children.push(words);
+        element.children.push(pill);
+    }
 }
 
 /// The place whose window a node shows, which the page's host fills ([`Page::wells`]): a window
@@ -572,7 +626,11 @@ impl Page {
     fn node(&mut self, node: &Composed, place: Place, context: Context) -> Element {
         let semantics = node.semantics.as_ref();
         let leaf = node.children.is_empty();
-        let shows = if leaf {
+        let shows = if node.live.is_some() {
+            // The host decodes the picture where the widget stands: the page carries the stream,
+            // never a still of it.
+            Shows::Call
+        } else if leaf {
             if node.picture.is_some() {
                 Shows::Paint
             } else {
@@ -670,6 +728,7 @@ impl Page {
                 }
             }
             (Shows::Words, Some(access)) => words_into(&mut element, access),
+            (Shows::Call, _) => call_into(&mut element, node),
             (Shows::Paint, _) => {
                 if let Some(data) = node
                     .picture

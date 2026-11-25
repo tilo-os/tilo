@@ -436,18 +436,23 @@ impl ChangeClaim {
 /// # Errors
 /// [`ClaimError::NoInvoker`] for a stamp that names no invoker.
 pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
+    // How the invoker acted, as the writer recorded it: an agent its person's device handed its
+    // session to, or one under a key of its own.
+    if let Some(invoker) = stamp
+        .context
+        .as_ref()
+        .and_then(|context| context.invoker.as_ref())
+    {
+        return Ok(invoker.acting.clone());
+    }
     let acting = stamp
         .invoked_by()
         .map(tilo_action_policy::Acting::from)
         .ok_or(ClaimError::NoInvoker)?;
     Ok(match &stamp.acted_for {
         // The agent works for the person its stamp names, so every receiver
-        // decides it as that person's agent, never as a bare name. An agent named beside its
-        // person had its session handed to it by a device of that person: an agent with a key of
-        // its own signs with that key and keeps the call it made.
-        Some(person) => acting
-            .handed()
-            .acting_for(tilo_action_policy::Acting::person(person.clone())),
+        // decides it as that person's agent, never as a bare name.
+        Some(person) => acting.acting_for(tilo_action_policy::Acting::person(person.clone())),
         None => acting,
     })
 }

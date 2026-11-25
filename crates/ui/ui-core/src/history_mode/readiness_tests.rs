@@ -123,7 +123,7 @@ fn readiness_refuses_review_refresh_and_confirmation_without_head_change() {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::state::owned_restore_tests::value(&driver.state_mut().doc),
+            crate::history_mode::integration_tests::body(&driver.state_mut().doc),
             "old"
         );
     }
@@ -137,7 +137,6 @@ static COMPONENT_HISTORY: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain {
             create: super::super::host_tests::preview,
         },
-        content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
 fn component(
@@ -239,7 +238,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
             .records
             .read_checked(
                 &binding.checkout.id,
-                crate::state::owned_restore_tests::value
+                crate::history_mode::integration_tests::body
             )
             .unwrap(),
         "live"
@@ -256,7 +255,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
             .records
             .read_checked(
                 &binding.checkout.id,
-                crate::state::owned_restore_tests::value
+                crate::history_mode::integration_tests::body
             )
             .unwrap(),
         "old"

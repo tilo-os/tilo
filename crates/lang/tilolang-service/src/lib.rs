@@ -39,13 +39,21 @@ use tilolang_tilo::publish::{
     Planner, Publications, publish_package, resource_id, split_published,
 };
 use tilolang_tilo::readings::{reading_of, resource_at};
-use tilolang_tilo::versions::{each_published, version_entry, versions};
+use tilolang_tilo::versions::{each_published, published_refs, store_ref, version_entry, versions};
 
 pub mod notices;
 
 /// The history verbs a published root answers here: undo and redo through the store's undo, and
 /// its versions as the store keeps them.
-const HISTORY_VERBS: [&str; 3] = ["undo", "redo", "history"];
+const HISTORY_VERBS: [&str; 7] = [
+    "undo",
+    "redo",
+    "history",
+    "restore",
+    "checkpoint",
+    "review-restore",
+    "restore-reviewed",
+];
 
 /// How many versions the history verb lists when it is not told.
 const HISTORY_LAST: usize = 50;
@@ -810,6 +818,7 @@ impl ResourceService {
                 by: None,
                 to: None,
                 step: None,
+                chosen: None,
             } => {
                 let mut undone = 0_u32;
                 while undone < steps.unwrap_or(1) && store.undo_last(Some(by)).map_err(failed)? {
@@ -817,19 +826,27 @@ impl ResourceService {
                 }
                 Ok(serde_json::json!({ "undone": undone }))
             }
-            HistoryEdit::Redo { steps } => {
+            HistoryEdit::Redo { steps, undos: None } => {
                 let mut redone = 0_u32;
                 while redone < steps.unwrap_or(1) && store.redo_last(Some(by)).map_err(failed)? {
                     redone = redone.saturating_add(1);
                 }
                 Ok(serde_json::json!({ "redone": redone }))
             }
+            HistoryEdit::Redo { undos: Some(_), .. } => {
+                Err("this app brings back whole invocations".to_owned())
+            }
             HistoryEdit::Undo { .. } => Err(
                 "undo takes an invocation or a step from history, or how many of your last \
                  steps"
                     .to_owned(),
             ),
-            other => Err(format!("{} is not offered here", other.verb())),
+            HistoryEdit::Restore { .. }
+            | HistoryEdit::RestoreReviewed { .. }
+            | HistoryEdit::Checkpoint { .. }
+            | HistoryEdit::Name { .. } => {
+                version_edit(&self.host, &[self.tree(resource)?], edit, by)
+            }
         }
     }
 
@@ -874,8 +891,14 @@ pub fn history(
     view: &HistoryView,
     reader: &tilolang_tilo::runtime::Actor,
 ) -> Result<Json, String> {
-    let HistoryView::History { last } = view else {
-        return Err("only the history of a resource is offered here".to_owned());
+    let last = match view {
+        HistoryView::History { last } => *last,
+        HistoryView::ReviewRestore { version, paths } => {
+            return review_restore(host, trees, version, paths);
+        }
+        HistoryView::Diff { .. } => {
+            return Err("only the history of a resource is offered here".to_owned());
+        }
     };
     let reads = host.reads_for(reader);
     let mut versions = Vec::new();
@@ -903,6 +926,139 @@ pub fn history(
         .map(|(app, version)| version_entry(host, &app, &version))
         .collect();
     Ok(serde_json::json!({ "versions": listed, "total": total }))
+}
+
+/// Carry out on the published resources `trees`, which `host` reads, the history verb `edit` that
+/// goes back to a version or names one, as `by`'s step: a restore of them (or of the ones it
+/// names) to a version, one a review saw, or a checkpoint of each. What the verb did, as its
+/// caller is answered. What an app's window and the session's service both answer these verbs
+/// with.
+///
+/// # Errors
+/// The verb is an undo or a redo, or the store refused it: the version is none of theirs,
+/// they moved since the review, or they stand as they did then.
+pub fn version_edit(
+    host: &Host,
+    trees: &[&ResourceSpec],
+    edit: &HistoryEdit,
+    by: &tilolang_tilo::runtime::Actor,
+) -> Result<Json, String> {
+    let store = host.store();
+    let refs: Vec<ResourceRef> = trees
+        .iter()
+        .flat_map(|tree| published_refs(host, tree))
+        .collect();
+    let failed = |error: tilolang_runtime::store::StoreError| error.to_string();
+    match edit {
+        HistoryEdit::Restore { version, ids, .. } => {
+            let only = ids.as_ref().map(|ids| {
+                ids.iter()
+                    .map(|id| {
+                        split_published(id)
+                            .map_or(id.as_str(), |(_, path)| path)
+                            .to_owned()
+                    })
+                    .collect()
+            });
+            let restored = store
+                .restore_version(&refs, version, only, None, Some(by))
+                .map_err(failed)?;
+            Ok(serde_json::json!({ "restored": restored }))
+        }
+        HistoryEdit::RestoreReviewed { review } => {
+            let version = review
+                .target_heads()
+                .first()
+                .ok_or("the review names no version")?;
+            let restored = store
+                .restore_version(
+                    &refs,
+                    version,
+                    Some(review.paths().to_vec()),
+                    Some(review.live_heads().to_vec()),
+                    Some(by),
+                )
+                .map_err(failed)?;
+            Ok(serde_json::json!({ "restored": restored }))
+        }
+        HistoryEdit::Checkpoint { name } => {
+            // Each of them the store keeps; what the app publishes beside them (its host's
+            // own resource) keeps no history.
+            let roots: Vec<ResourceRef> = trees
+                .iter()
+                .filter_map(|tree| store_ref(host, tree))
+                .collect();
+            if roots.is_empty() {
+                return Err("nothing here keeps a history to name a version of".to_owned());
+            }
+            for root in &roots {
+                store.name_version(root, name, Some(by)).map_err(failed)?;
+            }
+            Ok(serde_json::json!({ "checkpoint": name }))
+        }
+        // The store keeps a tilolang app's history by invocation; it names no run of changes.
+        HistoryEdit::Undo { .. } | HistoryEdit::Redo { .. } | HistoryEdit::Name { .. } => {
+            Err(format!("{} takes no version", edit.verb()))
+        }
+    }
+}
+
+/// What restoring the published resources `trees` to `version` would change, of the ones
+/// `paths` names (every one that differs when it names none): the review `restore-reviewed`
+/// takes, and the items it restores by their published ids.
+fn review_restore(
+    host: &Host,
+    trees: &[&ResourceSpec],
+    version: &str,
+    paths: &[String],
+) -> Result<Json, String> {
+    let refs: Vec<ResourceRef> = trees
+        .iter()
+        .flat_map(|tree| published_refs(host, tree))
+        .collect();
+    let review = host
+        .store()
+        .review_restore(&refs, version)
+        .map_err(|error| error.to_string())?;
+    let asked: Vec<&str> = paths
+        .iter()
+        .map(|path| split_published(path).map_or(path.as_str(), |(_, id)| id))
+        .collect();
+    let selected: Vec<String> = review
+        .differing
+        .into_iter()
+        .filter(|id| asked.is_empty() || asked.contains(&id.as_str()))
+        .collect();
+    if selected.is_empty() {
+        return Err("nothing of what you asked for differs from that version".to_owned());
+    }
+    // Each by the id it is published under; one made after the version, or removed since, by
+    // the app's that publishes them.
+    let mut published = BTreeMap::new();
+    let mut app = None;
+    for tree in trees {
+        each_published(tree, &mut |spec| {
+            if let (Some((owner, path)), Some(_)) =
+                (split_published(spec.id.as_str()), store_ref(host, spec))
+            {
+                app.get_or_insert_with(|| owner.to_owned());
+                published.insert(path.to_owned(), spec.id.as_str().to_owned());
+            }
+        });
+    }
+    let app = app.unwrap_or_default();
+    let items: Vec<Json> = selected
+        .iter()
+        .map(|id| {
+            let item = published
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| resource_id(&app, id));
+            serde_json::json!({ "item": item })
+        })
+        .collect();
+    let review = verbs::review::RestoreReview::new(vec![version.to_owned()], review.live, selected);
+    Ok(serde_json::json!({ "review": review, "items": items }))
 }
 
 /// The scalar a register holds for `value`.

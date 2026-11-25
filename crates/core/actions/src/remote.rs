@@ -423,6 +423,15 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),
 ];
 
+/// The provider a moderation turn reaches a person's recorded changes under.
+pub const MODERATION_PROVIDER: &str = "tilo.moderation";
+/// The resource its read and its undo are actions of.
+pub const MODERATION_HISTORY: &str = "moderation.history";
+/// Its action that takes a person's changes back.
+pub const MODERATION_UNDO: &str = "undo";
+/// The app whose record a moderation turn reads and takes changes back in: the workspace's chat.
+pub const MODERATED_APP: &str = "so.tilo.chat";
+
 /// What the action `target` names declares it writes besides its own resource
 /// ([`crate::ActionContract::effects`]), from its declaration: a device reading a record checks
 /// here whether a step a call's change takes there is one the called action takes. Every action
@@ -469,6 +478,12 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
         person_accounts::PROVIDER => person_accounts::effects(&address.resource, &address.action),
         model_providers::PROVIDER => model_providers::effects(&address.action),
         person_connections::PROVIDER => person_connections::effects(&address.action),
+        // A moderation undo takes a person's changes back in the chat's record.
+        MODERATION_PROVIDER
+            if address.resource == MODERATION_HISTORY && address.action == MODERATION_UNDO =>
+        {
+            vec![crate::ActionEffect::undo(MODERATED_APP)]
+        }
         _ => Vec::new(),
     };
     for effect in person_vault::declared_effects(target) {

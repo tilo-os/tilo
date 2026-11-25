@@ -103,17 +103,14 @@ impl Approver for RootSigns {
 struct KeptInRecord(Workspaces);
 
 impl Keeping for KeptInRecord {
-    fn keep(&self, cert: DeviceCert) {
+    fn keep(&self, cert: DeviceCert) -> tilo_peer_state::new_device::Kept {
         let workspaces = self.0.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        runtime.spawn(async move {
+        Box::pin(async move {
             let kept = person_workspace::devices::keep(&workspaces, &cert).await;
             if let Err(error) = kept {
                 tracing::warn!(%error, "the laptop does not list the phone among the person's devices");
             }
-        });
+        })
     }
 }
 

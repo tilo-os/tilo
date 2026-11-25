@@ -7,14 +7,13 @@
 use crate::Key;
 use crate::day_schedule::{MODE_KEY, SECTION};
 
-pub const DEVICE_SECTION: &str = "appearance_device";
+pub use settings_model::appearance::{
+    DEVICE_SECTION, TEXT_SCALE_MAX, TEXT_SCALE_MIN, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN,
+};
 
 pub const MODE: Key<Option<String>> = Key::new(SECTION, MODE_KEY, || None);
 
 pub const HIGH_CONTRAST: Key<bool> = Key::new(SECTION, "high_contrast", || false);
-
-pub const TEXT_SCALE_MIN: f32 = 0.5;
-pub const TEXT_SCALE_MAX: f32 = 4.0;
 
 /// The desktop's wallpaper: the id of a picture the image ships
 /// (`tilo-wallpapers`' catalog), or `"custom"` for the person's own picture,
@@ -65,9 +64,6 @@ pub const ACCENT: Key<Option<String>> = Key::new(SECTION, "accent", || None);
 /// accessibility switch that makes every panel opaque (`reduce_transparency`)
 /// still wins over this.
 pub const TRANSLUCENCY: Key<Option<f32>> = Key::new(SECTION, "translucency", || None);
-
-pub const TRANSLUCENCY_MIN: f32 = 0.0;
-pub const TRANSLUCENCY_MAX: f32 = 1.0;
 
 #[cfg(test)]
 mod tests {

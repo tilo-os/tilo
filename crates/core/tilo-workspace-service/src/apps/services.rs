@@ -473,7 +473,7 @@ pub struct ResourceRequestContext {
     /// The invocations the workspace service delivered to this route's app that it is still carrying out,
     /// each with who invoked it: a write that serves one is that invoker's, an agent acting for
     /// the caller included.
-    serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+    serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
     /// The caller the device opened this route's view for, when it opened one for a caller of
     /// its dispatch: a write the app makes outside an invocation it serves is theirs, limited
     /// to what they may do, and a read answers only what they may read.
@@ -579,22 +579,25 @@ impl ResourceRequestContext {
         Self::authenticated(app_id, workspace_id, caller)
     }
 
-    pub fn serving(
+    pub fn serving<A: Into<tilo_actions::Acting>>(
         mut self,
-        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+        serving: impl IntoIterator<Item = (tilo_actions::InvocationId, A)>,
     ) -> Self {
-        self.serving = serving;
+        self.serving = serving
+            .into_iter()
+            .map(|(invocation, acting)| (invocation, acting.into()))
+            .collect();
         self
     }
 
-    /// Who invoked `invocation`, when it is one the workspace service delivered to this route's app and
-    /// the app is still carrying out.
+    /// Who invoked `invocation`, and how they acted, when it is one the workspace service
+    /// delivered to this route's app and the app is still carrying out.
     #[must_use]
-    pub fn invoker_of(&self, invocation: &str) -> Option<&tilo_actions::Actor> {
+    pub fn invoker_of(&self, invocation: &str) -> Option<&tilo_actions::Acting> {
         self.serving
             .iter()
             .find(|(id, _)| id.0.to_string() == invocation)
-            .map(|(_, actor)| actor)
+            .map(|(_, acting)| acting)
     }
 
     #[must_use]

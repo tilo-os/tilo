@@ -91,6 +91,10 @@ fn an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_k
         None,
         "the device is in no call yet"
     );
+    assert!(
+        session.speaker().word().is_none(),
+        "a device nobody is at says no word in its workspace, so nobody lists it as here"
+    );
 
     let _entered = tilo_rt::app().handle().enter();
     let at = crate::seats::AppAt {
@@ -276,8 +280,9 @@ fn app_connection(
 }
 
 /// The person's shell ends the way a desktop quits: the word it said and the call it was in
-/// stop being said in the workspace, and the device says only what it is there. A person gone
-/// from their computer is in no call, as their roster row on everyone else's device shows.
+/// stop being said in the workspace, and the device, which nobody is at now, says nothing there.
+/// A person gone from their computer is in no call and not here, as their roster row on everyone
+/// else's device shows.
 #[test]
 fn a_shell_that_ends_leaves_the_person_out_of_the_call() {
     use collab_types::presence::CallPresence;
@@ -327,7 +332,10 @@ fn a_shell_that_ends_leaves_the_person_out_of_the_call() {
         deafened: false,
     }));
     assert!(
-        session.speaker().word().status.is_some(),
+        session
+            .speaker()
+            .word()
+            .is_some_and(|word| word.status.is_some()),
         "the person says what they are doing while their shell runs"
     );
     assert!(
@@ -337,12 +345,7 @@ fn a_shell_that_ends_leaves_the_person_out_of_the_call() {
 
     live.gone();
     loop {
-        let word = session.speaker().word();
-        if word.status.is_none() && session.speaker().call().is_none() {
-            assert!(
-                !word.label.is_empty(),
-                "the device still says what it is after the shell ends"
-            );
+        if session.speaker().word().is_none() && session.speaker().call().is_none() {
             break;
         }
         assert!(

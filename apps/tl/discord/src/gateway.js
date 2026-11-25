@@ -45,11 +45,27 @@ export async function connect({ make, token, onEvent, onVoice, watch, url, log =
   client.on("messageReactionRemove", (reaction, user) =>
     onEvent(discordReaction("REACTION_REMOVED", reaction, user)),
   );
-  client.on("guildMemberUpdate", (_, member) => onEvent(discordMember(member)));
+  client.on("guildMemberUpdate", (_, member, how) => onEvent(discordMember(member, how)));
+  client.on("threadCreate", (thread) => onEvent(discordThread(thread)));
+  client.on("command", (command) => onEvent({ source: "COMMAND", payload: command }));
   client.on("layout", (guild) => onEvent(discordLayout(guild)));
   await client.login(token, url);
   if (watch) await watch();
   return client;
+}
+
+/// A thread started in Discord, as the planners read it: the thread, the channel it is in, its
+/// name, and who started it.
+export function discordThread(thread) {
+  return {
+    source: "THREAD_CREATED",
+    payload: {
+      id: thread?.id ?? "",
+      parent_id: thread?.parentId ?? thread?.parent_id ?? "",
+      name: thread?.name ?? "",
+      owner_id: thread?.ownerId ?? thread?.owner_id ?? "",
+    },
+  };
 }
 
 /// A message of the gateway as the planners read it.
@@ -104,17 +120,18 @@ export function discordReaction(source, reaction, user) {
   };
 }
 
-/// A member change as the planners read it.
-export function discordMember(member) {
+/// A member change as the planners read it: `how` says whether Discord banned the member or they
+/// left the server.
+export function discordMember(member, { banned = false, left = false } = {}) {
   return {
     source: "MEMBER_CHANGED",
     payload: {
       guild_id: member?.guild?.id ?? "",
       user_id: member?.id ?? "",
       roles: [...(member?.roles?.cache?.keys?.() ?? [])],
-      banned: false,
-      left: false,
-      user: { name: member?.user?.username ?? "Someone" },
+      banned,
+      left,
+      user: { name: member?.user?.username ?? "", display_name: member?.user?.globalName ?? "" },
       avatar: member?.user?.avatar ?? null,
     },
   };
@@ -139,6 +156,12 @@ export function discordLayout(guild) {
         parent: channel.parentId ?? channel.parent_id ?? channel.parent ?? "",
         position: channel.position ?? 0,
         topic: channel.topic ?? "",
+        overwrites: list(channel.permission_overwrites ?? channel.overwrites).map((overwrite) => ({
+          id: String(overwrite.id ?? ""),
+          kind: Number(overwrite.type ?? overwrite.kind ?? 0),
+          allow: String(overwrite.allow ?? "0"),
+          deny: String(overwrite.deny ?? "0"),
+        })),
       })),
       roles: list(guild?.roles).map((role) => ({
         id: role.id,
@@ -411,6 +434,8 @@ export class Gateway {
       case "READY":
         this.#session = data?.session_id ?? null;
         this.user = data?.user ?? null;
+        // The bot's application, which its slash commands are registered under.
+        this.application = String(data?.application?.id ?? data?.user?.id ?? "");
         this.#attempt = 0;
         this.#ready?.resolve(this);
         this.#ready = null;
@@ -433,6 +458,24 @@ export class Gateway {
           guildId: data?.guild_id ?? null,
         });
         return;
+      // A moderator clearing many messages at once: each is a deletion of its own.
+      case "MESSAGE_DELETE_BULK":
+        for (const id of data?.ids ?? []) {
+          this.#emit("messageDelete", {
+            id: String(id),
+            channelId: data?.channel_id ?? "",
+            guildId: data?.guild_id ?? null,
+          });
+        }
+        return;
+      case "THREAD_CREATE":
+        this.#emit("threadCreate", {
+          id: data?.id ?? "",
+          parentId: data?.parent_id ?? "",
+          name: data?.name ?? "",
+          ownerId: data?.owner_id ?? "",
+        });
+        return;
       case "MESSAGE_REACTION_ADD":
         this.#emit("messageReactionAdd", reactionOf(data), userOf(data));
         return;
@@ -447,6 +490,25 @@ export class Gateway {
         this.#emit("guildMemberUpdate", null, memberOf(data));
         return;
       }
+      // A slash command someone ran: its name, who ran it, and what answers it.
+      case "INTERACTION_CREATE":
+        if (Number(data?.type) !== 2) return;
+        this.#emit("command", {
+          interaction: String(data?.id ?? ""),
+          token: String(data?.token ?? ""),
+          application: String(data?.application_id ?? ""),
+          guild_id: String(data?.guild_id ?? ""),
+          name: String(data?.data?.name ?? ""),
+          user_id: String(data?.member?.user?.id ?? data?.user?.id ?? ""),
+        });
+        return;
+      // A member banned or gone from the server: the planners read it as their change.
+      case "GUILD_BAN_ADD":
+        this.#emit("guildMemberUpdate", null, memberOf(data), { banned: true });
+        return;
+      case "GUILD_MEMBER_REMOVE":
+        this.#emit("guildMemberUpdate", null, memberOf(data), { left: true });
+        return;
       case "CHANNEL_CREATE":
       case "CHANNEL_UPDATE": {
         const standing = this.#standing.get(String(data?.guild_id ?? ""));
@@ -572,6 +634,11 @@ export function voiceStateOf(guild, data) {
 }
 
 /// A gateway message as the client's callers read it.
+/// A message as Discord's REST answers it, read as the gateway's MESSAGE_CREATE is.
+export function restMessage(data) {
+  return discordMessage("MESSAGE_CREATED", messageOf(data));
+}
+
 function messageOf(data) {
   return {
     id: data?.id ?? "",
@@ -614,6 +681,10 @@ function memberOf(data) {
     guild: { id: data?.guild_id ?? "" },
     id: data?.user?.id ?? "",
     roles: { cache: { keys: () => [...(data?.roles ?? [])] } },
-    user: { username: data?.user?.username ?? "Someone", avatar: data?.user?.avatar ?? null },
+    user: {
+      username: data?.user?.username ?? "",
+      globalName: data?.user?.global_name ?? "",
+      avatar: data?.user?.avatar ?? null,
+    },
   };
 }

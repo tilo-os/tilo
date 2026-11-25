@@ -3,7 +3,8 @@
 //! takes in one (join, leave, mute, deafen, camera, screen), carried out through that service.
 //! The pictures of the call's cameras and shared screens are collected here too, for the window
 //! that draws them: the views' tiles ask for them, and the service sends the layers they show and
-//! nothing else.
+//! nothing else. A page whose tiles stand in its own HTML decodes the same stream where they
+//! stand (`pictures_local`): nothing of it is collected here.
 //!
 //! The service is the shell's governed voice service (`CollabRequest::NativeMediaCommand`): it
 //! binds every command to the connection's own app, workspace and record, asks for the
@@ -376,7 +377,9 @@ impl Calls {
     }
 
     /// Tell the call which pictures the view shows when that changed, and keep one collection of
-    /// the ones it delivered outstanding while anything is shown.
+    /// the ones it delivered outstanding while anything is shown. A call service that draws the
+    /// pictures itself (a browser page decodes them where the view shows them) is told the tiles
+    /// and nothing more: there is nothing for it to collect.
     fn follow_pictures(&mut self, now: Instant) {
         let wanted = self.wanted();
         if wanted != self.shown {
@@ -393,7 +396,11 @@ impl Calls {
                 self.pictures = None;
             }
         }
-        if !self.shown.is_empty() && self.pictures.is_none() {
+        let local = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.pictures_local);
+        if !local && !self.shown.is_empty() && self.pictures.is_none() {
             let request_id = self.request_id();
             self.queued.push(CollabRequest::NativeMediaCommand {
                 request_id,
@@ -628,6 +635,7 @@ mod tests {
             volumes: Vec::new(),
             cameras: Vec::new(),
             camera_id: None,
+            pictures_local: false,
         }
     }
 
@@ -723,6 +731,35 @@ mod tests {
             }]);
             assert!(pictures.is_empty(), "nothing arrived yet");
             assert!(calls.take_window_message().is_none(), "nothing new to say");
+        }
+
+        phase a_service_that_draws_the_pictures_itself_is_told_the_tiles_and_collects_nothing;
+        {
+            let mut calls = Calls::new(ME);
+            let id = joined(&mut calls);
+            let mut local = snapshot(State::Live, channel_call(true, false));
+            local.pictures_local = true;
+            answer(&mut calls, id, local);
+            let requests = sent(&mut calls);
+            assert!(
+                requests.iter().any(|request| matches!(
+                    &request.command,
+                    Command::Show { pictures } if pictures.len() == 1
+                )),
+                "the page is told which tiles the view draws"
+            );
+            assert!(
+                !requests
+                    .iter()
+                    .any(|request| matches!(&request.command, Command::Pictures { .. })),
+                "a page decodes the pictures where its tiles stand: nothing is collected"
+            );
+            let window = calls.take_window_message().expect("the window is told the tiles");
+            let ToUi::CallPictures { shown, pictures } = window else {
+                panic!("the window takes the call's pictures");
+            };
+            assert_eq!(shown.len(), 1);
+            assert!(pictures.is_empty(), "the window draws no frame the page decoded");
         }
 
         phase a_picture_the_call_delivered_reaches_the_window_and_is_collected_again;

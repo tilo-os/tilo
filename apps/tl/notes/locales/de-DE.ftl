@@ -126,12 +126,15 @@ d-xptsjaii = Markdown exportieren
     .doc = Eine Notiz als Markdown: ihr Titel, dann ihr Text, jedes Bild, das sie zeigt, daneben als `<note>/images/<name>`, ein Pfad, dem ein anderer Leser der Datei folgt und den diese App wieder als Adresse der Bilddaten liest.
 
 d-2e5dloct = Notiz exportieren
+    .export = Markdown
     .doc = Eine Notiz als Datei: ihr Markdown, und die Bilder, die sie zeigt, daneben.
 
 d-cdjz7d5y = Notizbuch exportieren
+    .export = Zip aus Markdown-Dateien
     .doc = Das Notizbuch als Zip, eine Markdown-Datei für jede Notiz: die einer Notiz unter dem Ordner der Notiz, in der sie steht, und die Bilder, die sie zeigt, in ihrem eigenen Ordner `images` daneben.
 
 d-hjwb45bx = Notizbuch als Markdown exportieren
+    .export = Ein Markdown-Dokument
     .doc = Das Notizbuch als ein Markdown-Dokument, in dem jede Notiz eine Überschrift eine Ebene tiefer als die Notiz, unter der sie steht, ist (sechs auf der tiefsten), ihr Text darunter steht und danach die Notizen unter ihr folgen, gelesen als ein Text in der Reihenfolge, in der der Baum sie führt.
 
 d-t4nxxtng = Markdown importieren
@@ -189,10 +192,7 @@ d-qrsfr4a5 = Notizbuchmenü
     .w-file = Datei
     .w-import-markdown = Markdown importieren…
     .w-import-a-notion-export-or-a = Ein Notion-Export oder ein Zip aus Markdown importieren…
-    .w-export-the-notebook = Das Notizbuch exportieren…
-    .w-export-the-notebook-as-one-markdown = Das Notizbuch als ein Markdown-Dokument exportieren…
     .w-insert-an-image = Ein Bild einfügen…
-    .w-export-this-note = Diese Notiz exportieren…
     .w-new-sub-note = Neue Unternotiz
 
 d-kdl43aw7 = Notizen

@@ -1896,16 +1896,15 @@ impl HistoryHost {
             .scopes
             .get(self.active_scope)
             .is_some_and(|scope| {
-                scope.content_schema.is_some()
-                    || (matches!(
-                        scope.presentation,
-                        HistoryPresentation::Domain { .. }
-                            | HistoryPresentation::DomainWithAssets { .. }
-                    ) && matches!(
-                        self.source(),
-                        HistorySourceRegistration::HostDocument { .. }
-                            | HistorySourceRegistration::OwnedDocument { .. }
-                    ))
+                matches!(
+                    scope.presentation,
+                    HistoryPresentation::Domain { .. }
+                        | HistoryPresentation::DomainWithAssets { .. }
+                ) && matches!(
+                    self.source(),
+                    HistorySourceRegistration::HostDocument { .. }
+                        | HistorySourceRegistration::OwnedDocument { .. }
+                )
             })
     }
 

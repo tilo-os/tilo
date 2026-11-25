@@ -54,7 +54,7 @@ use tilolang_tilo::runtime::store::Run;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 
 pub use tilo_workspace_service::tl_records::{
-    Package, Raised, Record, RecordCall, member, runs_elsewhere,
+    Package, Raised, Record, RecordCall, Wakeup, member, runs_elsewhere,
 };
 pub use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
 pub use tilolang_tilo::runtime;
@@ -242,6 +242,11 @@ const BUILT_IN: &[&[(&str, &str)]] = &[
     &[(
         include_str!("../../../../apps/tl/discord/app.tl"),
         include_str!("../../../../apps/tl/discord/app.ids"),
+    )],
+    // A device's daemon arms the alarms set for it from Clocks' record, window or no window.
+    &[(
+        include_str!("../../../../apps/tl/clocks/app.tl"),
+        include_str!("../../../../apps/tl/clocks/app.ids"),
     )],
     &[
         (
@@ -925,22 +930,27 @@ impl Records for crate::Service {
         &self,
         record: Record,
         policy: Option<Arc<WorkspacePolicy>>,
-        viewer: &Actor,
+        acting: &tilo_actions::Acting,
         app: &str,
         run: (&str, &str),
-        invocations: &[String],
+        (invocations, call): (&[String], Option<&tilo_actions::remote::SignedCall>),
     ) -> Result<u32, String> {
         // The agent takes the changes back for the person it works for, as every write an agent
-        // makes is made for them.
-        let acted_for = Some(record.reader().to_owned());
+        // makes is made for them, and each change records how it acted.
+        let viewer = &acting.by;
+        let person = record.reader().to_owned();
         let opened = opened_with(record, policy, viewer.clone(), app, None)?;
         let store = opened.host().store();
-        let _for = store.acting_for(acted_for);
+        let _for = store.acting_for(Some(person), Some(acting.clone()));
         let (id, title) = run;
         store.set_run(Some(Run {
             id: id.to_owned(),
             title: title.to_owned(),
         }));
+        // The undo serves the call that asked for it: it carries the call's invocation and
+        // keeps what its caller signed, as every write made for a call does.
+        store.serve(call.map(|call| call.signed.statement().invocation.0.to_string()));
+        store.serve_signed(call.cloned().map(Box::new));
         let mut undone = 0_u32;
         let mut failure = None;
         for invocation in invocations {
@@ -953,6 +963,8 @@ impl Records for crate::Service {
             }
         }
         store.set_run(None);
+        store.serve(None);
+        store.serve_signed(None);
         // What the workspace refused of the undo is the undo's answer, never a count.
         if let Some(refused) = store.take_refusal() {
             return Err(refused);
@@ -1070,6 +1082,34 @@ impl Records for crate::Service {
     ) -> Result<(), String> {
         let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
         crate::notices::seen(&opened, person, doc)
+    }
+
+    fn act_on(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        person: &str,
+        (app, package): (&str, Option<&Package>),
+        opens: (&str, &str),
+        action: &str,
+    ) -> Result<(), String> {
+        let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
+        let at = ResourceRef::parse_id(opens.1, opens.0)
+            .ok_or_else(|| format!("`{}` names no resource", opens.1))?;
+        crate::notices::choose_on(&opened, person, &at, action)
+    }
+
+    fn wakeups(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        (person, device): (&str, &str),
+        app: &str,
+        package: Option<&Package>,
+        now_s: i64,
+    ) -> Result<Vec<Wakeup>, String> {
+        let opened = crate::notices::open(record, policy, person, app, package.cloned())?;
+        Ok(crate::notices::wakeups(&opened, person, device, now_s))
     }
 
     fn notice_action(

@@ -19,18 +19,26 @@ path = "src/lib.rs"
 
 [features]
 default = ["model"]
-# The sections as resource models: `TextAssistancePrefs` with its `Model` impl and the
+# The sections as resource models: the `Model` derives on the plain section types and the
 # `settings.text-assistance` record the store keeps. A crate that only reads the schema, the
-# theme names and the plain section types turns it off and carries no resource model.
+# theme names, the plain section types and the installed settings source turns it off and
+# carries no resource model.
 model = ["dep:tilo-resource"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+unicode-normalization = "0.1.25"
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

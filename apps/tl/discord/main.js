@@ -4,6 +4,8 @@
 // call is bridged through.
 
 import { startCalls } from "./src/call.js";
+import { keepAvatar, linkPhoto } from "./src/avatars.js";
+import { keepsRoles, rolesPlan, overwritesOf, memberRoles } from "./src/roles.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
   fromDiscord,
@@ -20,6 +22,16 @@ import {
   chatChanges,
   changeTarget,
   messageOf,
+  importOf,
+  sidebarOf,
+  byDiscord,
+  memberToDiscord,
+  placedByChange,
+  personOfLink,
+  linkOfUser,
+  blockedToChat,
+  BLOB_SCHEME,
+  blocksPersona,
   CHAT,
   SELF,
 } from "./src/plan.js";
@@ -33,11 +45,18 @@ import {
   webhookSend,
   webhookEdit,
   webhookDelete,
+  channelMessages,
   channelWebhooks,
   createWebhook,
   WEBHOOK_NAME,
   react,
   startThread,
+  member,
+  applyRole,
+  setOverwrite,
+  memberRole,
+  registerCommands,
+  answerCommand,
   whyRefused,
 } from "./src/rest.js";
 
@@ -109,6 +128,10 @@ export function callsOf(ws) {
     },
     content(bytes) {
       return ws.files?.upload ? ws.files.upload(bytes) : null;
+    },
+    /// The workspace's people, each with their role.
+    async members() {
+      return ws.members?.list ? ws.members.list() : [];
     },
     /// This app's call lane (the SDK's `callLane`): the daemon's side of a call carried from an
     /// outside service. `null` for a workspace client that carries none, which is a bridge that
@@ -232,6 +255,8 @@ export async function openGateway({
   const account = current.account;
   const token = await released(calls, account.token_item, { wait });
   const stop = { stopped: false };
+  // The overwrites asked of Discord on this connection: each is asked once.
+  const asked = new Set();
   // The call lane this app's connection was granted: a client that carries none leaves the
   // bridge reading and writing, never in a call.
   const lane = calls.lane();
@@ -260,12 +285,25 @@ export async function openGateway({
       make: makeClient,
       token,
       url: account.gateway_url || undefined,
-      onEvent: (event) => carryFromDiscord({ calls, account: current.account, event, fetch, log }),
+      onEvent: (event) => carryFromDiscord({ calls, account: current.account, event, fetch, asked, log }),
       onVoice: (event) => carried?.hear(event),
       log,
     }),
   );
   await carried?.start();
+  // `/link` and `/unlink`, registered once the gateway names the bot's application. A bridge of
+  // one channel adds nothing to the server.
+  if (client?.application && account.guild_id && !account.only_channel) {
+    calls
+      .webCall(
+        registerCommands(
+          { tokenItem: account.token_item, origin: account.api_origin },
+          client.application,
+          account.guild_id,
+        ),
+      )
+      .catch((error) => log(`the bridge's slash commands were not registered: ${error?.message ?? error}`));
+  }
   const carrying = carryFromWorkspace({ calls, current, log, stop }).catch((error) =>
     log(`the workspace's changes stopped reaching Discord: ${error?.message ?? error}`),
   );
@@ -443,10 +481,28 @@ export async function carryFromDiscord({
   account,
   event,
   fetch = globalThis.fetch,
+  asked = new Set(),
   log = () => {},
 }) {
   for (const call of fromDiscord(account, event)) {
     try {
+      if (call.photo) {
+        // A link's picture is the avatar's bytes: one that does not come over is left as it was.
+        const photo = await linkPhoto(call.photo, { fetch });
+        delete call.photo;
+        if (!photo) continue;
+        call.args = { ...call.args, photo };
+      }
+      if (call.avatar) {
+        // Kept once and remembered: an avatar that does not come over leaves the message
+        // without a picture rather than one only Discord serves.
+        const blob = await keepAvatar(call.avatar.url, { fetch, content: (bytes) => calls.content(bytes) });
+        if (blob) {
+          await calls.do({ app: SELF, action: "remember_avatar", args: { hash: call.avatar.hash, blob } });
+          call.args = { ...call.args, avatar: `${BLOB_SCHEME}${blob}` };
+        }
+        delete call.avatar;
+      }
       const files = await keptFiles(calls, call.attachments, { fetch, log });
       if (files.length > 0) call.args = { ...call.args, attachments: files };
       delete call.attachments;
@@ -455,6 +511,103 @@ export async function carryFromDiscord({
       log(`a Discord event did not reach the workspace: ${error?.message ?? error}`);
     }
   }
+  if (event.source === "LAYOUT_CHANGED") {
+    const adopted = await adoptServer({ calls, account, layout: event.payload, log });
+    await keepRoles({ calls, account: adopted, layout: event.payload, asked, log });
+    await readBack({ calls, account: adopted, fetch, log });
+  }
+  if (event.source === "COMMAND" && String(event.payload.guild_id) === String(account.guild_id)) {
+    await answerSlash({ calls, account, command: event.payload, log });
+  }
+  // A linked member whose Discord roles were changed by hand holds the one their role here
+  // gives them again.
+  if (event.source === "MEMBER_CHANGED" && !event.payload.banned && !event.payload.left) {
+    const link = linkOfUser(account, event.payload.user_id);
+    if (link && keepsRoles(account)) {
+      const roles = Array.isArray(event.payload.roles) ? event.payload.roles.map(String) : [];
+      await followRole({ calls, account, link, current: roles, log });
+    }
+  }
+}
+
+/// What each bridged text channel said that the workspace does not hold yet: the channel's newest
+/// messages, oldest first, each relayed as it would have been live. The first time the bridge
+/// meets a server this is the channel's history; on every later start it is what was said while
+/// the bridge was away. A message already joined to one here is not relayed again.
+export async function readBack({ calls, account, fetch = globalThis.fetch, log = () => {} }) {
+  if (!account) return;
+  const { restMessage } = await import("./src/gateway.js");
+  const rest = { tokenItem: account.token_item, origin: account.api_origin };
+  for (const entry of mappings(account)) {
+    if (entry?.kind !== "channel") continue;
+    const shown = (account.channels ?? []).find((channel) => channel.id === entry.discord);
+    if (shown && shown.kind !== "text") continue;
+    if (account.only_channel && account.only_channel !== entry.discord) continue;
+    let listed;
+    try {
+      const answer = await calls.webCall(channelMessages(rest, entry.discord));
+      if (Number(answer?.status ?? 200) >= 300) continue;
+      listed = listedOf(answer);
+    } catch (error) {
+      log(`a bridged channel's earlier messages did not read: ${error?.message ?? error}`);
+      continue;
+    }
+    if (!Array.isArray(listed)) continue;
+    for (const data of [...listed].reverse()) {
+      if (byDiscord(account, "message", String(data?.id ?? ""))) continue;
+      await carryFromDiscord({ calls, account, event: restMessage(data), fetch, log });
+    }
+  }
+}
+
+/// Chat's root, whose sidebar the server's layout is brought into.
+const SIDEBAR = `${CHAT}/conversations`;
+
+/// Brings what Discord's layout shows into Chat's sidebar ([`importOf`]): a pass joins or makes
+/// every category and channel, and the next, reading the record those calls wrote, finishes the
+/// import once nothing is left to join.
+export async function adoptServer({ calls, account, layout, log = () => {} }) {
+  let state = account;
+  for (let pass = 0; pass < 2; pass += 1) {
+    let sidebar;
+    try {
+      sidebar = sidebarOf(await calls.state(SIDEBAR));
+    } catch (error) {
+      log(`Chat's sidebar did not read, so the server's layout waits: ${error?.message ?? error}`);
+      return state;
+    }
+    const planned = importOf(state, layout, sidebar);
+    if (planned.length === 0) return state;
+    // The categories this pass joined or made, by their Discord id: a channel's call names its
+    // category by that id until it is made.
+    const joined = new Map();
+    for (const call of planned) {
+      try {
+        if (call.categoryFrom) {
+          const category =
+            joined.get(call.categoryFrom) ?? byDiscord(state, "category", call.categoryFrom)?.tilo ?? null;
+          call.args = { ...call.args, category };
+          delete call.categoryFrom;
+        }
+        const made = await calls.do(call);
+        if (call.map?.kind === "category") {
+          const id = referenceId(made);
+          if (id) joined.set(call.map.discord, publishedOf(id));
+        } else if (call.action === "map" && call.args.kind === "category") {
+          joined.set(call.args.discord, call.args.tilo);
+        }
+      } catch (error) {
+        log(`the server's layout did not all come over: ${error?.message ?? error}`);
+      }
+    }
+    try {
+      const accounts = await calls.state(ACCOUNTS);
+      state = { ...(accounts?.accounts?.[0] ?? accounts ?? state), token_item: state.token_item };
+    } catch {
+      return state;
+    }
+  }
+  return state;
 }
 
 /// The files of a Discord message, each fetched from `url` and kept in the workspace as the
@@ -503,7 +656,8 @@ export async function keptFiles(
 /// bridge already joined: a message it does not know is new, one whose words moved is an edit,
 /// one that is gone a deletion, one whose emoji changed a reaction, and one that started a
 /// thread a thread. A change this app made itself is skipped, so a message the bridge relayed
-/// here is never sent back.
+/// here is never sent back. A person the workspace removes, bans or lets back is kicked, banned
+/// or unbanned in the server under each Discord account linked to them.
 export async function carryFromWorkspace({ calls, current, log = () => {}, stop = { stopped: false } }) {
   const known = new Map();
   for (const entry of mappings(current.account)) {
@@ -522,6 +676,24 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
     // The record is read again for each change: what it pairs since the gateway opened is
     // carried from the change it names.
     const account = current.account;
+    if (blocksPersona(event)) await purgeBlocked({ calls, account, log });
+    for (const link of keepsRoles(account) ? placedByChange(account, event) : []) {
+      try {
+        await followRole({ calls, account, link, current: null, log });
+      } catch (error) {
+        log(`a member's role did not reach Discord: ${error?.message ?? error}`);
+      }
+    }
+    for (const { action, op } of memberToDiscord(account, event)) {
+      try {
+        if (!(await carries(calls, action, op, log))) continue;
+        await calls.webCall(
+          member({ tokenItem: account.token_item, origin: account.api_origin }, account.guild_id, op),
+        );
+      } catch (error) {
+        log(`a member's change did not reach Discord: ${error?.message ?? error}`);
+      }
+    }
     for (const resource of chatChanges(event)) {
       const target = changeTarget(account, resource);
       if (!target) continue;
@@ -530,6 +702,111 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
       } catch (error) {
         log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
       }
+    }
+  }
+}
+
+/// The bridge's roles kept in line with the workspace's, against the layout Discord showed: each
+/// made or corrected and joined to its role here, then each bridged channel's overwrite for the
+/// roles that may do less than everyone.
+export async function keepRoles({ calls, account, layout, asked = new Set(), log = () => {} }) {
+  if (!keepsRoles(account)) return;
+  const rest = { tokenItem: account.token_item, origin: account.api_origin };
+  const plan = rolesPlan(account, layout, asked);
+  const made = [];
+  for (const op of plan.apply) {
+    try {
+      if (!(await carries(calls, "apply_role", op, log))) continue;
+      const id = messageIdOf(await calls.webCall(applyRole(rest, account.guild_id, op)));
+      if (!id) throw new Error(`Discord made no role for ${op.name}`);
+      if (op.id) continue;
+      await calls.do({ app: SELF, action: "map", args: { kind: "role", tilo: op.tilo, discord: id, origin: "tilo" } });
+      made.push({ kind: "role", tilo: op.tilo, discord: id, origin: "tilo" });
+    } catch (error) {
+      log(`a workspace role did not reach Discord: ${error?.message ?? error}`);
+    }
+  }
+  // A role made now has no overwrite anywhere yet: each bridged channel gets it.
+  const overwrites =
+    made.length > 0
+      ? overwritesOf({ ...account, map: [...mappings(account), ...made] }, layout, asked)
+      : plan.overwrites;
+  for (const op of overwrites) {
+    try {
+      if (!(await carries(calls, "set_overwrite", op, log))) continue;
+      asked.add(JSON.stringify(op));
+      await calls.webCall(setOverwrite(rest, op));
+    } catch (error) {
+      log(`a channel's permission did not reach Discord: ${error?.message ?? error}`);
+    }
+  }
+}
+
+/// A linked account given the bridge's role for its person's role here, and the bridge's others
+/// taken off. `current` is the account's roles in Discord when an event said them.
+async function followRole({ calls, account, link, current, log }) {
+  const person = personOfLink(link);
+  const members = await calls.members();
+  const role = members.find((member) => member?.person === person)?.role ?? null;
+  const op = memberRoles(account, link.discord_user, role, current);
+  if (!op || !(await carries(calls, "set_member_roles", op, log))) return;
+  const rest = { tokenItem: account.token_item, origin: account.api_origin };
+  for (const [roles, given] of [
+    [op.add, true],
+    [op.remove, false],
+  ]) {
+    for (const id of roles) {
+      await calls.webCall(memberRole(rest, account.guild_id, op.user, id, given));
+    }
+  }
+}
+
+/// A slash command answered, seen only by who ran it. `/unlink` unlinks their account and says
+/// from whom; `/link` says where linking is done: from the workspace, signing in with Discord.
+export async function answerSlash({ calls, account, command, log = () => {} }) {
+  let content;
+  if (command.name === "unlink") {
+    const link = linkOfUser(account, command.user_id);
+    if (link) {
+      await calls.do({ app: SELF, action: "unlink", args: { discord_user: command.user_id } });
+      const person = personOfLink(link);
+      const members = await calls.members().catch(() => []);
+      const name = members.find((member) => member?.person === person)?.name?.trim() || "your Tilo account";
+      content = `Unlinked from ${name}. What you write here shows under your Discord name again.`;
+    } else {
+      content = "This Discord account isn't linked to a Tilo account, so there was nothing to unlink.";
+    }
+  } else if (command.name === "link") {
+    content = account.sign_in_page
+      ? "Link this account from Tilo: open Discord in your workspace and choose Connect. You sign in with Discord there, and what you write here then shows as you."
+      : "Linking isn't set up for this server: its Tilo workspace offers no signing in with Discord.";
+  } else {
+    return;
+  }
+  const op = { op: "answer-interaction", interaction: command.interaction, content };
+  if (!(await carries(calls, "answer_interaction", op, log))) return;
+  await calls.webCall(
+    answerCommand({ tokenItem: account.token_item, origin: account.api_origin }, command, content),
+  );
+}
+
+/// A moderator blocked a Discord account: what was mirrored of it here is removed. The record is
+/// read again, as the block is its newest change.
+async function purgeBlocked({ calls, account, log }) {
+  let state = account;
+  try {
+    const accounts = await calls.state(ACCOUNTS);
+    const listed = accounts?.accounts ?? [];
+    state = listed.find((held) => held?.guild_id === account.guild_id) ?? listed[0] ?? account;
+  } catch (error) {
+    log(`the bridge's record did not read, so a block waits: ${error?.message ?? error}`);
+    return;
+  }
+  for (const call of blockedToChat(state)) {
+    try {
+      await calls.do(call);
+    } catch (error) {
+      log(`a blocked account's message stayed: ${error?.message ?? error}`);
     }
   }
 }

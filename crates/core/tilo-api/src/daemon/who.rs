@@ -235,16 +235,21 @@ fn logging_in(args: &Value) -> Result<Who, String> {
     let restarted = std::time::Instant::now();
     let mut stopped = false;
     loop {
-        let now = who()?;
-        match &now.home {
-            Some(home) if stopped || Some(home) != before.as_ref() => return Ok(now),
-            Some(_) => {}
-            None => stopped = true,
+        // While the person's part starts again the endpoint may take longer than a question
+        // waits to answer: that is the restart under way, asked about again until it is late.
+        let asked = who();
+        match asked.as_ref().map(|now| &now.home) {
+            Ok(Some(home)) if stopped || Some(home) != before.as_ref() => return asked,
+            Ok(Some(_)) | Err(_) => {}
+            Ok(None) => stopped = true,
         }
         if restarted.elapsed() > RESTARTING {
+            let why = asked
+                .err()
+                .map_or_else(String::new, |error| format!(" ({error})"));
             return Err(format!(
                 "this computer is one of your devices now, but Tilo did not start again as it in \
-                 time: {}",
+                 time{why}: {}",
                 super::service::LOOK
             ));
         }

@@ -92,6 +92,10 @@ pub struct Caller {
     // The grants the transport that admitted this connection holds for it besides its
     // certificate's: what a device hands an app it started, from its signed manifest.
     granted: Vec<tilo_action_policy::Grant>,
+    // The app this device's daemon launched and attests this connection's process to be
+    // (`Self::launched`): the one caller that acts as that app itself. No payload, kept caller or
+    // shell link carries it.
+    launched_app: Option<tilo_app_id::AppId>,
 }
 
 /// The authority an invitation carries ([`Caller::invited`]): the signed invitation, and the
@@ -127,6 +131,7 @@ impl Caller {
             invited: None,
             forwarded_by: None,
             granted: Vec::new(),
+            launched_app: None,
         }
     }
 
@@ -239,6 +244,24 @@ impl Caller {
     pub fn local_app(app_id: impl Into<String>) -> Self {
         let app: String = app_id.into();
         Self::admitted(Acting::by_app(app.clone()).in_app(app), None)
+    }
+
+    /// App `app_id`, in the process this device's daemon launched it as and attests to be it
+    /// ([`Self::local_app`]): the one caller that may act as the app itself, with the grants that
+    /// name it. Set only where the daemon attests the process; nothing restored or carried is it.
+    #[must_use]
+    pub fn launched(app_id: impl Into<String>) -> Self {
+        let app: String = app_id.into();
+        Self {
+            launched_app: Some(tilo_app_id::AppId::new(app.clone())),
+            ..Self::local_app(app)
+        }
+    }
+
+    /// The app this device's daemon launched this caller's process as ([`Self::launched`]).
+    #[must_use]
+    pub const fn launched_app(&self) -> Option<&tilo_app_id::AppId> {
+        self.launched_app.as_ref()
     }
 
     /// A remote agent device whose certificate the transport verified to
@@ -890,6 +913,9 @@ impl KeptCaller {
             invited: None,
             forwarded_by: None,
             granted: Vec::new(),
+            // Only the daemon's own attestation of the process it launched makes a caller the
+            // app itself; a kept or carried caller is never that.
+            launched_app: None,
         }
     }
 }

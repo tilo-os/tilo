@@ -245,6 +245,9 @@ pub enum ShellCall {
     },
     /// The person leaves the call they are in in `workspace`.
     Leave { workspace: String },
+    /// Every change of `workspace`'s members its governance names, oldest first: what a feed of
+    /// the workspace's changes lists as changes of its members.
+    MemberChanges { workspace: String },
 }
 
 /// What the person says of themselves in one workspace, as their shell knows it: what the
@@ -505,6 +508,17 @@ pub enum ShellReply {
         socket: std::path::PathBuf,
         secret: [u8; SHELL_SECRET_BYTES],
     },
+    /// A [`ShellCall::MemberChanges`], or why the device holds none.
+    MemberChanges(Result<Vec<ShellMemberChange>, String>),
+}
+
+/// One change of a workspace's members as its governance names it: the change's hash, the
+/// message naming its action and who decided it, and the time its commit carries (Unix seconds).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellMemberChange {
+    pub change: [u8; 32],
+    pub message: String,
+    pub time: i64,
 }
 
 /// A document the device took a write to.

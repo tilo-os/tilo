@@ -533,6 +533,10 @@ pub struct Version {
     /// history still says who did it. `None` where no one acted for anyone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acted_for: Option<String>,
+    /// The name a checkpoint gave the version it stands at, for the version that is a
+    /// checkpoint: what history calls it, and what a restore can name it by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named: Option<String>,
 }
 
 impl Version {
@@ -825,6 +829,7 @@ pub fn versions_in<'c>(
                 gesture: None,
                 invocation: note.invocation,
                 acted_for: None,
+                named: None,
             }
         })
         .collect();

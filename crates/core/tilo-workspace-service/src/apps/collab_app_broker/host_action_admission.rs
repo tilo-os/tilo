@@ -247,12 +247,19 @@ impl AppBrokerState {
                 // A host with a device or native certificates serves everyone
                 // through retained ownership, so a caller that arrives with no
                 // original admission is refused rather than downgraded. An app
-                // acting by itself has no certificate to downgrade: it is decided
-                // by the grants that name it, and what it starts is its own.
+                // this device's daemon launched, acting by itself, has no
+                // certificate to downgrade: it is decided by the grants that name
+                // it, and what it starts is its own. Having no keys is not being
+                // that app: only the daemon's attestation of the process it
+                // launched is, so a caller restored, carried or crafted to name an
+                // app never owns as it.
                 let keyed =
                     caller.device_public_key().is_some() || caller.user_public_key().is_some();
-                let app_itself = actor.actor().app().is_some();
+                let app_itself = caller
+                    .launched_app()
+                    .is_some_and(|launched| actor.actor().app() == Some(launched));
                 if keyed
+                    || (actor.actor().app().is_some() && !app_itself)
                     || (!app_itself
                         && (self.services.local_person.is_some()
                             || self.services.native_certificates.is_some()))

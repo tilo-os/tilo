@@ -8,11 +8,9 @@
 //! path its actions run; what is read back is the committed governance, the
 //! changes a history or a feed of them reads.
 
-use automerge::Change as AmChange;
 use tilo_action_policy::roles::governance;
 use tilo_action_policy::{Actor, MemberId, PersonId};
 use tilo_peer_state::join::Role;
-use tilo_user_identity::DeviceCert;
 
 use super::tests::{governor, guest_device, test_host};
 use super::*;
@@ -449,5 +447,116 @@ async fn a_base_keeps_every_action_the_history_before_it_took() {
     }
     let times: Vec<i64> = kept.iter().map(|(_, time)| *time).collect();
     assert!(times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
+    server.shutdown().await;
+}
+
+/// What a watcher of the whole workspace reads, the way the desktop's feed
+/// reads it: the members' changes this device's service names, taken into a
+/// log of the workspace's changes, and the page after `cursor`.
+fn feed_after(
+    documents: &crate::device_documents::ServiceDocuments,
+    log: &mut tilo_resource_store::history::feed::ChangeLog,
+    workspace: &str,
+    cursor: Option<&str>,
+) -> tilo_actions::remote::ChangePage {
+    use crate::workspace_documents::DeviceDocuments as _;
+    let named: Vec<([u8; 32], String, i64)> = documents
+        .member_changes(workspace)
+        .expect("the workspace's members read")
+        .into_iter()
+        .map(|change| (change.change, change.message, change.time))
+        .collect();
+    log.take_in_named(
+        &(
+            tilo_action_policy::agent_answers::WORKSPACE_APP.to_owned(),
+            "workspace/members".to_owned(),
+        ),
+        &named,
+    );
+    log.page(cursor, None)
+}
+
+#[tokio::test]
+async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_when() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let by = collab_types::Stamp::by(&actor(owner.user_public_key));
+    let workspace = made_workspace(&workspaces, "Watched").await;
+    let documents = crate::device_documents::ServiceDocuments::of(workspaces.clone());
+    let mut log = tilo_resource_store::history::feed::ChangeLog::new();
+    let cursor = feed_after(&documents, &mut log, &workspace, None).cursor;
+    let started = i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX) * 1000;
+    let (banned, removed, stranger) = ([31u8; 32], [32u8; 32], guest_device().1);
+    for (request, person) in [(1u8, banned), (2, removed)] {
+        workspaces
+            .add_member(
+                &workspace,
+                &owner,
+                AddMemberRequest {
+                    request_id: [request; 32],
+                    user_public_key: person,
+                    place: MemberPlace::Role(Role::Editor),
+                    name: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let gone = |request: u8, person: [u8; 32]| RemoveMemberRequest {
+        request_id: [request; 32],
+        user_public_key: person,
+    };
+    workspaces
+        .ban_member(&workspace, &owner, gone(3, banned))
+        .await
+        .unwrap();
+    // Someone the workspace never let in removes nobody, and nothing of it
+    // reaches a watcher.
+    assert!(
+        workspaces
+            .remove_member(&workspace, &stranger, gone(4, removed))
+            .await
+            .is_err()
+    );
+    workspaces
+        .remove_member(&workspace, &owner, gone(5, removed))
+        .await
+        .unwrap();
+    workspaces
+        .unban_member(&workspace, &owner, gone(6, banned))
+        .await
+        .unwrap();
+
+    let page = feed_after(&documents, &mut log, &workspace, Some(&cursor));
+    let verbs: Vec<&str> = page
+        .changes
+        .iter()
+        .map(|change| change.entry["verb"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        verbs,
+        [
+            governance::ADD_MEMBER,
+            governance::ADD_MEMBER,
+            governance::BAN,
+            governance::REMOVE_MEMBER,
+            governance::UNBAN,
+        ],
+        "each action once, in the order it was made, the first administration's \
+         among them: {page:?}"
+    );
+    for change in &page.changes {
+        assert_eq!(change.app, tilo_action_policy::agent_answers::WORKSPACE_APP);
+        assert_eq!(change.record, "workspace/members");
+        assert_eq!(change.entry["by"], by.as_str(), "{change:?}");
+        assert_eq!(change.entry["happened"], "edited", "{change:?}");
+        let time = change.entry["time_ms"].as_i64().unwrap_or_default();
+        assert!(time >= started, "{time} < {started}: {change:?}");
+    }
+    // Read again, a watcher is told nothing twice.
+    let again = feed_after(&documents, &mut log, &workspace, Some(&page.cursor));
+    assert!(again.changes.is_empty(), "{again:?}");
     server.shutdown().await;
 }

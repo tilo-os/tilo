@@ -19,6 +19,9 @@ fn runtime_binary() -> std::path::PathBuf {
 }
 /// How long a daemon this test started has to answer on its native endpoint.
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
+/// How long a daemon asked to end may take before it is killed: a daemon that never answered is
+/// never waited on for the run's own timeout.
+const ENDING: Duration = Duration::from_secs(30);
 
 fn host(profile: &Path) -> Command {
     let mut command = Command::new(runtime_bin(profile));
@@ -47,6 +50,18 @@ fn runtime_bin(profile: &Path) -> PathBuf {
     } else {
         runtime_binary()
     }
+}
+
+/// The directory the daemon serving `profile` keeps its sockets in: a profile named apart keeps
+/// them beside this account's own, named by its path, so no profile's path ever becomes a
+/// socket's path. Every client derives it the same way (`--connect` included).
+fn sockets_dir(profile: &Path) -> Result<PathBuf> {
+    tilo_api::daemon::profile_sockets(profile).map_err(anyhow::Error::msg)
+}
+
+/// The native endpoint of the daemon serving `profile`, in its [`sockets_dir`].
+fn native_socket(profile: &Path) -> Result<PathBuf> {
+    Ok(sockets_dir(profile)?.join(tilo_paths::machine::DAEMON_NATIVE))
 }
 
 /// The launcher a test's profile starts apps through: the build the run made for the runtime's
@@ -101,20 +116,45 @@ impl DaemonProfile {
         let deadline = Instant::now()
             .checked_add(LAUNCHER_START_CAP)
             .context("the start's deadline")?;
+        let mut unanswered: String;
         loop {
-            if status(self.path()).is_ok_and(|status| {
-                status
-                    .get("pid")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|pid| pid != 0)
-            }) {
-                return Ok(());
+            match status(self.path()) {
+                Ok(status)
+                    if status
+                        .get("pid")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|pid| pid != 0) =>
+                {
+                    return Ok(());
+                }
+                Ok(status) => unanswered = format!("its status answers no pid: {status}"),
+                Err(error) => unanswered = format!("its status: {error:#}"),
             }
-            ensure!(
-                Instant::now() < deadline,
-                "the profile's daemon did not start"
-            );
+            if let Some(daemon) = self.daemon.as_mut()
+                && let Some(ended) = daemon.try_wait().context("whether the daemon ended")?
+            {
+                bail!(
+                    "the profile's daemon ended ({ended}) before it answered: {unanswered}\n{}",
+                    self.log()
+                );
+            }
+            if Instant::now() >= deadline {
+                // One that never answered is ended here, so its log is the failure and nothing
+                // keeps serving behind the test.
+                self.end();
+                bail!(
+                    "the profile's daemon did not start: {unanswered}\n{}",
+                    self.log()
+                );
+            }
             std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    /// End the daemon this profile started: a start that never answered is not asked first.
+    fn end(&mut self) {
+        if let Some(mut daemon) = self.daemon.take() {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
         }
     }
     /// Start the profile's daemon with a launcher beside its runtime binary: apps this profile
@@ -225,7 +265,9 @@ impl Drop for DaemonProfile {
         {
             eprintln!("daemon.log:\n{log}");
         }
-        if let Ok(stream) = UnixStream::connect(self.path().join("native.sock")) {
+        if let Ok(socket) = native_socket(self.path())
+            && let Ok(stream) = UnixStream::connect(socket)
+        {
             let mut stream = stream;
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             let _ = stream.write_all(b"{\"native\":\"status\"}\n");
@@ -241,7 +283,29 @@ impl Drop for DaemonProfile {
             }
         }
         if let Some(mut daemon) = self.daemon.take() {
+            // It was asked to end above; one that does not, or never started, is named and
+            // killed rather than waited on: a failed test must not become the run's timeout.
+            let pid = daemon.id();
+            let deadline = Instant::now()
+                .checked_add(ENDING)
+                .unwrap_or_else(Instant::now);
+            while matches!(daemon.try_wait(), Ok(None)) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if matches!(daemon.try_wait(), Ok(None)) {
+                eprintln!(
+                    "the daemon (pid {pid}) serving {} did not end within {ENDING:?}: killing \
+                     it\n{}",
+                    self.path().display(),
+                    self.log()
+                );
+            }
+            let _ = daemon.kill();
             let _ = daemon.wait();
+        }
+        // The sockets live beside this account's own, not in the profile: they go with it.
+        if let Ok(sockets) = sockets_dir(self.path()) {
+            let _ = std::fs::remove_dir_all(sockets);
         }
     }
 }
@@ -294,7 +358,7 @@ fn a_computer_is_set_up() {
 /// call answers nothing at all.
 fn who_briefly(profile: &Path) -> String {
     (|| -> Result<Value> {
-        let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+        let mut stream = UnixStream::connect(native_socket(profile)?)?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
         stream.write_all(b"{\"native\":\"account#who\"}\n")?;
         let mut line = String::new();
@@ -308,7 +372,7 @@ fn who_briefly(profile: &Path) -> String {
 }
 /// The runtime's answer to `request` on the profile's socket.
 fn ask(profile: &Path, request: &Value) -> Result<Value> {
-    let mut stream = UnixStream::connect(profile.join("native.sock"))
+    let mut stream = UnixStream::connect(native_socket(profile)?)
         .context("connecting to the runtime's profile socket")?;
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -363,7 +427,7 @@ fn launch(profile: &Path, app: &str) -> Result<Value> {
 #[test]
 fn launches_reuse_the_one_daemon_which_recovers_a_stale_socket() -> Result<()> {
     let mut profile = DaemonProfile::unstarted()?;
-    let stale = std::os::unix::net::UnixListener::bind(profile.path().join("native.sock"))?;
+    let stale = std::os::unix::net::UnixListener::bind(native_socket(profile.path())?)?;
     drop(stale);
     profile.start()?;
     profile.found()?;
@@ -604,8 +668,9 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
         let workspace = std::env::var(WORKSPACE).context("the workspace is named")?;
         // This program makes the collaboration connection itself, as a program started by hand
         // does, and names an app this computer never launched.
-        let mut stream = UnixStream::connect(profile.join(tilo_runtime::COLLAB_SOCKET))
-            .context("connecting to the collaboration socket")?;
+        let mut stream =
+            UnixStream::connect(sockets_dir(&profile)?.join(tilo_runtime::COLLAB_SOCKET))
+                .context("connecting to the collaboration socket")?;
         stream
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .context("bounding the refusal")?;
@@ -771,7 +836,7 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
         })
         .collect();
     let report = package_actions::device::change_at(
-        &profile.join("native.sock"),
+        &native_socket(profile)?,
         &package_actions::Change::InstallDev {
             manifest: package_actions::Uploaded {
                 source: dir.join("tilo-app.toml").display().to_string(),
@@ -780,11 +845,17 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
         },
     )
     .map_err(anyhow::Error::msg)?;
-    ensure!(!report.lines.is_empty(), "the device installed nothing");
-    Ok(tilo_app_package::dev_app_id(
-        app,
-        &device.verifying_key().to_bytes(),
-    ))
+    let id = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
+    // The cache says what it installed: an answer that only says why it did not is no install.
+    ensure!(
+        report
+            .lines
+            .iter()
+            .any(|line| line.starts_with(&format!("installed development build: {id}"))),
+        "the device did not install {id}: {}",
+        report.lines.join("\n")
+    );
+    Ok(id)
 }
 
 /// Ask the profile's daemon to start `app` through the same launch a window takes.

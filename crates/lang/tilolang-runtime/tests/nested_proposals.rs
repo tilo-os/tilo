@@ -1,5 +1,6 @@
 //! An action another action calls that reaches outside. Called by someone other than the person
-//! (an agent), the person is asked once, and the call they allow runs inside the caller; a call
+//! (an agent), or delivered as the person's call by the dispatch with no yes of theirs behind
+//! it, the person is asked once, and the call they allow runs inside the caller; a call
 //! they decline ends the caller and takes back what it wrote. A person's own press asks nothing
 //! of what its code asks: what its code calls runs as theirs, and what the press does after it
 //! follows once it is done. A rule of theirs that asks them first still does, on the system's
@@ -237,6 +238,51 @@ default view letters for Box
                 "what the reply wrote before it asked is taken back"
             );
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
+        }
+
+        phase the_persons_call_the_dispatch_delivered_still_asks_about_the_send;
+        {
+            let p = post();
+            // The dispatch delivers the person's reply, admitted for itself: the send its code
+            // makes is not covered by it, so the person is asked, as for an agent's reply.
+            let InvokeOutcome::Waits { run, .. } = p
+                .rt
+                .invoke_admitted(
+                    &me(),
+                    (p.app.action("reply").as_str(), vec![p.letter.clone()]),
+                    None,
+                )
+                .unwrap()
+            else {
+                panic!("the send inside the delivered reply asks");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("send"));
+            assert!(p.rt.pending_outbox().is_empty(), "nothing left before the yes");
+            p.auth.grant_outside(&p.app.action("send"));
+            let out = p.dispatch.allow(&p.rt, &run);
+            assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter goes once, on the yes");
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+        }
+
+        phase the_reply_the_person_approved_sends_on_the_same_yes;
+        {
+            let p = post();
+            // The dispatch delivers the reply again on the person's yes on the system's confirm:
+            // the run is the one they answered, and the send its code makes runs on that yes.
+            let out = p
+                .rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (p.app.action("reply").as_str(), vec![p.letter.clone()]),
+                    None,
+                )
+                .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.dispatch.len(), 0, "nobody is asked again");
+            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter goes once");
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
 
         phase a_trusted_send_runs_without_asking;

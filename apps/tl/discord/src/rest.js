@@ -42,6 +42,20 @@ export function createWebhook({ tokenItem, origin = API }, channel) {
   };
 }
 
+/// How many of a channel's newest messages the bridge reads when it meets the server: what was
+/// said there before, and what was said while it was away.
+export const HISTORY = 50;
+
+/// A channel's newest messages, newest first, as Discord answers them.
+export function channelMessages({ tokenItem, origin = API }, channel, limit = HISTORY) {
+  return {
+    url: `${at(origin)}/channels/${channel}/messages?limit=${limit}`,
+    key: tokenItem,
+    method: "GET",
+    reason: "what was said in a bridged channel before the bridge saw it",
+  };
+}
+
 /// Sends a message through a webhook, answering the message it made there. `webhook` is the
 /// webhook's `id/token`, the address Discord executes it at.
 ///
@@ -166,6 +180,91 @@ export function nickname({ tokenItem, origin = API }, guild, nick) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ nick: nick ? [...nick].slice(0, 32).join("") : null }),
     reason: "who is in the workspace's side of a call",
+  };
+}
+
+/// Kicks, bans or unbans a linked member of `guild`, as the workspace did to their person. The
+/// reason goes to the server's audit log.
+export function member({ tokenItem, origin = API }, guild, op) {
+  const ban = op.op === "ban" || op.op === "unban";
+  const headers = op.reason ? { "x-audit-log-reason": encodeURIComponent(op.reason) } : {};
+  if (op.op === "ban") headers["content-type"] = "application/json";
+  return {
+    url: `${at(origin)}/guilds/${guild}/${ban ? "bans" : "members"}/${op.user}`,
+    key: tokenItem,
+    method: op.op === "ban" ? "PUT" : "DELETE",
+    headers,
+    ...(op.op === "ban" ? { body: "{}" } : {}),
+    reason: "a member the workspace removed, banned or let back",
+  };
+}
+
+/// Makes one of the bridge's roles in `guild`, or brings it back in line when `op.id` names it.
+/// Its answer is the role, whose id joins it to the workspace's role.
+export function applyRole({ tokenItem, origin = API }, guild, op) {
+  return {
+    url: `${at(origin)}/guilds/${guild}/roles${op.id ? `/${op.id}` : ""}`,
+    key: tokenItem,
+    method: op.id ? "PATCH" : "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: op.name, permissions: op.permissions, color: op.color }),
+    reason: "the workspace's roles, kept in the server",
+  };
+}
+
+/// Sets a channel's permission overwrite for one of the bridge's roles.
+export function setOverwrite({ tokenItem, origin = API }, op) {
+  return {
+    url: `${at(origin)}/channels/${op.channel}/permissions/${op.target}`,
+    key: tokenItem,
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ allow: op.allow, deny: op.deny, type: op.target_kind === "member" ? 1 : 0 }),
+    reason: "what a workspace role may not do in a bridged channel",
+  };
+}
+
+/// Gives a member of `guild` one role, or takes it back: one request each.
+export function memberRole({ tokenItem, origin = API }, guild, user, role, given) {
+  return {
+    url: `${at(origin)}/guilds/${guild}/members/${user}/roles/${role}`,
+    key: tokenItem,
+    method: given ? "PUT" : "DELETE",
+    reason: "a linked member's role in the workspace",
+  };
+}
+
+/// The slash commands the bridge answers in a server: `/link` and `/unlink`.
+export const COMMANDS = [
+  {
+    name: "link",
+    type: 1,
+    description: "Link your Discord account to your Tilo account, so you show as yourself on both sides",
+  },
+  { name: "unlink", type: 1, description: "Unlink your Discord account from your Tilo account" },
+];
+
+/// Registers the bridge's slash commands in `guild`, replacing whatever it registered before.
+export function registerCommands({ tokenItem, origin = API }, application, guild) {
+  return {
+    url: `${at(origin)}/applications/${application}/guilds/${guild}/commands`,
+    key: tokenItem,
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(COMMANDS),
+    reason: "the bridge's /link and /unlink",
+  };
+}
+
+/// Answers a slash command with `content`, seen only by who ran it.
+export function answerCommand({ tokenItem, origin = API }, command, content) {
+  return {
+    url: `${at(origin)}/interactions/${command.interaction}/${command.token}/callback`,
+    key: tokenItem,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ type: 4, data: { flags: 64, content } }),
+    reason: "an answer to a slash command",
   };
 }
 

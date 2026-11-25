@@ -337,7 +337,10 @@ pub enum PackageChanges {
     FlatpakFlathub,
     /// Install the app whose built directory is handed over as this device's development build
     /// of it: it marks it, packs it, signs it with its own key, and it runs under its own id.
-    #[effect(kind = "outside")]
+    /// It is this device's own, touching nothing shared: typing `tilo app install --dev`, or
+    /// `tilolang dev` building it here, is the person's decision, and no one else's connection
+    /// installs one ([`tilo_actions::OWN_DEVICE_SCOPE`]).
+    #[effect(kind = "outside", own_device)]
     InstallDev {
         #[param("The app's authored manifest: `{\"source\": \"tilo.content:<hash>\"}`.")]
         manifest: serde_json::Value,

@@ -446,8 +446,9 @@ impl Widget for CallTile {
 
     fn needs_redraw(&self) -> bool {
         // A live frame is asked for on every draw: a tile that shows one repaints with the
-        // window, so the picture moves on the frame after it arrived.
-        self.dirty || self.picture.is_some()
+        // window, so the picture moves on the frame after it arrived. A tile nobody sends
+        // frames to (a page decodes them itself) repaints only when it changed.
+        self.dirty || self.picture_now().is_some()
     }
 
     fn mark_drawn(&mut self) {
@@ -462,9 +463,21 @@ impl Widget for CallTile {
         "CallTile"
     }
 
+    /// The address of the frame the tile shows: a host that decodes the call's stream draws it
+    /// here itself, and never a still of the tile.
+    fn live_picture(&self) -> Option<String> {
+        self.address().map(str::to_owned)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Image).with_name(self.spoken()))
+        let mut node = AccessNode::new(Role::Image).with_name(self.spoken());
+        // The person's name alone, as the tile shows it beside their picture: what a page writes
+        // in its caption, where the words after it are for a reader alone.
+        if !self.name.is_empty() {
+            node = node.with_title(self.name.clone());
+        }
+        Some(node)
     }
 }
 
@@ -510,6 +523,18 @@ mod tests {
             assert_eq!(
                 tile.accessibility().and_then(|node| node.name).as_deref(),
                 Some("Ada, sharing their screen")
+            );
+            let access = tile.accessibility().expect("the tile says what it is");
+            assert_eq!(
+                access.title.as_deref(),
+                Some("Ada"),
+                "the player's name alone is the tile's caption"
+            );
+            let address = format!("tilo-live://call/{}/screen", "ab".repeat(32));
+            assert_eq!(
+                tile.live_picture().as_deref(),
+                Some(address.as_str()),
+                "a host that decodes the call's stream draws it where the tile stands"
             );
         }
 

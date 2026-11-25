@@ -10,11 +10,14 @@
 //! is given, so the owner's role holds every part by default, and anyone else
 //! writes what their role and grants let them ([`settings`], [`sandbox`]).
 //!
-//! An admission through an invitation is the inviter's: any key holder that
-//! may invite writes it, with the joiner's device and the redemption receipt
-//! carrying the signed invitation, and every receiver checks that invitation
-//! itself ([`invitation_admits`]). A device certified by a member's root is
-//! that member's device: any key holder writes it in.
+//! A device writes its own way in, and no device writes another's: an
+//! admission through an invitation is the joining device's, with its row and
+//! the redemption receipt carrying the signed invitation, which every receiver
+//! checks itself ([`invitation_admits`]); a device certified by a member's
+//! root writes its own row as that member's device. Another device's row
+//! changes only as it takes that device out. A holder of the workspace is
+//! named by its owner or an administrator in the workspace's hosts, not on its
+//! member list, and that naming gives it no person and no role.
 
 use super::AdmissionFailure;
 use std::collections::BTreeMap;
@@ -228,16 +231,11 @@ fn operations_name_rows(
             // An admission writes the device it admits, and names that row
             // itself: each admission of a batch writes its own device.
             MembershipOpCommand::Admit { person, .. } => {
-                // An admission is written by the person it admits, the
-                // invitation its authority, or by a member: a device whose
-                // person holds no role signs nobody else in.
-                if *person != op.author.user_public_key
-                    && crate::workspace::policy_of(at, workspace)
-                        .active_role(&op.person())
-                        .is_none()
-                {
+                // An admission is written by the device it admits, the
+                // invitation its authority: no device signs anyone else in.
+                if *person != op.author.user_public_key {
                     return Err(MembershipRefusal::Refused(
-                        "an admission is its own person's or a member's to write".into(),
+                        "an admission is written by the device it admits".into(),
                     ));
                 }
                 if held_rows.contains(&GovernanceRow::Identities) {
@@ -485,7 +483,13 @@ fn rows_permitted(
                     (before, written),
                     (op.at_ns, now_ns),
                 )?;
-                identities(&held, &wanted, &invited, writer, (before, written))?;
+                identities(
+                    &held,
+                    &wanted,
+                    &invited,
+                    (writer, &op.author.device_public_key),
+                    (before, written),
+                )?;
             }
             _ => {
                 return Err(MembershipRefusal::Refused(format!(
@@ -888,45 +892,56 @@ fn identities(
     held: &WorkspacePolicy,
     wanted: &WorkspacePolicy,
     invited: &BTreeMap<String, (Role, String)>,
-    (actor, authority, cx): (&str, &tilo_action_policy::Authority<'_>, &Context<'_>),
+    ((actor, authority, cx), author): (
+        (&str, &tilo_action_policy::Authority<'_>, &Context<'_>),
+        &[u8; 32],
+    ),
     (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
 ) -> Result<(), MembershipRefusal> {
-    let person_of = |bytes: &[u8]| {
+    let decoded = |bytes: &[u8]| {
         GovernedIdentity::decode(bytes)
-            .map(|identity| hex::encode(identity.device_cert.user_public_key))
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
     };
+    let person_of =
+        |bytes: &[u8]| decoded(bytes).map(|row| hex::encode(row.device_cert.user_public_key));
     let may = |action: &str| held.check_action(authority, action, cx, false).is_ok();
+    let author = hex::encode(author);
     for (device, bytes) in &written.identities {
-        if before.identities.get(device) == Some(bytes) {
+        let held_row = before.identities.get(device);
+        if held_row == Some(bytes) {
             continue;
         }
         let person = person_of(bytes)?;
-        let identity = GovernedIdentity::decode(bytes)
-            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
+        let identity = decoded(bytes)?;
         tilo_user_identity::verify_device_cert(&identity.device_cert)
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
+        // A device writes its own row, and no device writes another's in:
+        // another device's row changes only as it takes that device out.
+        if *device != author {
+            let takes_out = match held_row {
+                Some(held_row) => takes_out(&decoded(held_row)?, identity.clone())?,
+                None => identity.removed,
+            };
+            if !takes_out {
+                return Err(MembershipRefusal::Refused(format!(
+                    "device {device} writes its own row: no other device writes it in"
+                )));
+            }
+            if person != actor && !may(governance::REMOVE_MEMBER) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "device {device} is not the writer's to remove"
+                )));
+            }
+            continue;
+        }
+        if person != actor {
+            return Err(MembershipRefusal::Refused(format!(
+                "device {device} is listed under another person than its writer's"
+            )));
+        }
         if wanted.role_of(&person).is_none() && !invited.contains_key(&person) {
             return Err(MembershipRefusal::Refused(format!(
                 "device {device} is not of a member"
-            )));
-        }
-        let redeemed = invited
-            .get(&person)
-            .is_some_and(|(_, redeemer)| redeemer == device);
-        // A device certified by a member's root is that member's: the
-        // device writes itself in when it first asks, or a member does.
-        let further = !before.identities.contains_key(device)
-            && held.role_of(&person).is_some()
-            && identity.admission.is_none()
-            && identity.admissions.is_empty()
-            && identity.delegate.is_none();
-        // A device row of someone else is written only by a member: one
-        // holding no role writes its own device's row and nothing else.
-        let member = held.role_of(actor).is_some();
-        if person != actor && !((redeemed || further) && member) && !may(governance::ADD_MEMBER) {
-            return Err(MembershipRefusal::Refused(format!(
-                "device {device} is not the writer's to admit"
             )));
         }
     }
@@ -948,6 +963,43 @@ fn identities(
         return Err(MembershipRefusal::Refused("the owner's role".into()));
     }
     Ok(())
+}
+
+/// Whether `written`, another device's row in place of `held`, only takes the
+/// device out: it marks the row removed, records revocations or withdraws an
+/// agent's delegation, and gives the device nothing `held` did not, whether a
+/// certificate, an admission or a delegation.
+fn takes_out(
+    held: &GovernedIdentity,
+    mut written: GovernedIdentity,
+) -> Result<bool, MembershipRefusal> {
+    if held.removed && !written.removed {
+        return Ok(false);
+    }
+    if !held
+        .revocations
+        .iter()
+        .all(|entry| written.revocations.contains(entry))
+    {
+        return Ok(false);
+    }
+    match (&held.delegate, &mut written.delegate) {
+        (Some(was), Some(is)) => {
+            if was.withdrawn_at_ns.is_some() && is.withdrawn_at_ns != was.withdrawn_at_ns {
+                return Ok(false);
+            }
+            is.withdrawn_at_ns = was.withdrawn_at_ns;
+        }
+        (None, None) => {}
+        _ => return Ok(false),
+    }
+    written.removed = held.removed;
+    written.revocations.clone_from(&held.revocations);
+    let encoded = |row: &GovernedIdentity| {
+        row.encode()
+            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
+    };
+    Ok(encoded(&written)? == encoded(held)?)
 }
 
 /// The sandbox capabilities the batch records or takes back: each recorded

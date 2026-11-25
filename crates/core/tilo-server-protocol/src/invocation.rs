@@ -292,7 +292,7 @@ pub fn verify_served(
 /// change names.
 pub fn verify_recorded(
     context: &tilo_actions::ActionContext,
-    (workspace, keeper): (&str, Option<RecordHost<'_>>),
+    (workspace, app, keeper): (&str, &str, Option<RecordHost<'_>>),
     revocations: &RevocationList,
     at_ns: u64,
     published_name: Option<PublishedName<'_>>,
@@ -323,7 +323,7 @@ pub fn verify_recorded(
     // Or it is a step the called action declares it takes in another record, written by the
     // device that keeps that record. A host that ran another resource's action for the call, or
     // another action on it, is refused here.
-    let declared = outside_call(context, &statement.target, published_name);
+    let declared = outside_call(context, &statement.target, app, published_name);
     if declared && !declared_step(context, &statement.target, keeper.map(|keeper| keeper.app)) {
         return Err(StatementMismatch::Target.into());
     }
@@ -373,17 +373,20 @@ pub struct RecordHost<'a> {
     pub device: &'a [u8; 32],
 }
 
-/// Whether the change `context` records is outside the call `target` names: another resource
-/// than the call's, or another verb than the one it asked. Such a change counts only as a step
-/// the called action declares ([`verify_recorded`]).
+/// Whether the change `context` records, in a record of `app`, is outside the call `target`
+/// names: another resource than the call's, or another verb than the one it asked. A step through
+/// the record's history (an undo, a checkpoint) is inside a call that names the app. Such a
+/// change counts only as a step the called action declares ([`verify_recorded`]).
 fn outside_call(
     context: &tilo_actions::ActionContext,
     target: &tilo_actions::remote::RemoteActionTarget,
+    app: &str,
     published_name: Option<PublishedName<'_>>,
 ) -> bool {
     let named = &target.address.resource;
     let in_resource = match &context.resource {
         Some(resource) => &resource.kind == named || &resource.id == named,
+        None if matches!(&context.what, Some(tilo_actions::Did::History(_))) => named == app,
         None => context.what.is_none(),
     };
     let names_verb = match &context.what {
@@ -405,19 +408,33 @@ fn same_action(claimed: &str, signed: &str, published_name: Option<PublishedName
             .is_some_and(|name| name == signed)
 }
 
-/// Whether the change `context` records is a step the call it keeps declares, rather than the
-/// call's own action on its own resource: what the device that keeps the record took for the
-/// call ([`verify_recorded`] checks that it may). Such a step is decided as the call's effect:
-/// its caller's, under the call that was allowed, never again as an edit the agent makes.
+/// Whether the change `context` records, in a record of `app`, is a step the call it keeps
+/// declares, rather than the call's own action on its own resource: what the device that keeps
+/// the record took for the call ([`verify_recorded`] checks that it may). Such a step is decided
+/// as the call's effect: its caller's, under the call that was allowed, never again as an edit
+/// the agent makes.
 #[must_use]
 pub fn declared_effect(
     context: &tilo_actions::ActionContext,
+    app: &str,
     published_name: Option<PublishedName<'_>>,
 ) -> bool {
-    context
-        .signed
-        .as_deref()
-        .is_some_and(|call| outside_call(context, &call.signed.statement().target, published_name))
+    context.signed.as_deref().is_some_and(|call| {
+        outside_call(
+            context,
+            &call.signed.statement().target,
+            app,
+            published_name,
+        )
+    })
+}
+
+/// Whether the change `context` records takes changes of its record back.
+fn undoes(context: &tilo_actions::ActionContext) -> bool {
+    matches!(
+        &context.what,
+        Some(tilo_actions::Did::History(step)) if step.op == tilo_actions::HistoryOp::Undo
+    )
 }
 
 /// Whether `context` records a step the action `target` names declares it takes
@@ -431,12 +448,27 @@ fn declared_step(
     target: &tilo_actions::remote::RemoteActionTarget,
     keeper: Option<&str>,
 ) -> bool {
+    // An undo names no kind of its own: the call declares taking back changes of the app's
+    // records, whichever kinds they wrote.
+    if let Some(app) = keeper
+        && undoes(context)
+    {
+        return declares_undo(target, app);
+    }
     let (Some(app), Some(tilo_actions::Did::Verb(verb)), Some(resource)) =
         (keeper, &context.what, &context.resource)
     else {
         return false;
     };
     verb.action.kind == resource.kind && declares(target, app, &resource.kind, &verb.action.action)
+}
+
+/// Whether the action `target` names declares taking back changes of `app`'s records
+/// ([`tilo_actions::ActionEffect::undo`]).
+fn declares_undo(target: &tilo_actions::remote::RemoteActionTarget, app: &str) -> bool {
+    tilo_actions::remote::declared_effects(target)
+        .iter()
+        .any(|effect| effect.undoes_in(app))
 }
 
 /// Whether the action `target` names declares the step `verb` on records of `kind` in `app`.
@@ -489,10 +521,16 @@ pub fn verify_carried(
     let outside = carried_effect(signed, record, claim, published_name);
     let verbs = claimed_verbs(claim);
     let declared = keeper.is_some()
-        && !verbs.is_empty()
-        && verbs
-            .iter()
-            .all(|action| declares(&statement.target, record.app, &action.kind, &action.action));
+        && if verbs.is_empty() {
+            // A store's change claims only the kinds of the records it writes: what a receiver
+            // without the key reads of a declared undo. Every device that opens it checks that it
+            // is that undo ([`verify_recorded`]), and reads the record without it otherwise.
+            claim_edits_records(claim) && declares_undo(&statement.target, record.app)
+        } else {
+            verbs
+                .iter()
+                .all(|action| declares(&statement.target, record.app, &action.kind, &action.action))
+        };
     if outside && !declared {
         return Err(StatementMismatch::Target.into());
     }
@@ -559,6 +597,16 @@ pub fn carried_effect(
         .iter()
         .all(|action| same_action(&action.action, &target.address.action, published_name));
     !(in_record && names_verb)
+}
+
+/// Whether every action `claim` names is an edit of a record's fields, as a store's change is
+/// claimed.
+fn claim_edits_records(claim: &collab_types::claim::ChangeClaim) -> bool {
+    claim
+        .action
+        .members()
+        .into_iter()
+        .all(|member| matches!(member, collab_types::claim::ClaimedAction::Edit { .. }))
 }
 
 /// Whether the claim names `kind` as the resource kind of one of its actions.
@@ -1194,7 +1242,7 @@ mod tests {
                         invoker: Some(tilo_actions::ActionInvoker::admitted(invoker)),
                         ..tilo_actions::ActionContext::default()
                     },
-                    (WORKSPACE, None),
+                    (WORKSPACE, "so.tilo.notes", None),
                     &RevocationList::new(),
                     NOW,
                     None,
@@ -1264,7 +1312,7 @@ mod tests {
             let none = RevocationList::new();
             // The call's own resource and action are inside it; another of either is not.
             assert_eq!(
-                verify_recorded(&change("note:1", "note", "rename"), (WORKSPACE, None), &none, NOW, None),
+                verify_recorded(&change("note:1", "note", "rename"), (WORKSPACE, "so.tilo.notes", None), &none, NOW, None),
                 Ok(Some(cert))
             );
             for outside in [
@@ -1272,7 +1320,7 @@ mod tests {
                 change("note:1", "note", "delete"),
             ] {
                 assert_eq!(
-                    verify_recorded(&outside, (WORKSPACE, None), &none, NOW, None),
+                    verify_recorded(&outside, (WORKSPACE, "so.tilo.notes", None), &none, NOW, None),
                     Err(InvocationError::Mismatch(StatementMismatch::Target))
                 );
             }
@@ -1322,13 +1370,13 @@ mod tests {
             let none = RevocationList::new();
             let host = [7; 32];
             let keeper = |app| RecordHost { app, device: &host };
-            let kept_by = |keeper| verify_recorded(&step("keep-sealed"), (WORKSPACE, keeper), &none, NOW, None);
+            let kept_by = |keeper| verify_recorded(&step("keep-sealed"), (WORKSPACE, "so.tilo.passwords", keeper), &none, NOW, None);
             assert_eq!(kept_by(Some(keeper("so.tilo.passwords"))), Ok(Some(cert)));
             let refused = Err(InvocationError::Mismatch(StatementMismatch::Target));
             assert_eq!(kept_by(None), refused);
             assert_eq!(kept_by(Some(keeper("so.tilo.notes"))), refused);
             assert_eq!(
-                verify_recorded(&step("remove-sealed"), (WORKSPACE, Some(keeper("so.tilo.passwords"))), &none, NOW, None),
+                verify_recorded(&step("remove-sealed"), (WORKSPACE, "so.tilo.passwords", Some(keeper("so.tilo.passwords"))), &none, NOW, None),
                 refused
             );
         }
@@ -1376,19 +1424,19 @@ mod tests {
                 })
             };
             let used = step("keep-uses", &agent);
-            assert!(declared_effect(&used, None));
+            assert!(declared_effect(&used, "so.tilo.passwords", None));
             assert_eq!(
-                verify_recorded(&used, (WORKSPACE, keeper(&host.device_public_key)), &none, NOW, None),
+                verify_recorded(&used, (WORKSPACE, "so.tilo.passwords", keeper(&host.device_public_key)), &none, NOW, None),
                 Ok(Some(host.clone()))
             );
             assert!(
-                verify_recorded(&used, (WORKSPACE, keeper(&[9; 32])), &none, NOW, None).is_err(),
+                verify_recorded(&used, (WORKSPACE, "so.tilo.passwords", keeper(&[9; 32])), &none, NOW, None).is_err(),
                 "another device than the keeper signed it"
             );
             assert_eq!(
                 verify_recorded(
                     &step("keep-sealed", &agent),
-                    (WORKSPACE, keeper(&host.device_public_key)),
+                    (WORKSPACE, "so.tilo.passwords", keeper(&host.device_public_key)),
                     &none,
                     NOW,
                     None
@@ -1399,7 +1447,7 @@ mod tests {
             assert_eq!(
                 verify_recorded(
                     &step("keep-uses", &Acting::person(ada)),
-                    (WORKSPACE, keeper(&host.device_public_key)),
+                    (WORKSPACE, "so.tilo.passwords", keeper(&host.device_public_key)),
                     &none,
                     NOW,
                     None
@@ -1407,6 +1455,75 @@ mod tests {
                 Err(InvocationError::NotInvoker),
                 "the host never names the person as having made it"
             );
+        }
+
+        phase an_undo_counts_as_a_step_only_where_its_call_declares_it;
+        // Alice's moderation agent asks, under its own key, to take changes back in the chat:
+        // the undo the host writes in the chat's record names that call and checks. The same undo
+        // in another app's record, or written by a device that does not keep the record, is
+        // outside what the call declares; a call that declares no undo admits none.
+        {
+            use tilo_actions::remote::{MODERATED_APP, MODERATION_HISTORY, MODERATION_PROVIDER, MODERATION_UNDO};
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let person = hex::encode(root.verifying_key().to_bytes());
+            let workspace = *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes();
+            let agent_key = SigningKey::from_bytes(&[11; 32]);
+            let agent = agent_grant_of(&root, &agent_key, AgentScope::agent_in(workspace, "scout"));
+            let mut moderating = request();
+            moderating.target = RemoteActionTarget {
+                provider: MODERATION_PROVIDER.into(),
+                address: ActionAddress::new(MODERATION_HISTORY, MODERATION_UNDO),
+            };
+            assert_eq!(
+                tilo_actions::remote::declared_effects(&moderating.target),
+                vec![tilo_actions::ActionEffect::undo(MODERATED_APP)]
+            );
+            let undo = |asked: &InvokeRequest| tilo_actions::ActionContext {
+                source_invocation: Some(asked.invocation),
+                signed: tilo_actions::remote::SignedCall::of(asked).map(Box::new),
+                invoker: Some(tilo_actions::ActionInvoker::admitted(
+                    &Acting::agent("scout").acting_for(Acting::person(person.clone())),
+                )),
+                what: Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+                    op: tilo_actions::HistoryOp::Undo,
+                    steps: 1,
+                    of: None,
+                    undoes: Some("the person's post".into()),
+                    verb: "send".into(),
+                })),
+                ..tilo_actions::ActionContext::default()
+            };
+            let none = RevocationList::new();
+            let host = [7; 32];
+            let kept_in = |context: &tilo_actions::ActionContext, app, keeper: Option<&str>| {
+                verify_recorded(
+                    context,
+                    (WORKSPACE, app, keeper.map(|app| RecordHost { app, device: &host })),
+                    &none,
+                    NOW,
+                    None,
+                )
+            };
+            let asked = signed(&moderating, &agent, &agent_key, NOW);
+            let taken = undo(&asked);
+            assert!(declared_effect(&taken, MODERATED_APP, None));
+            assert_eq!(kept_in(&taken, MODERATED_APP, Some(MODERATED_APP)), Ok(Some(agent.clone())));
+            let outside = Err(InvocationError::Mismatch(StatementMismatch::Target));
+            assert_eq!(kept_in(&taken, "so.tilo.notes", Some("so.tilo.notes")), outside);
+            assert_eq!(kept_in(&taken, MODERATED_APP, None), outside);
+            // A call that declares no undo admits none, from the host or anyone.
+            let renaming = signed(&request(), &agent, &agent_key, NOW);
+            assert_eq!(kept_in(&undo(&renaming), MODERATED_APP, Some(MODERATED_APP)), outside);
+            // A page's call names its app: an undo at that page is the call's own, declared or not.
+            let mut paging = request();
+            paging.target = RemoteActionTarget {
+                provider: "so.tilo.notes".into(),
+                address: ActionAddress::new("so.tilo.notes", "undo"),
+            };
+            let paged = signed(&paging, &agent, &agent_key, NOW);
+            assert!(!declared_effect(&undo(&paged), "so.tilo.notes", None));
+            assert_eq!(kept_in(&undo(&paged), "so.tilo.notes", None), Ok(Some(agent)));
+            assert_eq!(kept_in(&undo(&paged), MODERATED_APP, None), outside);
         }
 
         phase a_device_writes_only_for_its_own_person_and_the_agents_it_runs;
@@ -1434,7 +1551,7 @@ mod tests {
                         invoker: Some(tilo_actions::ActionInvoker::admitted(&answering_bo)),
                         ..tilo_actions::ActionContext::default()
                     },
-                    (WORKSPACE, None),
+                    (WORKSPACE, "so.tilo.notes", None),
                     &RevocationList::new(),
                     NOW,
                     None,

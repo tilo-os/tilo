@@ -86,7 +86,7 @@ pub(super) struct AppAssemblyValues {
     pub autofocus_first: Option<bool>,
     pub autofocus_on_structure_change: Option<bool>,
     pub appearance_reconcile: Option<bool>,
-    pub theme_store_stamp: Option<Option<settings_store::SettingsStamp>>,
+    pub theme_store_stamp: Option<Option<crate::settings_source::SettingsStamp>>,
     pub last_theme_store_check: Option<Instant>,
     pub input: Option<InputRuntime>,
     pub focus_history: Option<HistoryRuntime>,

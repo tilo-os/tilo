@@ -469,6 +469,8 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .map(Value::Float)
             .ok_or_else(|| "number out of range".to_owned()),
         (Ty::Duration, _) => duration_value(json),
+        // A JSON document is taken as it was given, whatever its shape.
+        (Ty::Json, _) => Ok(Value::Json(Box::new(json.clone()))),
         // A union of documents: the reference's kind says which of them it is.
         (Ty::Union(keys), _) => union_value(host, meta, json, keys),
         _ => from_json(json),
@@ -909,6 +911,25 @@ impl HostInner {
         }
     }
 
+    /// Run the call the API admitted for `invoker`, made through `through`'s process when it
+    /// names one. A call the person approved on the system's confirm is the run they answered:
+    /// what its own code calls runs on that yes. Any other asks again for what asks.
+    fn run_admitted(
+        &self,
+        invoker: &Actor,
+        through: Option<&str>,
+        action: (&str, Vec<Value>),
+        from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        if crate::page::approved() {
+            self.runtime
+                .invoke_approved_through(invoker, through, action, from)
+        } else {
+            self.runtime
+                .invoke_admitted_through(invoker, through, action, from)
+        }
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         // An edit of a field an action settles is that action, given the value.
@@ -972,6 +993,7 @@ impl HostInner {
             request
                 .caller
                 .and_then(|caller| caller.on_behalf_of.clone()),
+            request.caller.and_then(crate::publish::Caller::acting_for),
         );
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
@@ -979,8 +1001,7 @@ impl HostInner {
                 // The API admitted the call before it asked for its plan, asking the person
                 // first where it had to: the run does not ask them again.
                 let outcome = self
-                    .runtime
-                    .invoke_admitted_through(
+                    .run_admitted(
                         &invoker,
                         request.caller.and_then(|caller| caller.app.as_deref()),
                         (request.action_id, args),
@@ -1854,6 +1875,13 @@ impl Host {
     /// off runs once when one comes up. Returns how many ran here.
     pub fn run_triggers(&self, now: i64) -> usize {
         crate::triggers::run_due(self, &self.inner.triggers, now)
+    }
+
+    /// What this host's triggers that name a device land on `device`, the device of `person`,
+    /// after `now`: the moments it arms its own wakeups for ([`crate::triggers::landing`]).
+    #[must_use]
+    pub fn landing(&self, device: &str, person: &str, now: i64) -> Vec<crate::triggers::Landing> {
+        crate::triggers::landing(self, device, person, now)
     }
 
     /// The next instant strictly after `now` at which a trigger has something to run: what the

@@ -365,6 +365,66 @@ tilo_test_env::scenario! {
         assert!(app.undo());
         assert_eq!(app.state().title, "Hardware");
     }
+
+    phase history_does_not_restore_a_record_stored_at_another_version;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
+        let version = app.versions().pop().unwrap().hash;
+        app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
+        // A newer app wrote the record since.
+        app.merge_peer_edit(|doc| {
+            tilo_app::tilo_resource::evolution::write_version(doc, Checklist::VERSION + 1).unwrap();
+        });
+        let before = app.read_document(|doc| doc.clone().get_heads());
+        let said = restore_in_history(&mut app, &version);
+        assert!(said.contains("stored at version"), "{said}");
+        // This app no longer reads the record, so nothing was written to it.
+        assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
+    }
+
+    phase history_does_not_restore_a_version_that_no_longer_opens;
+    {
+        use tilo_app::automerge::transaction::Transactable as _;
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
+        // Another writer once left the title as something no checklist reads, and set it right.
+        app.merge_peer_edit(|doc| {
+            doc.put_object(tilo_app::automerge::ROOT, "title", tilo_app::automerge::ObjType::List)
+                .unwrap();
+        });
+        let version = app.versions().pop().unwrap().hash;
+        app.merge_peer_edit(|doc| {
+            doc.put(tilo_app::automerge::ROOT, "title", "Hardware").unwrap();
+        });
+        let said = restore_in_history(&mut app, &version);
+        assert!(said.contains("no longer opens"), "{said}");
+        assert_eq!(app.state().title, "Hardware");
+    }
+}
+
+/// Restore the version `version` from the History pane as a person does, and what the pane says.
+fn restore_in_history(
+    app: &mut TestApp<ChecklistApp>,
+    version: &tilo_app::automerge::ChangeHash,
+) -> String {
+    let harness = app.harness();
+    harness.click_named("history-open").unwrap();
+    let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
+    let target = format!("timeline-entry:{}", tilo_app::HistoryEntryId::hex(&entry));
+    harness
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &tilo_app::a11y::Action::Activate,
+        )
+        .unwrap();
+    harness.click_named("history-restore").unwrap();
+    harness
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    harness.relayout();
+    harness.inspection_json().unwrap()
 }
 
 tilo_test_env::scenario! {

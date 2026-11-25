@@ -483,7 +483,7 @@ impl App {
             self.focused_node = None;
             let changed = history.service_restore(
                 &mut self.state,
-                self.root_widget.as_ref(),
+                self.root_widget.as_mut(),
                 &self.permission_ctx,
                 &self.collaboration.local_author,
             );

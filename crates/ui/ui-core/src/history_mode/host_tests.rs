@@ -18,7 +18,6 @@ static DEFINITION: HistoryDefinition = HistoryDefinition {
         key: "document",
         title: "Notebook",
         presentation: HistoryPresentation::Domain { create: preview },
-        content_schema: None,
     }],
 };
 struct NotebookPreview {
@@ -611,7 +610,6 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
             presentation: HistoryPresentation::External {
                 reason: "Fixture history unavailable",
             },
-            content_schema: None,
         }],
     };
     let registration = HistoryRegistration::new(
@@ -668,7 +666,6 @@ static FOLDER_COMPOSITION: HistoryDefinition = HistoryDefinition {
         key: "folder",
         title: "Folder",
         presentation: HistoryPresentation::Folder,
-        content_schema: None,
     }],
 };
 

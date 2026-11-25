@@ -932,6 +932,11 @@ impl Core {
             let mut node =
                 Self::action_button(action, &format!("{key}~{part}~more-{index}"), entry, false);
             node.props.insert("in_menu".to_owned(), on_off(true));
+            // The run an action stands in folds into one row of the bar's menu, as it does in a
+            // header's: the system's one Export… lists the formats under it.
+            if let Some(group) = opt_text(action, GROUP) {
+                node.props.insert("group".to_owned(), Value::text(group));
+            }
             self.put_in_part(shell, part, node)?;
         }
         self.costs

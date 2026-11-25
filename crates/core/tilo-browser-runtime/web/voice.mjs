@@ -20,8 +20,10 @@
  *   (`demand` events), what the page shows of each device is told to the
  *   live session (`signalling.showing`), and a device that starts showing a source
  *   is asked for a keyframe (`signalling.keyframe`) until one arrives;
- * - the pictures the live session delivers for the call's devices, admitted to the
- *   inbox as they come (`picture` events), for the app to draw;
+ * - the pictures the live session delivers for the call's devices (`picture`
+ *   events): decoded here with `WebCodecs` for whoever draws them where the
+ *   call's tiles stand (`onPicture`), or kept in the inbox for a host that
+ *   decodes them itself;
  * - who is speaking, from the levels the audio thread measures;
  * - whether this person is muted or deafened, told to the host with what they
  *   show whenever it changes; a deafened person hears nothing of the call and
@@ -39,7 +41,7 @@
  */
 import {hex, unhex} from './hex.mjs';
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
-import {createPictureEncoder, createPictureInbox, openSource, pictureObject, videoInputs} from './voice-video.mjs';
+import {createPictureDecoder, createPictureEncoder, createPictureInbox, openSource, pictureObject, videoInputs} from './voice-video.mjs';
 import {callIdOf} from './voice-controls.mjs';
 
 /** RMS above which a member counts as speaking, and how long it stays so. */
@@ -146,6 +148,19 @@ export function createVoiceCall({
   const asking = new Set();
   const ready = new Set();
   const inbox = createPictureInbox();
+  /** Whoever draws the call's pictures here, where its tiles stand (a hosted page's tiles in its
+   * HTML): pictures are decoded and handed to them, and none is kept for a host that collects. */
+  const frameListeners = new Set();
+  const decoders = createPictureDecoder({
+    environment,
+    onFrame: (person, source, frame) => {
+      for (const listener of [...frameListeners]) {
+        try { listener(person, source, frame); } catch (error) { report({type: 'video-frame-error', error}); }
+      }
+    },
+    report,
+  });
+  const drawsPicturesHere = () => frameListeners.size > 0;
   /** What left and arrived over the live session, for diagnostics and tests. */
   const counters = {frames: 0, heard: 0, sent: 0, pictures: 0, showing: 0};
 
@@ -359,7 +374,11 @@ export function createVoiceCall({
     // This person's own tile draws what their camera makes at its layer.
     if (picture.source === 'camera' && ownLayer === picture.layer) {
       const self = members().find(member => member.self);
-      if (self) inbox.admit({person: self.user, stream: 'own/camera', source: picture.source, object: pictureObject(picture)}, picture.keyframe);
+      if (self) {
+        const object = pictureObject(picture);
+        if (drawsPicturesHere()) decoders.admit({person: self.user, stream: 'own/camera', source: picture.source, object});
+        else inbox.admit({person: self.user, stream: 'own/camera', source: picture.source, object}, picture.keyframe);
+      }
     }
   }
 
@@ -407,6 +426,7 @@ export function createVoiceCall({
     asking.clear();
     ready.clear();
     inbox.clear();
+    decoders.reset();
   }
 
   /** Turn `source` (`camera`, `screen`) on or off in the call. */
@@ -441,8 +461,8 @@ export function createVoiceCall({
     update({[source]: true, videoIssue: null});
   }
 
-  /** One picture the live session delivered for a device: admitted to the inbox as
-   * it comes, for the app to draw. */
+  /** One picture the live session delivered for a device: decoded where a page draws it, or
+   * admitted to the inbox as it comes for a host that decodes it itself. */
   function heardPicture(picture) {
     const person = grant?.members.find(member => member.device === picture.from)?.user;
     const source = picture.source;
@@ -454,7 +474,9 @@ export function createVoiceCall({
       asking.delete(`${picture.from}|${source}`);
       ready.add(`${picture.from}|${source}`);
     }
-    inbox.admit({person, stream: `${picture.from}/${generation}`, source, object}, picture.keyframe);
+    const stream = `${picture.from}/${generation}`;
+    if (drawsPicturesHere()) decoders.admit({person, stream, source, object});
+    else inbox.admit({person, stream, source, object}, picture.keyframe);
   }
 
   /** What the live session says the call shows of this page: the layers its encoders
@@ -679,7 +701,19 @@ export function createVoiceCall({
       for (const key of [...asking, ...ready]) if (!keys.has(key)) { asking.delete(key); ready.delete(key); }
       if (inCall()) sendShowing();
     },
-    /** The pictures received after `after`: `{pictures, cursor}`, objects in base64. */
+    /** Draw the call's pictures here, where its tiles stand: `listener(person, source, frame)`
+     * gets every picture a decoder makes, and draws it before it returns. While one listens the
+     * pictures are decoded here and none waits in the inbox. Returns the call that stops it. */
+    onPicture(listener) {
+      frameListeners.add(listener);
+      return () => {
+        frameListeners.delete(listener);
+        if (frameListeners.size === 0) decoders.reset();
+      };
+    },
+    /** The pictures received after `after`: `{pictures, cursor}`, objects in base64. A host that
+     * draws them itself asks for these; a page whose tiles stand in its HTML listens instead
+     * ([`onPicture`](#onPicture)). */
     takePictures: (after, budget) => inbox.take(after, budget),
     /** Resolves when a picture arrives or `ms` passed. */
     waitPictures: ms => inbox.wait(ms),

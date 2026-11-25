@@ -352,6 +352,45 @@ fn number_of(html: &str, mark: &str) -> u32 {
         .unwrap_or_else(|| panic!("the element with {mark} is numbered: {html}"))
 }
 
+/// A call's tile is the browser's picture: the page marks where it stands and carries a canvas
+/// the page decodes the call's stream into, never a still of the tile's paint.
+#[test]
+fn a_call_tile_is_a_canvas_the_page_decodes_and_never_a_picture() {
+    use crate::widget::{CallSource, CallTile};
+    let person = "ab".repeat(32);
+    let tile = CallTile::of(
+        crate::component::Person::new(tilo_actions::MemberId::person(&person), "Ada"),
+        CallSource::Camera,
+    );
+    let mut frame = framed(Box::new(tile), (640, 360));
+    let composition = shown(&mut frame);
+    // No still of the tile is drawn: the page carries the stream.
+    fn painted(node: &Composed) -> bool {
+        node.picture.is_some() || node.children.iter().any(painted)
+    }
+    assert!(
+        !painted(&composition.root),
+        "a live picture is not painted: {composition:?}"
+    );
+    let html = Page::new().render(&composition);
+    assert!(
+        html.contains(&format!("data-live=\"tilo-live://call/{person}/camera\"")),
+        "the page says which stream the tile shows: {html}"
+    );
+    assert!(
+        html.contains("<canvas class=\"tilo-call-picture\""),
+        "the tile holds the canvas the page draws: {html}"
+    );
+    assert!(
+        html.contains("tilo-call-name") && html.contains("Ada"),
+        "the tile says whose it is: {html}"
+    );
+    assert!(
+        !html.contains("data:image/png"),
+        "no picture of the tile is sent: {html}"
+    );
+}
+
 #[test]
 fn an_iso_date_time_or_span_is_a_time() {
     for time in [

@@ -233,18 +233,28 @@ tilo_test_env::scenario! {
     phase sizes_the_store_does_not_take_are_refused_before_anything_opens;
     {
         let fixture = fixture();
-        for size in [0, 1025] {
-            let refused = fixture
-                .puts
-                .begin(&owner(&fixture.workspace), size)
-                .err()
-                .unwrap();
-            assert_eq!(
-                reason(&refused),
-                format!("an upload is 1 to 1024 bytes, not {size}")
-            );
-        }
+        let refused = fixture
+            .puts
+            .begin(&owner(&fixture.workspace), 1025)
+            .err()
+            .unwrap();
+        assert_eq!(reason(&refused), "an upload is 0 to 1024 bytes, not 1025");
         assert!(fixture.shelf.lock().unwrap().begun.is_empty());
+    }
+
+    phase an_empty_upload_stores_the_empty_content;
+    // A file may be empty: an app's marker, a file written before anything goes in it.
+    {
+        let fixture = fixture();
+        let upload = fixture.puts.begin(&owner(&fixture.workspace), 0).unwrap();
+        let reference = upload.finish().unwrap();
+        let hash = blake3::hash(b"").to_hex().to_string();
+        assert_eq!(reference, format!("tilo.content:{hash}"));
+        let shelf = fixture.shelf.lock().unwrap();
+        assert_eq!(
+            shelf.stored,
+            [(fixture.workspace.clone(), hash, Vec::new())]
+        );
     }
 
     phase a_put_whose_session_ended_before_finish_stores_nothing;

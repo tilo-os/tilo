@@ -72,6 +72,10 @@ pub struct Capabilities {
     pub account_sign_ins: Option<ServeSignIns>,
     /// Whether the Wi-Fi radio named (`phy0`) wakes its machine on a magic packet.
     pub radio_wakes: Option<RadioWakes>,
+    /// The platform's notifications, which keep a notification for a later moment and show it
+    /// whether or not this program runs then: a moment an app's trigger lands on this device is
+    /// armed there ([`tilo_workspace_service::apps::wakeups`]). A phone's app mounts its own.
+    pub alarms: Option<Arc<dyn tilo_workspace_service::apps::wakeups::Notifier>>,
 }
 
 static MOUNTED: OnceLock<Capabilities> = OnceLock::new();
@@ -103,6 +107,11 @@ pub(crate) fn register(at: &Mounting<'_>) {
 /// reads and changes tilolang apps' records through.
 pub(crate) fn tilolang() -> Option<tilo_workspace_service::tl_records::Tilolang> {
     mounted()?.tilolang.as_ref().map(|host| host())
+}
+
+/// The platform's notifications the program mounted for this device's wakeups, where it did.
+pub(crate) fn alarms() -> Option<Arc<dyn tilo_workspace_service::apps::wakeups::Notifier>> {
+    mounted()?.alarms.clone()
 }
 
 /// Take a hold on suspend, where something mounted can.

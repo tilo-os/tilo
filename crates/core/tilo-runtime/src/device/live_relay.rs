@@ -1197,8 +1197,9 @@ impl Live {
         }
     }
 
-    /// What this device says of itself with no person's shell running: its name, as its
-    /// certificate gives it, and its person.
+    /// What this device says of itself when one of its apps takes its person into a call with no
+    /// shell of theirs running: its name, as its certificate gives it, and its person. Outside a
+    /// call such a device says nothing.
     fn base_word(&self, devices: &[Device]) -> tilo_live::presence::Own {
         let cert = self.shared.workspaces.device_cert();
         let name = tilo_user_identity::device_name(&cert.device_label)

@@ -24,6 +24,11 @@ tracing.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../tilo-identity-client", optional = true }
+
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32, and the toolkit
+# links this crate in the browser.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -40,6 +40,7 @@ function fakeGateway() {
                 session_id: "s1",
                 resume_gateway_url: `ws://127.0.0.1:${server.port}`,
                 user: { id: "900", username: "bridge" },
+                application: { id: "950" },
               },
             }),
           );
@@ -228,6 +229,40 @@ test("the gateway keeps what decides the bot's permissions as Discord changes it
   discord.stop();
 });
 
+test("a thread started and a bulk deletion reach the bridge as their events", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "THREAD_CREATE",
+    d: { id: "777", guild_id: "123", parent_id: "456", name: "follow-up", owner_id: "3001", type: 11 },
+  });
+  discord.send({
+    op: 0,
+    s: 4,
+    t: "MESSAGE_DELETE_BULK",
+    d: { ids: ["801", "802"], channel_id: "456", guild_id: "123" },
+  });
+  await until(() => events.filter((event) => event.source === "MESSAGE_DELETED").length === 2, "the deletions");
+  expect(events.find((event) => event.source === "THREAD_CREATED").payload).toEqual({
+    id: "777",
+    parent_id: "456",
+    name: "follow-up",
+    owner_id: "3001",
+  });
+  expect(
+    events.filter((event) => event.source === "MESSAGE_DELETED").map((event) => event.payload.id),
+  ).toEqual(["801", "802"]);
+  client.destroy();
+  discord.stop();
+});
+
 test("a call hands the voice session Discord named, never the gateway's", async () => {
   const discord = fakeGateway();
   const client = await connect({
@@ -275,6 +310,62 @@ test("a call hands the voice session Discord named, never the gateway's", async 
     d: { guild_id: "123", user_id: "900", channel_id: null, session_id: "voice-session-1" },
   });
   await until(() => !client.voice.has("123"), "the call ended");
+  client.destroy();
+  discord.stop();
+});
+
+test("a member banned from or leaving the server reaches the bridge as their change", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  discord.send({ op: 0, s: 3, t: "GUILD_BAN_ADD", d: { guild_id: "123", user: { id: "3005", username: "eve" } } });
+  discord.send({ op: 0, s: 4, t: "GUILD_MEMBER_REMOVE", d: { guild_id: "123", user: { id: "3006", username: "bob" } } });
+  await until(() => events.filter((event) => event.source === "MEMBER_CHANGED").length === 2, "the member changes");
+  expect(
+    events
+      .filter((event) => event.source === "MEMBER_CHANGED")
+      .map(({ payload }) => [payload.user_id, payload.banned, payload.left]),
+  ).toEqual([
+    ["3005", true, false],
+    ["3006", false, true],
+  ]);
+  client.destroy();
+  discord.stop();
+});
+
+test("a slash command run in the server reaches the bridge with what answers it", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  expect(client.application).toBe("950");
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "INTERACTION_CREATE",
+    d: {
+      id: "77",
+      token: "itok",
+      type: 2,
+      application_id: "950",
+      guild_id: "123",
+      member: { user: { id: "3001" } },
+      data: { name: "unlink" },
+    },
+  });
+  // A button press is no command.
+  discord.send({ op: 0, s: 4, t: "INTERACTION_CREATE", d: { id: "78", type: 3, data: {} } });
+  await until(() => events.some((event) => event.source === "COMMAND"), "the command");
+  expect(events.filter((event) => event.source === "COMMAND").map((event) => event.payload)).toEqual([
+    { interaction: "77", token: "itok", application: "950", guild_id: "123", name: "unlink", user_id: "3001" },
+  ]);
   client.destroy();
   discord.stop();
 });

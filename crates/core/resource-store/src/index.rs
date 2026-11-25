@@ -436,17 +436,25 @@ impl Table {
         to.saturating_sub(from)
     }
 
-    /// The ids whose `field` lies between the bounds, as its index lists them.
+    /// The ids whose `field` lies between the bounds, as its index lists them; of those that
+    /// hold something in it, where `present`.
     fn ranging<'a>(
         &'a self,
         field: &str,
         from: &'a Bound<Value>,
         to: &'a Bound<Value>,
+        present: bool,
     ) -> Option<impl Iterator<Item = &'a str> + 'a> {
         let entries = self.by_field.get(field)?;
         let start = match from {
             Bound::Included(value) | Bound::Excluded(value) => {
                 Bound::Included((value.clone(), Value::Null, String::new()))
+            }
+            // Nothing sorts first: a range from the start over the resources that hold the field
+            // starts at the least value held, never walking those that lack it (every task but
+            // the few with a reminder, for the reminders due by now).
+            Bound::Unbounded if present => {
+                Bound::Included((Value::Bool(false), Value::Null, String::new()))
             }
             Bound::Unbounded => Bound::Unbounded,
         };
@@ -488,7 +496,13 @@ impl Table {
         let by_range = || {
             filters.iter().find_map(|filter| match filter {
                 Filter::Within { field, from, to } => {
-                    Some(self.ranging(field, from, to).map(Iterator::collect))
+                    let present = filters
+                        .iter()
+                        .any(|filter| matches!(filter, Filter::Present(held) if held == field));
+                    Some(
+                        self.ranging(field, from, to, present)
+                            .map(Iterator::collect),
+                    )
                 }
                 _ => None,
             })
@@ -1302,6 +1316,17 @@ impl Index {
         self.readable(&query.kind, may_read)
             .map(|table| table.window(query))
             .collect()
+    }
+
+    /// How many listings the index keeps as writes land, of every kind: each
+    /// costs a key per resource it lists and a little work on every write.
+    #[must_use]
+    pub fn kept(&self) -> usize {
+        self.kinds
+            .values()
+            .flat_map(HashMap::values)
+            .map(|table| table.kept.borrow().len())
+            .fold(0, usize::saturating_add)
     }
 
     /// How many resources `query` lists, of those whose readers `may_read` admits.

@@ -81,4 +81,4 @@ pub enum Gesture {
 
 /// What the person record keeps about control hints: which they know, how often each showed (at
 /// most once), and whether hints show at all.
-pub use settings_store::control_hints::Learned;
+pub use settings_model::control_hints::Learned;

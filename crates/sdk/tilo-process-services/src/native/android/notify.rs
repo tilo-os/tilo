@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use jni::JNIEnv;
 use jni::objects::{JObject, JValue};
 
-use super::bridge::{self, NOTIFICATIONS, optional_string};
+use super::bridge::{self, ALARMS, NOTIFICATIONS, optional_string};
 use crate::process::{Notification, Notifier, NotifyError};
+use tilo_notify::{Scheduled, SystemTime};
 
 const POST_NOTIFICATIONS: &str = "android.permission.POST_NOTIFICATIONS";
 /// Android 13, where posting became a runtime permission.
@@ -148,4 +149,126 @@ impl Notifier for SystemNotifier {
     fn withdraw(&self, tag: &str) -> Result<(), NotifyError> {
         Self::call("withdraw", &[tag])
     }
+
+    /// An alarm: `AlarmManager.setAlarmClock` wakes the phone exactly at `at`, and the
+    /// notification rings full screen whether or not the app runs then (`TiloAlarms`).
+    fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
+        self.permitted()?;
+        let at_ms = at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|since| i64::try_from(since.as_millis()).ok())
+            .ok_or(NotifyError::Invalid(
+                "an alarm's moment is before the epoch",
+            ))?;
+        let refusal = super::with_activity(|env, activity| {
+            let alarms = bridge::class(env, activity, ALARMS)?;
+            let tag = env.new_string(&notification.tag)?;
+            let title = env.new_string(&notification.title)?;
+            let body = env.new_string(&notification.body)?;
+            let labels: Vec<&str> = notification.buttons.iter().map(|b| b.label.as_str()).collect();
+            let uris: Vec<&str> = notification
+                .buttons
+                .iter()
+                .map(|b| b.activation.as_str())
+                .collect();
+            let labels = string_array(env, &labels)?;
+            let uris = string_array(env, &uris)?;
+            let refusal = env
+                .call_static_method(
+                    &alarms,
+                    "schedule",
+                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;J[Ljava/lang/String;[Ljava/lang/String;)Ljava/lang/String;",
+                    &[
+                        JValue::Object(activity),
+                        JValue::Object(&tag),
+                        JValue::Object(&title),
+                        JValue::Object(&body),
+                        JValue::Long(at_ms),
+                        JValue::Object(&labels),
+                        JValue::Object(&uris),
+                    ],
+                )?
+                .l()?;
+            optional_string(env, refusal)
+        })
+        .map_err(NotifyError::Failed)?;
+        refusal.map_or(Ok(()), |reason| Err(NotifyError::Failed(reason)))
+    }
+
+    fn cancel_scheduled(&self, tag: &str) -> Result<(), NotifyError> {
+        let refusal = super::with_activity(|env, activity| {
+            let alarms = bridge::class(env, activity, ALARMS)?;
+            let tag = env.new_string(tag)?;
+            let refusal = env
+                .call_static_method(
+                    &alarms,
+                    "cancel",
+                    "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+                    &[JValue::Object(activity), JValue::Object(&tag)],
+                )?
+                .l()?;
+            optional_string(env, refusal)
+        })
+        .map_err(NotifyError::Failed)?;
+        refusal.map_or(Ok(()), |reason| Err(NotifyError::Failed(reason)))
+    }
+
+    /// What `TiloAlarms` keeps armed: one it no longer lists rang.
+    fn scheduled(&self) -> Result<Vec<Scheduled>, NotifyError> {
+        let listed = super::with_activity(|env, activity| {
+            let alarms = bridge::class(env, activity, ALARMS)?;
+            let listed = env
+                .call_static_method(
+                    &alarms,
+                    "scheduled",
+                    "(Landroid/content/Context;)Ljava/lang/String;",
+                    &[JValue::Object(activity)],
+                )?
+                .l()?;
+            optional_string(env, listed)
+        })
+        .map_err(NotifyError::Failed)?
+        .unwrap_or_default();
+        Ok(listed
+            .lines()
+            .filter_map(|line| {
+                let (tag, at) = line.split_once('\t')?;
+                let at = SystemTime::UNIX_EPOCH
+                    .checked_add(std::time::Duration::from_millis(at.parse().ok()?))?;
+                Some(Scheduled {
+                    tag: tag.to_owned(),
+                    at,
+                })
+            })
+            .collect())
+    }
+}
+
+/// `TiloActivity.nativeActivated`: the app was opened with the URI a notification's button
+/// names, which its activation handler carries out.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_so_tilo_android_TiloActivity_nativeActivated<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    uri: jni::objects::JString<'local>,
+) {
+    let Ok(uri) = env.get_string(&uri).map(String::from) else {
+        return;
+    };
+    tilo_notify::report_activation(&uri);
+}
+
+/// `items` as a Java `String[]`.
+fn string_array<'local>(
+    env: &mut jni::JNIEnv<'local>,
+    items: &[&str],
+) -> jni::errors::Result<jni::objects::JObjectArray<'local>> {
+    let length = i32::try_from(items.len()).unwrap_or(i32::MAX);
+    let array = env.new_object_array(length, "java/lang/String", JObject::null())?;
+    for (index, item) in (0..length).zip(items) {
+        let item = env.new_string(item)?;
+        env.set_object_array_element(&array, index, item)?;
+    }
+    Ok(array)
 }

@@ -209,6 +209,7 @@ impl FolderHistorySource {
             by,
             to: None,
             step: Some(change.hash.to_string()),
+            chosen: None,
         };
         self.apply(&change, edit)
     }

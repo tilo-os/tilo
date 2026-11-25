@@ -38,6 +38,9 @@ pub use tickets::{LookAgain, PageHost, Refusal, Tickets};
 /// How long a follower waiting for the approval is held before it looks again.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
 
+/// What listing a certified computer comes to, as the call that certified it waits for it.
+pub type Kept = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+
 /// Where a computer is listed once a ticket certified it: the record of the person's devices in
 /// their own workspace, which the device that issued the ticket writes. A computer the person's
 /// server does not know as one of theirs is refused by it, so this is written before the computer
@@ -45,7 +48,7 @@ const LOOK_AGAIN: Duration = Duration::from_secs(1);
 pub trait Keeping: Send + Sync {
     /// Keep `cert`, which the person's root signed for the computer the ticket added, in the
     /// person's own workspace's record of their devices.
-    fn keep(&self, cert: DeviceCert);
+    fn keep(&self, cert: DeviceCert) -> Kept;
 }
 
 /// The ticket a device issued, served on its action service until a computer is certified with
@@ -302,7 +305,7 @@ impl ServedTicket {
                         // The computer is one of the person's devices before it is answered its
                         // certificate: its first calls are decided against their record.
                         if let Some(keep) = served.0.keep.get() {
-                            keep.keep(cert.clone());
+                            keep.keep(cert.clone()).await;
                         }
                         let answer = CertifyAnswer {
                             cert: cert.clone(),

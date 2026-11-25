@@ -1000,9 +1000,12 @@ async fn planned_ticket(
     tickets: &tilo_workspace_service::device_tickets::TicketServer,
 ) -> tilo_device_identity::login::Ticket {
     tickets
-        .issue(Some(tilo_workspace_service::device_tickets::Role::Plan(
-            PLANNED.to_owned(),
-        )))
+        .issue(
+            Some(tilo_workspace_service::device_tickets::Role::Plan(
+                PLANNED.to_owned(),
+            )),
+            false,
+        )
         .await
         .expect("the plan's ticket is issued")
 }

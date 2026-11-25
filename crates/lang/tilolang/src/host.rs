@@ -1048,6 +1048,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         settles: None,
         key: None,
         group: None,
+        export: None,
         uses: Vec::new(),
         guard: false,
         applies: false,

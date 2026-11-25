@@ -335,10 +335,13 @@ fn tasks_in(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use tilo_resource_store::wire::Command;
     use tilo_resource_store::{Cell, Resource, Stamp, Value as Stored};
 
     use super::*;
+    use crate::workspaces::MemberDevice;
 
     /// One text of a record.
     fn text(text: &str) -> Cell {
@@ -402,6 +405,10 @@ verbs = [
         let (key, cert) = crate::workspaces::fixtures::governor();
         let host = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
         let workspaces = host.workspaces().clone();
+        workspaces.set_member_device(Arc::new(MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key.clone()),
+        }));
         crate::workspaces::fixtures::declare_app(&host, "so.tilo.mail", MAIL_SURFACE.as_bytes());
         let workspace = workspaces.create("Mail").await.unwrap().workspace;
         let own = Own {

@@ -50,6 +50,7 @@ fn undo_of_a_small_step_costs_the_step_not_the_record() {
         by: None,
         to: None,
         step: None,
+        chosen: None,
     };
     // Reading the text once: what an undo that walked the record would cost at least.
     let reading = tilo_clock::now();

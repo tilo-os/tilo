@@ -1723,6 +1723,15 @@ fn read_from(
                 .map_err(|error| error.to_string())?
                 .map(|children| tilo_resource_store::wire::PastChildren::page(children, *from)),
         ),
+        // A review reads the documents of what it restores, wherever they are kept.
+        Command::ReviewRestore { resources, change } => {
+            let readable = tilo_resource_store::wire::readable(&store, resources, &may_read);
+            Reply::Review(
+                store
+                    .review_restore(&readable, change)
+                    .map_err(|error| error.to_string()),
+            )
+        }
         _ => read(&store, command, &may_read).unwrap_or(Reply::Written),
     };
     Ok(answer)
@@ -1856,10 +1865,10 @@ impl Workspaces {
             // What the app writes outside an invocation it serves is the person's at the window,
             // or the caller's the device opened the view for.
             let otherwise = context.viewer().map_or_else(
-                || tilo_actions::Actor::Member(tilo_actions::MemberId::person(person)),
-                |viewer| viewer.acting().by.clone(),
+                || tilo_actions::Acting::person(person),
+                |viewer| viewer.acting().clone(),
             );
-            acting = Some(otherwise.clone());
+            acting = Some(otherwise.by.clone());
             // The device the write is made on is where a resource it makes live is live.
             let written_on = (
                 hex::encode(device.device()),
@@ -1891,7 +1900,9 @@ impl Workspaces {
                 None => true,
                 Some(named) => {
                     acting.as_ref() == Some(&named)
-                        || context.invoker_of(&stamp.invocation) == Some(&named)
+                        || context
+                            .invoker_of(&stamp.invocation)
+                            .is_some_and(|invoker| invoker.by == named)
                 }
             };
             self.opened_record_change(
@@ -1995,7 +2006,7 @@ impl Workspaces {
     /// `workspace` ([`crate::work::Turn::Once`]); with `done`, keep that it ran and let the turn
     /// go. Asking again while this device runs it renews its claim.
     #[cfg(feature = "apps")]
-    async fn once_turn(
+    pub(crate) async fn once_turn(
         &self,
         workspace: &str,
         app: &str,
@@ -2146,6 +2157,12 @@ impl Workspaces {
 /// The action `writes`, `device`'s for `app`, are when they change more than one document: one
 /// part per document, naming the changes of it no other change of the batch builds on. `None`
 /// for writes to one document, which its own history keeps whole.
+///
+/// A write that founds its document is no part: it is drafted as the document's first snapshot,
+/// which claims no change, so a reader holding the record sealed could never find it taken in,
+/// and every record the action names would wait for it for good. A document nobody holds yet
+/// has nothing another record's write could land out of step with, and it is kept in its place
+/// in the batch all the same.
 #[cfg(feature = "apps")]
 fn action_of(
     governed: &GovernedWorkspace,
@@ -2154,7 +2171,9 @@ fn action_of(
     writes: &[tilo_resource_store::Written],
 ) -> Option<collab_types::WorkspaceCommit> {
     let mut parts: Vec<collab_types::CommitPart> = Vec::new();
-    for write in writes {
+    for write in writes.iter().filter(|write| {
+        !(write.change.deps().is_empty() && !governed.peer().holds_document(app, &write.doc))
+    }) {
         let hash = write.change.hash().0;
         match parts.iter_mut().find(|part| part.document == write.doc) {
             Some(part) => part.heads.push(hash),
@@ -2260,7 +2279,7 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         command: tilo_resource_store::wire::Command,
-        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         self.own_kind_command(workspace, (app, None), command, serving)
             .await
@@ -2277,7 +2296,7 @@ impl Workspaces {
         workspace: &str,
         (app, kind): (&str, Option<&str>),
         command: tilo_resource_store::wire::Command,
-        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         let device = self.member_identity()?;
         let caller = tilo_actions::remote::Caller::authenticated(
@@ -2338,8 +2357,8 @@ impl Workspaces {
 fn stamp_resource_invoker(
     command: &mut tilo_resource_store::wire::Command,
     device: &(String, String),
-    served: &dyn Fn(&str) -> Option<tilo_actions::Actor>,
-    otherwise: &tilo_actions::Actor,
+    served: &dyn Fn(&str) -> Option<tilo_actions::Acting>,
+    otherwise: &tilo_actions::Acting,
     person: &str,
     unserved: &mut Vec<(String, String)>,
 ) {
@@ -2347,8 +2366,9 @@ fn stamp_resource_invoker(
     let (kind, stamp) = match command {
         Command::Put { kind, stamp, .. }
         | Command::Remove { kind, stamp, .. }
-        | Command::Edit { kind, stamp, .. } => (kind.as_str(), stamp),
-        Command::Undo { stamp, .. } => ("", stamp),
+        | Command::Edit { kind, stamp, .. }
+        | Command::Checkpoint { kind, stamp, .. } => (kind.as_str(), stamp),
+        Command::Undo { stamp, .. } | Command::Restore { stamp, .. } => ("", stamp),
         Command::Batch(commands) => {
             for command in commands {
                 stamp_resource_invoker(command, device, served, otherwise, person, unserved);
@@ -2376,22 +2396,28 @@ fn stamp_resource_invoker(
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
         | Command::RecordChange { .. }
+        | Command::ReviewRestore { .. }
         | Command::Records => return,
     };
-    let invoker = served(&stamp.invocation).unwrap_or_else(|| {
+    let mut acting = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));
         otherwise.clone()
     });
-    // An agent writes what its person handed it: the stamp names that person, as every receiver
-    // decides an agent by the pair of its id and the person it acted for, never by its id alone.
-    if stamp.acted_for.is_none()
-        && invoker
-            .member_id()
-            .is_some_and(tilo_action_policy::MemberId::is_agent)
-    {
-        stamp.acted_for = Some(person.to_owned());
+    // An agent works for a person: the person the route's caller is, where its call named none.
+    if acting.agent_id().is_some() && acting.acted_for_person().is_none() {
+        acting = acting.acting_for(tilo_actions::Acting::person(person));
     }
-    stamp.invoker = tilo_resource_store::Stamp::by(&invoker);
+    if stamp.acted_for.is_none() {
+        stamp.acted_for = acting.acted_for_person().map(str::to_owned);
+    }
+    stamp.invoker = tilo_resource_store::Stamp::by(&acting.by);
+    // How an agent acted is recorded, never left to be guessed: handed its session by its
+    // person's device, which the device answers for, or under a key of its own, whose call the
+    // write must keep.
+    if acting.agent_id().is_some() {
+        stamp.context.get_or_insert_default().invoker =
+            Some(tilo_actions::ActionInvoker::admitted(&acting));
+    }
     device.0.clone_into(&mut stamp.device);
     device.1.clone_into(&mut stamp.device_name);
 }

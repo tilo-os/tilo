@@ -515,11 +515,11 @@ pub struct App {
     /// re-themes live.
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made in Settings.
-    theme_store_stamp: Option<settings_store::SettingsStamp>,
+    theme_store_stamp: Option<crate::settings_source::SettingsStamp>,
     last_theme_store_check: Instant,
     /// The schedule an "Automatic" theme follows and whether it was night when last applied: sunrise
     /// and sunset re-theme without a file change.
-    theme_schedule: Option<(settings_store::day_schedule::Scheduled, bool)>,
+    theme_schedule: Option<(settings_model::day_schedule::Scheduled, bool)>,
     input: InputRuntime,
 
     focus_history: HistoryRuntime,
@@ -608,7 +608,7 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<settings_store::SettingsStamp>,
+    theme_store_stamp: fn() -> Option<crate::settings_source::SettingsStamp>,
     local_author: ConstructionValue<crate::permissions::MemberId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -710,12 +710,12 @@ impl AppConstructionInputs {
             debug_mode: || {
                 cfg!(debug_assertions) && crate::process::environment().diagnostics.debug_overlay
             },
-            theme_store_stamp: settings_store::stamp,
+            theme_store_stamp: crate::settings_source::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if crate::process::environment().accessibility.screen_reader
-                    || settings_store::accessibility::ScreenReaderSettings::load().enabled
+                    || crate::screen_reader::settings().enabled
                 {
                     Some(App::configured_screen_reader())
                 } else {
@@ -1974,14 +1974,14 @@ impl App {
         // says its revision in one atomic read and wakes this loop when it
         // rings, so its change arrives on the wake it caused rather than on
         // some later input after the debounce.
-        if settings_store::installed_source().is_some()
+        if crate::settings_source::installed_source().is_some()
             && let Some(due) = now.checked_sub(Duration::from_millis(750))
         {
             self.last_theme_store_check = due;
         }
         self.reconcile_configured_theme_with(
             crate::time::now(),
-            settings_store::stamp,
+            crate::settings_source::stamp,
             Self::apply_configured_theme,
         )
     }
@@ -1990,7 +1990,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<settings_store::SettingsStamp>,
+        stamp: impl FnOnce() -> Option<crate::settings_source::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         if !self.watch_system_settings {
@@ -2034,9 +2034,9 @@ impl App {
         if let Some(scale) = comforts.ui_scale {
             self.accessibility.ui_scale = scale;
         }
-        self.theme_schedule = Theme::automatic_schedule_from(&settings_store::load())
+        self.theme_schedule = Theme::automatic_schedule_from(&crate::settings_source::load())
             .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
-        let settings = settings_store::accessibility::ScreenReaderSettings::load();
+        let settings = crate::screen_reader::settings();
         self.set_screen_reader_enabled(
             settings.enabled || crate::process::environment().accessibility.screen_reader,
         );
@@ -2474,12 +2474,9 @@ impl App {
             }
         }
 
-        if self.focused_node.is_none()
-            && let Some(name) = self.focus_anchor.clone()
-            && let Some(node) = self.unique_answering(&name)
-        {
-            self.set_focused_node(Some(node));
-        }
+        // The keyboard is seated once the tree this pass builds stands: a build that puts it on a
+        // control of its own (a page moving to the field it asks for) has it there, and the name
+        // the person's focus answered to only restores what the tree did not seat.
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
@@ -3057,7 +3054,6 @@ pub(crate) mod control_fixture_tests {
             presentation: HistoryPresentation::Domain {
                 create: crate::history_mode::test_preview,
             },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
         }],
     };
     fn fixture_widget(

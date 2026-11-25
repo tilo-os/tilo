@@ -70,19 +70,7 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
         // the window's to make before anything else is asked, since it settles which engine the
         // page has; a page that already started keeps the engine it has.
         codec::Ask::Private => {
-            let mut held = page.borrow_mut();
-            if held.is_some() {
-                return Ok(Asked::Answered(codec::accepted()));
-            }
-            let root = tilo_webview::chromium::allocate_private_root()?;
-            let engine = match ui::webview::new_private_page_engine(&root) {
-                Ok(engine) => engine,
-                Err(why) => {
-                    tilo_webview::chromium::release_private_root(&root);
-                    return Err(why);
-                }
-            };
-            held.replace(PageSession::new_private(engine, root));
+            start_private(page)?;
             Ok(Asked::Answered(codec::accepted()))
         }
         // An extension the person chose arrives as the address of its bytes in this device's
@@ -100,11 +88,7 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
         // and the app's never to see: the session asks the page for them and acts after, with
         // the engine and the workspace's vault.
         codec::Ask::Login { origin, ask } => {
-            let mut held = page.borrow_mut();
-            let session = held
-                .as_mut()
-                .ok_or_else(|| "this window has no page".to_owned())?;
-            session.login(&origin, ask);
+            session_of(page, |session| session.login(&origin, ask))?;
             Ok(Asked::Answered(codec::accepted()))
         }
         // What the person types in the address, presses Enter on or leaves, and the page an
@@ -129,19 +113,11 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::AddressEntered { text } => {
-            let mut held = page.borrow_mut();
-            let Some(session) = held.as_mut() else {
-                return Ok(Asked::Answered(codec::accepted()));
-            };
-            session.address_entered(&text);
+            if_session(page, |session| session.address_entered(&text));
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::AddressLeft => {
-            let mut held = page.borrow_mut();
-            let Some(session) = held.as_mut() else {
-                return Ok(Asked::Answered(codec::accepted()));
-            };
-            session.address_left();
+            if_session(page, PageSession::address_left);
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::DownloadAgain { url, job } => {
@@ -154,11 +130,7 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::PanelClose => {
-            let mut held = page.borrow_mut();
-            let Some(session) = held.as_mut() else {
-                return Ok(Asked::Answered(codec::accepted()));
-            };
-            session.close_panel();
+            if_session(page, PageSession::close_panel);
             Ok(Asked::Answered(codec::accepted()))
         }
         codec::Ask::Command(command) => {
@@ -182,6 +154,40 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
                 .ok_or_else(|| "this window has no page".to_owned())?;
             Ok(Asked::Waiting(session.ask(None, request)))
         }
+    }
+}
+
+/// Start the window's page on a fresh, disposable profile, unless it already has one.
+fn start_private(page: &Page) -> Result<(), String> {
+    let mut held = page.borrow_mut();
+    if held.is_some() {
+        return Ok(());
+    }
+    let root = tilo_webview::chromium::allocate_private_root()?;
+    let engine = match ui::webview::new_private_page_engine(&root) {
+        Ok(engine) => engine,
+        Err(why) => {
+            tilo_webview::chromium::release_private_root(&root);
+            return Err(why);
+        }
+    };
+    held.replace(PageSession::new_private(engine, root));
+    Ok(())
+}
+
+/// Do `act` with the window's page session, refusing when the window keeps no page.
+fn session_of<T>(page: &Page, act: impl FnOnce(&mut PageSession) -> T) -> Result<T, String> {
+    let mut held = page.borrow_mut();
+    let session = held
+        .as_mut()
+        .ok_or_else(|| "this window has no page".to_owned())?;
+    Ok(act(session))
+}
+
+/// Do `act` with the window's page session, when it has one: with none, there is nothing to do.
+fn if_session(page: &Page, act: impl FnOnce(&mut PageSession)) {
+    if let Some(session) = page.borrow_mut().as_mut() {
+        act(session);
     }
 }
 

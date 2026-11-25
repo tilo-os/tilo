@@ -164,6 +164,28 @@ fn last_move(app: &TestApp<BoardApp>) -> Vec<(String, String, String)> {
     })
 }
 
+/// The change id History lists for the card `text` was added by.
+fn change_of(app: &mut TestApp<BoardApp>, text: &str) -> String {
+    history(app)["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|version| version["what"]["args"]["text"] == text)
+        .and_then(|version| version["change"].as_str())
+        .unwrap()
+        .to_owned()
+}
+
+/// The change id of the newest row History lists: what a window keeps of a move it made.
+fn newest_change(app: &mut TestApp<BoardApp>) -> String {
+    history(app)["versions"]
+        .as_array()
+        .and_then(|versions| versions.last())
+        .and_then(|version| version["change"].as_str())
+        .unwrap()
+        .to_owned()
+}
+
 fn history(app: &mut TestApp<BoardApp>) -> Value {
     app.call("history", json!({}))
         .unwrap()
@@ -251,6 +273,115 @@ tilo_test_env::scenario! {
         app.call("undo", json!({})).unwrap();
         assert_eq!(cards(&app), Vec::<String>::new());
         assert_eq!(app.state().title, "Plan");
+    }
+
+    phase chosen_changes_are_taken_back_together_as_one_move;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.call("add", json!({"text": "milk"})).unwrap();
+        app.call("add", json!({"text": "tea"})).unwrap();
+        app.call("add", json!({"text": "eggs"})).unwrap();
+        let chosen = [change_of(&mut app, "milk"), change_of(&mut app, "eggs")];
+
+        app.call("undo", json!({"chosen": chosen})).unwrap();
+        assert_eq!(cards(&app), ["tea"]);
+        // A change for each step, newest first, each naming the invocation it took back.
+        let moved = last_move(&app);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|(op, verb, _)| op == "undo" && verb == "add"), "{moved:?}");
+        assert_ne!(moved[0].2, moved[1].2, "one invocation each: {moved:?}");
+
+        // History lists them as the one move the person made.
+        let listed = history(&mut app);
+        let undos: Vec<&Value> = listed["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|version| version["what"]["did"] == "history" && version["what"]["op"] == "undo")
+            .collect();
+        assert_eq!(undos.len(), 1, "{listed}");
+        assert_eq!(undos[0]["sentence"], "Undid 2 steps", "{listed}");
+        assert_eq!(undos[0]["changes"].as_array().map(Vec::len), Some(2), "{listed}");
+
+        // One redo brings both back.
+        let redone = app.call("redo", json!({})).unwrap().unwrap();
+        assert_eq!(redone["redone"].as_array().unwrap().len(), 2, "{redone}");
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+
+        // Chosen changes are given alone, and must still be in effect.
+        app.call("add", json!({"text": "bread"})).unwrap();
+        let bread = [change_of(&mut app, "bread")];
+        let mixed = refusal(app.call("undo", json!({"chosen": bread, "steps": 1})));
+        assert!(mixed.contains("alone"), "{mixed}");
+        app.call("undo", json!({"chosen": bread})).unwrap();
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+        let again = refusal(app.call("undo", json!({"chosen": bread})));
+        assert!(again.contains("no longer in effect"), "{again}");
+    }
+
+    phase a_take_back_is_brought_back_by_naming_it_after_newer_undos;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        for text in ["milk", "tea", "eggs"] {
+            app.call("add", json!({"text": text})).unwrap();
+        }
+        let chosen = [change_of(&mut app, "milk"), change_of(&mut app, "eggs")];
+        app.call("undo", json!({"chosen": chosen})).unwrap();
+        let take_back = newest_change(&mut app);
+        // A newer step and its undo, made elsewhere: a plain redo would bring that back.
+        app.call("add", json!({"text": "bread"})).unwrap();
+        app.call("undo", json!({})).unwrap();
+        assert_eq!(cards(&app), ["tea"]);
+
+        let redone = app
+            .call("redo", json!({"undos": [take_back]}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(redone["redone"].as_array().unwrap().len(), 2, "{redone}");
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+        // One change for each step it brought back, listed as one move.
+        let moved = last_move(&app);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|(op, verb, _)| op == "redo" && verb == "add"), "{moved:?}");
+        let listed = history(&mut app);
+        let last = listed["versions"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["what"]["op"], "redo", "{listed}");
+        assert_eq!(last["changes"].as_array().map(Vec::len), Some(2), "{listed}");
+
+        let again = refusal(app.call("redo", json!({"undos": [take_back]})));
+        assert!(again.contains("no longer in effect"), "{again}");
+        let mixed = refusal(app.call("redo", json!({"undos": [take_back], "steps": 1})));
+        assert!(mixed.contains("alone"), "{mixed}");
+        // The undo made elsewhere is still there to redo.
+        app.call("redo", json!({})).unwrap();
+        let mut all = cards(&app);
+        all.sort();
+        assert_eq!(all, ["bread", "eggs", "milk", "tea"]);
+    }
+
+    phase each_window_redoes_only_the_undos_it_made;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        for text in ["milk", "tea"] {
+            app.call("add", json!({"text": text})).unwrap();
+        }
+        // Two windows on one record: each takes back one card.
+        let milk = [change_of(&mut app, "milk")];
+        app.call("undo", json!({"chosen": milk})).unwrap();
+        let first = newest_change(&mut app);
+        let tea = [change_of(&mut app, "tea")];
+        app.call("undo", json!({"chosen": tea})).unwrap();
+        let second = newest_change(&mut app);
+        assert!(cards(&app).is_empty());
+
+        // The first window's redo brings back its own undo, though the other's is newer.
+        app.call("redo", json!({"undos": [first]})).unwrap();
+        assert_eq!(cards(&app), ["milk"]);
+        // Of the undos a window names, the newest still in effect.
+        app.call("redo", json!({"undos": [first, second]})).unwrap();
+        assert_eq!(cards(&app), ["milk", "tea"]);
+        let none = refusal(app.call("redo", json!({"undos": [first, second]})));
+        assert!(none.contains("no longer in effect"), "{none}");
     }
 
     phase a_restore_takes_back_each_step_since_and_brings_back_what_stood_then;

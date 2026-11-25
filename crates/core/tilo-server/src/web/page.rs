@@ -29,7 +29,7 @@ use crate::app_serving::AppPages;
 use crate::service::ServerProtocol;
 
 /// How often an open page asks what changed while its person does nothing: their edits reach it
-/// within this, and a view drawing a call's pictures far sooner
+/// within this, and a view whose call tiles settle far sooner
 /// ([`AppPages::follow_every`](crate::app_serving::AppPages::follow_every)).
 use crate::app_serving::FOLLOW_EVERY;
 
@@ -116,7 +116,7 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
     // record of the person's devices holds now are read together.
     let mut notices: Vec<PageNotice> = Vec::new();
     let mut followed = false;
-    // When the record of the person's devices was last read: a page drawing a call's pictures is
+    // When the record of the person's devices was last read: a page whose call tiles settle is
     // followed far faster than its person's notifications change. It starts a pass behind, so the
     // page is told what the record holds as soon as it opens.
     let mut notices_read = std::time::Instant::now()
@@ -126,8 +126,8 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
     // the call, and hears of a step the moment the view asks for it.
     let calls = pages.calls_waker();
     loop {
-        // How soon this page is asked what changed: a view drawing a call's pictures is followed
-        // at the speed its frames move, one showing nothing live every couple of seconds.
+        // How soon this page is asked what changed: a view whose call tiles settle is followed
+        // closely while they do, one showing nothing live every couple of seconds.
         let follow_in = open.map_or(FOLLOW_EVERY, |(_, page)| pages.follow_every(page));
         let asked_for_a_call = async {
             match &calls {

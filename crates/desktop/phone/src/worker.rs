@@ -58,10 +58,28 @@ pub struct Worker {
     open: Arc<Mutex<Option<String>>>,
 }
 
-/// Mount on this process's daemon what the `tilo-runtime` program mounts on its own, once.
+/// Mount on this process's daemon what the `tilo-runtime` program mounts on its own, once, and
+/// the phone's own notifications as the wakeups an app's moment is armed with: an alarm set for
+/// this phone rings from the platform when the phone is offline or the app asleep.
 fn mount() {
     static MOUNTED: std::sync::Once = std::sync::Once::new();
-    MOUNTED.call_once(|| tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities()));
+    MOUNTED.call_once(|| {
+        tilo_runtime::device::capabilities::mount(capabilities(
+            ui::process::current().notifications,
+        ));
+    });
+}
+
+/// What the phone mounts on its daemon: the program's own, and `alarms`, the notifications the
+/// moments its apps land on this phone are armed with.
+#[must_use]
+pub fn capabilities(
+    alarms: Arc<dyn ui::notify::Notifier>,
+) -> tilo_runtime::device::capabilities::Capabilities {
+    tilo_runtime::device::capabilities::Capabilities {
+        alarms: Some(alarms),
+        ..tilo_daemon::capabilities()
+    }
 }
 
 impl Worker {

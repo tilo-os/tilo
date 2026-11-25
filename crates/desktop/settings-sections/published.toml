@@ -1730,6 +1730,22 @@ cases = [
 ]
 
 [[resources]]
+kind = "settings.emoji"
+label = "Emoji"
+version = 1
+setters = true
+fields = [
+  { path = "used", type = "text", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-used"
+kind = "undoable"
+params = [
+  { name = "used", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
 kind = "settings.osk-sources"
 label = "On-screen keyboard layouts"
 version = 1
@@ -2164,6 +2180,11 @@ published = "devices/{device}/settings/clock"
 name = "display_change"
 kind = "settings.display-change"
 published = "devices/{device}/settings/display-transaction"
+
+[[roots]]
+name = "emoji"
+kind = "settings.emoji"
+published = "settings/emoji"
 
 [[roots]]
 name = "osk_sources"

@@ -58,7 +58,7 @@ impl PeerGovernanceMut<'_> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the change is not `key`'s device's to make, `renewed`
+    /// Returns an error if `key` is not the renewed device's own, `renewed`
     /// does not renew the device's certificate, or governance cannot be
     /// updated.
     pub fn renew_member_certificate(
@@ -67,6 +67,9 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        if key.device_public_key() != renewed.device_public_key {
+            return Err("a device renews only its own certificate".into());
+        }
         let Some(held) = self.peer.governance().renewal_of(renewed, now)? else {
             return Ok(false);
         };

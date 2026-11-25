@@ -32,7 +32,7 @@
 //!
 //! **Starting.** A document the store kept is given back whole ([`Store::load`]), and its
 //! resources are read from it; or, faster, the index's snapshot of it ([`Store::snapshot`]) is
-//! given with the heads the document is at ([`Store::restore`]), and the document itself is
+//! given with the heads the document is at ([`Store::restore_version`]), and the document itself is
 //! read only when a write or a peer's change needs it, from the source the store was made with
 //! ([`Store::with_source`]). [`Store::evict`] lets a document go from memory again; its
 //! resources stay indexed.
@@ -145,6 +145,8 @@ pub enum StoreError {
     NotAWrite,
     /// A write places a resource where its type's reader rule does not.
     Readers(String),
+    /// A step through history that cannot be taken: why.
+    History(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -153,7 +155,7 @@ impl std::fmt::Display for StoreError {
             Self::Missing { kind, id } => write!(f, "there is no {kind} `{id}`"),
             Self::Document(error) => write!(f, "the document refused the change: {error}"),
             Self::NotAWrite => write!(f, "that is a read, not a write"),
-            Self::Readers(reason) => f.write_str(reason),
+            Self::Readers(reason) | Self::History(reason) => f.write_str(reason),
         }
     }
 }
@@ -2778,4 +2780,400 @@ fn put_fields(
     }
     let (hash, _) = tx.commit_with(CommitOptions::default().with_message(stamp.message()));
     Ok(hash.and_then(|_| doc.get_last_local_change()))
+}
+
+/// One document a restore writes: where it goes back to, and which resources of it go back.
+struct Restoring {
+    doc: String,
+    readers: String,
+    /// The document's heads as it stood at the version.
+    target: Vec<ChangeHash>,
+    /// The resources it brings back, by id: those an index document holds, or the one whose
+    /// content a content document is.
+    ids: BTreeSet<String>,
+    /// It is a resource's content, which goes back whole.
+    content: bool,
+}
+
+/// The resources a restore brings back, by the documents they are in.
+#[derive(Default)]
+struct Held {
+    /// Each document's reader set and the resources of it.
+    docs: BTreeMap<String, (String, BTreeSet<String>)>,
+    /// Each resource's kind.
+    kinds: BTreeMap<String, String>,
+}
+
+impl Held {
+    fn add(&mut self, doc: &str, readers: &str, kind: &str, id: &str) {
+        self.docs
+            .entry(doc.to_owned())
+            .or_insert_with(|| (readers.to_owned(), BTreeSet::new()))
+            .1
+            .insert(id.to_owned());
+        self.kinds.insert(id.to_owned(), kind.to_owned());
+    }
+
+    /// The documents they are in, and their contents.
+    fn documents(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (doc, (readers, ids)) in &self.docs {
+            out.push(doc.clone());
+            for id in ids {
+                if let Some(kind) = self.kinds.get(id) {
+                    out.push(content_id(readers, kind, id));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// What restoring some resources to a version would change, as a person reviews it before they
+/// restore: the heads of every document it reads, and the resources that differ.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Review {
+    /// The heads, each a full change hash, of every document the restore writes, sorted: a
+    /// restore of this review is refused once any of them moved.
+    pub live: Vec<String>,
+    /// The ids of the resources that differ from the version, sorted.
+    pub differing: Vec<String>,
+}
+
+impl Store {
+    /// Names the version the resource `id` of `kind` stands at now `name`, as `stamp`: a change
+    /// of its document with no operations, whose verb is [`Stamp::CHECKPOINT_VERB`], which its
+    /// history lists as a version of it, and which a restore can go back to.
+    ///
+    /// # Errors
+    /// When there is no such resource.
+    pub fn checkpoint(
+        &mut self,
+        kind: &str,
+        id: &str,
+        name: &str,
+        stamp: &Stamp,
+    ) -> Result<Written, StoreError> {
+        let stamp = Stamp {
+            verb: Stamp::CHECKPOINT_VERB.to_owned(),
+            args: vec![name.into(), id.into()],
+            ..stamp.clone()
+        };
+        self.mark(kind, id, &stamp)
+    }
+
+    /// Brings the resources `resources` (by kind and id), and those nested in them then or now,
+    /// back to how they stood at the version `change` (a version's change, or a checkpoint's), as
+    /// one change of each document that differs, stamped `stamp`: an invocation of its own,
+    /// which an undo takes back. With `only`, just the resources it names go back; with `live`,
+    /// the restore is refused unless the documents stand where a review saw them.
+    ///
+    /// # Errors
+    /// When the version is none of theirs, the documents moved since the review, or everything
+    /// already stands as it did then.
+    pub fn restore_version(
+        &mut self,
+        resources: &[(String, String)],
+        change: &str,
+        only: Option<&[String]>,
+        live: Option<&[String]>,
+        stamp: &Stamp,
+    ) -> Result<Vec<Written>, StoreError> {
+        let restoring = self.load_restoring(resources, change)?;
+        if let Some(live) = live
+            && self.review_of(&restoring).live != live
+        {
+            return Err(StoreError::History(
+                "what you reviewed changed since; review it again".to_owned(),
+            ));
+        }
+        let mut context = stamp.action_context();
+        context.what = Some(tilo_actions::Did::History(
+            tilo_actions::entry::HistoryStep {
+                op: tilo_actions::HistoryOp::Restore,
+                steps: 0,
+                of: None,
+                undoes: None,
+                verb: String::new(),
+            },
+        ));
+        let stamp = Stamp {
+            context: Some(Box::new(context)),
+            ..stamp.clone()
+        };
+        let mut written = Vec::new();
+        for part in restoring {
+            let ids: Vec<String> = part
+                .ids
+                .iter()
+                .filter(|id| only.is_none_or(|only| only.contains(id)))
+                .map(|id| held_key(id))
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let Some(doc) = self.docs.get(&part.doc) else {
+                continue;
+            };
+            let mut working = automerge::AutoCommit::from(Automerge::clone(doc));
+            // A content goes back whole; a document of resources, only in theirs.
+            let keys = if part.content { Vec::new() } else { ids };
+            // A document that stands as it did then writes nothing.
+            if crate::history::steps::restore(&mut working, &part.target, &keys).is_err() {
+                continue;
+            }
+            working.commit_with(CommitOptions::default().with_message(stamp.message()));
+            let Some(change) = working.get_last_local_change() else {
+                continue;
+            };
+            self.apply(&part.doc, &part.readers, change.clone())?;
+            written.push(Written {
+                doc: part.doc,
+                readers: part.readers,
+                change,
+            });
+        }
+        if written.is_empty() {
+            return Err(StoreError::History(
+                "it already stands as it did then".to_owned(),
+            ));
+        }
+        Ok(written)
+    }
+
+    /// What [`Self::restore_version`] of `resources` to the version `change` would change, their
+    /// documents read from the source where they are not in memory.
+    ///
+    /// # Errors
+    /// When the version is none of theirs, or a document does not read.
+    pub fn review_restore(
+        &mut self,
+        resources: &[(String, String)],
+        change: &str,
+    ) -> Result<Review, StoreError> {
+        let restoring = self.load_restoring(resources, change)?;
+        Ok(self.review_of(&restoring))
+    }
+
+    /// [`Self::review_restore`] of the documents in memory.
+    ///
+    /// # Errors
+    /// When the version is none of theirs.
+    pub fn review_restore_held(
+        &self,
+        resources: &[(String, String)],
+        change: &str,
+    ) -> Result<Review, StoreError> {
+        let restoring = self.restoring(resources, change, &|doc| self.docs.get(doc).cloned())?;
+        Ok(self.review_of(&restoring))
+    }
+
+    /// [`Self::restoring`], each document it reads read from the source first.
+    fn load_restoring(
+        &mut self,
+        resources: &[(String, String)],
+        change: &str,
+    ) -> Result<Vec<Restoring>, StoreError> {
+        loop {
+            let missing = std::cell::RefCell::new(Vec::new());
+            let restoring = self.restoring(resources, change, &|doc| {
+                let held = self.docs.get(doc).cloned();
+                if held.is_none() {
+                    missing.borrow_mut().push(doc.to_owned());
+                }
+                held
+            });
+            let mut read = false;
+            for doc in missing.into_inner() {
+                read |= self.existing(&doc)?.is_some();
+            }
+            if !read {
+                return restoring;
+            }
+        }
+    }
+
+    fn review_of(&self, restoring: &[Restoring]) -> Review {
+        let mut review = Review::default();
+        for part in restoring {
+            let Some(doc) = self.docs.get(&part.doc) else {
+                continue;
+            };
+            review
+                .live
+                .extend(doc.get_heads().iter().map(ToString::to_string));
+            for id in &part.ids {
+                let differs = if part.content {
+                    let now = crate::wire::AsOf { doc, heads: None };
+                    let then = crate::wire::AsOf {
+                        doc,
+                        heads: Some(&part.target),
+                    };
+                    now.json(&ROOT) != then.json(&ROOT)
+                } else {
+                    read_as_of(doc, None, id) != read_as_of(doc, Some(&part.target), id)
+                };
+                if differs {
+                    review.differing.push(id.clone());
+                }
+            }
+        }
+        review.live.sort_unstable();
+        review.live.dedup();
+        review.differing.sort_unstable();
+        review.differing.dedup();
+        review
+    }
+
+    /// The documents a restore of `resources` to the version `change` writes: the documents
+    /// they are placed in, with the resources nested in them then or now, and the content of
+    /// each.
+    fn restoring(
+        &self,
+        resources: &[(String, String)],
+        change: &str,
+        loaded: &dyn Fn(&str) -> Option<Arc<Automerge>>,
+    ) -> Result<Vec<Restoring>, StoreError> {
+        let not_theirs = || StoreError::History(format!("`{change}` is no version of these"));
+        let mut held = Held::default();
+        for (kind, id) in resources {
+            if let Some((doc, readers)) = self.placed(kind, id) {
+                held.add(&doc, &readers, kind, id);
+            }
+        }
+        // What is nested in them now, then the version's change in one of their documents (a
+        // checkpoint's name names its newest checkpoint), and when it was written.
+        self.nest(&mut held, loaded, None);
+        let version: ChangeHash = match change.parse() {
+            Ok(version) => version,
+            Err(_) => named(&held, change, loaded).ok_or_else(not_theirs)?,
+        };
+        let mut moment = None;
+        for doc_id in held.documents() {
+            if let Some(doc) = loaded(&doc_id)
+                && let Some(found) = doc.get_change_by_hash(&version)
+            {
+                moment = Some(Stamp::of(&found).map_or(0, |stamp| stamp.moment));
+                break;
+            }
+        }
+        let moment = moment.ok_or_else(not_theirs)?;
+        // What was nested in them then goes back with them too.
+        self.nest(&mut held, loaded, Some((version, moment)));
+        let mut restoring = Vec::new();
+        for (doc_id, (readers, ids)) in held.docs {
+            let Some(doc) = loaded(&doc_id) else {
+                continue;
+            };
+            for id in &ids {
+                let Some(kind) = held.kinds.get(id) else {
+                    continue;
+                };
+                let content = content_id(&readers, kind, id);
+                if let Some(content_doc) = loaded(&content) {
+                    restoring.push(Restoring {
+                        target: heads_at(&content_doc, version, moment),
+                        doc: content,
+                        readers: readers.clone(),
+                        ids: BTreeSet::from([id.clone()]),
+                        content: true,
+                    });
+                }
+            }
+            restoring.push(Restoring {
+                target: heads_at(&doc, version, moment),
+                doc: doc_id,
+                readers,
+                ids,
+                content: false,
+            });
+        }
+        Ok(restoring)
+    }
+
+    /// Adds to `held` every resource nested in one it holds, now, or with `then` (a version
+    /// and its moment) as it stood then too.
+    fn nest(
+        &self,
+        held: &mut Held,
+        loaded: &dyn Fn(&str) -> Option<Arc<Automerge>>,
+        then: Option<(ChangeHash, u64)>,
+    ) {
+        let mut queue: Vec<String> = held.kinds.keys().cloned().collect();
+        while let Some(parent) = queue.pop() {
+            for doc_id in self.nested_in.get(&parent).into_iter().flatten() {
+                let (Some(doc), Some(readers)) = (loaded(doc_id), self.index.readers(doc_id))
+                else {
+                    continue;
+                };
+                let target = then.map(|(version, moment)| heads_at(&doc, version, moment));
+                for heads in std::iter::once(None).chain(target.as_deref().map(Some)) {
+                    let look = crate::wire::AsOf { doc: &doc, heads };
+                    for key in look.keys(&ROOT) {
+                        let Some(id) = key.strip_prefix(HELD) else {
+                            continue;
+                        };
+                        if held.kinds.contains_key(id) {
+                            continue;
+                        }
+                        if let Some((kind, resource)) = read_as_of(&doc, heads, id)
+                            && resource.parent.as_deref() == Some(parent.as_str())
+                        {
+                            held.add(doc_id, readers, &kind, id);
+                            queue.push(id.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The newest checkpoint named `name` of the resources `held` holds, in the documents they are in.
+fn named(
+    held: &Held,
+    name: &str,
+    loaded: &dyn Fn(&str) -> Option<Arc<Automerge>>,
+) -> Option<ChangeHash> {
+    held.docs
+        .iter()
+        .filter_map(|(doc, (_, ids))| Some((loaded(doc)?, ids)))
+        .flat_map(|(doc, ids)| {
+            doc.get_changes(&[])
+                .into_iter()
+                .filter(automerge::Change::is_empty)
+                .filter_map(|change| {
+                    let stamp = Stamp::of(&change)?;
+                    let names = stamp.verb == Stamp::CHECKPOINT_VERB
+                        && stamp.args.first().and_then(serde_json::Value::as_str) == Some(name)
+                        && stamp
+                            .args
+                            .get(1)
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|id| ids.contains(id));
+                    names.then(|| (stamp.moment, change.hash()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .max()
+        .map(|(_, hash)| hash)
+}
+
+/// The heads of `doc` as it stood at the version `version`, written at `moment`: just after it,
+/// in the document that holds it; in another, every change written by then.
+fn heads_at(doc: &Automerge, version: ChangeHash, moment: u64) -> Vec<ChangeHash> {
+    if doc.get_change_by_hash(&version).is_some() {
+        return vec![version];
+    }
+    let mut kept: BTreeSet<ChangeHash> = BTreeSet::new();
+    let mut deps: BTreeSet<ChangeHash> = BTreeSet::new();
+    for change in doc.get_changes(&[]) {
+        let at = Stamp::of(&change).map_or(0, |stamp| stamp.moment);
+        if at <= moment && change.deps().iter().all(|dep| kept.contains(dep)) {
+            kept.insert(change.hash());
+            deps.extend(change.deps().iter().copied());
+        }
+    }
+    kept.retain(|hash| !deps.contains(hash));
+    kept.into_iter().collect()
 }

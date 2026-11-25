@@ -54,7 +54,7 @@ pub trait SpeechFactory: Send + Sync {
 
 pub use tilo_notify::{Notification, Notifier, NotifyError};
 
-pub use tilo_location::LocationProvider;
+pub use crate::location::LocationProvider;
 
 pub use tilo_secrets::{SecretBackend, SecretStore};
 
@@ -147,7 +147,7 @@ impl ProcessServices {
             speech: Arc::new(SilentSpeech),
             notifications: tilo_notify::unavailable(),
             media_session: Arc::new(NoMediaSession),
-            location: tilo_location::unavailable(),
+            location: crate::location::unavailable(),
             screen_capture: Arc::new(NoScreenCapture),
             secrets: Arc::new(InProcessSecrets::default()),
         }
@@ -155,15 +155,17 @@ impl ProcessServices {
 
     /// This target's services for the app `app_id`: the clipboard over the connection its
     /// session serves it, each platform crate's system backend (file choosers and URI opening,
-    /// notifications, location, secrets) and, with the `native` feature, speech, media
-    /// controls and screen capture. Without an app id notifications are unavailable.
+    /// notifications, secrets) and, with the `native` feature, speech, media controls and screen
+    /// capture. Location is the device's own action, which the host installs with
+    /// [`Self::with_location`]; a process given none answers that location is not available.
+    /// Without an app id notifications are unavailable.
     pub fn system(app_id: Option<&str>) -> Self {
         let services = Self {
             clipboard: tilo_clipboard::system(),
             files: tilo_dialogs::unavailable_picker(),
             opener: tilo_dialogs::system_opener(),
             notifications: tilo_notify::system(app_id),
-            location: tilo_location::system(),
+            location: crate::location::unavailable(),
             secrets: Arc::new(SystemSecrets),
             ..Self::null()
         };
@@ -183,6 +185,15 @@ impl ProcessServices {
     #[must_use]
     pub fn with_files(mut self, files: Arc<dyn FilePicker>) -> Self {
         self.files = files;
+        self
+    }
+
+    /// Replace location, keeping every other service: the host installs one that asks the
+    /// device's own action, so a sandboxed process never reaches the platform's location
+    /// service itself.
+    #[must_use]
+    pub fn with_location(mut self, location: Arc<dyn LocationProvider>) -> Self {
+        self.location = location;
         self
     }
 }
@@ -312,7 +323,6 @@ fn install_resolvers() {
         picker: || current().files,
         opener: || current().opener,
     });
-    tilo_location::install_resolver(|| current().location);
 }
 
 /// The services effects on this thread should reach right now; see the

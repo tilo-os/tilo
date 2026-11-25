@@ -266,6 +266,10 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             };
             attribute(&mut out, "did", &words);
         }
+        // The format an export action writes, which the system's one Export… lists.
+        if let Some(export) = &action.export {
+            attribute(&mut out, "export", &pattern(export));
+        }
         // What the person types where they answer its ask, each labelled.
         for (n, take) in action.takes.iter().enumerate() {
             attribute(

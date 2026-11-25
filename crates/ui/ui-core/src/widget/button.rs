@@ -2471,9 +2471,12 @@ impl Widget for Button {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.effectively_enabled() {
+        if !self.enabled {
             return;
         }
+        // Its action is not the person's to run here: it looks it, and their press is still
+        // answered, with why ([`ActionEmitter::press_refused`]), never dropped unseen.
+        let refused = !self.effectively_enabled();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = ctx.logical(position);
@@ -2498,8 +2501,10 @@ impl Widget for Button {
                     ElementState::Pressed if self.is_hovered && !self.press.is_held() => {
                         self.press.press(at);
                         *ctx.handled = true;
-                        self.pressed_into_focus |= !self.is_focused;
-                        *ctx.focus_target = Some(ctx.node_id);
+                        if !refused {
+                            self.pressed_into_focus |= !self.is_focused;
+                            *ctx.focus_target = Some(ctx.node_id);
+                        }
                     }
                     ElementState::Pressed => {
                         if !self.is_hovered && self.press.is_held() {
@@ -2509,6 +2514,14 @@ impl Widget for Button {
                     }
                     ElementState::Released => {
                         match self.press.release(self.is_hovered.then_some(at)) {
+                            Release::Click(()) if refused => {
+                                *ctx.handled = true;
+                                if let Some(action) = &mut self.action
+                                    && let Err(error) = action.press_refused(())
+                                {
+                                    tracing::warn!(%error, button = %self.id, "action-bound control refused its arguments");
+                                }
+                            }
                             Release::Click(()) => {
                                 *ctx.handled = true;
                                 self.activate();

@@ -1,5 +1,5 @@
 //! Explicit ownership and presentation registration for managed roots.
-use super::{HistoryResource, preview::PreviewFactory, restore::HistoryRestoreSchema};
+use super::{HistoryResource, preview::PreviewFactory};
 use crate::widget::Widget;
 use automerge::transaction::Transactable as _;
 
@@ -21,7 +21,6 @@ pub struct HistoryScopeDefinition {
     pub key: &'static str,
     pub title: &'static str,
     pub presentation: HistoryPresentation,
-    pub content_schema: Option<&'static HistoryRestoreSchema>,
 }
 pub enum HistoryPresentation {
     Domain {
@@ -262,10 +261,8 @@ impl HistoryRegistration {
                 return Err(HistoryRegistrationError::InvalidScopes);
             }
             match (&scope.presentation, source) {
-                // A folder's changes claim none of the window's document, so it carries no
-                // restore schema.
-                (HistoryPresentation::Folder, HistorySourceRegistration::FolderFiles { .. })
-                    if scope.content_schema.is_none() => {}
+                // A folder's changes claim none of the window's document.
+                (HistoryPresentation::Folder, HistorySourceRegistration::FolderFiles { .. }) => {}
                 (
                     HistoryPresentation::Domain { .. }
                     | HistoryPresentation::DomainWithAssets { .. },
@@ -417,7 +414,6 @@ mod asset_factory_tests {
         scopes: &[HistoryScopeDefinition {
             key: "deck",
             title: "Deck",
-            content_schema: None,
             presentation: HistoryPresentation::DomainWithAssets {
                 create: crate::history_mode::test_preview,
                 assets: || std::rc::Rc::new(EmptySource),

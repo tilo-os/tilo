@@ -47,8 +47,44 @@ pub fn inherited_link(
     Ok(ShellClient::open(link).0)
 }
 
-/// How long a blocking ask may wait before it says where it waited from.
+/// How long a blocking ask may wait before it says where it waits from, and again each time it
+/// waited as long once more.
 const SLOW_ASK: std::time::Duration = std::time::Duration::from_secs(2);
+/// What a blocking ask made on the thread that carries the daemon's link is told: it could
+/// never be answered.
+pub const ASKED_ON_THE_LINK: &str =
+    "a blocking ask of the device's daemon was made on the thread that carries its link";
+
+/// How much of what a waiting ask asked it says.
+const ASKING_SHOWN: usize = 200;
+
+/// The start of `call`, as a wait says what it asked: written no further than it is shown, so a
+/// call that carries a document costs no more than one that does not.
+fn shown(call: &ShellCall) -> String {
+    use std::fmt::Write as _;
+    /// Takes what is written up to [`ASKING_SHOWN`] bytes, and refuses the rest.
+    struct Start(String);
+    impl std::fmt::Write for Start {
+        fn write_str(&mut self, written: &str) -> std::fmt::Result {
+            let room = ASKING_SHOWN.saturating_sub(self.0.len());
+            let mut end = written.len().min(room);
+            while !written.is_char_boundary(end) {
+                end = end.saturating_sub(1);
+            }
+            self.0.push_str(written.get(..end).unwrap_or_default());
+            if end < written.len() {
+                return Err(std::fmt::Error);
+            }
+            Ok(())
+        }
+    }
+    let mut start = Start(String::new());
+    // A call longer than what is shown stops the writing there, and says it goes on.
+    if write!(start, "{call:?}").is_err() {
+        start.0.push('…');
+    }
+    start.0
+}
 
 /// The shell's connection to the device's daemon.
 #[derive(Clone)]
@@ -62,6 +98,9 @@ struct Inner {
     /// What carries the connection's frames: a runtime with a worker of its own, never the thread
     /// a synchronous reader blocks.
     runtime: tokio::runtime::Handle,
+    /// The one thread that drives [`Self::runtime`] when it has only one: a blocking ask made on
+    /// it waits for frames only it could carry.
+    driver: Arc<std::sync::OnceLock<std::thread::ThreadId>>,
 }
 
 impl std::fmt::Debug for DaemonShell {
@@ -76,8 +115,19 @@ impl DaemonShell {
     /// The shell's connection to the daemon over `link`, carried on `runtime`.
     #[must_use]
     pub fn new(link: Result<ShellClient, String>, runtime: tokio::runtime::Handle) -> Self {
+        let driver = Arc::new(std::sync::OnceLock::new());
+        if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+            let noted = Arc::clone(&driver);
+            runtime.spawn(async move {
+                let _ = noted.set(std::thread::current().id());
+            });
+        }
         Self {
-            inner: Arc::new(Inner { link, runtime }),
+            inner: Arc::new(Inner {
+                link,
+                runtime,
+                driver,
+            }),
         }
     }
 
@@ -106,24 +156,53 @@ impl DaemonShell {
     /// # Errors
     /// As [`Self::ask`].
     pub fn ask_blocking(&self, call: ShellCall) -> Result<ShellReply, String> {
+        // What the call asks, for a wait that has to say so: its kind and the start of its fields.
+        let asking = shown(&call);
+        // The thread that carries the link's frames would wait for itself, and every other ask of
+        // the desktop's after it: it is refused at once, saying where it was asked from.
+        if self.inner.driver.get() == Some(&std::thread::current().id()) {
+            tracing::error!(
+                asking = %asking,
+                from = %std::backtrace::Backtrace::force_capture(),
+                "a blocking ask of the device's daemon was made on the thread that carries its link"
+            );
+            return Err(ASKED_ON_THE_LINK.to_owned());
+        }
         let (answered, answer) = std::sync::mpsc::sync_channel(1);
         let inner = Arc::clone(&self.inner);
         self.inner.runtime.spawn(async move {
             let _ = answered.send(inner.ask(call).await);
         });
         let asked = tilo_clock::now();
-        let answered = answer
-            .recv()
-            .map_err(|_| "the daemon's connection stopped before it answered".to_owned())?;
-        // A thread that waits here waits on the daemon's store: one that waited long says where
-        // it waited from, so a wait on the desktop's own loop is found and moved off it.
-        let waited = tilo_clock::now().saturating_duration_since(asked);
-        if waited > SLOW_ASK {
+        // A thread that waits here waits on the daemon: one that waits long says what it asked
+        // and where it waits from while it still waits, so a wait that never ends is found too,
+        // and a wait on the desktop's own loop is moved off it.
+        let mut said = false;
+        let answered = loop {
+            match answer.recv_timeout(SLOW_ASK) {
+                Ok(answered) => break answered,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let waited = tilo_clock::now().saturating_duration_since(asked);
+                    tracing::warn!(
+                        waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+                        thread = std::thread::current().name().unwrap_or("unnamed"),
+                        asking = %asking,
+                        from = %std::backtrace::Backtrace::force_capture(),
+                        "a blocking ask of the device's daemon is still waiting"
+                    );
+                    said = true;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the daemon's connection stopped before it answered".to_owned());
+                }
+            }
+        };
+        if said {
+            let waited = tilo_clock::now().saturating_duration_since(asked);
             tracing::warn!(
                 waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
-                thread = std::thread::current().name().unwrap_or("unnamed"),
-                from = %std::backtrace::Backtrace::force_capture(),
-                "a blocking ask of the device's daemon waited long"
+                asking = %asking,
+                "a blocking ask of the device's daemon was answered after a long wait"
             );
         }
         answered
@@ -473,6 +552,27 @@ impl DeviceDocuments for DaemonDocuments {
                 tracing::warn!(resource, %error, "the daemon did not say");
                 false
             }
+        }
+    }
+
+    fn member_changes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<tilo_peer_state::workspace_documents::MemberChange>, String> {
+        match self.0.ask_blocking(ShellCall::MemberChanges {
+            workspace: workspace.to_owned(),
+        })? {
+            ShellReply::MemberChanges(changes) => Ok(changes?
+                .into_iter()
+                .map(
+                    |change| tilo_peer_state::workspace_documents::MemberChange {
+                        change: change.change,
+                        message: change.message,
+                        time: change.time,
+                    },
+                )
+                .collect()),
+            other => Err(unexpected(&other)),
         }
     }
 

@@ -557,6 +557,51 @@ tilo_test_env::scenario! {
         assert!(refused.reason.contains("another action"), "{}", refused.reason);
     }
 
+    phase an_undo_outside_what_its_call_declares_is_refused;
+    {
+        let (mut receiver, a, ac, b, _bc, now) = seeded_with(RevocationList::new());
+        // A person asked to take changes back as moderation does, which declares an undo in the
+        // chat's record only. The device that keeps the records writes that undo in another
+        // app's record: it is outside what the call declares, refused, and the record keeps
+        // what it held.
+        let mut undoing = caller_context(caller_invoker(&ac), &ac, &a, now);
+        let invocation = InvocationId::new();
+        let mut request = InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::MODERATION_PROVIDER.into(),
+                address: ActionAddress::new(
+                    tilo_actions::remote::MODERATION_HISTORY,
+                    tilo_actions::remote::MODERATION_UNDO,
+                ),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        request.signed = Some(Box::new(
+            sign_invocation_now(WORKSPACE, &request, &ac, &a, now_ns(now)).unwrap(),
+        ));
+        undoing.source_invocation = Some(invocation);
+        undoing.signed = SignedCall::of(&request).map(Box::new);
+        undoing.what = Some(Did::History(tilo_actions::HistoryStep {
+            op: tilo_actions::HistoryOp::Undo,
+            steps: 1,
+            of: None,
+            undoes: Some("a post".into()),
+            verb: "send".into(),
+        }));
+        let message = written(&receiver, &b, &undoing, "taken back", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+    }
+
     phase an_agent_its_device_runs_is_admitted;
     {
         let (mut receiver, _a, _ac, b, bc, now) = seeded_with(RevocationList::new());
@@ -576,6 +621,44 @@ tilo_test_env::scenario! {
         let message = written(&receiver, &b, &context, "her agent's", now);
         take(&mut receiver, message, now).expect("the device writes for the agent it runs");
         assert!(value(&receiver).contains("her agent's"), "{}", value(&receiver));
+    }
+
+    phase an_agents_store_write_is_admitted_on_how_it_says_the_agent_acted;
+    {
+        let (mut receiver, _a, _ac, b, bc, now) = seeded_with(RevocationList::new());
+        let owner = hex::encode(bc.user_public_key);
+        let scribe = tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("scribe"));
+        let stamp = |acting: Option<tilo_action_policy::Acting>| collab_types::Stamp {
+            verb: "set".into(),
+            invoker: collab_types::Stamp::by(&scribe),
+            acted_for: Some(owner.clone()),
+            invocation: InvocationId::new().to_string(),
+            context: acting.map(|acting| {
+                Box::new(ActionContext {
+                    invoker: Some(tilo_actions::ActionInvoker::admitted(&acting)),
+                    ..ActionContext::default()
+                })
+            }),
+            ..collab_types::Stamp::default()
+        };
+        // A store write naming an agent beside its person, keeping no call, that records nothing
+        // of how the agent acted: nothing shows the agent asked, so it is refused.
+        let unsaid = committed(&receiver, &b, &stamp(None).message(), "unsaid", now);
+        let refused = take(&mut receiver, unsaid, now).unwrap_err();
+        assert!(refused.reason.contains("own certified key"), "{}", refused.reason);
+        // One recording an agent with a key of its own, keeping no call it signed: refused.
+        let own_key = tilo_action_policy::Acting::agent("scribe")
+            .acting_for(tilo_action_policy::Acting::person(owner.as_str()));
+        let unsigned = committed(&receiver, &b, &stamp(Some(own_key)).message(), "unsigned", now);
+        let refused = take(&mut receiver, unsigned, now).unwrap_err();
+        assert!(refused.reason.contains("own certified key"), "{}", refused.reason);
+        assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+        // One recording the agent its person's device handed its session to: the device answers
+        // for it, and it is admitted.
+        let handed = tilo_action_policy::Acting::handed_agent("scribe", owner.clone());
+        let message = committed(&receiver, &b, &stamp(Some(handed)).message(), "handed", now);
+        take(&mut receiver, message, now).expect("the device writes for the agent it runs");
+        assert!(value(&receiver).contains("handed"), "{}", value(&receiver));
     }
 
     phase a_revoked_signer_or_a_non_member_or_a_removed_member_is_refused;

@@ -31,16 +31,17 @@ use super::{Ask, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
 
 /// The provider a moderation turn reaches a person's recorded changes under.
-pub(super) const PROVIDER: &str = "tilo.moderation";
+pub(super) const PROVIDER: &str = tilo_actions::remote::MODERATION_PROVIDER;
 /// The resource both actions are actions of.
-pub(super) const RESOURCE: &str = "moderation.history";
+pub(super) const RESOURCE: &str = tilo_actions::remote::MODERATION_HISTORY;
 /// Read a person's recorded changes, oldest first.
 pub(super) const ACTIVITY: &str = "activity";
-/// Take exactly the changes a read returned back, as one run.
-pub(super) const UNDO: &str = "undo";
+/// Take exactly the changes a read returned back, as one run: the step its declaration names,
+/// an undo in the chat's record ([`tilo_actions::remote::declared_effects`]).
+pub(super) const UNDO: &str = tilo_actions::remote::MODERATION_UNDO;
 
 /// The app whose record a moderation turn reads: the workspace's tl Chat.
-const CHAT: &str = "so.tilo.chat";
+const CHAT: &str = tilo_actions::remote::MODERATED_APP;
 /// The node under an app the two actions are decided at.
 const NODE_KIND: &str = "moderation.history";
 /// The most versions a read hands back when a turn asks for none.
@@ -92,6 +93,12 @@ impl TurnHistory {
                 let mut contract = tilo_actions::ActionContract::default();
                 // A turn's own: no person picks it from a list.
                 contract.set_audience(tilo_actions::contract::Audience::Agents);
+                // What the undo takes back is declared, so the agent's undo is admitted as that
+                // step, and whoever asks first is shown it.
+                contract.effects = tilo_actions::remote::declared_effects(&RemoteActionTarget {
+                    provider: PROVIDER.to_owned(),
+                    address: address.clone(),
+                });
                 CatalogueRow::for_action(
                     PROVIDER.to_owned(),
                     PROVIDER.to_owned(),
@@ -191,6 +198,7 @@ impl TurnHistory {
     async fn undo(
         &self,
         caller: &Caller,
+        request: &InvokeRequest,
         arguments: &Map<String, Value>,
     ) -> Result<Value, ActionCallError> {
         let app = text(arguments, "app").unwrap_or_else(|| CHAT.to_owned());
@@ -213,11 +221,11 @@ impl TurnHistory {
         }
         self.admitted(caller, &app, UNDO, ActionKind::Undoable)
             .await?;
-        let agent = caller
+        // Only an agent takes a person's changes back.
+        caller
             .acting()
             .agent_id()
-            .ok_or(ActionCallError::NotPermitted)?
-            .to_owned();
+            .ok_or(ActionCallError::NotPermitted)?;
         // Each invocation once, at the time it last wrote.
         let mut made: Vec<(String, u64, String)> = Vec::new();
         for version in self.versions(caller, &app).await? {
@@ -269,7 +277,9 @@ impl TurnHistory {
             person.id(),
             tilo_clock::unix_now_ms_i64()
         );
-        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::agent(agent));
+        // The undo is made as the agent acts for its person: under its own key, or handed its
+        // person's session, as every write it makes records.
+        let acting = caller.acting().clone();
         // The agent reads what the person it works for may read, never the moderated person.
         let reader = crate::workspaces::person_reading(caller);
         // The undo writes: the record is carried on this reactor, never read-only.
@@ -278,8 +288,18 @@ impl TurnHistory {
             .tl_record(&self.workspace, &app, &reader)
             .map_err(unavailable)?;
         let policy = self.workspaces.policy_now(&self.workspace).map(Arc::new);
+        // The undo keeps the call the agent signed for it, under its own key: every reader
+        // admits the undo as the step that call declares, and history shows the call took it.
+        let call = tilo_actions::remote::SignedCall::of(request);
         let undone = tokio::task::spawn_blocking(move || {
-            records.undo(record, policy, &viewer, &app, (&run, ""), &invocations)
+            records.undo(
+                record,
+                policy,
+                &acting,
+                &app,
+                (&run, ""),
+                (&invocations, call.as_ref()),
+            )
         })
         .await
         .map_err(unavailable)?
@@ -331,7 +351,7 @@ impl TurnProvider for TurnHistory {
             let arguments = arguments.clone();
             let value = match request.target.address.action.as_str() {
                 ACTIVITY => self.activity(&caller, &arguments).await?,
-                UNDO => self.undo(&caller, &arguments).await?,
+                UNDO => self.undo(&caller, &request, &arguments).await?,
                 _ => return Err(ActionCallError::UnknownAction),
             };
             Ok(InvocationUpdate::Succeeded {

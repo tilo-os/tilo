@@ -18,9 +18,6 @@ use crate::runtime::origin::OriginWrite;
 use crate::runtime::{ResourceRef, Value};
 use crate::tilolang::Compiled;
 
-mod asking;
-pub use asking::{AskedReading, AskingOrigin, AskingWriter};
-
 /// The shell's package id.
 pub const SHELL_APP: &str = "so.tilo.shell";
 

@@ -19,6 +19,7 @@ use tilo_lock::MutexRecover as _;
 pub(super) const RESULTS: &str = "so.tilo.android.TiloActivityResults";
 pub(super) const DOCUMENTS: &str = "so.tilo.android.TiloDocuments";
 pub(super) const NOTIFICATIONS: &str = "so.tilo.android.TiloNotifications";
+pub(super) const ALARMS: &str = "so.tilo.android.TiloAlarms";
 pub(super) const SPEECH: &str = "so.tilo.android.TiloSpeech";
 pub(super) const LOCATION: &str = "so.tilo.android.TiloLocation";
 

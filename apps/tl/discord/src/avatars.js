@@ -34,14 +34,11 @@ export function contentHash(answer) {
   return /^[0-9a-f]{64}$/.test(bare) ? bare : null;
 }
 
-/// Fetch `url` into the workspace's content store with `content(bytes)` and answer the hash of
-/// the picture, or null when it is not an avatar this bridge may keep.
-export async function keepAvatar(
-  url,
-  { fetch = globalThis.fetch, content, max = AVATAR_MAX_BYTES } = {},
-) {
+/// The picture `url` serves, `{bytes, type}`, or null when it is not an avatar this bridge may
+/// fetch or is larger than `max`.
+export async function fetchAvatar(url, { fetch = globalThis.fetch, max = AVATAR_MAX_BYTES } = {}) {
   const address = avatarAddress(url);
-  if (!address || !content) return null;
+  if (!address) return null;
   let answer;
   try {
     const signal =
@@ -68,9 +65,33 @@ export async function keepAvatar(
     return null;
   }
   if (bytes.length === 0 || bytes.length > max) return null;
+  return { bytes, type };
+}
+
+/// Fetch `url` into the workspace's content store with `content(bytes)` and answer the hash of
+/// the picture, or null when it is not an avatar this bridge may keep.
+export async function keepAvatar(
+  url,
+  { fetch = globalThis.fetch, content, max = AVATAR_MAX_BYTES } = {},
+) {
+  if (!content) return null;
+  const picture = await fetchAvatar(url, { fetch, max });
+  if (!picture) return null;
   try {
-    return contentHash(await content(bytes));
+    return contentHash(await content(picture.bytes));
   } catch {
     return null;
   }
+}
+
+/// How large a link's picture may be as the record keeps it: a base64 `data:` URL the record
+/// takes up to 48 KiB of.
+export const PHOTO_MAX_BYTES = 36 * 1024;
+
+/// A linked account's avatar as the small picture its link keeps, a base64 `data:` URL, or null
+/// when it is not an avatar this bridge may keep or is too large for the record.
+export async function linkPhoto(url, { fetch = globalThis.fetch } = {}) {
+  const picture = await fetchAvatar(url, { fetch, max: PHOTO_MAX_BYTES });
+  if (!picture) return null;
+  return `data:${picture.type};base64,${Buffer.from(picture.bytes).toString("base64")}`;
 }

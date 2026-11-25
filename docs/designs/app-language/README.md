@@ -124,6 +124,22 @@ value next, every parameter after those has a default, and one action settles a 
 field set whole can be settled (a case, a date, a person, a flag): a text is spliced where it is
 typed, and a collection changes by its items.
 
+Exporting is the system's. An app publishes each format it can write as an export action on the
+type: it takes the record, answers a `File`, and declares the format as the person reads it with
+`export:`. The system's one Export…, on every resource's menu, lists the formats published for
+what is open and saves the file where the person says, under the name the file gives itself. No
+app keeps an export menu or a save dialog of its own:
+
+```
+action export_note(n: Note) -> File (icon: .download, export: "Markdown") {
+    File.of_text("{file_name(n)}.md", note_markdown(n))
+}
+```
+
+A resource with several formats declares one action each, in the order the Export… lists them.
+An action that only makes the words or bytes another format wraps (a helper answering `Text`)
+declares no format and stays the app's own.
+
 `(readers: people)` makes privacy between members a rule on the record: only the actors its
 `List<Actor>` field `people` holds read a record of the type and everything under it, whatever the
 workspace's grants say, the owner's included. `std.may_read`, `members(r)`, opening it and search

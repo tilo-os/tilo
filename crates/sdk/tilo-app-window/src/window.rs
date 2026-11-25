@@ -264,6 +264,17 @@ struct PipWindow {
     content_rect: ui::kurbo::Rect,
 }
 
+/// Where the person's keys stand in a window, between its rebuilds.
+#[derive(Clone, Copy, Debug, Default)]
+struct Keys {
+    /// A key, a press or a touch arrived since the window last looked where the keyboard focus is.
+    input: bool,
+    /// The keyboard is asked to leave the field it is in, at the next rebuild.
+    blur_request: bool,
+    /// Whether an input method composes in the focused control, as last sent.
+    composing: bool,
+}
+
 pub struct AppWindow {
     transport: Box<dyn Transport>,
     limits: PatchLimits,
@@ -290,18 +301,14 @@ pub struct AppWindow {
     structure_dirty: bool,
     /// Why the window shows the platform's error state: a batch it refused.
     failed: Option<String>,
-    /// A key, a press or a touch arrived since the window last looked where the keyboard focus is.
-    input: bool,
+    /// Where the person's keys stand: input since the last look, a blur asked, a composition.
+    keys: Keys,
     /// The bound control the keyboard focus was in, as last sent, by key in the composed tree.
     focus: Option<String>,
     /// The record and field the control holding the keyboard edits, by the control's key in the
     /// composed tree, as last seen: when the same editor edits another record (a deck's next
     /// slide), the person has left the field they were typing in.
     focus_binding: Option<(String, (String, String))>,
-    /// The keyboard is asked to leave the field it is in, at the next rebuild.
-    blur_request: bool,
-    /// Whether an input method composes in the focused control, as last sent.
-    composing: bool,
     /// The modifier keys held now, as the last window event said.
     held: wire::Held,
     /// The modifier keys held, as last sent with a press.
@@ -516,11 +523,9 @@ impl AppWindow {
             out: Vec::new(),
             structure_dirty: true,
             failed: None,
-            input: false,
+            keys: Keys::default(),
             focus: None,
             focus_binding: None,
-            blur_request: false,
-            composing: false,
             held: wire::Held::default(),
             held_sent: wire::Held::default(),
             activations: 0,
@@ -1821,7 +1826,7 @@ impl AppWindow {
         if self.save.take_bar_action().is_some() {
             self.out.push(ToApp::SaveAgain);
         }
-        if std::mem::take(&mut self.input) {
+        if std::mem::take(&mut self.keys.input) {
             self.follow_focus();
         }
         let wanted: Vec<(Level, String, crate::rows::Asked)> = self
@@ -1940,7 +1945,7 @@ impl AppWindow {
         );
         self.focus_binding = binding.map(|binding| (now, binding));
         if left {
-            self.blur_request = true;
+            self.keys.blur_request = true;
             self.structure_dirty = true;
             self.focus = None;
             self.out.push(ToApp::Focus { at: None });
@@ -2427,7 +2432,7 @@ impl AppWindow {
         };
         if key.state != ui::winit::event::ElementState::Pressed
             || key.logical_key != Key::Named(NamedKey::Enter)
-            || self.composing
+            || self.keys.composing
             || modifiers.shift_key()
             || modifiers.control_key()
             || modifiers.alt_key()
@@ -2456,7 +2461,7 @@ impl AppWindow {
         event: &ui::winit::event::WindowEvent,
         modifiers: ui::winit::keyboard::ModifiersState,
     ) -> Option<Press> {
-        if self.composing {
+        if self.keys.composing {
             return None;
         }
         let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
@@ -3214,7 +3219,7 @@ impl AppWindow {
                         .filter_map(|node| offered(node))
                         .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)))
                 });
-                let (width, height) = room.unwrap_or((rect.width(), rect.height()));
+                let (width, height) = room.unwrap_or_else(|| (rect.width(), rect.height()));
                 let space = (width as f32 / self.rem, height as f32 / self.rem, self.rem);
                 let moved = spaces.get(key).is_none_or(|before| {
                     (before.0 - space.0).abs() >= SPACE_STEP_REM
@@ -3929,7 +3934,7 @@ impl ui::widget::Decorator for AppWindow {
                 | WindowEvent::Touch(_)
                 | WindowEvent::Ime(_)
         ) {
-            self.input = true;
+            self.keys.input = true;
         }
         let modifiers = ctx.modifiers.state();
         self.held = wire::Held {
@@ -3940,8 +3945,8 @@ impl ui::widget::Decorator for AppWindow {
         if let WindowEvent::Ime(ime) = event {
             let composing =
                 matches!(ime, ui::winit::event::Ime::Preedit(text, _) if !text.is_empty());
-            if composing != self.composing {
-                self.composing = composing;
+            if composing != self.keys.composing {
+                self.keys.composing = composing;
                 self.out.push(ToApp::Composing(composing));
             }
         }
@@ -4021,7 +4026,7 @@ impl ui::widget::Decorator for AppWindow {
     fn take_focus_request(&mut self) -> Option<String> {
         // No field: the view ended the keyboard's place in an editor (`blur()`), or the editor
         // now edits another record.
-        if std::mem::take(&mut self.blur_request) {
+        if std::mem::take(&mut self.keys.blur_request) {
             return Some(String::new());
         }
         let request = self

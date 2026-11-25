@@ -13,6 +13,14 @@ import {
   changeTarget,
   messageOf,
   sizeOf,
+  textToDiscord,
+  textFromDiscord,
+  reactionToDiscord,
+  importOf,
+  sidebarOf,
+  blockedToChat,
+  blocksPersona,
+  SELF as SELF_APP,
 } from "../src/plan.js";
 import { callsOf } from "../main.js";
 import { looksLikeToken, webhookSend } from "../src/rest.js";
@@ -83,7 +91,9 @@ test("a message written on Discord is relayed as its author, with their picture 
   expect(call.args.service).toBe("Discord");
   // The account ada linked wears her face and colour here.
   expect(call.args.member).toEqual({ member: { person: "ada" } });
-  expect(call.args.avatar).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
+  // An avatar the workspace does not keep yet is fetched first, never hot-linked.
+  expect(call.args.avatar).toBe("");
+  expect(call.avatar).toEqual({ hash: "abc", url: "https://cdn.discordapp.com/avatars/3001/abc.png?size=128" });
   expect(call.args.outside_emoji).toEqual([
     { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
   ]);
@@ -192,10 +202,83 @@ test("a channel Discord has is made here and joined to it", () => {
     source: "LAYOUT_CHANGED",
     payload: { bot_user: "900", channels: [{ id: "458", kind: "text", name: "notes" }], roles: [] },
   });
-  expect(calls[0].action).toBe("observe_layout");
-  const made = calls.find((call) => call.action === "new_channel");
-  expect(made.args.name).toBe("notes");
+  expect(calls.map((call) => call.action)).toEqual(["observe_layout"]);
+  const made = importOf(
+    state(),
+    { channels: [{ id: "458", kind: "text", name: "notes" }] },
+    { categories: [], channels: [] },
+  ).find((call) => call.action === "new_channel");
+  expect(made.args).toEqual({ name: "notes", category: null });
   expect(made.map).toEqual({ kind: "channel", discord: "458", origin: "discord" });
+});
+
+const ID = (id) => `tl:so.tilo.chat:${id}`;
+
+/// The server's layout: a "Text" category holding the bridged #design, #notes and a voice
+/// channel, and a "Voice" category of its own with #lobby.
+const LAYOUT = {
+  channels: [
+    { id: "11", kind: "category", name: "Voice", position: 1 },
+    { id: "10", kind: "category", name: "Text", position: 0 },
+    { id: "456", kind: "text", name: "design", parent: "10", position: 0 },
+    { id: "458", kind: "text", name: "notes", parent: "10", position: 1 },
+    { id: "459", kind: "voice", name: "Call", parent: "10", position: 2 },
+    { id: "460", kind: "text", name: "lobby", parent: "11", position: 0 },
+  ],
+};
+
+test("adopting a server joins the workspace's categories and channels by name and makes the rest", () => {
+  const sidebar = sidebarOf({
+    channels: [
+      { id: "k1", value: { name: "text", channels: [] } },
+      { id: "c9", value: { name: "Notes", topic: "", messages: [] } },
+      { id: "k2", value: { name: "chat", channels: [{ id: "c1", value: { name: "general", topic: "", messages: [] } }] } },
+    ],
+  });
+  expect(sidebar.categories).toEqual([
+    { id: ID("k1"), name: "text" },
+    { id: ID("k2"), name: "chat" },
+  ]);
+  expect(sidebar.channels.map((channel) => [channel.id, channel.category])).toEqual([
+    [ID("c9"), null],
+    [ID("c1"), ID("k2")],
+  ]);
+  const calls = importOf(state({ ownership: "importing" }), LAYOUT, sidebar);
+  expect(calls.map((call) => [call.action, call.args, call.categoryFrom ?? null, call.map ?? null])).toEqual([
+    // The workspace's "text" category is Discord's "Text"; "Voice" is made.
+    ["map", { kind: "category", tilo: ID("k1"), discord: "10", origin: "discord" }, null, null],
+    ["new_category", { name: "Voice" }, null, { kind: "category", discord: "11", origin: "discord" }],
+    // #notes is joined and moves into its Discord channel's category.
+    ["map", { kind: "channel", tilo: ID("c9"), discord: "458", origin: "discord" }, null, null],
+    ["move_channel", { ch: ID("c9"), category: ID("k1") }, null, null],
+    ["new_voice_channel", { name: "Call", category: ID("k1") }, null, { kind: "channel", discord: "459", origin: "discord" }],
+    // #lobby waits for the category its call makes.
+    ["new_channel", { name: "lobby", category: null }, "11", { kind: "channel", discord: "460", origin: "discord" }],
+  ]);
+  // Planned again once everything is joined, the import finishes: #general and its category had
+  // no match there and stay the workspace's own.
+  const joined = state({
+    ownership: "importing",
+    map: [
+      { kind: "channel", tilo: ID("design"), discord: "456" },
+      { kind: "category", tilo: ID("k1"), discord: "10" },
+      { kind: "category", tilo: ID("k3"), discord: "11" },
+      { kind: "channel", tilo: ID("c9"), discord: "458" },
+      { kind: "channel", tilo: ID("v1"), discord: "459" },
+      { kind: "channel", tilo: ID("c2"), discord: "460" },
+    ],
+  });
+  expect(importOf(joined, LAYOUT, sidebar)).toEqual([
+    { app: SELF_APP, action: "finish_import", args: { tilo_only: [ID("k2"), ID("c1")] } },
+  ]);
+  expect(importOf({ ...joined, ownership: "adopted" }, LAYOUT, sidebar)).toEqual([]);
+});
+
+test("a bridge of one channel joins that one alone, outside any category", () => {
+  const calls = importOf(state({ only_channel: "458" }), LAYOUT, { categories: [], channels: [] });
+  expect(calls.map((call) => [call.action, call.args])).toEqual([
+    ["new_channel", { name: "notes", category: null }],
+  ]);
 });
 
 test("a workspace message goes through the webhook, cut where Discord takes it", () => {
@@ -509,4 +592,113 @@ test("a file Discord does not take goes as its name and size, and the message st
   expect(op.content).toBe("the recording\n📎 talk.mp4 (123 MB), in the workspace");
   expect(sizeOf(943)).toBe("943 B");
   expect(sizeOf(1_400_000)).toBe("1.4 MB");
+});
+
+test("a thread started in Discord under a message here is started here, and what is said in it lands in it", () => {
+  const held = state({ bot_user: "900" });
+  const started = fromDiscord(held, {
+    source: "THREAD_CREATED",
+    payload: { id: "777", parent_id: "456", name: "follow-up", owner_id: "3001" },
+  });
+  expect(started).toHaveLength(1);
+  expect(started[0].action).toBe("start_thread");
+  expect(started[0].args).toEqual({ c: "tl:so.tilo.chat:design", m: "tl:so.tilo.chat:m1", name: "follow-up" });
+  expect(started[0].map).toEqual({ kind: "thread", discord: "777", origin: "discord", root: "tl:so.tilo.chat:design" });
+
+  // The bot's own thread, one on a message the workspace does not hold, and one already joined
+  // start nothing.
+  const thread = (payload) => fromDiscord(held, { source: "THREAD_CREATED", payload });
+  expect(thread({ id: "777", parent_id: "456", name: "x", owner_id: "900" })).toEqual([]);
+  expect(thread({ id: "999", parent_id: "456", name: "x", owner_id: "3001" })).toEqual([]);
+  const joined = state({
+    map: [
+      { kind: "channel", tilo: "tl:so.tilo.chat:design", discord: "456" },
+      { kind: "thread", tilo: "tl:so.tilo.chat:t1", discord: "777", root: "tl:so.tilo.chat:design" },
+    ],
+  });
+  expect(fromDiscord(joined, { source: "THREAD_CREATED", payload: { id: "777", parent_id: "456" } })).toEqual([]);
+
+  // A message in the thread is relayed into it.
+  const [relayed] = fromDiscord(joined, {
+    source: "MESSAGE_CREATED",
+    payload: {
+      id: "778",
+      channel_id: "777",
+      content: "in the thread",
+      author: { id: "3003", name: "cleo" },
+      attachments: [],
+    },
+  });
+  expect(relayed.action).toBe("relay");
+  expect(relayed.args.to).toBe("tl:so.tilo.chat:t1");
+});
+
+test("a server's emoji is the workspace's :name: here and itself there, in words and reactions", () => {
+  const held = state({
+    emojis: [
+      { id: "22", name: "party", animated: false },
+      { id: "23", name: "wave", animated: true },
+    ],
+  });
+  expect(textToDiscord(held, "done :party: :wave: :nope: <:party:22>")).toBe(
+    "done <:party:22> <a:wave:23> :nope: <:party:22>",
+  );
+  expect(textFromDiscord("done <:party:22> and <a:wave:23>")).toBe("done :party: and :wave:");
+  expect(reactionToDiscord(held, ":party:")).toBe("party:22");
+  expect(reactionToDiscord(held, "🎉")).toBe("🎉");
+  expect(reactionToDiscord(held, ":nope:")).toBeNull();
+
+  // A message carries them so; a reaction of the server's emoji arrives as its :name:.
+  const [op] = toDiscord(held, "tl:so.tilo.chat:design", { id: "m9", text: "yay :party:", author: ADA });
+  expect(op.content).toBe("yay <:party:22>");
+  const [relayed] = fromDiscord(held, {
+    source: "REACTION_ADDED",
+    payload: { message_id: "777", user_id: "3001", user_name: "ada", emoji: { name: "party", id: "22" } },
+  });
+  expect(relayed.args.emoji).toBe(":party:");
+  const [said] = fromDiscord(held, {
+    source: "MESSAGE_CREATED",
+    payload: { id: "780", channel_id: "456", content: "hi <:party:22>", author: { id: "3003", name: "cleo" } },
+  });
+  expect(said.args.body).toBe("hi :party:");
+  expect(said.args.outside_emoji).toEqual([
+    { name: "party", picture: "https://cdn.discordapp.com/emojis/22.png" },
+  ]);
+});
+
+test("a member Discord bans is blocked here and what was mirrored of them goes; one who left keeps it", () => {
+  const said = (tilo, discord, persona) => ({ kind: "message", tilo, discord, origin: "discord", persona });
+  const held = state({
+    map: [
+      said("tl:so.tilo.chat:m1", "777", "3005"),
+      said("tl:so.tilo.chat:m2", "778", "3005"),
+      said("tl:so.tilo.chat:m3", "779", "3006"),
+      // Written here and carried there: never Discord's to take back.
+      { kind: "message", tilo: "tl:so.tilo.chat:m4", discord: "780", origin: "tilo", persona: "" },
+    ],
+  });
+  const member = (how) => ({
+    source: "MEMBER_CHANGED",
+    payload: { guild_id: "123", user_id: "3005", roles: [], banned: false, left: false, ...how },
+  });
+  expect(fromDiscord(held, member({ banned: true })).map((call) => [call.action, call.args])).toEqual([
+    ["block_persona", { discord_user: "3005" }],
+    ["delete", { m: "tl:so.tilo.chat:m1", to: null }],
+    ["unmap", { kind: "message", tilo: "tl:so.tilo.chat:m1" }],
+    ["delete", { m: "tl:so.tilo.chat:m2", to: null }],
+    ["unmap", { kind: "message", tilo: "tl:so.tilo.chat:m2" }],
+  ]);
+  expect(fromDiscord(held, member({ left: true }))).toEqual([]);
+  // Banned again while already blocked: nothing more to do.
+  expect(fromDiscord({ ...held, blocked_personas: ["3005"] }, member({ banned: true }))).toEqual([]);
+
+  // A moderator's block removes the same, read from the record once it holds the block.
+  expect(blockedToChat({ ...held, blocked_personas: ["3006"] }).map((call) => call.args.m ?? call.args.tilo)).toEqual([
+    "tl:so.tilo.chat:m3",
+    "tl:so.tilo.chat:m3",
+  ]);
+  const block = (verb, app = SELF_APP) => ({ kind: "change", verb, resources: [{ app, record: "r", item: "x" }] });
+  expect(blocksPersona(block("block_persona"))).toBe(true);
+  expect(blocksPersona(block("unblock_persona"))).toBe(false);
+  expect(blocksPersona(block("block_persona", "so.tilo.chat"))).toBe(false);
 });

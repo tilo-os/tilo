@@ -26,7 +26,6 @@ serde_json.workspace = true
 # A copy's payload bytes inside the JSON document.
 base64.workspace = true
 tracing.workspace = true
-unicode-normalization = "0.1.25"
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
 # `$HOME/.config`), shared with every other reader of the settings file.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }

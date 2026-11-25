@@ -108,6 +108,8 @@ function harness({ makeVoice } = {}) {
     lane,
     gateway,
     makeVoice: makeVoice ?? opened,
+    // Discord's CDN is out of reach: a person's avatar stays where Discord serves it.
+    fetch: async () => ({ status: 404, ok: false }),
     // Discord's REST, as the vault makes the call: the lines shown on the channel's status.
     webCall: (request) => {
       const channel = /channels\/([^/]+)\/voice-status$/.exec(request.url)?.[1];

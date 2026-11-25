@@ -20,7 +20,7 @@ test-support = ["tilo-ui/test-support"]
 ignored = ["tilo-component-scan"]
 
 [dependencies]
-tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false, features = ["model"] }
 jiff.workspace = true
 tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }

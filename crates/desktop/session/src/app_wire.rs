@@ -25,7 +25,6 @@ use tilo_broker_core::services::{WorkspaceAuthority, WorkspaceAuthorityHandle};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tilo_workspace_keys::KeyProvider;
-use tilo_workspace_service::apps::NativePeerBrokerConfig;
 use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
 use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
 use tilo_workspace_service::apps::services::{
@@ -625,24 +624,15 @@ pub fn serve_hosted(
         .engine
         .clone()
         .map(|engine| std::sync::Arc::new(SessionMemberships { engine }) as _);
-    // A session with an identity and a state to keep its workspaces in is the
-    // person's device itself: what its broker admits is recorded before it runs
-    // and answered from that record, so a change survives the session stopping
-    // mid-run. A session with neither keeps the services that need no identity.
-    let config =
-        hosted
-            .engine
-            .as_ref()
-            .zip(hosted.journal_root.clone())
-            .map(|(_, journal_root)| NativePeerBrokerConfig {
-                journal_root,
-                certificate_authority: std::sync::Arc::clone(&certificates) as _,
-            });
     // The apps this device has, as its lists last read them: what the broker
     // lists as each app's name and offered actions, and what decides the
     // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
-    // No daemon records the effects of a hosted session's actions.
+    // No daemon records the effects of a hosted session's actions, so this
+    // broker names no durable owner: the record it admits actions in is the
+    // session's own journal (`services.journal_root`), and an action's receipt
+    // is the app's alone. Naming an owner here would have every action ask a
+    // record that does not exist whether it may run.
     let publisher = PeerPublisher::disabled();
     let services = host_services(
         link,
@@ -656,7 +646,7 @@ pub fn serve_hosted(
         socket,
         Some(membership),
         publisher,
-        config.as_ref(),
+        None,
         services,
         channels,
         fanout,

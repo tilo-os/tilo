@@ -3,7 +3,7 @@
 // account's name, and an edit, a deletion and a reaction follow it there.
 
 import { test, expect } from "bun:test";
-import { run } from "../main.js";
+import { adoptServer, carryFromDiscord, readBack, run } from "../main.js";
 
 /// Wait until `check()` is true, or fail the test after `timeout`.
 async function until(check, what, timeout = 3_000) {
@@ -99,6 +99,7 @@ function fakeWorkspace({
     for (const wake of wakers) wake();
     wakers.clear();
   };
+  const state = { people: [] };
   const ws = {
     async read(path) {
       if (path === "so.tilo.discord.preview/accounts") return { accounts: held() };
@@ -118,6 +119,11 @@ function fakeWorkspace({
         if (closed) return;
         await new Promise((wake) => wakers.add(wake));
       }
+    },
+    members: {
+      async list() {
+        return state.people;
+      },
     },
     files: {
       async upload() {
@@ -149,6 +155,9 @@ function fakeWorkspace({
   };
   return {
     tilo: { workspace: () => ws },
+    set people(list) {
+      state.people = list;
+    },
     done,
     requests,
     hooks,
@@ -195,6 +204,8 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   const running = run({
     tilo: workspace.tilo,
     makeClient: () => gateway,
+    // Discord's CDN is out of reach here: the author's avatar does not come over.
+    fetch: async () => ({ status: 404, ok: false }),
     log: () => {},
   });
 
@@ -218,7 +229,8 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   expect(relay.args.to).toBe(CONVERSATION);
   expect(relay.args.by).toBe("ada");
   expect(relay.args.service).toBe("Discord");
-  expect(relay.args.avatar).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
+  // An avatar that did not come over leaves no picture, never an address only Discord serves.
+  expect(relay.args.avatar).toBe("");
   expect(
     workspace.done.some(
       (call) => call.address === "so.tilo.discord.preview#map" && call.args.discord === "777",
@@ -430,7 +442,9 @@ test("a file posted on Discord is kept here and the message carries it", async (
   const relay = workspace.done.find(
     (call) => call.address === "so.tilo.chat#relay" && call.args.attachments?.length,
   );
-  expect(fetched).toEqual(["https://cdn.discordapp.com/attachments/456/1/shot.png"]);
+  expect(fetched.filter((url) => url.includes("/attachments/"))).toEqual([
+    "https://cdn.discordapp.com/attachments/456/1/shot.png",
+  ]);
   expect(relay.args.attachments).toEqual([
     { file: { name: "shot.png", media: "image/png", size: 3, content: "tilo.content:abc123" } },
   ]);
@@ -623,4 +637,337 @@ test("a bridged channel the bot has no webhook in gets one, joined in the record
   expect(workspace.hooks).toHaveLength(2);
   workspace.finish();
   await running;
+});
+
+test("a server's category is made before the channels in it, which are made inside it", async () => {
+  const done = [];
+  let record = account({ ownership: "importing", map: [] });
+  const calls = {
+    async state(path) {
+      if (path === "so.tilo.chat/conversations") return { channels: [] };
+      return { accounts: [record] };
+    },
+    async do(call) {
+      done.push([call.action, call.args]);
+      const made = { id: `made${done.length}` };
+      if (call.map) {
+        record = {
+          ...record,
+          map: [...record.map, { kind: call.map.kind, tilo: `tl:so.tilo.chat:${made.id}`, discord: call.map.discord }],
+        };
+      }
+      return made;
+    },
+  };
+  await adoptServer({
+    calls,
+    account: record,
+    layout: {
+      channels: [
+        { id: "10", kind: "category", name: "Projects", position: 0 },
+        { id: "456", kind: "text", name: "design", parent: "10", position: 0 },
+      ],
+    },
+  });
+  expect(done).toEqual([
+    ["new_category", { name: "Projects" }],
+    ["new_channel", { name: "design", category: "tl:so.tilo.chat:made1" }],
+    // The next pass reads the record those calls wrote: everything is joined, so it finishes.
+    ["finish_import", { tilo_only: [] }],
+  ]);
+});
+
+test("what a bridged channel said before, or while the bridge was away, is relayed once, oldest first", async () => {
+  const done = [];
+  const asked = [];
+  const calls = {
+    async webCall(request) {
+      asked.push(request.url);
+      // Discord answers the newest first; one of them is already joined to a message here.
+      return {
+        status: 200,
+        body: JSON.stringify([
+          { id: "803", channel_id: "456", content: "third", timestamp: "2026-11-24T09:03:00Z", author: { id: "3001", username: "ada" } },
+          { id: "802", channel_id: "456", content: "second", timestamp: "2026-11-24T09:02:00Z", author: { id: "3002", username: "bob" } },
+          { id: "801", channel_id: "456", content: "first", timestamp: "2026-11-24T09:01:00Z", author: { id: "3002", username: "bob" } },
+        ]),
+      };
+    },
+    async do(call) {
+      done.push(call);
+      return { id: `m${done.length}` };
+    },
+    async content() {
+      return null;
+    },
+  };
+  const held = account({
+    map: [
+      { kind: "channel", tilo: CONVERSATION, discord: "456" },
+      { kind: "message", tilo: "tl:so.tilo.chat:m0", discord: "803" },
+    ],
+  });
+  await readBack({ calls, account: held });
+  expect(asked).toEqual(["https://discord.com/api/v10/channels/456/messages?limit=50"]);
+  const relayed = done.filter((call) => call.action === "relay");
+  expect(relayed.map((call) => [call.args.body, call.args.by, call.map.discord])).toEqual([
+    ["first", "bob", "801"],
+    ["second", "bob", "802"],
+  ]);
+  expect(relayed[0].args.written).toBe(Date.parse("2026-11-24T09:01:00Z"));
+});
+
+test("a person the workspace bans, lets back or removes is banned, unbanned or kicked in the server", async () => {
+  const workspace = fakeWorkspace();
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+
+  const people = (verb, person, sentence = "") => ({
+    kind: "change",
+    path: "workspace/members",
+    app: "tilo.workspace",
+    verb,
+    what: verb === "unban" ? "edited" : "removed",
+    sentence,
+    time_ms: 1000,
+    actor: { by: { member: { person: "mod" } } },
+    resources: [{ path: "workspace/members", app: "tilo.workspace", item: `workspace/members/${person}` }],
+  });
+  workspace.say(people("ban", "ada", "spam"));
+  workspace.say(people("unban", "ada"));
+  workspace.say(people("remove-member", "ada"));
+  // Someone with no Discord account linked: nothing reaches Discord for them.
+  workspace.say(people("ban", "grace"));
+  await until(() => workspace.requests.length >= 3, "three member calls");
+
+  expect(workspace.requests.map((request) => [request.method, request.url.replace(/^.*\/guilds/, "")])).toEqual([
+    ["PUT", "/123/bans/3001"],
+    ["DELETE", "/123/bans/3001"],
+    ["DELETE", "/123/members/3001"],
+  ]);
+  expect(workspace.requests[0].headers["x-audit-log-reason"]).toBe("spam");
+  // Each passed the bridge's own action first, whose guards say who may do it there.
+  expect(
+    workspace.done
+      .map((call) => call.address)
+      .filter((address) => /#(kick|ban|unban)$/.test(address)),
+  ).toEqual([
+    "so.tilo.discord.preview#ban",
+    "so.tilo.discord.preview#unban",
+    "so.tilo.discord.preview#kick",
+  ]);
+
+  workspace.finish();
+  await running;
+});
+
+test("a bridge of one channel leaves the server's members alone", async () => {
+  const workspace = fakeWorkspace({ accounts: [account({ only_channel: "456" })] });
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+  workspace.say({
+    kind: "change",
+    verb: "ban",
+    resources: [{ path: "workspace/members", app: "tilo.workspace", item: "workspace/members/ada" }],
+  });
+  // A message after it is carried, so the ban was read and passed over.
+  workspace.message(`chat/${RECORD}/messages/m1`, messageFields({ body: "after" }));
+  workspace.say(change({ item: "messages/m1" }));
+  await until(() => workspace.requests.length >= 1, "the send");
+  expect(workspace.requests.map((request) => request.url).filter((url) => url.includes("/guilds/"))).toEqual([]);
+  workspace.finish();
+  await running;
+});
+
+test("a Discord account a moderator blocks loses what was mirrored of it here", async () => {
+  const relayed = { kind: "message", tilo: "tl:so.tilo.chat:m9", discord: "779", origin: "discord", persona: "3006" };
+  let held = account({ map: [...account().map, relayed] });
+  const workspace = fakeWorkspace({ accounts: () => [held] });
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+
+  // The moderator's block is the record's newest change: the bridge reads the record again.
+  held = { ...held, blocked_personas: ["3006"] };
+  workspace.say({
+    kind: "change",
+    verb: "block_persona",
+    actor: { by: { member: { person: "mod" } } },
+    resources: [{ path: "so.tilo.discord.preview", app: "so.tilo.discord.preview", record: "accounts", item: "x" }],
+  });
+  await until(() => workspace.done.some((call) => call.address === "so.tilo.chat#delete"), "the deletion");
+  expect(workspace.done.filter((call) => /#(delete|unmap)$/.test(call.address))).toEqual([
+    { address: "so.tilo.chat#delete", args: { m: "tl:so.tilo.chat:m9", to: null } },
+    { address: "so.tilo.discord.preview#unmap", args: { kind: "message", tilo: "tl:so.tilo.chat:m9" } },
+  ]);
+  workspace.finish();
+  await running;
+});
+
+test("a linked member's new names and avatar are the link's, the avatar kept as their picture", async () => {
+  const done = [];
+  const calls = { do: async (call) => done.push([call.action, call.args]) };
+  const fetched = [];
+  const png = new Uint8Array([137, 80, 78, 71]);
+  const fetch = async (url) => {
+    fetched.push(url);
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": "image/png" }),
+      arrayBuffer: async () => png.buffer,
+    };
+  };
+  const member = (user, avatar) => ({
+    source: "MEMBER_CHANGED",
+    payload: { guild_id: "123", user_id: "3001", roles: [], banned: false, left: false, user, avatar },
+  });
+  await carryFromDiscord({
+    calls,
+    account: account(),
+    event: member({ name: "ada_l", display_name: "Ada L." }, "def"),
+    fetch,
+  });
+  expect(fetched).toEqual(["https://cdn.discordapp.com/avatars/3001/def.png?size=64"]);
+  expect(done).toEqual([
+    ["rename_link", { discord_user: "3001", user_name: "ada_l", display_name: "Ada L.", avatar: "def" }],
+    ["set_link_photo", { discord_user: "3001", avatar: "def", photo: "data:image/png;base64,iVBORw==" }],
+  ]);
+
+  // Nothing new about them: nothing is written, nothing fetched.
+  done.length = 0;
+  fetched.length = 0;
+  await carryFromDiscord({
+    calls,
+    account: account({
+      links: [{ ...account().links[0], user_name: "ada", display_name: "Ada", avatar: "abc", photo_avatar: "abc" }],
+    }),
+    event: member({ name: "ada", display_name: "Ada" }, "abc"),
+    fetch,
+  });
+  expect([done, fetched]).toEqual([[], []]);
+
+  // An account nobody linked is no one's to follow.
+  await carryFromDiscord({ calls, account: account({ links: [] }), event: member({ name: "x" }, "f"), fetch });
+  expect(done).toEqual([]);
+});
+
+test("a Discord author's avatar is kept here once and the message shows the workspace's copy", async () => {
+  const done = [];
+  const kept = [];
+  const hash = "c".repeat(64);
+  const calls = {
+    do: async (call) => done.push([call.action, call.args]),
+    content: async (bytes) => {
+      kept.push([...bytes]);
+      return `tilo.content:${hash}`;
+    },
+  };
+  const fetched = [];
+  const fetch = async (url) => {
+    fetched.push(url);
+    return {
+      status: 200,
+      headers: new Headers({ "content-type": "image/png" }),
+      arrayBuffer: async () => new Uint8Array([137, 80, 78, 71]).buffer,
+    };
+  };
+  const said = (id) => ({
+    source: "MESSAGE_CREATED",
+    payload: {
+      id,
+      channel_id: "456",
+      content: "hi",
+      timestamp_ms: 1000,
+      author: { id: "3009", name: "eve", avatar: "e1" },
+    },
+  });
+  await carryFromDiscord({ calls, account: account(), event: said("801"), fetch });
+  expect(fetched).toEqual(["https://cdn.discordapp.com/avatars/3009/e1.png?size=128"]);
+  expect(kept).toEqual([[137, 80, 78, 71]]);
+  expect(done.map(([action]) => action)).toEqual(["remember_avatar", "relay"]);
+  expect(done[0][1]).toEqual({ hash: "e1", blob: hash });
+  expect(done[1][1].avatar).toBe(`tilo-blob://${hash}`);
+
+  // Once the record keeps it, the next message names it without asking Discord again.
+  done.length = 0;
+  fetched.length = 0;
+  await carryFromDiscord({ calls, account: account({ avatars: { e1: hash } }), event: said("802"), fetch });
+  expect(fetched).toEqual([]);
+  expect(done.map(([action, args]) => [action, args.avatar])).toEqual([["relay", `tilo-blob://${hash}`]]);
+});
+
+test("a linked person given a new role here holds its bridge role in the server", async () => {
+  const roles = ["viewer", "commenter", "editor", "moderator", "owner"].map((tilo, n) => ({
+    kind: "role",
+    tilo,
+    discord: String(701 + n),
+  }));
+  const workspace = fakeWorkspace({ accounts: [account({ map_roles: true, map: [...account().map, ...roles] })] });
+  workspace.people = [{ person: "ada", role: "moderator" }];
+  const running = run({ tilo: workspace.tilo, makeClient: () => fakeGateway(), log: () => {} });
+  await until(() => workspace.released.length > 0 || workspace.done.length > 0, "the bridge");
+  workspace.say({
+    kind: "change",
+    verb: "set-role",
+    actor: { by: { member: { person: "owner" } } },
+    resources: [{ path: "workspace/members", app: "tilo.workspace", item: "workspace/members/ada" }],
+  });
+  await until(() => workspace.requests.length >= 5, "the member's roles");
+  expect(workspace.requests.map((request) => [request.method, request.url.replace(/^.*\/guilds/, "")])).toEqual([
+    ["PUT", "/123/members/3001/roles/704"],
+    ["DELETE", "/123/members/3001/roles/701"],
+    ["DELETE", "/123/members/3001/roles/702"],
+    ["DELETE", "/123/members/3001/roles/703"],
+    ["DELETE", "/123/members/3001/roles/705"],
+  ]);
+  workspace.finish();
+  await running;
+});
+
+test("/unlink unlinks the account and says from whom, seen only by who ran it; /link says where linking is done", async () => {
+  const done = [];
+  const requests = [];
+  const calls = {
+    do: async (call) => done.push([call.action, call.args]),
+    webCall: async (request) => requests.push(request),
+    members: async () => [{ person: "ada", name: "Ada Lovelace", role: "editor" }],
+  };
+  const command = (name, user = "3001") => ({
+    source: "COMMAND",
+    payload: { interaction: "77", token: "itok", application: "950", guild_id: "123", name, user_id: user },
+  });
+  const answered = () => JSON.parse(requests.at(-1).body);
+
+  await carryFromDiscord({ calls, account: account(), event: command("unlink"), fetch: async () => ({}) });
+  expect(done.slice(0, 2)).toEqual([
+    ["unlink", { discord_user: "3001" }],
+    ["answer_interaction", { op: { op: "answer-interaction", interaction: "77", content: answered().data.content } }],
+  ]);
+  expect(requests.at(-1).url).toBe("https://discord.com/api/v10/interactions/77/itok/callback");
+  expect(answered()).toEqual({
+    type: 4,
+    data: { flags: 64, content: "Unlinked from Ada Lovelace. What you write here shows under your Discord name again." },
+  });
+
+  await carryFromDiscord({ calls, account: account(), event: command("unlink", "4004"), fetch: async () => ({}) });
+  expect(answered().data.content).toContain("isn't linked to a Tilo account");
+
+  await carryFromDiscord({
+    calls,
+    account: account({ sign_in_page: "https://discord.com/oauth2/authorize?client_id=1" }),
+    event: command("link", "4004"),
+    fetch: async () => ({}),
+  });
+  expect(answered().data.content).toContain("choose Connect");
+  await carryFromDiscord({ calls, account: account(), event: command("link", "4004"), fetch: async () => ({}) });
+  expect(answered().data.content).toContain("Linking isn't set up");
+
+  // A command of another server is not this bridge's to answer.
+  const before = requests.length;
+  await carryFromDiscord({
+    calls,
+    account: account(),
+    event: { ...command("unlink"), payload: { ...command("unlink").payload, guild_id: "999" } },
+    fetch: async () => ({}),
+  });
+  expect(requests).toHaveLength(before);
 });

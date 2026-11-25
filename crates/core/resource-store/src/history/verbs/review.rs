@@ -51,6 +51,39 @@ fn heads(values: &[String]) -> Result<Vec<ChangeHash>, String> {
 }
 
 impl RestoreReview {
+    /// A review of going back to `target_heads` from `live_heads`, of the items `paths`.
+    #[must_use]
+    pub const fn new(
+        target_heads: Vec<String>,
+        live_heads: Vec<String>,
+        paths: Vec<String>,
+    ) -> Self {
+        Self {
+            schema: 1,
+            target_heads,
+            live_heads,
+            paths,
+        }
+    }
+
+    /// The version it goes back to, by its heads.
+    #[must_use]
+    pub fn target_heads(&self) -> &[String] {
+        &self.target_heads
+    }
+
+    /// The heads it was reviewed at.
+    #[must_use]
+    pub fn live_heads(&self) -> &[String] {
+        &self.live_heads
+    }
+
+    /// The items it restores.
+    #[must_use]
+    pub fn paths(&self) -> &[String] {
+        &self.paths
+    }
+
     pub fn apply(&self, doc: &mut AutoCommit) -> Result<(), String> {
         if self.schema != 1 {
             return Err("Unsupported restore review schema.".into());

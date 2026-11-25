@@ -268,14 +268,18 @@ pub use tilo_ui_paint::raster;
 pub mod storage;
 /// Where each settings section is kept, and so published: `settings/<section>` for the person's,
 /// `devices/<device>/settings/<section>` for the device's.
+#[cfg(feature = "model")]
 pub use settings_store::placement as settings_placement;
 /// The verb a setting is set by, `set-<field>`: each field of a settings section has its own.
+#[cfg(feature = "model")]
 pub use settings_store::workspace::verb as setting_verb;
 pub mod settings_device;
+pub mod settings_source;
 pub mod workspace_sync;
 /// The shell's keyboard shortcut table (actions, their chords and the defaults) as the settings
 /// document keeps it: what every shell host resolves a key press through, the native shell and a
 /// browser page alike.
+#[cfg(feature = "model")]
 pub mod shortcut_table {
     pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
     pub use settings_store::keyboard_shortcuts::{
@@ -285,6 +289,7 @@ pub mod shortcut_table {
 /// The widgets and the screen edges things kept at the screen's edges wait at, as the settings
 /// document keeps them: what every shell host places them by, the native shell and a browser page
 /// alike.
+#[cfg(feature = "model")]
 pub mod widgets {
     pub use settings_store::widgets::{
         DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, WidgetsPrefs, prefs_key,
@@ -369,6 +374,7 @@ pub mod theme;
 pub mod theme_bundle;
 mod theme_document;
 mod theme_layers;
+#[cfg(feature = "model")]
 mod theme_record;
 pub mod tokens;
 pub mod type_ahead;

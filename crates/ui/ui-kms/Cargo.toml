@@ -11,7 +11,7 @@ name = "ui_kms"
 path = "src/lib.rs"
 
 [dependencies]
-ui = { package = "tilo-ui", path = "../ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../ui-core", default-features = false, features = ["model"] }
 tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 vello.workspace = true
 winit.workspace = true

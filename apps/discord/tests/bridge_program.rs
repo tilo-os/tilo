@@ -1080,7 +1080,9 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     use tilo_automation::dispatch::{Armed, Event, Firer, dispatch, event_of};
     use ui::tilo_resource::Replica;
 
-    let mut ada = Replica::<Guild>::new().as_author("u_ada");
+    let mut ada = Replica::<Guild>::new()
+        .in_app("so.tilo.model", "Model")
+        .as_author("u_ada");
     ada.apply(Guild::CONNECT.with(guild::Connect {
         guild_id: "1".into(),
         name: "Tilo".into(),

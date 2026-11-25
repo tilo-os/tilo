@@ -1,44 +1,29 @@
 //! What History can honestly do with a resource type: one classification the panel, the read API and
 //! the restore review all read, so "no past version here" is never confused with "this text does not
 //! read", "written by a newer app" or "this type keeps no content history". The classification is
-//! derived from what the resource type itself declared, never guessed per app: the schema history
-//! restores content with, and whether the type has a read adapter.
-
-use super::registration::HistoryScopeDefinition;
-use super::restore::HistoryRestoreSchema;
+//! derived from what the resource type itself declared, never guessed per app: whether the type has a
+//! read adapter.
 
 /// What History can do with one resource type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HistoricalSupport {
-    /// Every version can be shown, compared and restored by content: the type declared a restore
-    /// schema.
+    /// Every version can be shown, compared and restored: the type reads its record, and a restore is
+    /// checked against that read by the store's history verbs.
     Content,
-    /// The type reads its record but declares no restore schema: a version reads through the type's own
-    /// adapter and lists with its metadata, and a restore brings what it held back byte for byte.
-    MetadataOnly,
     /// The type declares no content it could restore or show: its versions are named by address only.
     Unsupported,
 }
 
 impl HistoricalSupport {
-    /// What the scope's own declaration says its resource type supports; `reads_content` says the type
-    /// declared a read adapter (`ResourceSpec::READABLE`).
+    /// What the type supports; `reads_content` says it reads its stored content: a read adapter
+    /// (`ResourceSpec::READABLE`) or a record read field by field.
     #[must_use]
-    pub fn of(scope: &HistoryScopeDefinition, reads_content: bool) -> Self {
-        if scope.content_schema.is_some() {
+    pub fn of(reads_content: bool) -> Self {
+        if reads_content {
             Self::Content
-        } else if reads_content {
-            Self::MetadataOnly
         } else {
             Self::Unsupported
         }
-    }
-
-    /// Whether the scope's declaration carries a restore schema: a `Some` even when that schema cannot
-    /// name what replaces what.
-    #[must_use]
-    pub fn declares_schema(self) -> bool {
-        matches!(self, Self::Content)
     }
 
     /// Whether a version of this type can be restored at all.
@@ -117,39 +102,6 @@ impl HistoricalGap {
 impl std::fmt::Display for HistoricalGap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.reason())
-    }
-}
-
-/// What the common historical surface of a resource type answers, whatever the app: the check run when
-/// a restore schema is registered, and the per-type classification the History panel and the read API
-/// read.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypeHistory {
-    pub kind: &'static str,
-    pub version: u32,
-    pub support: HistoricalSupport,
-}
-
-impl TypeHistory {
-    /// Classify a resource type by what it declared.
-    #[must_use]
-    pub fn of(
-        kind: &'static str,
-        version: u32,
-        scope: &HistoryScopeDefinition,
-        reads_content: bool,
-    ) -> Self {
-        Self {
-            kind,
-            version,
-            support: HistoricalSupport::of(scope, reads_content),
-        }
-    }
-
-    /// Why the registered restore schema cannot be used on this type, if it cannot: a schema that names
-    /// no selector, or that would restore the record's own bookkeeping.
-    pub fn check_schema(schema: &'static HistoryRestoreSchema) -> Result<(), String> {
-        super::restore::check_schema(schema).map_err(|error| error.to_string())
     }
 }
 

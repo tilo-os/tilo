@@ -1371,6 +1371,257 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A grant that lets a person write a channel is the grant that lets them post in it: the call
+/// and the change read one node, the channel's own.
+#[test]
+fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
+    let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
+    ada.commit();
+
+    // Ben is a Viewer of the workspace, granted edit on `design` alone: the grant a share of the
+    // channel writes, on the channel's own node.
+    let share = |channel: &tilolang_runtime::ResourceRef, access| {
+        let node = tilo_action_policy::TreePath::workspace("workspace")
+            .app(APP)
+            .kind("tl.so.tilo.chat.TextChannel")
+            .any(tilo_action_policy::Level::Resource)
+            .item(
+                channel
+                    .item
+                    .clone()
+                    .expect("a channel is an item of its document"),
+            );
+        let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "ada");
+        policy
+            .members
+            .insert("ben".to_owned(), tilo_action_policy::Role::Viewer);
+        policy.grants.extend(
+            tilo_action_policy::share::share_grants("workspace", "ada", "share-1", &node, access)
+                .unwrap(),
+        );
+        policy
+    };
+    let access: std::rc::Rc<std::cell::RefCell<Option<tilo_action_policy::MemberAccess>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (ben, _) = Replica::following("ben", ada.doc.fork(), &[(CHAT, &loaded[0].ids)], {
+        let access = std::rc::Rc::clone(&access);
+        move || access.borrow().clone()
+    });
+    let plan = |channel: &tilolang_runtime::ResourceRef| {
+        let meta = ben.host.package(APP).unwrap().meta;
+        let send = meta.actions.iter().find(|a| a.name == "send").unwrap();
+        let kind = tilolang_tilo::meta::MetaExt::kind_of(&meta, "TextChannel");
+        ben.host.plan(&tilolang_tilo::publish::PlanRequest {
+            app: APP,
+            kind: &kind,
+            action_id: &send.id,
+            resource: Some(&channel.id_string()),
+            args: serde_json::json!({ "body": "Hello there" })
+                .as_object()
+                .unwrap(),
+            caller: None,
+            from: None,
+        })
+    };
+
+    // Edit on the channel: ben posts there, and nowhere he holds nothing.
+    let design_ref = target(&design);
+    let random_ref = target(&random);
+    *access.borrow_mut() = Some(tilo_action_policy::MemberAccess::person(
+        share(&design_ref, tilo_action_policy::share::ShareAccess::Edit),
+        "ben",
+    ));
+    assert!(
+        plan(&design_ref).is_ok(),
+        "the grant that writes the channel posts in it: {:?}",
+        plan(&design_ref).err()
+    );
+    let elsewhere = plan(&random_ref).err().expect("no grant, no post");
+    assert!(elsewhere.contains("not allowed"), "{elsewhere}");
+
+    // Viewing it is no writing it: a share to read refuses the post.
+    *access.borrow_mut() = Some(tilo_action_policy::MemberAccess::person(
+        share(&design_ref, tilo_action_policy::share::ShareAccess::View),
+        "ben",
+    ));
+    let reading_only = plan(&design_ref).err().expect("viewing is not posting");
+    assert!(reading_only.contains("not allowed"), "{reading_only}");
+}
+
+#[test]
+fn a_channel_lists_its_threads_and_opening_one_opens_it() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    let ask = call(
+        &ada,
+        "send",
+        vec![
+            design.clone(),
+            rich("Can we move the account step to the end?"),
+            Value::none(),
+        ],
+    );
+    let account = call(
+        &ada,
+        "start_thread",
+        vec![design.clone(), ask, Value::text("Account step")],
+    );
+    let when = call(
+        &ada,
+        "send",
+        vec![
+            design.clone(),
+            rich("When does the build go out?"),
+            Value::none(),
+        ],
+    );
+    call(
+        &ada,
+        "start_thread",
+        vec![design.clone(), when, Value::text("Release date")],
+    );
+    ada.commit();
+
+    // The channel lists the threads its messages started, each a row of the shared list under
+    // the section that counts them.
+    let mut view = open(&ada, &target(&design));
+    view.poll_patches().unwrap();
+    let rows: Vec<&UiNode> = view
+        .tree()
+        .of_kind("ui.Section")
+        .into_iter()
+        .flat_map(|section| section.of_kind("ui.ListRow"))
+        .collect();
+    let titles: Vec<String> = rows
+        .iter()
+        .filter_map(|row| text_prop(row, "title"))
+        .collect();
+    assert_eq!(titles, ["Account step", "Release date"], "{titles:?}");
+
+    // Each row shows the thread it lists, and activating it opens that thread.
+    let row = rows
+        .into_iter()
+        .find(|row| text_prop(row, "title") == Some("Account step".to_owned()))
+        .expect("the account thread's row");
+    assert!(
+        matches!(row.props.get("item"), Some(Value::Ref(reference))
+            if reference.target.id_string() == target(&account).id_string()),
+        "the row names its thread: {:?}",
+        row.props.get("item")
+    );
+    let opened = view
+        .event_action(&row.key, "activate")
+        .expect("the row opens its thread");
+    assert!(
+        matches!(opened.args.first(), Some(Value::Ref(reference))
+            if reference.target.id_string() == target(&account).id_string()),
+        "the row opens the thread it lists: {:?}",
+        opened.args
+    );
+}
+
+#[test]
+fn a_place_is_keyed_by_its_conversation_so_a_rename_and_a_twin_name_stay_apart() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    // Ada owns the workspace: a channel's name is its moderators' to change.
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
+    let team = call(&ada, "new_category", vec![all.clone(), Value::text("Team")]);
+    let twin = call(
+        &ada,
+        "new_channel",
+        vec![
+            all,
+            Value::text("design"),
+            Value::text(""),
+            Value::Opt(Some(Box::new(team))),
+        ],
+    );
+    ada.commit();
+    // The place of `at`: the row the sidebar draws for that conversation.
+    let place = |view: &ViewInstance, at: &tilolang_runtime::ResourceRef| -> UiNode {
+        view.tree()
+            .of_kind("ui.NavItem")
+            .into_iter()
+            .find(|item| {
+                matches!(item.props.get("item"), Some(Value::Ref(reference))
+                    if reference.target.id_string() == at.id_string())
+            })
+            .unwrap_or_else(|| panic!("a place for {at:?}"))
+            .clone()
+    };
+    // Two channels called `design` stand apart, each place keyed by its own id.
+    let sidebar = ada.view(APP);
+    assert_eq!(
+        text_prop(&place(&sidebar, &target(&design)), "key"),
+        Some(target(&design).id_string()),
+        "the channel's own id"
+    );
+    assert_eq!(
+        text_prop(&place(&sidebar, &target(&twin)), "key"),
+        Some(target(&twin).id_string()),
+        "the twin's own id"
+    );
+
+    // A rename changes what the place says, never the key it keeps.
+    call(
+        &ada,
+        "rename_channel",
+        vec![design.clone(), Value::text("design reviews")],
+    );
+    ada.commit();
+    let mut renamed = ada.view(APP);
+    let renamed_place = place(&renamed, &target(&design));
+    assert_eq!(
+        text_prop(&renamed_place, "key"),
+        Some(target(&design).id_string()),
+        "a rename keeps the place"
+    );
+    assert_eq!(
+        text_prop(&renamed_place, "label"),
+        Some("design reviews".to_owned())
+    );
+
+    // Choosing the renamed channel selects it by that key.
+    let outcome = renamed.fire(&renamed_place.key, "select").unwrap();
+    assert!(matches!(outcome, InvokeOutcome::Done(_)), "{outcome:?}");
+    renamed.poll_patches().unwrap();
+    let selected = renamed
+        .tree()
+        .first_of_kind("ui.NavList")
+        .expect("the sidebar's list")
+        .props
+        .get("selected")
+        .cloned();
+    assert_eq!(
+        selected,
+        Some(Value::text(target(&design).id_string())),
+        "the place chosen is the conversation's id"
+    );
+}
+
 /// How many ways the view offers to make a channel: the bar's primary, and any empty state's
 /// own call to action. The host reads the bar's off the action's declaration, and its header
 /// rules only ever drop a control that repeats one the content or the sidebar offers, so a view

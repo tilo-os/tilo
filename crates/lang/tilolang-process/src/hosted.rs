@@ -1594,6 +1594,8 @@ pub struct Hosted {
     presses: Rc<RefCell<Presses>>,
     /// Whether the runtime sends its calls of other apps' actions on this instance's connection.
     sending: bool,
+    /// Whether the runs an earlier host over this store left waiting were ended.
+    left_runs_ended: bool,
     platform: Rc<RefCell<Roots>>,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
@@ -1657,11 +1659,13 @@ pub struct Hosted {
 enum Ran {
     /// It ran, and this is what it answers.
     Done(tilo_actions::ActionOutput),
-    /// It waits on a child call it made: the call's id, and the run that waits on it (`None`
-    /// when no run does, the call itself being the served invocation's work).
+    /// It waits on a child call it made: the call's id, the run that waits on it (`None`
+    /// when no run does, the call itself being the served invocation's work), and the action
+    /// whose result the run's value is answered as when it ends.
     Waits {
         call: String,
         run: Option<tilolang_tilo::runtime::ids::RunId>,
+        action: Option<ServedAction>,
     },
 }
 
@@ -1690,8 +1694,17 @@ enum PressRan {
     Waits {
         call: String,
         run: Option<tilolang_tilo::runtime::ids::RunId>,
+        action: Option<ServedAction>,
     },
     Failed(Refused),
+}
+
+/// The action a waiting run is a run of, by its app and its id: what the run's value is answered
+/// as once it ends, as the action's declared result, the same as a run that never waited.
+#[derive(Clone)]
+struct ServedAction {
+    app: String,
+    action: String,
 }
 
 /// A child call this instance sent, and what waits on its answer.
@@ -1710,6 +1723,8 @@ struct Child {
     /// The asked record the call waits in, once the dispatch said a person is asked about it:
     /// the served invocation said so once, naming it.
     asked: Option<String>,
+    /// The action the waiting run is a run of, when the served invocation ends with it.
+    action: Option<ServedAction>,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -1768,21 +1783,14 @@ struct Delivered {
     context: Option<Box<tilo_actions::ActionContext>>,
 }
 
-/// End the runs an earlier host over `store` left waiting on a child call: the invocation each
-/// went out as died with that host, and the change it held went with it, so each is ended with
-/// the failure that is true of it rather than left waiting for ever.
-fn abandon_open_runs(
-    store: &ResourceStore,
-    connection: &Connection,
-    instance: &Instance,
-    app: &str,
-) {
+/// End the runs an earlier host over `store` left waiting on a child call, through `host`, the
+/// runtime now open over it: the invocation each went out as died with that host, and the change
+/// it held went with it, so each is ended with the failure that is true of it rather than left
+/// waiting for ever.
+fn abandon_open_runs(store: &ResourceStore, connection: &Connection, host: &Host, app: &str) {
     for (call, run, action) in store.open_runs() {
         let reason = format!("`{action}` stopped when its app restarted");
         tracing::warn!(%app, %call, %run, %reason);
-        let Some(host) = instance.host() else {
-            continue;
-        };
         match host.runtime().abandon_run(&run, &reason) {
             Ok(Some((request, invocation))) => {
                 // The person sees it where the invocation shows: its own record says it ended,
@@ -1957,11 +1965,6 @@ impl Hosted {
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
         let callees = Rc::new(callees_of(&bundle, &spec.workspace, &spec.provided));
-        // A run an earlier host over this store left waiting on a child call cannot be answered:
-        // the invocation the call went out as died with that host, and the change the run held
-        // went with it. It is ended here with the failure that is true of it, rather than left
-        // waiting for ever.
-        abandon_open_runs(&store, &connection, &instance, &spec.app);
         let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
         let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(BTreeMap::new()));
         // Each press of the person's at the window is a call of its own, recorded with the
@@ -1997,6 +2000,7 @@ impl Hosted {
             children,
             presses,
             sending: false,
+            left_runs_ended: false,
             platform: platform_roots,
             identity: None,
             scope,
@@ -2271,6 +2275,17 @@ impl Hosted {
         events.extend(self.connection.poll());
         let mut changed = !events.is_empty();
         self.instance.sync();
+        // A run an earlier host over this store left waiting on a child call cannot be answered:
+        // the invocation the call went out as died with that host, and the change the run held
+        // went with it. It is ended with the failure that is true of it, rather than left waiting
+        // for ever, once the runtime that holds it is open, before anything the connection
+        // delivered is served.
+        if !self.left_runs_ended
+            && let Some(host) = self.instance.host()
+        {
+            abandon_open_runs(&self.store, &self.connection, &host, &self.spec.app);
+            self.left_runs_ended = true;
+        }
         // The runtime's calls of other apps' actions go out on this instance's connection, as
         // children of the invocation the broker is serving: installed once the host that makes
         // them is open.
@@ -2761,7 +2776,7 @@ impl Hosted {
             // another app or on a person, which answers nobody here.
             Ok(InvokeOutcome::Done(_) | InvokeOutcome::Asked(_)) => None,
             Ok(InvokeOutcome::Waits { run, call }) => {
-                self.waiting(call, Some(run), None, None);
+                self.waiting(call, Some(run), None, None, None);
                 None
             }
             Ok(other) => {
@@ -2794,18 +2809,23 @@ impl Hosted {
                 by: None,
                 to: None,
                 step: None,
+                chosen: None,
             },
-            HistoryAsk::Redo => HistoryEdit::Redo { steps: Some(1) },
+            HistoryAsk::Redo => HistoryEdit::Redo {
+                steps: Some(1),
+                undos: None,
+            },
             HistoryAsk::UndoStep(step) | HistoryAsk::UndoRun(step) => HistoryEdit::Undo {
                 steps: None,
                 invocation: None,
                 by: None,
                 to: None,
                 step: Some(step.clone()),
+                chosen: None,
             },
         };
         let by = tilolang_tilo::runtime::Actor::Member(MemberId::person(self.spec.person.as_str()));
-        match self.history_edit(&edit, &by) {
+        match self.history_edit(&edit, &by, &[]) {
             Ok(_) => {
                 self.store_moved();
                 true
@@ -2845,14 +2865,22 @@ impl Hosted {
 
     /// Carry out the history verb `edit` on the store, as `by`'s: undo takes back the last step
     /// written from this instance (or the invocation it names, everywhere it wrote), redo brings
-    /// back what the last undo took back. What the verb did, as it answers its caller.
+    /// back what the last undo took back, and a restore or a checkpoint goes back to or names a
+    /// version of the published resources `trees`. What the verb did, as it answers its caller.
     fn history_edit(
         &self,
         edit: &HistoryEdit,
         by: &tilolang_tilo::runtime::Actor,
+        trees: &[&ResourceSpec],
     ) -> Result<Option<serde_json::Value>, String> {
         let failed = |error: tilolang_tilo::runtime::store::StoreError| error.to_string();
         match edit {
+            HistoryEdit::Undo {
+                chosen: Some(_), ..
+            }
+            | HistoryEdit::Redo { undos: Some(_), .. } => {
+                Err("this app takes back and brings back whole invocations".to_owned())
+            }
             HistoryEdit::Undo {
                 invocation, step, ..
             } if invocation.is_some() || step.is_some() => {
@@ -2877,7 +2905,7 @@ impl Hosted {
                 }
                 Ok(Some(serde_json::json!({ "undone": undone })))
             }
-            HistoryEdit::Redo { steps } => {
+            HistoryEdit::Redo { steps, undos: None } => {
                 let mut redone = 0_u32;
                 for _ in 0..steps.unwrap_or(1).max(1) {
                     if !self.store.redo_last(Some(by)).map_err(failed)? {
@@ -2892,10 +2920,14 @@ impl Hosted {
             }
             HistoryEdit::Restore { .. }
             | HistoryEdit::RestoreReviewed { .. }
-            | HistoryEdit::Checkpoint { .. } => Err(format!(
-                "{} is not offered for this app's resources",
-                edit.verb()
-            )),
+            | HistoryEdit::Checkpoint { .. }
+            | HistoryEdit::Name { .. } => {
+                let host = self
+                    .instance
+                    .host()
+                    .ok_or_else(|| "the app has not started yet".to_owned())?;
+                tilolang_service::version_edit(&host, trees, edit, by).map(Some)
+            }
         }
     }
 
@@ -3229,8 +3261,8 @@ impl Hosted {
             Ok(Ran::Done(output)) if self.checks.continues(id, invocation, &output) => None,
             Ok(Ran::Done(output)) => Some(InvocationUpdate::Succeeded { invocation, output }),
             // What it calls answers later: the invocation ends with the run, not now.
-            Ok(Ran::Waits { call, run }) => {
-                self.waiting(call, run, Some(served), person.map(str::to_owned));
+            Ok(Ran::Waits { call, run, action }) => {
+                self.waiting(call, run, Some(served), person.map(str::to_owned), action);
                 None
             }
             Err(error) => {
@@ -3294,6 +3326,7 @@ impl Hosted {
         run: Option<tilolang_tilo::runtime::ids::RunId>,
         served: Option<Served>,
         person: Option<String>,
+        action: Option<ServedAction>,
     ) {
         // The invocation this run serves outlives this host: it is recorded with the run, so a
         // host starting over the store answers it if the run cannot go on. A press ends with
@@ -3311,6 +3344,7 @@ impl Hosted {
                 served,
                 person,
                 asked: None,
+                action,
             },
         );
     }
@@ -3538,7 +3572,9 @@ impl Hosted {
             ReceiptStatus::Accepted => return false,
         };
         match (child.run, child.served) {
-            (Some(run), served) => self.resume(&run, served, child.person, answer),
+            (Some(run), served) => {
+                self.resume(&run, served, (child.person, child.action), answer);
+            }
             // The call itself is the served invocation's work: its answer ends it.
             (None, Some(served)) => {
                 let invocation = served.invocation();
@@ -3573,7 +3609,7 @@ impl Hosted {
         &mut self,
         run: &tilolang_tilo::runtime::ids::RunId,
         served: Option<Served>,
-        person: Option<String>,
+        (person, action): (Option<String>, Option<ServedAction>),
         answer: Invoked,
     ) {
         let Some(host) = self.instance.host() else {
@@ -3599,19 +3635,35 @@ impl Hosted {
                 self.instance.commit_planned();
                 if let Some(served) = served {
                     let invocation = served.invocation();
-                    let output = output_of(&self.spec.app, &value);
-                    // A check the run started before it waited is still the invocation's work.
-                    let continues = match served {
-                        Served::Delivered(id, _) => self.checks.continues(id, invocation, &output),
-                        Served::Pressed(_) => false,
+                    // The run's value is the action's answer, as its declared result, as it is
+                    // for a run that never waited.
+                    let output = match &action {
+                        Some(action) => host
+                            .action_output(&action.app, &action.action, &value)
+                            .map_err(|error| Refused::new("action_failed", error)),
+                        // A run whose action is not named answers only that it ended.
+                        None => Ok(tilo_actions::ActionOutput::default()),
                     };
-                    if !continues {
-                        let update = InvocationUpdate::Succeeded { invocation, output };
-                        self.answer_served(served, update);
+                    match output {
+                        // A check the run started before it waited is still the invocation's
+                        // work.
+                        Ok(output)
+                            if matches!(served, Served::Delivered(id, _)
+                                if self.checks.continues(id, invocation, &output)) => {}
+                        Ok(output) => {
+                            let update = InvocationUpdate::Succeeded { invocation, output };
+                            self.answer_served(served, update);
+                        }
+                        Err(refused) => {
+                            self.checks.abandon(invocation);
+                            self.answer_served(served, failed(invocation, refused));
+                        }
                     }
                 }
             }
-            Ok(RunOutcome::Waits { run, call }) => self.waiting(call, Some(run), served, person),
+            Ok(RunOutcome::Waits { run, call }) => {
+                self.waiting(call, Some(run), served, person, action);
+            }
             Err(error) => {
                 self.instance.commit_planned();
                 if let Some(served) = served {
@@ -3679,6 +3731,7 @@ impl Hosted {
             PressOutcome::Waits { run, call } => PressRan::Waits {
                 call,
                 run: Some(run),
+                action: None,
             },
             // The action waits for the person's yes, as the call it made of itself: that call
             // continues the press, which did all it does here.
@@ -3736,8 +3789,9 @@ impl Hosted {
             PressRan::Done(output) => {
                 self.answer_served(served, InvocationUpdate::Succeeded { invocation, output });
             }
-            PressRan::Waits { call, run } => {
-                self.waiting(call, run, Some(served), Some(self.spec.person.clone()));
+            PressRan::Waits { call, run, action } => {
+                let person = Some(self.spec.person.clone());
+                self.waiting(call, run, Some(served), person, action);
             }
             PressRan::Failed(refused) => self.answer_served(served, failed(invocation, refused)),
         }
@@ -3929,8 +3983,10 @@ impl Hosted {
             let edit: HistoryEdit =
                 tilo_resource_store::history::verbs::edit_from_payload(&encoded.payload)
                     .map_err(|error| Refused::new("action_invalid_arguments", error))?;
+            let resources = surface.resources(Some(&shown));
+            let trees = history_trees(&resources, &address)?;
             let value = self
-                .history_edit(&edit, &invoker.acting.by)
+                .history_edit(&edit, &invoker.acting.by, &trees)
                 .map_err(|error| Refused::new("action_failed", error))?;
             self.store_moved();
             return Ok(Ran::Done(tilo_actions::ActionOutput {
@@ -3974,6 +4030,10 @@ impl Hosted {
                 return Ok(Ran::Waits {
                     call: waiting.call,
                     run: waiting.run,
+                    action: Some(ServedAction {
+                        app: action.app.clone(),
+                        action: action.action_id.clone(),
+                    }),
                 });
             }
             // The answer names the characters it wrote: the window draws them in the writer's
@@ -4077,25 +4137,7 @@ impl Hosted {
         let view = tilo_resource_store::history::verbs::view_from_payload(payload)
             .map_err(|error| Refused::new("action_invalid_arguments", error))?;
         let resources = surface.resources(Some(shown));
-        let tree = resources
-            .iter()
-            .find(|tree| tree.id.as_str() == address.resource)
-            .ok_or_else(|| {
-                Refused::new(
-                    "action_unavailable",
-                    format!("{} keeps no history here", address.resource),
-                )
-            })?;
-        // The app's own resource has the history of everything the app keeps.
-        let trees: Vec<&ResourceSpec> = if address
-            .resource
-            .strip_prefix("tl:")
-            .is_some_and(|app| !app.contains(':'))
-        {
-            resources.iter().collect()
-        } else {
-            vec![tree]
-        };
+        let trees = history_trees(&resources, address)?;
         let reader = tilolang_tilo::runtime::Actor::Member(MemberId::person(person));
         let mut value = tilolang_service::history(host, &trees, &view, &reader)
             .map_err(|error| Refused::new("action_failed", error))?;
@@ -4300,9 +4342,10 @@ impl Hosted {
             self.press_line().end();
             let outcome = match &ran {
                 Ok(Ran::Done(output)) => PressRan::Done(output.clone()),
-                Ok(Ran::Waits { call, run }) => PressRan::Waits {
+                Ok(Ran::Waits { call, run, action }) => PressRan::Waits {
                     call: call.clone(),
                     run: run.clone(),
+                    action: action.clone(),
                 },
                 Err(refused) => PressRan::Failed(refused.clone()),
             };
@@ -4331,7 +4374,7 @@ impl Hosted {
             }
             // It calls another app and waits on the answer: the run goes on when it comes. A
             // press answers nobody, so nothing is answered for it.
-            Ok(Ran::Waits { call, run }) => self.waiting(call, run, None, None),
+            Ok(Ran::Waits { call, run, .. }) => self.waiting(call, run, None, None, None),
             Err(refused) => self.instance.failed(refused.message),
         }
         // What the press queued outside the workspace waits in the outbox, and the instance
@@ -4687,21 +4730,6 @@ fn callees_of(
     callees
 }
 
-/// What the action whose run `value` returned answers: the resource it made, if any, as the
-/// invocation answers it.
-fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
-    match value {
-        Value::Ref(made) => tilo_actions::ActionOutput {
-            value: None,
-            resources: vec![tilolang_tilo::publish::resource_id(
-                app,
-                &made.target.id_string(),
-            )],
-        },
-        _ => tilo_actions::ActionOutput::default(),
-    }
-}
-
 /// What a view or an action of this window asks of another app's api: the app, the resource,
 /// the action's name and its arguments as the api takes them. `None` for an invocation that
 /// names no target.
@@ -4943,9 +4971,16 @@ fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], loc
     for version in versions {
         let text = |key: &str| version[key].as_str().unwrap_or_default().to_owned();
         let (resource, action, label) = (text("resource"), text("action"), text("label"));
+        let named = version["named"].as_str().map(str::to_owned);
         let app = tilolang_tilo::publish::app_of(&resource)
             .unwrap_or_default()
             .to_owned();
+        // A checkpoint or a restore is a step through history, said as history says it.
+        let step = match (action.as_str(), named) {
+            ("checkpoint", Some(name)) => Some(tilo_actions::HistoryOp::Checkpoint { name }),
+            ("restore", _) => Some(tilo_actions::HistoryOp::Restore),
+            _ => None,
+        };
         let entry = tilo_actions::ActionContext {
             app: Some(tilo_actions::ActionApp {
                 id: app.clone(),
@@ -4955,14 +4990,19 @@ fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], loc
                 id: resource,
                 label,
             }),
-            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall {
-                action: tilo_actions::ActionKey {
-                    app,
-                    kind: String::new(),
-                    action,
+            what: Some(step.map_or_else(
+                || {
+                    tilo_actions::Did::Verb(tilo_actions::VerbCall {
+                        action: tilo_actions::ActionKey {
+                            app,
+                            kind: String::new(),
+                            action,
+                        },
+                        args: std::collections::BTreeMap::new(),
+                    })
                 },
-                args: std::collections::BTreeMap::new(),
-            })),
+                |op| tilo_actions::Did::history(op, 0, None),
+            )),
             ..tilo_actions::ActionContext::default()
         };
         let sentence = reader.sentence(&entry);
@@ -5093,5 +5133,47 @@ mod tests {
             "carrying one of them would leave the rest behind"
         );
         assert_eq!(script.asked(), 3, "listed, then each read once");
+    }
+}
+/// The published resources whose history the resource `address` names keeps, of those
+/// `resources` the window publishes: the one it names, or every one for the app's own resource,
+/// which has the history of everything the app keeps.
+fn history_trees<'a>(
+    resources: &'a [ResourceSpec],
+    address: &ActionAddress,
+) -> Result<Vec<&'a ResourceSpec>, Refused> {
+    let tree = resources
+        .iter()
+        .find(|tree| tree.id.as_str() == address.resource)
+        .ok_or_else(|| {
+            Refused::new(
+                "action_unavailable",
+                format!("{} keeps no history here", address.resource),
+            )
+        })?;
+    Ok(
+        if address
+            .resource
+            .strip_prefix("tl:")
+            .is_some_and(|app| !app.contains(':'))
+        {
+            resources.iter().collect()
+        } else {
+            vec![tree]
+        },
+    )
+}
+
+/// What the press whose run `value` returned answers: the resource it made, if any.
+fn output_of(app: &str, value: &Value) -> tilo_actions::ActionOutput {
+    match value {
+        Value::Ref(made) => tilo_actions::ActionOutput {
+            value: None,
+            resources: vec![tilolang_tilo::publish::resource_id(
+                app,
+                &made.target.id_string(),
+            )],
+        },
+        _ => tilo_actions::ActionOutput::default(),
     }
 }

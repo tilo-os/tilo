@@ -8,13 +8,13 @@ use vello::peniko::Color;
 use crate::theme::{Theme, WindowAppearance};
 use crate::theme_document::{PresetDesign, ThemeDocument};
 use crate::tokens::{Emphasis, PresenceHue};
-use settings_model::theme::{Preset, THEMES_KEY, ThemeDensity};
+use settings_model::theme::{Preset, ThemeDensity};
 
 /// JSON id of the distribution-defaults layer.
 pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
 
 /// JSON key of the distribution-defaults object inside the device's appearance section
-/// ([`settings_store::appearance::DEVICE_SECTION`]).
+/// ([`settings_model::appearance::DEVICE_SECTION`]).
 pub const DISTRIBUTION_DEFAULTS_KEY: &str = "distribution_defaults";
 
 /// Pin id for the palette (hue, chroma, ladder, ink, status).
@@ -66,9 +66,9 @@ pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
 pub(crate) const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
 /// The settings section the person's appearance lives in.
-pub const APPEARANCE_SECTION: &str = settings_store::day_schedule::SECTION;
+pub const APPEARANCE_SECTION: &str = settings_model::day_schedule::SECTION;
 /// `appearance` key: `"dark"`, `"light"` or `"automatic"`.
-pub const MODE_KEY: &str = settings_store::day_schedule::MODE_KEY;
+pub const MODE_KEY: &str = settings_model::day_schedule::MODE_KEY;
 /// `appearance` key: the theme dark mode shows, a preset id or `custom:<id>`.
 pub const DARK_THEME_KEY: &str = "dark_theme";
 /// `appearance` key: the theme light mode shows, a preset id or `custom:<id>`.
@@ -138,6 +138,7 @@ pub struct DistributionDefaults {
     pub policy: DistributionPolicy,
 }
 
+#[cfg(feature = "model")]
 tilo_resource::json_model!(DistributionDefaults);
 
 impl Default for DistributionDefaults {
@@ -227,9 +228,9 @@ pub struct AccessibilityLayer {
 
 impl AccessibilityLayer {
     /// Same lower bound as [`Theme::with_text_scale`].
-    pub const TEXT_SCALE_MIN: f32 = settings_store::appearance::TEXT_SCALE_MIN;
+    pub const TEXT_SCALE_MIN: f32 = settings_model::appearance::TEXT_SCALE_MIN;
     /// Same upper bound as [`Theme::with_text_scale`].
-    pub const TEXT_SCALE_MAX: f32 = settings_store::appearance::TEXT_SCALE_MAX;
+    pub const TEXT_SCALE_MAX: f32 = settings_model::appearance::TEXT_SCALE_MAX;
     /// Same lower bound as [`Theme::with_ui_scale`].
     pub const UI_SCALE_MIN: f32 = 0.5;
     /// Same upper bound as [`Theme::with_ui_scale`].
@@ -322,8 +323,8 @@ impl FinishLayer {
             accent: self.accent,
             translucency: self.translucency.map(|value| {
                 value.clamp(
-                    settings_store::appearance::TRANSLUCENCY_MIN,
-                    settings_store::appearance::TRANSLUCENCY_MAX,
+                    settings_model::appearance::TRANSLUCENCY_MIN,
+                    settings_model::appearance::TRANSLUCENCY_MAX,
                 )
             }),
         })
@@ -349,13 +350,13 @@ impl ThemeLayerStack {
     #[must_use]
     pub fn from_settings_json(
         text: &str,
-        moment: settings_store::day_schedule::LocalMoment,
+        moment: settings_model::day_schedule::LocalMoment,
     ) -> Self {
         let document = serde_json::from_str::<serde_json::Value>(text).ok();
         let appearance = document.as_ref().and_then(|value| value.get("appearance"));
         let device = document
             .as_ref()
-            .and_then(|value| value.get(settings_store::appearance::DEVICE_SECTION));
+            .and_then(|value| value.get(settings_model::appearance::DEVICE_SECTION));
         let distribution_defaults = device.and_then(|section| {
             section
                 .get(DISTRIBUTION_DEFAULTS_KEY)
@@ -402,12 +403,42 @@ fn finish_layer(appearance: Option<&serde_json::Value>) -> FinishLayer {
     }
 }
 
+/// The person's own theme `custom`, one of the records the appearance section keeps under
+/// [`THEMES_KEY`](settings_model::theme::THEMES_KEY).
+#[cfg(feature = "model")]
+fn own_theme(appearance: &serde_json::Value, custom: &str) -> Option<ThemeDocument> {
+    Some(
+        appearance
+            .get(settings_model::theme::THEMES_KEY)
+            .map(|themes| {
+                <tilo_resource::Collection<crate::theme::ThemeRecord> as tilo_resource::Model>::from_json(themes)
+                    .map_err(|error| {
+                        tracing::warn!(theme = custom, %error, "the saved themes do not read; the stock theme shows");
+                    })
+                    .ok()
+            })??
+            .get(&tilo_resource::Id::from_raw(custom))?
+            .document(custom),
+    )
+}
+
+/// A person's own themes are records of their workspace, which a window of the toolkit alone
+/// does not read: the stock theme shows.
+#[cfg(not(feature = "model"))]
+fn own_theme(_appearance: &serde_json::Value, custom: &str) -> Option<ThemeDocument> {
+    tracing::warn!(
+        theme = custom,
+        "own themes are workspace records; the stock theme shows"
+    );
+    None
+}
+
 /// Which theme the mode and schedule in `settings` show, and with the person's density
 /// over it.
 #[must_use]
 pub fn user_document(
     settings: &serde_json::Value,
-    moment: settings_store::day_schedule::LocalMoment,
+    moment: settings_model::day_schedule::LocalMoment,
 ) -> Option<ThemeDocument> {
     let appearance = settings.get("appearance")?;
     let mode = appearance.get(MODE_KEY).and_then(serde_json::Value::as_str);
@@ -421,9 +452,9 @@ pub fn user_document(
         return None;
     }
     let dark = match mode {
-        Some(mode) if settings_store::day_schedule::is_automatic(mode) => {
+        Some(mode) if settings_model::day_schedule::is_automatic(mode) => {
             let schedule =
-                settings_store::day_schedule::Scheduled::from_settings(settings.as_object()?);
+                settings_model::day_schedule::Scheduled::from_settings(settings.as_object()?);
             schedule.is_night(moment)
         }
         Some("light") => false,
@@ -436,17 +467,7 @@ pub fn user_document(
         light_theme.unwrap_or(Preset::Light.id())
     };
     let mut document = match id.strip_prefix("custom:") {
-        Some(custom) => appearance
-            .get(THEMES_KEY)
-            .map(|themes| {
-                <tilo_resource::Collection<crate::theme::ThemeRecord> as tilo_resource::Model>::from_json(themes)
-                    .map_err(|error| {
-                        tracing::warn!(theme = custom, %error, "the saved themes do not read; the stock theme shows");
-                    })
-                    .ok()
-            })??
-            .get(&tilo_resource::Id::from_raw(custom))?
-            .document(custom),
+        Some(custom) => own_theme(appearance, custom)?,
         None => Preset::find(id)?.document(),
     };
     if let Some(reason) = crate::theme::Theme::refusal(&document) {
@@ -1008,7 +1029,7 @@ mod tests {
 
         phase configured_startup_reads_distribution_defaults;
         {
-            let settings = settings_store::parse(
+            let settings = crate::settings_source::parse(
                 r#"{"appearance_device":{"distribution_defaults":{"theme":"light"}}}"#,
             );
             assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
@@ -1152,7 +1173,7 @@ mod tests {
 
         phase the_user_layer_reads_mode_theme_density_and_overrides;
         {
-            use settings_store::day_schedule::LocalMoment;
+            use settings_model::day_schedule::LocalMoment;
             let noon = LocalMoment {
                 day_of_year: 100,
                 minute_of_day: 12 * 60,

@@ -180,8 +180,9 @@ pub trait AppActionServer: Send + Sync {
 /// edits of other people and agents reach it within this.
 pub const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// How often an open page asks while its view draws a call's pictures: a call's frames move far
-/// faster than a page otherwise follows.
+/// How often an open page asks while its view's call tiles settle: a camera that comes on, a
+/// person who joins, a screen that starts showing reach the page far sooner than it otherwise
+/// follows. The frames themselves are the browser's, decoded where the tiles stand.
 pub const LIVE_FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// A workspace's apps as web pages: each page an app's view of the
@@ -239,7 +240,7 @@ pub trait AppPages: Send + Sync {
     }
 
     /// How often the stream of `page` asks what changed on it: [`LIVE_FOLLOW_EVERY`] while its
-    /// view draws a call's pictures, [`FOLLOW_EVERY`] otherwise.
+    /// view's call tiles settle, [`FOLLOW_EVERY`] otherwise.
     fn follow_every(&self, page: u64) -> std::time::Duration {
         let _ = page;
         FOLLOW_EVERY

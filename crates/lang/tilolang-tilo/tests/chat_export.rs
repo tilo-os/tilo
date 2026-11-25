@@ -1,8 +1,8 @@
 //! Export is the system's, on every resource's menu, beside Copy link: no app writes its own.
 //! Choosing it saves the resource as a file where the person says. A Chat conversation saves as
 //! the Markdown Chat says it exports as (its messages in order, each under who wrote it and
-//! when), a note in Notes as its body under its title, and a resource that holds no document, a
-//! voice channel, as everything it holds in JSON.
+//! when), a note in Notes as the Markdown format it publishes, and a resource that holds no
+//! document, a voice channel, as everything it holds in JSON.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -266,6 +266,33 @@ fn export(
     (saved.pop().unwrap(), menu)
 }
 
+/// Choose the format `format` the system's Export… lists on the menu of `item`, and read back
+/// the one file it saved and the menu's commands.
+fn export_format(
+    instance: &mut Instance,
+    far: &mut End,
+    device: &Device,
+    item: &ResourceRef,
+    format: &str,
+) -> (Saved, Vec<String>) {
+    let (level, menu, key) = open_menu(instance, far, item, format);
+    told(far);
+    tell(
+        instance,
+        far,
+        ToApp::Fire {
+            level,
+            key,
+            event: "choose".to_owned(),
+            value: None,
+            gesture: None,
+        },
+    );
+    let mut saved = device.saved.borrow_mut();
+    assert_eq!(saved.len(), 1, "one file is saved: {saved:?}");
+    (saved.pop().unwrap(), menu)
+}
+
 #[test]
 fn a_channels_menu_exports_its_messages_as_markdown_in_order() {
     static PACKAGES: &[(&str, &str)] = &[crate::fixtures::CHAT];
@@ -358,7 +385,13 @@ fn a_notes_menu_exports_its_body() {
         ],
     ));
     instance.update();
-    let (file, _) = export(&mut instance, &mut far, &device, &note);
+    let (file, menu) = export_format(&mut instance, &mut far, &device, &note, "Markdown");
+    assert!(
+        !menu
+            .iter()
+            .any(|label| label.contains("Export") && !label.contains("Markdown")),
+        "Notes writes no export of its own beside the system's: {menu:?}"
+    );
     assert_eq!(file.name, "Plan.md");
     assert_eq!(file.media, "text/markdown");
     assert!(

@@ -1,39 +1,18 @@
 use super::*;
-use crate::history_mode::HistoryPresentation;
-
-fn scope(schema: Option<&'static HistoryRestoreSchema>) -> HistoryScopeDefinition {
-    HistoryScopeDefinition {
-        key: "document",
-        title: "Record",
-        presentation: HistoryPresentation::External {
-            reason: "checks the declaration only",
-        },
-        content_schema: schema,
-    }
-}
 
 tilo_test_env::scenario! {
     fn a_types_history_support_and_gaps_are_declared_not_assumed;
 
     phase a_type_is_classified_by_the_declarations_it_made_not_by_its_app;
     {
-        let content = HistoricalSupport::of(
-            &scope(Some(&crate::state::owned_restore_tests::SCHEMA)),
-            true,
-        );
+        // A type with a read adapter shows its versions through that adapter and restores them
+        // through the store's history verbs, checked against the same read.
+        let content = HistoricalSupport::of(true);
         assert_eq!(content, HistoricalSupport::Content);
         assert!(content.restorable());
-        assert!(content.declares_schema());
 
-        // A type with no schema but a read adapter reads its versions through
-        // that adapter and restores them byte for byte.
-        let read = HistoricalSupport::of(&scope(None), true);
-        assert_eq!(read, HistoricalSupport::MetadataOnly);
-        assert!(read.restorable(), "exact bytes can be brought back");
-        assert!(!read.declares_schema());
-
-        // A type that declares neither is unsupported, never promised.
-        let unreadable = HistoricalSupport::of(&scope(None), false);
+        // A type that declares no read adapter is unsupported, never promised.
+        let unreadable = HistoricalSupport::of(false);
         assert_eq!(unreadable, HistoricalSupport::Unsupported);
         assert!(!unreadable.restorable());
     }
@@ -69,19 +48,5 @@ tilo_test_env::scenario! {
             assert!(!gap.reason().is_empty());
             assert_eq!(gap.to_string(), gap.reason());
         }
-    }
-
-    phase a_registered_schema_is_checked_before_a_record_exists;
-    {
-        assert!(TypeHistory::check_schema(&crate::state::owned_restore_tests::SCHEMA).is_ok());
-        let history = TypeHistory::of(
-            "test.board",
-            1,
-            &scope(Some(&crate::state::owned_restore_tests::SCHEMA)),
-            true,
-        );
-        assert_eq!(history.kind, "test.board");
-        assert_eq!(history.version, 1);
-        assert!(history.support.declares_schema());
     }
 }

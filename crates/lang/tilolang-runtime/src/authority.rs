@@ -37,8 +37,10 @@ pub struct ActionInfo {
 /// A resource an action is invoked on, as the policy names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionTarget {
-    /// The resource's published id (`tl:<app>:<id>`).
-    pub resource: String,
+    /// The document it stands in, published (`tl:<app>:<doc>`).
+    pub document: String,
+    /// The item, when the resource is one of its document's; `None` for the document itself.
+    pub item: Option<String>,
     /// The kind of its type (`tl.<app>.<Type>`).
     pub kind: String,
 }

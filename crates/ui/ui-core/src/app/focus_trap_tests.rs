@@ -226,7 +226,6 @@ tilo_test_env::scenario! {
                 key: "document",
                 title: "Document",
                 presentation: HistoryPresentation::External { reason: "fixture" },
-                content_schema: None,
             }],
         };
         let registration = HistoryRegistration::new(

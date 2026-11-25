@@ -276,6 +276,7 @@ fn only_a_seed_runs_a_scenario() {
         actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
+        handed: false,
         app: None,
     };
     for caller in [None, Some(&agent)] {

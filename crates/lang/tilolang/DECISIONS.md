@@ -898,6 +898,26 @@ holds and what the host reads from it.
 - **A trigger runs for the package's records, as the platform stores them:** the resources of
   the trigger's type at the top of the app's tree (what migrations and publication see), not
   items inside a collection.
+- **`on r.field` names the device an `at` trigger's moment lands on, and the record says which.**
+  An alarm must ring on the phone it names when that phone is offline or asleep, which a
+  notification sent at the instant by the origin cannot promise. The language says where the
+  moment lands so a host can arm the device's own wakeup without knowing any app: `on` takes a
+  `Text` field of the record (E133 otherwise) holding a device's id, empty for every device of the
+  person's, and is refused on `every`, which names no moment. The trigger keeps its one action
+  and its origin; `on` adds a reading, not a second runner.
+- **The device learns what the moment tells by rehearsing the run.** Each device that keeps the
+  workspace runs, for each record still to come that names it or none, the trigger's action as
+  the run the origin will make (the same run name, the app as invoker, the clock at the instant),
+  keeps the notices it writes and takes the whole run back (`Runtime::rehearse_named`). It arms its
+  OS wakeup with those notices, and re-arms or cancels when the record changes. The alternative,
+  a declarative notice the compiler extracts from the trigger, would need a second, static
+  language of notices beside `notify`; rehearsing keeps one. Because a rehearsal runs the action
+  where nothing may leave the device, such an action may use `notify` and `time` and no other
+  effect (E149): a fetch or a draw would reach outside, or tell something the real run does not.
+- **The record's `$triggers` mark stays the one truth, and the notice its id.** A rehearsed
+  notice carries the id of the record the origin's run writes (the run name and the effect's
+  ordinal), so a device whose wakeup rang drops that notice when it arrives later, and the
+  person is told once. Nothing the device does on its own writes to the workspace.
 ## JSON
 
 Typed decode into records, enums, lists and options, encoding back as text, and a value for a

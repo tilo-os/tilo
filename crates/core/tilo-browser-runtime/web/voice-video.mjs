@@ -1,8 +1,8 @@
 /**
  * A browser member's pictures in a call: the camera (`getUserMedia`) or
  * a shared screen (`getDisplayMedia`) encoded here as one H.264 stream per
- * layer of its source, and the pictures the call sends for this page waiting
- * in an inbox until the app collects them.
+ * layer of its source, and the pictures the call delivers decoded here with
+ * `WebCodecs` ([`createPictureDecoder`]) for the tiles the page draws.
  *
  * A layer is encoded (WebCodecs, hardware where the browser has it) only
  * while a device in the call shows it, so nothing is encoded for nobody
@@ -13,9 +13,9 @@
  *
  * What the encoder writes is one picture's coded bytes and its place in the
  * source's stream: the page publishes it on its call's live session as it is made,
- * and the app draws the objects the live session delivers.
+ * and every device decodes what the live session delivers where its tiles stand.
  */
-import {SOURCES, base64Of, encodeVideoObject, fitted} from './video-profile.mjs';
+import {SOURCES, base64Of, decodeVideoObject, encodeVideoObject, fitted} from './video-profile.mjs';
 
 const KEYFRAME_MS = 2000;
 const REPEAT_MS = 2000;
@@ -219,9 +219,155 @@ export function pictureObject({source, layer, sequence, keyframe, timestampUs, w
   return encodeVideoObject({keyframe, layer, sequence, timestampUs, width, height, payload});
 }
 
+/** The `WebCodecs` configuration of each codec the profile carries, as the native call encodes
+ * them. The AVC bitstream is Annex B, which a decoder reads when it is given no description. */
+const DECODER_CONFIGS = Object.freeze({
+  h264: 'avc1.64002A',
+  vp9: 'vp09.00.41.08',
+  av1: 'av01.0.08M.08',
+});
+
 /**
- * Received pictures waiting for the app, by cursor; a stream that drops a
- * picture waits for its next keyframe (shell `video::Inbox`).
+ * Decode the pictures a call delivers, with `WebCodecs`: one decoder per stream (a person's
+ * camera or the screen they share), fed each tilo-video/1 object the live session delivers, and
+ * `onFrame(person, source, frame)` for every picture a decoder makes, which the page draws where
+ * the call's tile stands. The frame belongs to the call: it is closed once `onFrame` returns, so
+ * a listener draws it there and then.
+ *
+ * A decoder starts at a keyframe, which a device sends when a tile starts showing its stream, and
+ * nothing before it is fed. A person's newer stream (another device, or back after leaving) gets
+ * a decoder of its own. The decoder works on its own schedule: a stream that falls behind skips
+ * forward with the pictures that arrive, as the native decoder does.
+ */
+export function createPictureDecoder({environment = globalThis, onFrame = () => {}, report = () => {}} = {}) {
+  const streams = new Map();
+  let stopped = false;
+
+  function drop(key) {
+    const entry = streams.get(key);
+    if (!entry) return;
+    streams.delete(key);
+    try { entry.decoder.close(); } catch {}
+  }
+
+  function made(key, frame) {
+    const [person, source] = key.split('|');
+    try { onFrame(person, source, frame); } catch (error) { report({type: 'video-frame-error', error}); } finally { try { frame.close(); } catch {} }
+  }
+
+  function failed(key) {
+    drop(key);
+  }
+
+  function decoderFor(key, stream, codec) {
+    let entry = streams.get(key);
+    if (entry && (entry.stream !== stream || entry.codec !== codec)) {
+      drop(key);
+      entry = undefined;
+    }
+    if (entry) return entry;
+    const config = DECODER_CONFIGS[codec];
+    if (!config) {
+      report({type: 'video-decode-unsupported', codec});
+      return null;
+    }
+    let decoder;
+    try {
+      decoder = new environment.VideoDecoder({
+        output: frame => made(key, frame),
+        error: error => {
+          report({type: 'video-decoder-error', error});
+          failed(key);
+        },
+      });
+      decoder.configure({codec: config, optimizeForLatency: true});
+    } catch (error) {
+      report({type: 'video-decoder-error', error});
+      return null;
+    }
+    entry = {stream, codec, decoder};
+    streams.set(key, entry);
+    return entry;
+  }
+
+  return {
+    /** Hand over one picture of a stream: `{person, source, stream, object}`, with `object` the
+     * tilo-video/1 object the live session delivered. */
+    admit(picture) {
+      if (stopped) return;
+      let unit;
+      try { unit = decodeVideoObject(picture.object); } catch { return; }
+      const key = `${picture.person}|${picture.source}`;
+      let known = streams.get(key);
+      if (known && known.stream !== picture.stream) {
+        // The person's newer stream: the old one's decoder goes, and the new one starts at a
+        // keyframe.
+        drop(key);
+        known = undefined;
+      }
+      // Nothing decodes before the keyframe a device sends when a tile starts showing it.
+      if (!known && !unit.keyframe) return;
+      const entry = decoderFor(key, picture.stream, unit.codec);
+      if (!entry) return;
+      try {
+        entry.decoder.decode(new environment.EncodedVideoChunk({
+          type: unit.keyframe ? 'key' : 'delta',
+          timestamp: Number(unit.timestampUs),
+          data: unit.payload,
+        }));
+      } catch (error) {
+        report({type: 'video-decode-error', error});
+        drop(key);
+      }
+    },
+    /** Forget every stream: the call ended, or nothing is drawn any more. */
+    reset() {
+      for (const key of [...streams.keys()]) drop(key);
+    },
+    /** Nothing more decodes: the call is gone. */
+    close() {
+      stopped = true;
+      for (const key of [...streams.keys()]) drop(key);
+    },
+  };
+}
+
+/**
+ * `frame` drawn over `canvas` filling it as the native tile fills its box with the picture: the
+ * frame's middle, its shape kept, at the page's pixel density. Returns whether it was drawn.
+ */
+export function drawPicture(canvas, frame) {
+  const view = canvas.ownerDocument?.defaultView ?? globalThis;
+  const density = Number(view.devicePixelRatio) || 1;
+  const width = Math.max(1, Math.round((canvas.clientWidth || frame.displayWidth) * density));
+  const height = Math.max(1, Math.round((canvas.clientHeight || frame.displayHeight) * density));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const context = canvas.getContext('2d', {alpha: false, desynchronized: true});
+  if (!context) return false;
+  const [frameWidth, frameHeight] = [frame.displayWidth, frame.displayHeight];
+  if (!frameWidth || !frameHeight) return false;
+  const shape = frameWidth / frameHeight;
+  const box = width / height;
+  let [sx, sy, sw, sh] = [0, 0, frameWidth, frameHeight];
+  if (shape > box) {
+    sw = Math.round(frameHeight * box);
+    sx = Math.round((frameWidth - sw) / 2);
+  } else {
+    sh = Math.round(frameWidth / box);
+    sy = Math.round((frameHeight - sh) / 2);
+  }
+  context.drawImage(frame, sx, sy, sw, sh, 0, 0, width, height);
+  return true;
+}
+
+/**
+ * Received pictures waiting for a host that draws them itself (the web runtime's window, which
+ * decodes into its own canvas), by cursor; a stream that drops a picture waits for its next
+ * keyframe (shell `video::Inbox`). A page whose tiles stand in its HTML decodes them where they
+ * stand instead ([`createPictureDecoder`]).
  */
 export function createPictureInbox({maxBytes = INBOX_BYTES} = {}) {
   let queue = [];

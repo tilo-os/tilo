@@ -441,10 +441,9 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
                 ),
             )
             .unwrap_or_else(|error| panic!("the window checks the task off: {error}"));
-        assert!(
-            host.store().take_refusal().is_none(),
-            "the workspace's store takes the window's write"
-        );
+        if let Some(refused) = host.store().take_refusal() {
+            panic!("the workspace's store refused the window's write: {refused}");
+        }
         Some(())
     });
 
@@ -491,10 +490,9 @@ fn add_task(host: &Host, me: &tilo_actions::Actor, title: &str) -> Option<()> {
     host.runtime()
         .invoke_action(me, (new_task.as_str(), args))
         .unwrap_or_else(|error| panic!("the window adds the task: {error}"));
-    assert!(
-        host.store().take_refusal().is_none(),
-        "the workspace's store takes the window's write"
-    );
+    if let Some(refused) = host.store().take_refusal() {
+        panic!("the workspace's store refused the window's write: {refused}");
+    }
     Some(())
 }
 

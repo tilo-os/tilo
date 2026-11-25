@@ -44,6 +44,11 @@ pub struct Composed {
     /// It shows as a picture of its paint ([`page::shows_paint`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picture: Option<Picture>,
+    /// The live picture it shows, by its address in the window's live pictures
+    /// ([`crate::live_pictures`]): a host that decodes it draws it in the widget's place, and
+    /// no picture of its paint is made for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<String>,
     /// The vector glyph it draws in place of words, by its name in the shared icon set
     /// (`clock`): a host with no paint draws it from the same sources a native host strokes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,6 +85,7 @@ impl Composed {
             flows: false,
             appears_from: None,
             picture: None,
+            live: None,
             glyph: None,
             children: Vec::new(),
         }

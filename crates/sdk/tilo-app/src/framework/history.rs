@@ -74,8 +74,33 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
     }
 
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        // A version comes back only as the app reads it: from a record stored at the version the
+        // app reads, and only when what comes back still opens.
+        let restores = matches!(
+            self.edit,
+            HistoryEdit::Restore { .. } | HistoryEdit::RestoreReviewed { .. }
+        );
+        if restores {
+            let stored = tilo_resource::evolution::stored_version(doc);
+            if stored != R::VERSION {
+                return Err(tilo_actions::ActionError::Refused(format!(
+                    "This {} is stored at version {stored}; this app restores version {}.",
+                    R::LABEL,
+                    R::VERSION
+                )));
+            }
+        }
         self.edit
-            .apply_registered(doc, tilo_resource::group::register::<R>, &ThreadWords)
+            .apply_registered(doc, tilo_resource::group::register::<R>, &ThreadWords)?;
+        if restores {
+            R::read(doc).map_err(|error| {
+                tilo_actions::ActionError::Refused(format!(
+                    "That version of this {} no longer opens: {error}",
+                    R::LABEL
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     fn steps(&self, doc: &tilo_actions::Doc) -> Option<Vec<tilo_actions::ActionStep>> {

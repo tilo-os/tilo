@@ -632,7 +632,10 @@ impl AppBrokerState {
 
     /// The invocations delivered to `peer_id` that it has not finished, each with who the workspace
     /// service admitted it for: what a write it makes while serving one is credited to.
-    fn delivered_to(&self, peer_id: u64) -> Vec<(tilo_actions::InvocationId, tilo_actions::Actor)> {
+    fn delivered_to(
+        &self,
+        peer_id: u64,
+    ) -> Vec<(tilo_actions::InvocationId, tilo_actions::Acting)> {
         let pending = match self.pending_invocations.lock() {
             Ok(pending) => pending,
             Err(poisoned) => poisoned.into_inner(),
@@ -641,11 +644,13 @@ impl AppBrokerState {
             .values()
             .filter(|pending| pending.peer_id == peer_id)
             .map(|pending| {
-                let actor = pending.context.invoker.as_ref().map_or_else(
-                    || pending.actor.clone(),
-                    |invoker| invoker.acting.by.clone(),
+                // How the invoker acted goes with it: an agent its person's device handed its
+                // session to, or one under a key of its own, as its writes record it.
+                let acting = pending.context.invoker.as_ref().map_or_else(
+                    || tilo_actions::Acting::from(pending.actor.clone()),
+                    |invoker| invoker.acting.clone(),
                 );
-                (pending.update.invocation(), actor)
+                (pending.update.invocation(), acting)
             })
             .collect()
     }

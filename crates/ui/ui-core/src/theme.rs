@@ -11,14 +11,15 @@ pub use crate::theme_layers::{
     PINNABLE, TRANSLUCENCY_KEY, ThemeLayerStack, UI_FACE_KEY, WORKSPACE_TEMPERATURES_KEY,
     resolve_theme_layers, user_document, workspace_temperature_override,
 };
+#[cfg(feature = "model")]
 pub use crate::theme_record::{
     Ink as ThemeInk, Presence as ThemePresence, Status as ThemeStatus,
     StatusTone as ThemeStatusTone, Surfaces as ThemeSurfaces, ThemeRecord, admit_document,
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{Colors, PresenceHue, Tokens};
+pub use settings_model::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 pub use settings_model::theme::{Look, Preset, THEMES_KEY, ThemeDensity};
-pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
 
 fn mix_spring(
@@ -407,7 +408,7 @@ pub fn drawn(mode: Option<&str>, host: Option<bool>) -> Drawn {
     match mode {
         Some("light") => Drawn::Light,
         Some("dark") => Drawn::Dark,
-        Some(mode) if settings_store::day_schedule::is_automatic(mode) => {
+        Some(mode) if settings_model::day_schedule::is_automatic(mode) => {
             host.map_or(Drawn::Both, Drawn::of)
         }
         // A mode this build does not know draws the stock dark theme.
@@ -436,7 +437,7 @@ fn with_host_scheme(
     let open = appearance
         .get(MODE_KEY)
         .and_then(serde_json::Value::as_str)
-        .is_none_or(settings_store::day_schedule::is_automatic);
+        .is_none_or(settings_model::day_schedule::is_automatic);
     if open {
         appearance.insert(
             MODE_KEY.into(),
@@ -449,9 +450,9 @@ fn with_host_scheme(
 /// The local wall-clock moment the day/night schedule is evaluated at, read through the
 /// toolkit clock.
 #[must_use]
-pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
+pub fn local_moment() -> settings_model::day_schedule::LocalMoment {
     let local = crate::clock::local_now();
-    settings_store::day_schedule::LocalMoment {
+    settings_model::day_schedule::LocalMoment {
         day_of_year: u16::try_from(local.day_of_year()).unwrap_or(1),
         minute_of_day: u16::try_from(
             i32::from(local.hour())
@@ -722,10 +723,10 @@ impl Theme {
         self.status_success = c.semantic.success;
     }
 
-    /// Reads the person's settings ([`settings_store::load`]), whose appearance section
+    /// Reads the person's settings ([`crate::settings_source::load`]), whose appearance section
     /// Settings, the shell and agents change.
     pub fn configured() -> Self {
-        Self::configured_from(&settings_store::load())
+        Self::configured_from(&crate::settings_source::load())
     }
 
     /// [`Theme::configured`] from an explicit settings document, with the host's own light or dark
@@ -775,7 +776,7 @@ impl Theme {
     /// all: a host keeps its own value for one it does not.
     #[must_use]
     pub fn configured_comforts() -> ConfiguredComforts {
-        let document = serde_json::Value::Object(settings_store::load());
+        let document = serde_json::Value::Object(crate::settings_source::load());
         Self::comforts_in(&document, crate::process::environment().accessibility)
     }
 
@@ -835,10 +836,10 @@ impl Theme {
 
     /// [`Self::from_settings_json`] at an explicit local moment: automatic mode is the
     /// light theme by day and the dark theme by night, on the schedule night light shares
-    /// (`settings_store::day_schedule`).
+    /// (`settings_model::day_schedule`).
     pub fn from_settings_json_at(
         text: &str,
-        moment: settings_store::day_schedule::LocalMoment,
+        moment: settings_model::day_schedule::LocalMoment,
     ) -> Option<Self> {
         let settings: serde_json::Value = serde_json::from_str(text).ok()?;
         let document = crate::theme_layers::user_document(&settings, moment)?;
@@ -849,13 +850,13 @@ impl Theme {
     /// when the mode is fixed.
     pub fn automatic_schedule_from(
         document: &serde_json::Map<String, serde_json::Value>,
-    ) -> Option<settings_store::day_schedule::Scheduled> {
+    ) -> Option<settings_model::day_schedule::Scheduled> {
         let mode = document
             .get("appearance")?
-            .get(settings_store::day_schedule::MODE_KEY)?
+            .get(settings_model::day_schedule::MODE_KEY)?
             .as_str()?;
-        settings_store::day_schedule::is_automatic(mode)
-            .then(|| settings_store::day_schedule::Scheduled::from_settings(document))
+        settings_model::day_schedule::is_automatic(mode)
+            .then(|| settings_model::day_schedule::Scheduled::from_settings(document))
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
@@ -970,8 +971,8 @@ impl Theme {
     #[must_use]
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(
-            settings_store::appearance::TEXT_SCALE_MIN,
-            settings_store::appearance::TEXT_SCALE_MAX,
+            settings_model::appearance::TEXT_SCALE_MIN,
+            settings_model::appearance::TEXT_SCALE_MAX,
         );
         self.regrow_icons(self.text_scale, factor);
         self.text_scale = factor;
@@ -2160,7 +2161,7 @@ mod tests {
 
         phase the_automatic_mode_is_light_by_day_and_dark_by_night;
         {
-            use settings_store::day_schedule::LocalMoment;
+            use settings_model::day_schedule::LocalMoment;
             let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dusk-dark","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
             let at = |minute_of_day| LocalMoment {
                 day_of_year: 100,
@@ -2190,7 +2191,7 @@ mod configured_theme {
     #[test]
     fn startup_theme_follows_the_settings_file_or_its_absence() {
         {
-            let settings = settings_store::parse(
+            let settings = crate::settings_source::parse(
                 r#"{"version":1,"appearance":{"dark_theme":"high-contrast"}}"#,
             );
 
@@ -2200,15 +2201,17 @@ mod configured_theme {
                 "a settings file asking for high contrast must produce it",
             );
 
-            let settings =
-                settings_store::parse(r#"{"appearance":{"mode":"light","high_contrast":true}}"#);
+            let settings = crate::settings_source::parse(
+                r#"{"appearance":{"mode":"light","high_contrast":true}}"#,
+            );
             assert_eq!(
                 Theme::configured_from(&settings).name,
                 "High contrast light",
                 "appearance.high_contrast must reach the shell's chrome",
             );
-            let settings =
-                settings_store::parse(r#"{"appearance":{"mode":"light","high_contrast":false}}"#);
+            let settings = crate::settings_source::parse(
+                r#"{"appearance":{"mode":"light","high_contrast":false}}"#,
+            );
             assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
         }
 
@@ -2216,9 +2219,11 @@ mod configured_theme {
         // re-reads its theme through this API on every settings change, so flipping the
         // switch must flip the chrome's motion.
         if !crate::process::environment().accessibility.reduce_motion {
-            let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":true}}"#);
+            let settings =
+                crate::settings_source::parse(r#"{"appearance":{"reduce_motion":true}}"#);
             assert!(Theme::configured_from(&settings).reduce_motion);
-            let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":false}}"#);
+            let settings =
+                crate::settings_source::parse(r#"{"appearance":{"reduce_motion":false}}"#);
             assert!(!Theme::configured_from(&settings).reduce_motion);
         }
 
@@ -2226,7 +2231,7 @@ mod configured_theme {
         // reaches a window through its host (`Theme::in_window`), never through the
         // theme.
         {
-            let settings = settings_store::parse(r#"{"identity":{"colour":"teal"}}"#);
+            let settings = crate::settings_source::parse(r#"{"identity":{"colour":"teal"}}"#);
             assert_eq!(
                 Theme::configured_from(&settings).tokens.colors.you,
                 Theme::dark().tokens.colors.you

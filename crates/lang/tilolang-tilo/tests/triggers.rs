@@ -469,3 +469,186 @@ fn type_id_of(instance: &Instance, ty: &str) -> String {
         .id
         .clone()
 }
+
+/// Clocks, whose alarm rings on the device it names: its trigger lands `on` that device.
+const CLOCKS: (&str, &str) = (
+    include_str!("../../../../apps/tl/clocks/app.tl"),
+    include_str!("../../../../apps/tl/clocks/app.ids"),
+);
+const CLOCKS_APP: &str = "so.tilo.clocks";
+
+/// Ada's Clocks, its clock at `clock`, and its root.
+fn clocks(clock: &Rc<RefCell<String>>) -> (Replica, Meta, ResourceRef) {
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[CLOCKS]);
+    ada.host.set_clock({
+        let clock = Rc::clone(clock);
+        move || clock.borrow().clone()
+    });
+    let meta = packages.last().unwrap().meta.clone();
+    let root = ada.host.root_of(CLOCKS_APP).unwrap();
+    ada.commit();
+    (ada, meta, root)
+}
+
+/// Invoke Clocks' `name` on `args` as ada, and commit: what it answered.
+fn clocks_do(ada: &Replica, meta: &Meta, name: &str, args: Vec<Value>) -> Value {
+    let id = action_id(meta, name);
+    let InvokeOutcome::Done(value) = ada
+        .host
+        .runtime()
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&ada.name)),
+            (id.as_str(), args),
+        )
+        .unwrap()
+    else {
+        panic!("`{name}` runs");
+    };
+    ada.commit();
+    value
+}
+
+/// Set an alarm at `hour`:`minute` that rings once, on `rings_on`.
+fn alarm(
+    ada: &Replica,
+    meta: &Meta,
+    root: &ResourceRef,
+    label: &str,
+    at: (i64, i64),
+    rings_on: &str,
+) -> ResourceRef {
+    let made = clocks_do(
+        ada,
+        meta,
+        "add_alarm",
+        vec![
+            Value::resource(root),
+            Value::text(label),
+            Value::Int(at.0),
+            Value::Int(at.1),
+            Value::List(Vec::new()),
+            Value::text(rings_on),
+        ],
+    );
+    let Value::Ref(made) = made else {
+        panic!("add_alarm answers the alarm: {made:?}");
+    };
+    ResourceRef::clone(&made.target)
+}
+
+/// The notices the workspace holds, by their records' ids.
+fn notice_ids(replica: &Replica) -> Vec<String> {
+    replica
+        .host
+        .store()
+        .resources_of(tilolang::NOTICE_TYPE)
+        .unwrap_or_default()
+}
+
+tilo_test_env::scenario! {
+    fn an_alarm_lands_on_the_device_it_names_ahead_of_its_moment;
+
+    phase the_device_it_names_learns_what_it_will_tell_and_nothing_else_does;
+    {
+        let clock = Rc::new(RefCell::new("2026-10-27T06:59:00Z".to_owned()));
+        let (ada, meta, root) = clocks(&clock);
+        let early = tilolang::calendar::instant("2026-10-27T06:59:00Z").unwrap();
+        let seven = tilolang::calendar::instant("2026-10-27T07:00:00Z").unwrap();
+        let standup = alarm(&ada, &meta, &root, "Standup", (7, 0), "phone");
+        let versions = ada.host.store().versions(&standup).unwrap().len();
+
+        let landed = ada.host.landing("phone", "ada", early);
+        assert_eq!(landed.len(), 1, "{landed:#?}");
+        let landed = &landed[0];
+        assert_eq!((landed.app.as_str(), landed.at), (CLOCKS_APP, seven));
+        assert_eq!(landed.told.len(), 1, "it tells one thing: {landed:#?}");
+        let (id, notice) = &landed.told[0];
+        assert_eq!(
+            (notice.title.as_str(), notice.body.as_str(), notice.device.as_str()),
+            ("Standup", "It is 7:00", "phone"),
+        );
+        assert_eq!(notice.actions, vec!["snooze_alarm".to_owned()], "it offers its snooze");
+        assert_eq!(notice.opens, standup, "and opens the alarm");
+
+        assert!(ada.host.landing("laptop", "ada", early).is_empty(), "the laptop is not named");
+        assert!(ada.host.landing("phone", "bo", early).is_empty(), "nor is anyone else's phone");
+        assert!(ada.host.landing("phone", "ada", seven).is_empty(), "nothing once its moment came");
+
+        // Learning it ahead left the workspace as it was: the run was taken back.
+        assert!(notice_ids(&ada).is_empty(), "no notice was written");
+        assert_eq!(ada.host.store().versions(&standup).unwrap().len(), versions, "nor a change");
+        assert_eq!(ada.commit(), 0, "nothing waits to be sent");
+
+        // The device that runs the trigger at seven writes the very notice the phone learned.
+        "2026-10-27T07:00:00Z".clone_into(&mut clock.borrow_mut());
+        assert_eq!(ada.host.run_triggers(seven), 1, "the alarm rings once for the workspace");
+        ada.commit();
+        assert_eq!(notice_ids(&ada), vec![id.clone()], "one notice, under the id the phone holds");
+        assert!(
+            ada.host.landing("phone", "ada", seven).is_empty(),
+            "an alarm that rings once lands nothing more"
+        );
+    }
+
+    phase an_alarm_for_every_device_lands_on_each_of_the_persons;
+    {
+        let clock = Rc::new(RefCell::new("2026-10-27T06:59:00Z".to_owned()));
+        let (ada, meta, root) = clocks(&clock);
+        let early = tilolang::calendar::instant("2026-10-27T06:59:00Z").unwrap();
+        alarm(&ada, &meta, &root, "Coffee", (7, 0), "");
+        for device in ["phone", "laptop"] {
+            let landed = ada.host.landing(device, "ada", early);
+            assert_eq!(landed.len(), 1, "{device}: {landed:#?}");
+            assert_eq!(landed[0].told[0].1.device, "", "for every device of hers");
+        }
+        assert!(ada.host.landing("phone", "bo", early).is_empty(), "never on another person's");
+    }
+
+    phase moving_snoozing_and_turning_it_off_move_what_lands;
+    {
+        let clock = Rc::new(RefCell::new("2026-10-27T06:59:00Z".to_owned()));
+        let (ada, meta, root) = clocks(&clock);
+        let early = tilolang::calendar::instant("2026-10-27T06:59:00Z").unwrap();
+        let standup = alarm(&ada, &meta, &root, "Standup", (7, 0), "phone");
+        let first = ada.host.landing("phone", "ada", early).remove(0);
+
+        clocks_do(
+            &ada,
+            &meta,
+            "edit_alarm",
+            vec![
+                Value::resource(&standup),
+                Value::text("Standup"),
+                Value::Int(7),
+                Value::Int(30),
+                Value::List(Vec::new()),
+            ],
+        );
+        let moved = ada.host.landing("phone", "ada", early).remove(0);
+        assert_eq!(moved.key, first.key, "the same wakeup, moved");
+        assert_eq!(moved.at, tilolang::calendar::instant("2026-10-27T07:30:00Z").unwrap());
+        assert_ne!(moved.told[0].0, first.told[0].0, "a moment of its own is a notice of its own");
+        assert_eq!(moved.told[0].1.body, "It is 7:30");
+
+        clocks_do(&ada, &meta, "snooze_alarm", vec![Value::resource(&standup)]);
+        let snoozed = ada.host.landing("phone", "ada", early).remove(0);
+        assert_eq!(snoozed.at, tilolang::calendar::instant("2026-10-27T07:04:00Z").unwrap(), "five minutes on");
+
+        clocks_do(
+            &ada,
+            &meta,
+            "set_alarm_device",
+            vec![Value::resource(&standup), Value::text("laptop")],
+        );
+        assert!(ada.host.landing("phone", "ada", early).is_empty(), "it rings on the laptop now");
+        assert_eq!(ada.host.landing("laptop", "ada", early).len(), 1);
+
+        clocks_do(
+            &ada,
+            &meta,
+            "set_alarm_enabled",
+            vec![Value::resource(&standup), Value::Bool(false)],
+        );
+        assert!(ada.host.landing("laptop", "ada", early).is_empty(), "off, it lands nowhere");
+    }
+}

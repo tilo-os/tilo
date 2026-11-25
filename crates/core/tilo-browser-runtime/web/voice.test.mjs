@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {unhex} from './hex.mjs';
+import {hex, unhex} from './hex.mjs';
 import {bytesOfHex, createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
+import {encodeVideoObject} from './video-profile.mjs';
 
 const CALL = 'c'.repeat(64);
 /** This page's person. */
@@ -26,7 +27,7 @@ function grantFor({publish = true, others = [BOB]} = {}) {
 
 /** A page whose microphone, playback, camera encoders and timers the test
  * drives, and which records what its signalling sends. */
-function fixture() {
+function fixture({decoding = null} = {}) {
   const sent = [];
   const shows = [];
   const pictures = [];
@@ -78,11 +79,12 @@ function fixture() {
     clearTimeout: handle => { if (timers[handle - 1]) timers[handle - 1].callback = () => {}; },
   };
   const environment = new EventTarget();
+  if (decoding) Object.assign(environment, decoding.environment);
   const track = {stopped: 0, stop() { this.stopped++; }};
   const open = async () => ({getTracks: () => [track]});
   const call = createVoiceCall({signalling, device: HOST, audio, environment, clock, encoder, open});
   const event = value => listener?.(value);
-  return {sent, shows, pictures, showing, keyframes, published, audio, encoders, track, timers, clock, environment, call, event};
+  return {sent, shows, pictures, showing, keyframes, published, audio, encoders, track, timers, clock, environment, call, event, decoding};
 }
 
 /** Run the grant deadline's looks on a page that runs, one look at a time:
@@ -524,4 +526,44 @@ test('peer.voice moderates the workspace\'s calls through its call action, and d
   await drain();
   assert.equal(voice.call.state.phase, 'live', 'let back in, the person is in the call again');
   voice.dispose();
+});
+
+/** A browser's WebCodecs decoder stand-in: the chunks it was handed, and the frames the test
+ * makes it output. */
+function fakeDecoding() {
+  const decoders = [];
+  class EncodedVideoChunk {
+    constructor({type, timestamp, data}) { this.type = type; this.timestamp = timestamp; this.data = data; }
+  }
+  class VideoDecoder {
+    constructor({output}) { this.output = output; this.chunks = []; this.state = 'unconfigured'; decoders.push(this); }
+    configure(config) { this.config = config; this.state = 'configured'; }
+    decode(chunk) { this.chunks.push(chunk); }
+    close() { this.state = 'closed'; }
+    frame() { this.output({displayWidth: 640, displayHeight: 360, close() {}}); }
+  }
+  return {environment: {VideoDecoder, EncodedVideoChunk}, decoders};
+}
+
+test('a page that draws the call’s pictures decodes them where its tiles stand, and keeps none to collect', async () => {
+  const decoding = fakeDecoding();
+  const f = fixture({decoding});
+  const drawn = [];
+  const stop = f.call.onPicture((person, source, frame) => drawn.push([person, source, frame.displayWidth]));
+  f.call.join(CALL);
+  await drain();
+  f.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  f.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
+  const object = encodeVideoObject({keyframe: true, layer: 'mid', sequence: 0, timestampUs: 0, width: 640, height: 360, payload: Uint8Array.of(0, 0, 0, 1, 0x65)});
+  f.event({kind: 'picture', from: BOB, source: 'camera', keyframe: true, object: hex(object)});
+
+  assert.equal(decoding.decoders.length, 1, 'the call decodes a page’s pictures here');
+  assert.equal(decoding.decoders[0].chunks.length, 1);
+  decoding.decoders[0].frame();
+  assert.deepEqual(drawn, [[BOB, 'camera', 640]], 'each frame reaches whoever draws it');
+  assert.equal(f.call.takePictures(0).pictures.length, 0, 'and none waits for a host that collects them');
+
+  stop();
+  assert.equal(decoding.decoders[0].state, 'closed', 'a page that stops drawing decodes nothing more');
 });

@@ -365,6 +365,9 @@ pub struct TriggerDecl {
     /// The record the trigger runs for: the resources of its type are the ones it runs on.
     pub param: Option<Param>,
     pub when: TriggerWhen,
+    /// `on t.device`: the field naming the device the action's effect lands on, which a device
+    /// reads to arm its own wakeup for the instant (`at` only).
+    pub device: Option<Expr>,
     /// The action it runs: the target, and any roots it passes.
     pub call: Expr,
     pub span: Span,

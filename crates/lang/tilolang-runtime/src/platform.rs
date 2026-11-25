@@ -143,6 +143,28 @@ pub(crate) fn all_asked(meta: &Meta, params: &[ParamMeta]) -> bool {
         .all(|param| param.default.is_some() || form_asks(meta, &param.ty))
 }
 
+/// One `host.Action` the system offers on a resource ([`Core::system_offers`]): the label and
+/// icon a person reads, the action its row runs, the run it folds into, and the id the system
+/// knows it by. A system action always applies and can always run where it stands.
+fn system_row(label: String, icon: &str, run: ActionRef, group: Option<String>, id: &str) -> Value {
+    Value::Tuple(vec![
+        Value::Text(label),
+        Value::some(Value::text(icon)),
+        Value::text(""),
+        Value::Bool(false),
+        Value::Bool(false),
+        Value::none(),
+        Value::none(),
+        Value::List(Vec::new()),
+        Value::Action(run),
+        group.map_or_else(Value::none, |group| Value::some(Value::Text(group))),
+        Value::Bool(true),
+        Value::text(""),
+        Value::Bool(true),
+        Value::text(id),
+    ])
+}
+
 /// How many parameters of `action` the view offering it supplies: the places that follow its
 /// target (`above: Option<Task> (above)`).
 fn places_of(action: &ActionMeta) -> usize {
@@ -2488,11 +2510,16 @@ impl Core {
         Ok(out)
     }
 
-    /// What the system offers on `target`, each a `host.Action`: Export, which saves it as a file
-    /// ([`crate::host_ui::EXPORT_ACTION`]), and Copy link, which mints its link and copies it
-    /// ([`crate::host_ui::COPY_LINK_ACTION`]). Both are run by the window's host, and offered on
-    /// every resource whose link opens something, as the workspace publishes the link (a
+    /// What the system offers on `target`, each a `host.Action`: Export, which saves it as a
+    /// file ([`crate::host_ui::EXPORT_ACTION`]), and Copy link, which mints its link and copies
+    /// it ([`crate::host_ui::COPY_LINK_ACTION`]). Both are run by the window's host, and offered
+    /// on every resource whose link opens something, as the workspace publishes the link (a
     /// resource a view shows, and a package's root); nothing on anything else.
+    ///
+    /// An export action its app declares (`export: "Markdown"`) is an Export of its own format:
+    /// the rows stand together under the one Export… the menu folds them into, and each runs the
+    /// action, saving the file it answers where the person says. A resource whose app declares
+    /// none keeps the system's Markdown export of what it holds.
     pub(crate) fn system_offers(&self, target: &RefValue) -> Vec<Value> {
         let held = &target.target;
         let found = {
@@ -2508,33 +2535,66 @@ impl Core {
         if pkg.library || (!root && pkg.meta.views_showing(&info.name).is_empty()) {
             return Vec::new();
         }
-        [
-            (crate::host_ui::EXPORT_ACTION, EXPORT_WORDS, "download"),
-            (crate::host_ui::COPY_LINK_ACTION, COPY_LINK_WORDS, "link"),
-        ]
-        .into_iter()
-        .map(|(id, (phrase, words), icon)| {
-            Value::Tuple(vec![
-                Value::Text(self.word_args(phrase, &[], words)),
-                Value::some(Value::text(icon)),
-                Value::text(""),
-                Value::Bool(false),
-                Value::Bool(false),
-                Value::none(),
-                Value::none(),
-                Value::List(Vec::new()),
-                Value::Action(ActionRef::new(
-                    id,
+        let group = self.word_args(EXPORT_WORDS.0, &[], EXPORT_WORDS.1);
+        let mut out: Vec<Value> = Vec::new();
+        // The formats the app publishes for this type, each a row of the one Export…, in the
+        // order the app declares them.
+        for action in pkg.meta.actions.iter().filter(|action| {
+            action.export.is_some()
+                && action
+                    .params
+                    .first()
+                    .is_some_and(|first| names_type(&pkg.meta, &first.ty, info.id.as_str()))
+                && action
+                    .params
+                    .iter()
+                    .skip(1)
+                    .all(|param| param.default.is_some())
+        }) {
+            let format = action.export.clone().unwrap_or_default();
+            let key = tilolang::messages::key_of(&action.id);
+            let label = self.word_args(&format!("{key}.export"), &[], &format);
+            let export = ActionRef::new(action.id.clone(), vec![Value::Ref(target.clone())]);
+            // The action runs, and what it made is saved where the person says, under the file's
+            // own name.
+            let save = ActionRef::new(
+                crate::host_ui::SAVE_ACTION,
+                vec![Value::Action(export), Value::text("")],
+            );
+            let icon = action.icon.as_deref().unwrap_or("download");
+            out.push(system_row(
+                label,
+                icon,
+                save,
+                Some(group.clone()),
+                crate::host_ui::EXPORT_ACTION,
+            ));
+        }
+        // A resource whose app declares no format keeps the system's export of what it holds:
+        // its Markdown, or everything it keeps as JSON.
+        if out.is_empty() {
+            out.push(system_row(
+                self.word_args(EXPORT_WORDS.0, &[], EXPORT_WORDS.1),
+                "download",
+                ActionRef::new(
+                    crate::host_ui::EXPORT_ACTION,
                     vec![Value::Ref(target.clone()), Value::text(&pkg.meta.app)],
-                )),
-                Value::none(),
-                Value::Bool(true),
-                Value::text(""),
-                Value::Bool(true),
-                Value::text(id),
-            ])
-        })
-        .collect()
+                ),
+                None,
+                crate::host_ui::EXPORT_ACTION,
+            ));
+        }
+        out.push(system_row(
+            self.word_args(COPY_LINK_WORDS.0, &[], COPY_LINK_WORDS.1),
+            "link",
+            ActionRef::new(
+                crate::host_ui::COPY_LINK_ACTION,
+                vec![Value::Ref(target.clone()), Value::text(&pkg.meta.app)],
+            ),
+            None,
+            crate::host_ui::COPY_LINK_ACTION,
+        ));
+        out
     }
 
     /// What `f` makes of the actions offered on `target` ([`Self::actions_on`]), none of them
@@ -2562,7 +2622,12 @@ impl Core {
         });
         if let Some((pkg, info)) = &own {
             let at = rank(pkg);
-            for (index, action) in pkg.meta.offered_actions().enumerate() {
+            for (index, action) in pkg
+                .meta
+                .offered_actions()
+                .filter(|action| action.export.is_none())
+                .enumerate()
+            {
                 let takes_it = action.params.split_first().is_some_and(|(first, rest)| {
                     all_asked(&pkg.meta, rest)
                         && !asks_for_own_item(&pkg.meta, info.id.as_str(), rest)
@@ -2594,7 +2659,12 @@ impl Core {
                     continue;
                 };
                 let at = rank(pkg);
-                for (index, action) in pkg.meta.offered_actions().enumerate() {
+                for (index, action) in pkg
+                    .meta
+                    .offered_actions()
+                    .filter(|action| action.export.is_none())
+                    .enumerate()
+                {
                     let [first, second, rest @ ..] = action.params.as_slice() else {
                         continue;
                     };

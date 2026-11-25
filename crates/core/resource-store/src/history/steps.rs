@@ -1296,6 +1296,42 @@ pub fn redo(
     bring_back(doc, targets, restore, words)
 }
 
+/// Those of the undos `named` that are in effect, newest first: what one took back is still
+/// undone, by it rather than by a newer undo of the same steps. Whoever undid them.
+#[must_use]
+pub fn named_undos_in_effect(doc: &AutoCommit, named: &dyn Fn(&Version) -> bool) -> Vec<Version> {
+    let undone = undone(doc);
+    let mut claimed: HashSet<String> = HashSet::new();
+    let mut found = Vec::new();
+    for version in tilo_resource::history::committed_versions(doc).iter().rev() {
+        let Kind::Undo(took) = kind_of(doc, version) else {
+            continue;
+        };
+        if named(version)
+            && took
+                .iter()
+                .any(|hash| undone.contains(hash) && !claimed.contains(hash))
+        {
+            found.push(version.clone());
+        }
+        claimed.extend(took);
+    }
+    found
+}
+
+/// Bring back exactly the undo `target`, whoever made it, as one new change.
+///
+/// # Errors
+/// Says why nothing was redone.
+pub fn redo_undo(
+    doc: &mut AutoCommit,
+    target: Version,
+    restore: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
+    bring_back(doc, vec![target], restore, words)
+}
+
 /// Bring back the undos `targets`, newest first: [`redo`] once it has them.
 fn bring_back(
     doc: &mut AutoCommit,

@@ -386,8 +386,7 @@ impl Runtime {
     pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
         let app = meta.app.clone();
         // An app this runtime runs already keeps its package: its code is what its own actions
-        // and views run, and a description handed here (the actions a workspace offers, which
-        // code calls by address) must not stand in for it.
+        // and views run, and a description handed here must not stand in for it.
         if let Some(running) = self.core.registry.borrow().running_package_of(&app) {
             return Ok(running.hash.clone());
         }
@@ -921,6 +920,45 @@ impl Runtime {
             .invoke_direct_as(Some(run), actor, &action, action.from.as_ref())
     }
 
+    /// What [`Runtime::invoke_action_named`] would tell as the run `run`, with the clock at `at`
+    /// (an instant as `now` reads it), learned by running it and taking back everything it
+    /// wrote: each notice under the id of the record the run writes for it
+    /// ([`crate::notify::record_id`]), which a replica that runs the same run at that instant
+    /// writes too. No notice is raised to the host, and nothing of the run stays in the store.
+    ///
+    /// What a device does to learn, ahead of a trigger's instant, what the trigger's run tells
+    /// on it: a package's compiler holds such an action to telling and the clock (E149), so
+    /// running it ahead reaches nothing outside.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`]; a run that was refused or waits tells nothing.
+    pub fn rehearse_named(
+        &self,
+        run: &RunId,
+        actor: &Actor,
+        action: impl Into<ActionRef>,
+        at: &str,
+    ) -> Result<Vec<(String, crate::notify::Notice)>, RuntimeError> {
+        let action = action.into();
+        let rehearsal = format!("rehearsal:{run}");
+        let at = at.to_owned();
+        let pinned: Box<dyn Fn() -> String> = Box::new(move || at.clone());
+        let clock = self.core.clock.replace(Some(pinned));
+        let kept = self.core.rehearsed.replace(Some(Vec::new()));
+        self.core.store.borrow_mut().begin_run(&rehearsal);
+        let outcome = self
+            .core
+            .invoke_direct_as(Some(run), actor, &action, action.from.as_ref());
+        self.core.store.borrow_mut().abort_run(&rehearsal);
+        *self.core.clock.borrow_mut() = clock;
+        let told = self.core.rehearsed.replace(kept).unwrap_or_default();
+        match outcome? {
+            InvokeOutcome::Done(_) => Ok(told),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// [`Runtime::invoke_action`] made from the resource `from`: what the resources the action
     /// creates were made from, recorded in the change it makes (`created(r)?.from`,
     /// [`crate::Store::linked`]). What a "make from this" menu, or an agent working from
@@ -971,7 +1009,27 @@ impl Runtime {
     ) -> Result<InvokeOutcome, RuntimeError> {
         let action = action.into();
         let from = from.or(action.from.as_ref());
-        self.core.invoke_admitted((actor, app), &action, from, None)
+        self.core
+            .invoke_admitted((actor, app), &action, from, false)
+    }
+
+    /// [`Runtime::invoke_admitted_through`] of a call the dispatch admitted again on the person's
+    /// yes on the system's confirm, to the call as it was shown to them: the run is the one they
+    /// answered, so what its own code goes on to call does not ask them again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_approved_through(
+        &self,
+        actor: &Actor,
+        app: Option<&str>,
+        action: impl Into<ActionRef>,
+        from: Option<&crate::value::ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let action = action.into();
+        let from = from.or(action.from.as_ref());
+        self.core.invoke_admitted((actor, app), &action, from, true)
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their

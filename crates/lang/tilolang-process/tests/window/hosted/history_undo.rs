@@ -135,3 +135,112 @@ fn undo_named_from_a_view_takes_back_that_step() {
         "`undo(v)` takes back exactly the step the history named"
     );
 }
+
+/// The versions the app's history lists, oldest first, as the `history` verb answers them.
+fn history(session: &mut Session, record: &str) -> Vec<serde_json::Value> {
+    let answered = session
+        .invoke(None, None, record, "history", &serde_json::Map::new())
+        .expect("the app's history");
+    answered.value.expect("the history answers its versions")["versions"]
+        .as_array()
+        .expect("the history lists versions")
+        .clone()
+}
+
+/// The person names the version their tasks stand at, adds another task, and goes back to the
+/// named version through the system's history verbs: history lists the checkpoint, a review says
+/// what differs and goes stale when the tasks change, the restore brings the tasks back as they
+/// stood, and their undo takes the restore back.
+#[test]
+fn a_checkpoint_is_restored_after_a_review_and_undo_takes_the_restore_back() {
+    let mut window = Session::tasks();
+    let root = root(&mut window);
+    let add = action(&window, &root, "new_task");
+    let record = tilolang_tilo::publish::package_resource_id(TASKS);
+    window
+        .invoke(None, None, &root, &add, &titled("Call the landlord"))
+        .unwrap();
+    let mut named = serde_json::Map::new();
+    named.insert("name".to_owned(), "Before the move".into());
+    window
+        .invoke(None, None, &record, "checkpoint", &named)
+        .unwrap();
+    window
+        .invoke(None, None, &root, &add, &titled("Pack the boxes"))
+        .unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord", "Pack the boxes"]);
+
+    // History lists the checkpoint as a version, by the person who named it.
+    let versions = history(&mut window, &record);
+    let checkpoint = versions
+        .iter()
+        .find(|version| version["action"] == "checkpoint")
+        .unwrap_or_else(|| panic!("history lists the checkpoint: {versions:#?}"));
+    assert_eq!(checkpoint["named"], "Before the move");
+    let said = checkpoint["sentence"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("Before the move"),
+        "history says the checkpoint's name: {said}"
+    );
+    let change = checkpoint["change"].as_str().unwrap().to_owned();
+
+    // A review of going back names the task made since; a task added after it makes it stale.
+    let packing =
+        tilolang_tilo::publish::resource_id(TASKS, &task(&window, "Pack the boxes").id_string());
+    let mut asked = serde_json::Map::new();
+    asked.insert("version".to_owned(), change.clone().into());
+    asked.insert("paths".to_owned(), serde_json::json!([packing]));
+    let review = |window: &mut Session| {
+        window
+            .invoke(None, None, &record, "review-restore", &asked)
+            .expect("the review")
+            .value
+            .expect("the review answers")
+    };
+    let stale = review(&mut window);
+    assert_eq!(stale["items"], serde_json::json!([{ "item": packing }]));
+    window
+        .invoke(None, None, &root, &add, &titled("Book the van"))
+        .unwrap();
+    let mut reviewed = serde_json::Map::new();
+    reviewed.insert("review".to_owned(), stale["review"].clone());
+    let refused = window
+        .invoke(None, None, &record, "restore-reviewed", &reviewed)
+        .unwrap_err();
+    assert!(refused.contains("review it again"), "{refused}");
+    assert_eq!(
+        titles(&mut window),
+        ["Call the landlord", "Pack the boxes", "Book the van"],
+        "a stale review restores nothing"
+    );
+    let fresh = review(&mut window);
+    reviewed.insert("review".to_owned(), fresh["review"].clone());
+    window
+        .invoke(None, None, &record, "restore-reviewed", &reviewed)
+        .unwrap();
+    assert_eq!(
+        titles(&mut window),
+        ["Call the landlord", "Book the van"],
+        "the reviewed task alone goes back"
+    );
+
+    // A restore of everything to the checkpoint, by its name.
+    let mut restore = serde_json::Map::new();
+    restore.insert("version".to_owned(), "Before the move".into());
+    window
+        .invoke(None, None, &record, "restore", &restore)
+        .unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord"]);
+    assert!(
+        history(&mut window, &record)
+            .iter()
+            .any(|version| version["action"] == "restore"),
+        "history lists the restore as a step"
+    );
+
+    // The person's undo takes the restore back.
+    let mut one = serde_json::Map::new();
+    one.insert("steps".to_owned(), 1.into());
+    window.invoke(None, None, &record, "undo", &one).unwrap();
+    assert_eq!(titles(&mut window), ["Call the landlord", "Book the van"]);
+}

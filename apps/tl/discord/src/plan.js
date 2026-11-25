@@ -275,14 +275,55 @@ export function blocked(state, user) {
   return (state.blocked_personas ?? []).includes(user);
 }
 
+/// The server's custom emoji called `name`, as the bridge last observed them: `{id, animated}`,
+/// or `null`. The record keeps them as a list; an older one as an object of name to id.
+export function serverEmoji(state, name) {
+  const emojis = state?.emojis;
+  if (Array.isArray(emojis)) {
+    const found = emojis
+      .map((entry) => entry?.value ?? entry)
+      .find((emoji) => emoji?.name === name && emoji?.id);
+    return found ? { id: String(found.id), animated: Boolean(found.animated) } : null;
+  }
+  const id = emojis?.[name];
+  return id ? { id: String(id), animated: false } : null;
+}
+
 /// The custom emoji a message's words name, each with the address of its picture.
 export function emojiIn(state, text) {
   const found = [];
-  for (const match of String(text ?? "").matchAll(/:([a-zA-Z0-9_]{2,32}):/g)) {
-    const id = state.emojis?.[match[1]];
-    if (id) found.push({ name: match[1], picture: `https://cdn.discordapp.com/emojis/${id}.png` });
+  for (const match of textFromDiscord(text).matchAll(/:([a-zA-Z0-9_]{2,32}):/g)) {
+    const emoji = serverEmoji(state, match[1]);
+    if (emoji) found.push({ name: match[1], picture: `https://cdn.discordapp.com/emojis/${emoji.id}.png` });
   }
   return found;
+}
+
+/// Discord's words as the workspace writes them: a server emoji, `<:name:id>` or `<a:name:id>`,
+/// is the workspace's `:name:`.
+export function textFromDiscord(text) {
+  return String(text ?? "").replace(/<a?:([a-zA-Z0-9_]{2,32}):\d+>/g, ":$1:");
+}
+
+/// The workspace's words as Discord writes them: a `:name:` the server has an emoji of is that
+/// emoji, `<:name:id>`; any other stays as it is written.
+export function textToDiscord(state, text) {
+  return String(text ?? "").replace(/(?<!<|<a):([a-zA-Z0-9_]{2,32}):(?!\d+>)/g, (whole, name) => {
+    const emoji = serverEmoji(state, name);
+    return emoji ? `<${emoji.animated ? "a" : ""}:${name}:${emoji.id}>` : whole;
+  });
+}
+
+/// The reaction Discord's routes take for the workspace's `emoji`: a `:name:` the server has is
+/// `name:id`, a Unicode emoji itself, and anything else written with colons is no emoji Discord
+/// knows, so it stays here (`null`).
+export function reactionToDiscord(state, emoji) {
+  const named = /^:([a-zA-Z0-9_]{2,32}):$/.exec(emoji ?? "");
+  if (named) {
+    const found = serverEmoji(state, named[1]);
+    return found ? `${named[1]}:${found.id}` : null;
+  }
+  return emoji && !emoji.includes(":") ? emoji : null;
 }
 
 /// A call to Chat's generically bridged words.
@@ -302,20 +343,20 @@ export function fromDiscord(state, event) {
     const payload = event.payload;
     if (payload.webhook_id || payload.author?.bot) return [];
     if (blocked(state, payload.author.id)) return [];
-    const channel = byDiscord(state, "channel", payload.channel_id);
+    // Said in a bridged channel, or in a thread of one the workspace holds too.
+    const channel =
+      byDiscord(state, "channel", payload.channel_id) ?? byDiscord(state, "thread", payload.channel_id);
     if (!channel) return [];
     // An account linked to a member here wears that member's face and colour; one nobody linked
     // is the account's own face alone.
     const linked = linkOfUser(state, payload.author.id);
     const call = chat("relay", {
       to: channel.tilo,
-      body: payload.content ?? "",
+      body: textFromDiscord(payload.content),
       by: payload.author.name,
       written_in: "Discord",
       written: payload.timestamp_ms ?? 0,
-      avatar: payload.author.avatar
-        ? `https://cdn.discordapp.com/avatars/${payload.author.id}/${payload.author.avatar}.png?size=128`
-        : "",
+      avatar: keptAvatar(state, payload.author.avatar),
       service: "Discord",
       outside_emoji: emojiIn(state, payload.content),
       reply_to: payload.reference?.message_id
@@ -326,6 +367,14 @@ export function fromDiscord(state, event) {
     // The files it carries come over as the bytes Discord serves: the program fetches each and
     // keeps it in the workspace, then hands the message on with them.
     call.attachments = payload.attachments ?? [];
+    // An avatar the workspace does not keep yet is fetched once and kept, so the message shows
+    // a picture of the workspace's own, never one each reader's device asks Discord for.
+    if (payload.author.avatar && !call.args.avatar) {
+      call.avatar = {
+        hash: payload.author.avatar,
+        url: `https://cdn.discordapp.com/avatars/${payload.author.id}/${payload.author.avatar}.png?size=128`,
+      };
+    }
     call.map = {
       kind: "message",
       discord: payload.id,
@@ -334,11 +383,26 @@ export function fromDiscord(state, event) {
     };
     return [call];
   }
+  if (event.source === "THREAD_CREATED") {
+    // A thread someone started in Discord under a message the workspace holds is started here
+    // under that message, and the two joined: what is said in it lands in it. Discord gives a
+    // thread started on a message that message's id. One the bridge started itself is already
+    // the workspace's.
+    const payload = event.payload;
+    if (payload.owner_id && payload.owner_id === state.bot_user) return [];
+    if (byDiscord(state, "thread", payload.id)) return [];
+    const channel = byDiscord(state, "channel", payload.parent_id);
+    const message = byDiscord(state, "message", payload.id);
+    if (!channel || !message) return [];
+    const call = chat("start_thread", { c: channel.tilo, m: message.tilo, name: payload.name || "Thread" });
+    call.map = { kind: "thread", discord: payload.id, origin: "discord", root: channel.tilo };
+    return [call];
+  }
   if (event.source === "MESSAGE_UPDATED") {
     const payload = event.payload;
     const found = byDiscord(state, "message", payload.id);
     if (!found) return [];
-    return [chat("edit", { m: found.tilo, body: payload.content ?? "" })];
+    return [chat("edit", { m: found.tilo, body: textFromDiscord(payload.content) })];
   }
   if (event.source === "MESSAGE_DELETED") {
     const payload = event.payload;
@@ -356,16 +420,32 @@ export function fromDiscord(state, event) {
     return [
       chat("relay_reaction", {
         m: found.tilo,
-        emoji: payload.emoji?.name ?? payload.emoji?.id ?? "",
+        // A server's own emoji is the workspace's `:name:`; a Unicode one crosses as itself.
+        emoji: payload.emoji?.id ? `:${payload.emoji.name}:` : (payload.emoji?.name ?? ""),
         persona: payload.user_id,
         by: payload.user_name ?? "Someone",
         given: event.source === "REACTION_ADDED",
       }),
     ];
   }
-  if (event.source === "LAYOUT_CHANGED") {
+  if (event.source === "MEMBER_CHANGED") {
+    // A member Discord banned is blocked here, and what was mirrored of them goes, as a
+    // moderator's block does. One who only left keeps what they said. A linked member's newer
+    // names and avatar are the link's.
     const payload = event.payload;
-    const calls = [
+    if (!payload.user_id || payload.left) return [];
+    if (!payload.banned) return linkFollows(state, payload);
+    if (blocked(state, payload.user_id)) return [];
+    return [
+      self("block_persona", { discord_user: payload.user_id }),
+      ...mirroredOf(state, payload.user_id),
+    ];
+  }
+  if (event.source === "LAYOUT_CHANGED") {
+    // What Discord shows is recorded; bringing it into Chat reads Chat's sidebar first
+    // ([`importOf`]). A channel gone from Discord is marked vanished by `observe_layout`.
+    const payload = event.payload;
+    return [
       self("observe_layout", {
         bot_user: payload.bot_user ?? "",
         channels: payload.channels ?? [],
@@ -373,19 +453,135 @@ export function fromDiscord(state, event) {
         emojis: payload.emojis ?? [],
       }),
     ];
-    // A channel Discord has and the workspace has not: Chat makes a conversation, then the
-    // bridge joins the two. A channel gone from Discord is marked vanished by `observe_layout`.
-    for (const channel of payload.channels ?? []) {
-      if (byDiscord(state, "channel", channel.id) || channel.kind === "category") continue;
-      const call = chat(channel.kind === "voice" ? "new_voice_channel" : "new_channel", {
-        name: channel.name,
-        category: channel.parent ? byDiscord(state, "category", channel.parent)?.tilo ?? null : null,
-      });
+  }
+  return [];
+}
+
+// ---- adopting a server ----------------------------------------------------------------------
+
+/// Chat's sidebar as its root reads: its categories, and its text and voice channels with the
+/// category each sits in. Ids are published (`tl:so.tilo.chat:…`), as Chat's actions take them.
+export function sidebarOf(read) {
+  const categories = [];
+  const channels = [];
+  const conversation = (entry, category) => {
+    const value = entry?.value ?? entry;
+    if (value === null || typeof value !== "object" || typeof value.name !== "string") return;
+    const id = published(entry?.id ?? value.id ?? "");
+    const kind = String(value.kind ?? value.$type ?? "");
+    if (kind.endsWith("Category") || (!kind && Array.isArray(value.channels))) {
+      categories.push({ id, name: value.name });
+      for (const inner of value.channels ?? []) conversation(inner, id);
+      return;
+    }
+    const voice = kind.endsWith("VoiceChannel") || (!kind && !("messages" in value) && !("topic" in value));
+    if (!voice && !kind.endsWith("TextChannel") && kind) return;
+    channels.push({ id, name: value.name, voice, category, archived: Boolean(value.archived) });
+  };
+  for (const entry of read?.channels ?? []) conversation(entry, null);
+  return { categories, channels };
+}
+
+/// A name as Discord writes a text channel's: lower case, words joined by `-`. Two names that
+/// read the same this way are one channel's.
+function slugOf(name) {
+  return String(name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/^#/, "");
+}
+
+/// What adopting the server Discord's layout shows means in Chat, as calls run in order.
+///
+/// Each Discord category becomes Chat's category of its name, or a new one; each text and voice
+/// channel the Chat channel of its name and kind (one in the matching category first), moved
+/// into its Discord channel's category, or a new one there. So a workspace's `#general` becomes
+/// the server's `#general` wherever it sat, and Discord is left exactly as it was. A channel's
+/// call names its category by its Discord id (`categoryFrom`), which the program resolves once
+/// the category's own call has made or joined it. While the server is still being brought in and
+/// everything Discord shows is joined, `finish_import` names the workspace's channels and
+/// categories the server had no match for, which stay the workspace's own.
+export function importOf(state, layout, sidebar) {
+  const calls = [];
+  const only = state?.only_channel || "";
+  const apart = new Set(valuesOrList(state?.discord_only));
+  const taken = new Set(mappings(state).map((entry) => entry.tilo));
+  const joined = new Map();
+  const shown = (layout?.channels ?? [])
+    .filter((channel) => !apart.has(channel.id))
+    .filter((channel) => !only || channel.id === only)
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || String(a.id).localeCompare(String(b.id)));
+  let pending = false;
+  for (const category of only ? [] : shown.filter((channel) => channel.kind === "category")) {
+    const known = byDiscord(state, "category", category.id);
+    if (known) {
+      joined.set(category.id, known.tilo);
+      continue;
+    }
+    pending = true;
+    const same = sidebar.categories.find(
+      (held) => !taken.has(held.id) && slugOf(held.name) === slugOf(category.name),
+    );
+    if (same) {
+      taken.add(same.id);
+      joined.set(category.id, same.id);
+      calls.push(self("map", { kind: "category", tilo: same.id, discord: category.id, origin: "discord" }));
+    } else {
+      const call = chat("new_category", { name: category.name });
+      call.map = { kind: "category", discord: category.id, origin: "discord" };
+      calls.push(call);
+    }
+  }
+  // Channels in Discord's order: by their category's place (the top level first), text before
+  // voice, then by their own place.
+  const rank = new Map(
+    shown.filter((channel) => channel.kind === "category").map((category, at) => [category.id, at]),
+  );
+  const listed = shown
+    .filter((channel) => channel.kind === "text" || channel.kind === "voice")
+    .map((channel) => ({ channel, key: [rank.get(channel.parent) ?? -1, channel.kind === "voice" ? 1 : 0] }))
+    .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1])
+    .map(({ channel }) => channel);
+  for (const channel of listed) {
+    if (byDiscord(state, "channel", channel.id)) continue;
+    pending = true;
+    const parent = only ? "" : channel.parent || "";
+    const voice = channel.kind === "voice";
+    const named = sidebar.channels.filter(
+      (held) => !taken.has(held.id) && held.voice === voice && slugOf(held.name) === slugOf(channel.name),
+    );
+    const there = joined.get(parent) ?? null;
+    const same = named.find((held) => there !== null && held.category === there) ?? named[0] ?? null;
+    if (same) {
+      taken.add(same.id);
+      calls.push(self("map", { kind: "channel", tilo: same.id, discord: channel.id, origin: "discord" }));
+      if (!only && (same.category ?? null) !== there) {
+        const move = chat("move_channel", { ch: same.id, category: there });
+        if (parent && there === null) move.categoryFrom = parent;
+        calls.push(move);
+      }
+    } else {
+      const call = chat(voice ? "new_voice_channel" : "new_channel", { name: channel.name, category: there });
+      if (parent && there === null) call.categoryFrom = parent;
       call.map = { kind: "channel", discord: channel.id, origin: "discord" };
       calls.push(call);
     }
-    return calls;
   }
+  if (!pending && String(state?.ownership ?? "").replace(/^\./, "") === "importing") {
+    const left = [
+      ...sidebar.categories.filter((held) => !only && !taken.has(held.id)),
+      ...sidebar.channels.filter((held) => !taken.has(held.id)),
+    ].map((held) => held.id);
+    calls.push(self("finish_import", { tilo_only: left }));
+  }
+  return calls;
+}
+
+/// A set as a read answers it: a list, or an object of its members.
+function valuesOrList(set) {
+  if (Array.isArray(set)) return set;
+  if (set !== null && typeof set === "object") return Object.keys(set);
   return [];
 }
 
@@ -422,7 +618,7 @@ export function toDiscord(state, conversation, message) {
       username: author.name,
       avatar_url: author.avatar || null,
       avatar_blob: null,
-      content: fit(text),
+      content: fit(textToDiscord(state, text)),
       attachments: sent,
       created_ms: message.written ?? 0,
       tilo: published(message.id),
@@ -441,7 +637,7 @@ export function editToDiscord(state, conversation, message, there) {
       webhook: carriedTo.webhook,
       message: there,
       thread: carriedTo.thread,
-      content: fit(message.text ?? ""),
+      content: fit(textToDiscord(state, message.text ?? "")),
     },
   ];
 }
@@ -480,12 +676,14 @@ export function threadToDiscord(state, conversation, message, there, name, tilo)
 /// The REST calls carrying a reaction, or taking it back.
 export function reactToDiscord(state, conversation, message, emoji, added, there) {
   if (!carried(state, conversation)) return [];
+  const discordEmoji = reactionToDiscord(state, emoji);
+  if (!discordEmoji) return [];
   return [
     {
       op: added ? "react" : "unreact",
       channel: carried(state, conversation).channel,
       message: there,
-      emoji,
+      emoji: discordEmoji,
     },
   ];
 }
@@ -533,4 +731,148 @@ export function callPeople(states, { guild, channel, self, avatars }) {
   }
   people.sort((a, b) => (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
   return people;
+}
+
+/// The workspace app whose record lists the workspace's people.
+export const WORKSPACE = "tilo.workspace";
+
+/// What Discord does to a linked account when the workspace does it to their person: leaving the
+/// workspace leaves the server, and a ban here is a ban there until it is lifted.
+const MEMBER_OPS = { "remove-member": "kick", remove: "kick", ban: "ban", unban: "unban" };
+
+/// The person (their id, the last part of `workspace/members/<person>`) a change of the
+/// workspace's people names.
+function memberOf(resource) {
+  const item = String(resource?.item ?? "");
+  const named = item.split("/").pop();
+  return named || null;
+}
+
+/// Whether the record's link names `person`, kept as an actor's JSON or as a plain id.
+function linksPerson(link, person) {
+  const actor = actorOf(link?.person);
+  return actor?.member?.person === person || link?.person === person;
+}
+
+/// What a change of the workspace's people means in the bridged server: each linked account of
+/// the person it removed, banned or let back is kicked, banned or unbanned there, each as an
+/// action of the bridge (`kick`, `ban`, `unban`) with the op it takes. A bridge of one channel
+/// leaves the server's members alone.
+export function memberToDiscord(state, event) {
+  if (state?.only_channel) return [];
+  const op = MEMBER_OPS[event?.verb ?? ""];
+  if (!op) return [];
+  return linkedByChange(state, event).map((link) => ({
+    action: op,
+    op: { op, user: link.discord_user, reason: event.sentence ?? "" },
+  }));
+}
+
+/// The verbs that give a person here a place, whose linked accounts' roles there follow it.
+const PLACING = new Set(["set-role", "role", "add-member", "admit"]);
+
+/// The links whose person a change of the workspace's people gave a role: their Discord roles
+/// follow it.
+export function placedByChange(state, event) {
+  return PLACING.has(event?.verb ?? "") ? linkedByChange(state, event) : [];
+}
+
+/// The person here a link names: their id, as the workspace's people list them.
+export function personOfLink(link) {
+  return actorOf(link?.person)?.member?.person ?? null;
+}
+
+/// The links of the people a change of the workspace's people names.
+function linkedByChange(state, event) {
+  if (event?.kind !== "change") return [];
+  const links = [];
+  for (const resource of event.resources ?? []) {
+    const people =
+      resource?.app === WORKSPACE || String(resource?.path ?? "").startsWith("workspace/members");
+    const person = people ? memberOf(resource) : null;
+    if (!person) continue;
+    for (const link of state?.links ?? []) {
+      if (linksPerson(link, person)) links.push(link);
+    }
+  }
+  return links;
+}
+
+/// The calls that remove what was mirrored here of the Discord account `user`: each message it
+/// wrote there that the bridge relayed, deleted and let go of.
+function mirroredOf(state, user) {
+  return mappings(state)
+    .filter((m) => m.kind === "message" && m.origin === "discord" && m.persona === user)
+    .flatMap((m) => [
+      chat("delete", { m: m.tilo, to: null }),
+      self("unmap", { kind: "message", tilo: m.tilo }),
+    ]);
+}
+
+/// What a moderator's block of Discord accounts removes here: every message still mirrored of an
+/// account the record now blocks.
+export function blockedToChat(state) {
+  return (state?.blocked_personas ?? []).flatMap((user) => mirroredOf(state, user));
+}
+
+/// Whether a change is a moderator blocking a Discord account in the bridge's record.
+export function blocksPersona(event) {
+  if (event?.kind !== "change") return false;
+  const verb = String(event.verb ?? "").replace(/-/g, "_");
+  return (
+    verb === "block_persona" &&
+    (event.resources ?? []).some((resource) => resource?.app === SELF || event.app === SELF)
+  );
+}
+
+/// A linked account's newer names and avatar, taken into its link: the names it shows as, and the
+/// avatar kept as the person's picture until they upload their own. A `set_link_photo` call
+/// carries `photo`, where Discord serves the avatar: the program fetches it and hands the call
+/// the picture.
+function linkFollows(state, payload) {
+  const link = linkOfUser(state, payload.user_id);
+  if (!link) return [];
+  const name = payload.user?.name ?? "";
+  const display = payload.user?.display_name ?? "";
+  const avatar = payload.avatar ?? "";
+  const calls = [];
+  if (
+    name &&
+    (name !== (link.user_name ?? "") ||
+      display !== (link.display_name ?? "") ||
+      (avatar && avatar !== (link.avatar ?? "")))
+  ) {
+    calls.push(
+      self("rename_link", {
+        discord_user: link.discord_user,
+        user_name: name,
+        display_name: display,
+        avatar,
+      }),
+    );
+  }
+  if (avatar && avatar !== (link.photo_avatar ?? "")) {
+    const photo = self("set_link_photo", { discord_user: link.discord_user, avatar, photo: "" });
+    photo.photo = `https://cdn.discordapp.com/avatars/${link.discord_user}/${avatar}.png?size=64`;
+    calls.push(photo);
+  }
+  return calls;
+}
+
+/// Where a picture the workspace keeps is read from: its content's address.
+export const BLOB_SCHEME = "tilo-blob://";
+
+/// The address of the avatar `hash` the record keeps in the workspace, or empty when it keeps
+/// none.
+export function keptAvatar(state, hash) {
+  if (!hash) return "";
+  const avatars = state?.avatars ?? {};
+  let blob = "";
+  if (Array.isArray(avatars)) {
+    const entry = avatars.find((item) => (item?.key ?? item?.[0]) === hash);
+    blob = entry?.value ?? entry?.[1] ?? "";
+  } else if (avatars && typeof avatars === "object") {
+    blob = avatars[hash] ?? "";
+  }
+  return blob ? `${BLOB_SCHEME}${blob}` : "";
 }

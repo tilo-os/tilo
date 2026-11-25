@@ -289,6 +289,11 @@ pub struct TriggerMeta {
     /// The action's arguments, in the order the call passes them.
     pub args: Vec<TriggerArgMeta>,
     pub when: TriggerWhenMeta,
+    /// The `Text` field (by id) naming the device the action's effect lands on, for an `at`
+    /// trigger declared `on` one: that device arms its own wakeup for the instant. Empty in a
+    /// record means every device of the person's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 /// What a trigger passes its action: the record it runs for, or a root of the package.
@@ -752,6 +757,12 @@ pub struct ActionMeta {
     /// runs in the order the app declared them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// `export: "Markdown"`: the format the action writes its resource in, named as the person
+    /// reads it. The action is one of the resource's exports: it takes the resource and answers
+    /// a `File`, the platform lists it under the system's one Export…, and choosing it saves what
+    /// it made where the person says. No app keeps an export menu of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export: Option<String>,
     /// `uses web, random, time`: the effects the body reads, which its invocation records and a
     /// replay answers from ([`crate::effects::Effect`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

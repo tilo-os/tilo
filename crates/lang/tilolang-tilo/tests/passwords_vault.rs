@@ -132,13 +132,14 @@ fn action_id(host: &Host, name: &str) -> String {
         .clone()
 }
 
-/// Run Passwords' action `name` as the person pressing it in Passwords' window: the dispatch
-/// admitted the call, so what Passwords' own code calls of its own does not ask again.
+/// Run Passwords' action `name` as the person's own call, which they approved on the system's
+/// confirm: the run is the one they answered, so what Passwords' own code calls of its own runs on
+/// that yes and does not ask again.
 fn run(replica: &Replica, name: &str, args: Vec<Value>) -> Value {
     let outcome = replica
         .host
         .runtime()
-        .invoke_admitted_through(
+        .invoke_approved_through(
             &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             None,
             (action_id(&replica.host, name).as_str(), args),

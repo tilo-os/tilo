@@ -325,22 +325,16 @@ impl Stamp {
         if context.invoker.is_none()
             && let Some(by) = self.invoked_by()
         {
-            // An agent named beside the person it acted for had its session handed to it by a
-            // device of that person: an agent with a key of its own signs with that key and keeps
-            // the call it made, so a change reading as the device's own, naming both, is the
-            // device's agent acting for it, never an agent acting unsigned.
-            let handed = self.acted_for.is_some()
-                && matches!(
-                    by,
-                    tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::Agent(_))
-                );
+            // How an agent acted (handed its session by its person's device, or under a key of its
+            // own) is what its writer recorded in the context: a stamp that records none names an
+            // agent with a key of its own, which shows the call it signed.
             let acting = tilo_action_policy::Acting {
                 by,
                 app: None,
                 agent_session: None,
                 cause: None,
                 foreign_device: false,
-                handed,
+                handed: false,
                 acted_for: self
                     .acted_for
                     .iter()

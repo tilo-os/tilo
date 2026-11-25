@@ -803,6 +803,39 @@ mod cases {
         assert!(items >= 4, "four Tuesdays of that month hold the meeting");
     }
 
+    /// A series that repeats every other week, or a set number of times, stands on those dates
+    /// alone: the rule the event keeps is one the shared expander reads.
+    #[test]
+    fn a_series_every_other_week_or_twice_stands_on_those_dates_alone() {
+        let standups = |every: i64, count: Option<i64>| {
+            let s = sheet();
+            s.opened();
+            let e = s.make("Standup", "2026-11-03");
+            let mut given = vec![
+                ("e", Value::resource(&e)),
+                ("how", s.case("Repeat", "Repeat.weekly")),
+                ("every", Value::Int(every)),
+            ];
+            if let Some(n) = count {
+                given.push(("count", Value::some(Value::Int(n))));
+            }
+            s.call("repeat_rule", &given);
+            let w = s.timeline("month");
+            of_kind(w.tree(), "ui.TimelineItem")
+                .iter()
+                .filter(|item| text_prop_opt(item, "title").as_deref() == Some("Standup"))
+                .count()
+        };
+        let weekly = standups(1, None);
+        let fortnightly = standups(2, None);
+        assert!(weekly >= 4, "every Tuesday of the month holds it: {weekly}");
+        assert!(
+            fortnightly >= 2 && fortnightly < weekly,
+            "every other Tuesday holds it, not every one: {fortnightly} of {weekly}"
+        );
+        assert_eq!(standups(1, Some(2)), 2, "twice is two dates");
+    }
+
     /// The tasks window lists the list the person chose.
     #[test]
     fn the_tasks_window_lists_the_list_chosen() {
