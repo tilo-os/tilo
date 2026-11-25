@@ -54,7 +54,7 @@ trap table EXIT
 
 base=$repo/tools/ci/server-plan-base.env
 read_base() {
-  [[ -s $base ]] || die "no base: dispatch publish-server-plan-base on main (t dispatch --repo tilo --ref main publish-server-plan-base --publish) and commit the COMMIT= and IMAGE= lines its log ends with as ${base#"$repo"/}"
+  [[ -s $base ]] || die "no base: dispatch publish-server-plan-base on main (t dispatch --repo tilo --ref main@green publish-server-plan-base --publish) and commit the COMMIT= and IMAGE= lines its log ends with as ${base#"$repo"/}"
   base_commit=$(sed -n 's/^COMMIT=//p' "$base") base_image=$(sed -n 's/^IMAGE=//p' "$base")
   [[ $base_commit =~ ^[0-9a-f]{40}$ ]] || die "${base#"$repo"/} names no commit"
   [[ $base_image =~ ^registry\.tilo\.so/[a-z0-9/_-]+@sha256:[0-9a-f]{64}$ ]] \
@@ -78,7 +78,7 @@ if [[ $mode == layers ]]; then
   if jq -e '.refused | length > 0' "$out/selection.json" >/dev/null; then
     jq -r '.refused[] | "  \(.path // .component)\(if .programs then " (" + (.programs | join(", ")) + ")" else "" end): \(.reason)"' \
       "$out/selection.json" >&2
-    die "this change needs a new base, which this retry would not test: land it, then dispatch publish-server-plan-base on main"
+    die "this change needs a new base, which this retry would not test: land it, then dispatch publish-server-plan-base from the newest green commit of main (--ref main@green)"
   fi
   step build
   layers=$out/layers

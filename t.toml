@@ -5650,7 +5650,11 @@ name = "publish-server-plan-base"
 # Takes an identity token from t (at its deployment's own address) to the registry: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -euo pipefail\nout=/target/publish/server-plan-base\nrm -rf \"$out\" && mkdir -p \"$out\"\npython3 tools/ci/publish/server-plan-base.py pack \"$out\" \"$T_COMMIT\" bundle=/target/publish/server-installer-bundle-dev/x86_64/bundle imager=/target/server-installer-imager-dev/imager owner-disk.qcow2=/target/publish/os-dev-disk/x86_64/disk/disk.qcow2\nbash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-vm \"$out\" 'server-plan-base-{commit}'\nprintf 'COMMIT=%s\\nIMAGE=registry.tilo.so/tilo/tilo-vm@%s\\n' \"$T_COMMIT\" \"$(cat \"$out/digest\")\" > \"$out/base.env\"\ncat \"$out/base.env\"\nrm -rf \"$out/oci\""
-needs = ["server-installer-medium-dev-x86_64", "server-installer-imager-dev-x86_64", "os-dev-disk-lean-x86_64", "signing-tools"]
+# The compiles first: a check waits on its needs in the order they are named, and the first that
+# ends without passing skips it, so a red compile answers a dispatch of this in the compile's own
+# minutes instead of after the image, installer and disk stages behind it. They are needed through
+# those stages anyway; named here they gate them.
+needs = ["os-compile-x86_64", "os-compile-dev-x86_64", "server-installer-medium-dev-x86_64", "server-installer-imager-dev-x86_64", "os-dev-disk-lean-x86_64", "signing-tools"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
