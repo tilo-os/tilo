@@ -342,18 +342,23 @@ view person_row(p: device.Person, board: device.People) {
                     wave_button(p, board, name)
                 }
                 follow_button(followed, p, name)
+                // Where software works: pressing it brings that window forward, so what it is on
+                // stands in front of this person.
+                if p.agent and goable(p) {
+                    ui.Button(
+                        "Go there",
+                        icon: .arrow_right,
+                        icon_only: true,
+                        size: .small,
+                        role: .plain,
+                        description: std.say("Go where {name} works"),
+                    ) {
+                        on press: device.go_to(device.people, person: p.key)
+                    }
+                }
             }
         }
         on activate: device.show_person(device.people, person: p.key)
-    }
-    if p.agent and goable(p) {
-        // Where software works: the window it is in, with the way there. Pressing it brings that
-        // window forward, so what it is on stands in front of this person.
-        row(gap: .related, align: .center) {
-            ui.Button("Go there", icon: .arrow_right, size: .small, role: .plain) {
-                on press: device.go_to(device.people, person: p.key)
-            }
-        }
     }
 }
 

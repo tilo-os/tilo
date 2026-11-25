@@ -1397,8 +1397,8 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         one.2
     );
     assert!(
-        session.shell_control("Mia Clayton").is_none(),
-        "the face has no control of its own beside a chip: {:?}",
+        session.shell_control("Mia Clayton").is_some(),
+        "each face on the bar is its own control, opening that person's card: {:?}",
         session.accessible_labels()
     );
     // Three here stand three faces, a face's step wider each; the fourth takes the face at the
