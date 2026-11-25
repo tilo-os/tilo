@@ -716,21 +716,23 @@ impl PermissionContext {
 
     /// The answer for an action of `kind` at `node` below the workspace.
     pub fn answer(&self, node: &TreePath, kind: ActionKind) -> Answer {
-        self.verdict_for(node, kind, false, false, |verdict| verdict.answer)
+        self.verdict_for(node, kind, false, false, |verdict, _| verdict.answer)
             .unwrap_or(Answer::Deny)
     }
 
     /// What `read` takes from the verdict for an action of `kind` at `node`:
     /// of a privileged action when `privileged` ([`policy::Verdict::privileged`]),
     /// relying on `Once` grants only when `once` (an admission that spends
-    /// them) and this context can spend them.
+    /// them) and this context can spend them. `read` is also told whether the
+    /// verdict's Allow is the answer the person gave in advance
+    /// ([`policy::Authority::answered_in_advance`]).
     fn verdict_for<R>(
         &self,
         node: &TreePath,
         kind: ActionKind,
         privileged: bool,
         once: bool,
-        read: impl FnOnce(&policy::Verdict<'_>) -> R,
+        read: impl FnOnce(&policy::Verdict<'_>, bool) -> R,
     ) -> Result<R, String> {
         let now = self.policy_now()?;
         let cx = policy::Context::at_secs(now.unwrap_or(0));
@@ -743,11 +745,13 @@ impl PermissionContext {
             _ => &self.access,
         };
         let access = self.usable(held, once);
-        let mut verdict = access.verdict(&access.node(node), kind, &cx);
+        let authority = access.authority();
+        let mut verdict = authority.decide(&access.node(node), kind, &cx);
         if privileged {
             verdict = verdict.privileged();
         }
-        Ok(read(&verdict))
+        let answered_in_advance = authority.answered_in_advance(&verdict);
+        Ok(read(&verdict, answered_in_advance))
     }
 
     /// `held` without the `Once` grants this decision may not rely on: all of
@@ -786,7 +790,7 @@ impl PermissionContext {
         match scope {
             PermissionScope::Action { node, kind } => {
                 // Explained only when refused: an allowed check needs no sentence.
-                match self.verdict_for(node, *kind, false, false, |verdict| {
+                match self.verdict_for(node, *kind, false, false, |verdict, _| {
                     (verdict.answer == Answer::Deny).then(|| verdict.explain())
                 }) {
                     Ok(Some(why)) => Some(Denial::NotGranted(why)),
@@ -846,6 +850,30 @@ impl PermissionContext {
                 })
                 .unwrap_or(Answer::Deny);
         }
+        self.need_admission(app_id, resource_kind, resource_id, action_id, need)
+            .answer
+    }
+
+    /// [`Self::need_answer`], and whether that answer is one the person gave in advance.
+    fn need_admission(
+        &self,
+        app_id: &str,
+        resource_kind: &str,
+        resource_id: &str,
+        action_id: &str,
+        need: &tilo_actions::ActionNeed,
+    ) -> WindowAnswer {
+        if let Some(answer) = self.shown.answer(resource_id, action_id) {
+            return WindowAnswer::of(answer);
+        }
+        if self.action_authority.is_none() {
+            return self
+                .published_answers(|answer| {
+                    let mut node = answer.resource(app_id, resource_kind, resource_id);
+                    answer.admission(&mut node, need.field.as_deref(), action_id, need)
+                })
+                .unwrap_or(WindowAnswer::of(Answer::Deny));
+        }
         let node = tilo_actions::action_node(
             &TreePath::root(),
             app_id,
@@ -854,10 +882,17 @@ impl PermissionContext {
             need.field.as_deref(),
             action_id,
         );
-        self.verdict_for(&node, need.kind, need.privileged, false, |verdict| {
-            verdict.answer
-        })
-        .unwrap_or(Answer::Deny)
+        self.verdict_for(
+            &node,
+            need.kind,
+            need.privileged,
+            false,
+            |verdict, answered_in_advance| WindowAnswer {
+                answer: verdict.answer,
+                answered_in_advance,
+            },
+        )
+        .unwrap_or(WindowAnswer::of(Answer::Deny))
     }
 
     /// The answer for admitting one invocation of `action` on `resource`,
@@ -871,9 +906,9 @@ impl PermissionContext {
         action: &tilo_actions::ActionSpec,
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-    ) -> (Answer, Vec<policy::GrantId>) {
+    ) -> (WindowAnswer, Vec<policy::GrantId>) {
         if let Some(answer) = self.shown_answer(resource, &action.id) {
-            return (answer, Vec::new());
+            return (WindowAnswer::of(answer), Vec::new());
         }
         let need = input_need(&resource.kind, action, action.need_for(json, argument));
         let node = tilo_actions::action_node(
@@ -884,10 +919,20 @@ impl PermissionContext {
             need.field.as_deref(),
             &action.id,
         );
-        self.verdict_for(&node, need.kind, need.privileged, true, |verdict| {
-            (verdict.answer, verdict.spent())
-        })
-        .unwrap_or((Answer::Deny, Vec::new()))
+        self.verdict_for(
+            &node,
+            need.kind,
+            need.privileged,
+            true,
+            |verdict, answered_in_advance| {
+                let answer = WindowAnswer {
+                    answer: verdict.answer,
+                    answered_in_advance,
+                };
+                (answer, verdict.spent())
+            },
+        )
+        .unwrap_or((WindowAnswer::of(Answer::Deny), Vec::new()))
     }
 
     /// The answer for invoking `action` on `resource` with these arguments.
@@ -900,10 +945,24 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> Answer {
+        self.invocation_admission(app_id, resource, action, json, argument)
+            .answer
+    }
+
+    /// [`Self::invocation_answer`], and whether its Allow is the answer the person gave in
+    /// advance: what [`admit_in_window`] weighs.
+    pub fn invocation_admission(
+        &self,
+        app_id: &str,
+        resource: &tilo_actions::ResourceSpec,
+        action: &tilo_actions::ActionSpec,
+        json: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> WindowAnswer {
         if let Some(answer) = self.shown_answer(resource, &action.id) {
-            return answer;
+            return WindowAnswer::of(answer);
         }
-        self.need_answer(
+        self.need_admission(
             app_id,
             &resource.kind,
             resource.id.as_str(),
@@ -1106,6 +1165,49 @@ impl PublishedAnswers<'_> {
         action: &str,
         need: &tilo_actions::ActionNeed,
     ) -> Answer {
+        self.at_action(node, field, action, |node| {
+            self.authority
+                .answer(node, need.kind, need.privileged, &self.cx)
+        })
+    }
+
+    /// [`Self::action`], and whether its Allow is the answer the person gave in advance
+    /// ([`policy::Authority::answered_in_advance`]), read from the whole verdict only where it
+    /// allows.
+    fn admission(
+        &self,
+        node: &mut TreePath,
+        field: Option<&str>,
+        action: &str,
+        need: &tilo_actions::ActionNeed,
+    ) -> WindowAnswer {
+        self.at_action(node, field, action, |node| {
+            let answer = self
+                .authority
+                .answer(node, need.kind, need.privileged, &self.cx);
+            let answered_in_advance = answer == Answer::Allow && {
+                let mut verdict = self.authority.decide(node, need.kind, &self.cx);
+                if need.privileged {
+                    verdict = verdict.privileged();
+                }
+                self.authority.answered_in_advance(&verdict)
+            };
+            WindowAnswer {
+                answer,
+                answered_in_advance,
+            }
+        })
+    }
+
+    /// What `read` says at the node of `action` (and `field`) on the resource `node` names, as
+    /// [`tilo_actions::action_node`] places it; `node` is left as it was.
+    fn at_action<R>(
+        &self,
+        node: &mut TreePath,
+        field: Option<&str>,
+        action: &str,
+        read: impl FnOnce(&TreePath) -> R,
+    ) -> R {
         let resource = node.len();
         for part in field
             .unwrap_or_default()
@@ -1115,11 +1217,9 @@ impl PublishedAnswers<'_> {
             node.push_name(policy::Level::Field, part);
         }
         node.push_name(policy::Level::Action, action);
-        let answer = self
-            .authority
-            .answer(node, need.kind, need.privileged, &self.cx);
+        let read = read(node);
         node.truncate(resource);
-        answer
+        read
     }
 
     /// [`Self::action`] as [`Permitted`]: a refusal says what refused it.
@@ -1575,6 +1675,28 @@ fn input_need(
     }
 }
 
+/// What a window's grants answer for one invocation, as [`admit_in_window`] weighs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowAnswer {
+    /// The grants' answer for the action at its node.
+    pub answer: Answer,
+    /// Whether that Allow is the answer the person gave their agent in advance for this very
+    /// action or resource ([`policy::Authority::answered_in_advance`]): what someone acting for
+    /// them may then do unasked, though it leaves the system or its person attends.
+    pub answered_in_advance: bool,
+}
+
+impl WindowAnswer {
+    /// `answer`, given by nobody in advance.
+    #[must_use]
+    pub const fn of(answer: Answer) -> Self {
+        Self {
+            answer,
+            answered_in_advance: false,
+        }
+    }
+}
+
 /// The refusal of an invocation the presence may not take.
 pub fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
     tilo_actions::ApiError::Unavailable {
@@ -1592,16 +1714,16 @@ pub fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
 /// workspace's grants leave it to the person: the call then goes to the
 /// device's dispatch, which keeps it as its asked record until they answer.
 pub fn admit_in_window(
-    answer: tilo_action_policy::Answer,
+    answer: WindowAnswer,
     action: &tilo_actions::ActionSpec,
     asker: tilo_action_policy::Asker,
 ) -> Result<(), tilo_actions::ApiError> {
     let admitted = tilo_action_policy::admit(
         tilo_action_policy::Invoked {
-            answer,
+            answer: answer.answer,
             attended: action.contract.is_attended(),
             outside: action.contract.kind == tilo_actions::ActionKind::Outside,
-            answered_in_advance: false,
+            answered_in_advance: answer.answered_in_advance,
             resource: None,
         },
         asker,
@@ -1620,6 +1742,9 @@ mod policy_time_tests;
 
 #[cfg(test)]
 mod control_input_tests;
+
+#[cfg(test)]
+mod answered_in_advance_tests;
 
 #[cfg(test)]
 mod refused_listing_tests {

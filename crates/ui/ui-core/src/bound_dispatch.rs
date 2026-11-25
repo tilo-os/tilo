@@ -1885,10 +1885,10 @@ pub(crate) fn admit_local_action(
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
 ) -> Result<(), tilo_actions::ApiError> {
-    let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
+    let answer = permissions.invocation_admission(app_id, resource, action, typed, argument);
     crate::permissions::admit_in_window(answer, action, permissions.asker()).map_err(|refused| {
         match permissions.shown_refusal(resource, action) {
-            Some(held) if answer == crate::permissions::Answer::Deny => held,
+            Some(held) if answer.answer == crate::permissions::Answer::Deny => held,
             _ => refused,
         }
     })
@@ -3099,7 +3099,9 @@ fn perform_resource_action(
                                 if approval.is_some() => {}
                             admitted => admitted.map_err(|refused| {
                                 match binding.permissions.borrow().shown_refusal(resource, spec) {
-                                    Some(held) if answer == crate::permissions::Answer::Deny => {
+                                    Some(held)
+                                        if answer.answer == crate::permissions::Answer::Deny =>
+                                    {
                                         held
                                     }
                                     _ => refused,
