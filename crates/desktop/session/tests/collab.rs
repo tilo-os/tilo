@@ -1550,6 +1550,7 @@ fn said_by_the_shell(session: &Session) -> Vec<String> {
                 .into_iter()
                 .flatten()
                 .map(str::to_owned)
+                .collect::<Vec<_>>()
         })
         .collect()
 }
