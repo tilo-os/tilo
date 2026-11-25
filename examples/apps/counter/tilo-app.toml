@@ -11,7 +11,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [resources]
-kinds = ["so.tilo.example.counter.greeting"]
+kinds = ["example.counter"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -39,12 +39,3 @@ splash-budget = 250
 [providers]
 mime = []
 ext = []
-
-# What the app offers a person while it is closed: written by `tilolang surface` from
-# what its code publishes. Invoking one opens the app and invokes it there.
-
-[[offers]]
-resource = "so.tilo.example.counter.greeting"
-action = "clear"
-label = "Forget the name"
-operation = "document"

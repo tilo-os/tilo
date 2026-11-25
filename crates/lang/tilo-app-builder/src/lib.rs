@@ -8647,13 +8647,13 @@ impl CreateOutcome {
 }
 
 #[derive(Debug)]
-struct AppSpec {
-    package_name: String,
-    crate_name: String,
-    title: String,
-    app_id: String,
-    sdk: AppSdk,
-    template: Template,
+pub(crate) struct AppSpec {
+    pub(crate) package_name: String,
+    pub(crate) crate_name: String,
+    pub(crate) title: String,
+    pub(crate) app_id: String,
+    pub(crate) sdk: AppSdk,
+    pub(crate) template: Template,
 }
 
 impl AppSpec {
@@ -8666,7 +8666,7 @@ impl AppSpec {
 }
 
 #[derive(Debug)]
-enum AppSdk {
+pub(crate) enum AppSdk {
     /// A member of the Tilo workspace, with the path from the app to `ui-core`.
     Workspace {
         ui_path: PathBuf,
@@ -8901,13 +8901,7 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
     };
     let mut rendered = render(&spec)?;
     if let Some(example) = request.example {
-        examples::overlay(
-            &mut rendered,
-            example,
-            &spec.crate_name,
-            &spec.app_id,
-            &spec.title,
-        )?;
+        examples::overlay(&mut rendered, example, &spec)?;
     }
     let files = rendered.iter().map(|(path, _)| path.clone()).collect();
 
@@ -9698,9 +9692,10 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
     match &spec.sdk {
         AppSdk::Workspace { ui_path } => {
             let sdk_path = sdk_path_for_ui(ui_path);
-            let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
+            // The shared runtime dylib is the app SDK's sibling in the SDK group.
+            let runtime_path = sdk_path.parent().map_or_else(
                 || PathBuf::from("../../crates/sdk/runtime-dylib"),
-                |crates| crates.join("runtime/runtime-dylib"),
+                |sdk| sdk.join("runtime-dylib"),
             );
             // CI rejects a workspace member that cargo-hakari has not been told about. The hack's
             // feature set is native, so it stays off a wasm32 build (an app's packaged model); the
@@ -9803,6 +9798,12 @@ fn app_test(spec: &AppSpec) -> String {
 }
 
 fn app_manifest(spec: &AppSpec) -> Result<String> {
+    app_manifest_for(spec, &[scaffold_record(spec)], true)
+}
+
+/// The manifest of an app whose code declares `kinds`, naming them in
+/// `[resources]`, and the template's own offers when `offers`.
+fn app_manifest_for(spec: &AppSpec, kinds: &[String], offers: bool) -> Result<String> {
     // An app runs only where every service it names is served at a version Tilo serves, so a
     // scaffold names the current versions rather than the ones that were current when this line was
     // written. A service the image does not serve is a broken image, not a scaffold: say so and stop.
@@ -9812,16 +9813,23 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
             format!("os/usr/share/tilo/system-interfaces.toml serves no {service} service")
         })
     };
+    let kinds = kinds
+        .iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut manifest = format!(
-        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[resources]\nkinds = [{kind:?}]\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@{collab}\"\ntilo-fs = \"optional@{fs}\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
+        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[resources]\nkinds = [{kind}]\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@{collab}\"\ntilo-fs = \"optional@{fs}\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,
-        kind = scaffold_record(spec),
+        kind = kinds,
         collab = version("collab")?,
         fs = version("tilo-fs")?,
     );
-    manifest.push_str(&scaffold_offers(spec));
+    if offers {
+        manifest.push_str(&scaffold_offers(spec));
+    }
     Ok(manifest)
 }
 

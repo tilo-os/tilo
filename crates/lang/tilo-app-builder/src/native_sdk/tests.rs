@@ -37,8 +37,25 @@ fn sdk_graph_reuses_the_full_cohort_and_selective_production_wrapper() {
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(features.contains(&"poker/thin".to_owned()));
-    assert!(features.contains(&"settings/thin".to_owned()));
+    // Every native app in the checkout is in the graph, whichever one was selected.
+    let mut cohort = std::fs::read_dir(root.join("apps"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|app| app.join("tilo-app.toml").is_file() && app.join("Cargo.toml").is_file())
+        .map(|app| {
+            let manifest: toml::Value =
+                toml::from_str(&std::fs::read_to_string(app.join("Cargo.toml")).unwrap()).unwrap();
+            manifest["package"]["name"].as_str().unwrap().to_owned()
+        })
+        .collect::<Vec<_>>();
+    cohort.sort();
+    assert!(!cohort.is_empty(), "the checkout ships native apps");
+    for name in &cohort {
+        assert!(
+            features.contains(&format!("{name}/thin")),
+            "{name}/thin missing: {features:?}"
+        );
+    }
     assert!(args.iter().any(|a| a.contains("rustc-thin-app-wrapper.sh")));
     assert!(args.iter().any(|a| a == "runtime-dylib"));
     assert!(args.iter().any(|a| a == "--locked"));
