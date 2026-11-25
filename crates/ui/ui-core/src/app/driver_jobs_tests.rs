@@ -520,8 +520,10 @@ fn controls_list_what_a_person_can_press_with_their_name_bounds_and_focus() {
 }
 
 fn button_for(role: crate::permissions::Role) -> Driver {
-    let button = crate::widget::Button::new("go", "Send").on_click(|| {});
-    let mut driver = Driver::new(State::new(), Box::new(button), (600, 200));
+    // A press that reaches the workspace calls its typed action, which the workspace's grants
+    // decide; a toolkit closure is never gated.
+    let sends = crate::widget::effect_fixture::sends(|| {});
+    let mut driver = Driver::new(State::new(), sends, (600, 200));
     // The window's press reaches the workspace that grants its effects, as a window placed in
     // one does: without the stand-in for it, the effect would run at once and never be asked.
     driver.connect_peer();

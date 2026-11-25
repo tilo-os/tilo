@@ -2927,6 +2927,9 @@ mod control_touch_tests;
 #[cfg(test)]
 pub(crate) mod control_result_probe;
 
+#[cfg(test)]
+pub(crate) mod effect_fixture;
+
 pub mod keyboard_map;
 pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
 /// Logical screen topology canvas shared by local and native peer displays.
