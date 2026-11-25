@@ -594,7 +594,7 @@ pub(super) struct HeldOwnInvocation {
 /// replaced or re-entered, or its target, handler or meaning changed, it is refused rather than run
 /// on what stands there now.
 #[cfg(feature = "model")]
-pub(super) struct AskedOwnCall {
+pub(crate) struct AskedOwnCall {
     pub(super) target: crate::bound_dispatch::local_target::LocalResourceTarget,
     pub(super) invocation: tilo_actions::ControlInvocation,
     pub(super) arguments: crate::bound_dispatch::ControlContinuationArguments,

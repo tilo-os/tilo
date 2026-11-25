@@ -2660,11 +2660,6 @@ pub(crate) fn observed_field_language(palette: &ActionPalette) -> &str {
 }
 
 #[cfg(test)]
-pub(crate) fn observed_history_pending(palette: &ActionPalette) -> Option<PendingOperation> {
-    palette.pending_dispatch.clone()
-}
-
-#[cfg(test)]
 pub(crate) fn observed_history_editor(
     palette: &ActionPalette,
 ) -> (String, Option<(usize, usize)>, &'static str) {
