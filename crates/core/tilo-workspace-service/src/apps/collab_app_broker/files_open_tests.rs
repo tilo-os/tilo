@@ -1,6 +1,8 @@
 //! `files#open` given content: who may put a file into a workspace's own folder, and what the
-//! call answers. The tree itself is the service's (`files::OpenedFiles`), which its own tests
-//! take through a real workspace; here the dispatch is what is checked.
+//! call answers; and what the workspace's listing offers on that folder, its `list` and
+//! `read-text`, called as its rows offer them. The tree itself is the service's
+//! (`files::OpenedFiles`), which its own tests take through a real workspace; here the dispatch
+//! is what is checked.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -34,9 +36,15 @@ type Reached = (
     Option<tilo_actions::ActionContext>,
 );
 
-/// What reached the workspace's folder.
+/// What reached the workspace's folder: the puts, and the reads, each its action and arguments.
 #[derive(Default)]
-struct Recorder(Mutex<Vec<Reached>>);
+struct Recorder(
+    Mutex<Vec<Reached>>,
+    Mutex<Vec<(String, Map<String, Value>)>>,
+);
+
+/// What the recorder's workspace folder holds: a folder `Inbox` with one file in it.
+const HELD: [(&str, bool); 2] = [("Inbox", true), ("Inbox/plan.md", false)];
 
 impl FilesTreePuts for Recorder {
     fn put(
@@ -65,10 +73,33 @@ impl FilesTreePuts for Recorder {
     fn entries(
         &self,
         _workspace: WorkspaceId,
-        _folder: &str,
-        _below: bool,
+        folder: &str,
+        below: bool,
     ) -> Result<Vec<crate::apps::services::FilesEntry>, String> {
-        Ok(Vec::new())
+        Ok(HELD
+            .into_iter()
+            .filter(|(path, _)| {
+                let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+                parent == folder || (below && path.starts_with(folder))
+            })
+            .map(|(path, folder)| crate::apps::services::FilesEntry {
+                path: path.to_owned(),
+                folder,
+            })
+            .collect())
+    }
+
+    fn read(
+        &self,
+        _workspace: WorkspaceId,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, String> {
+        self.1
+            .lock()
+            .unwrap()
+            .push((action.to_owned(), arguments.clone()));
+        Ok(json!({"read": action}))
     }
 }
 
@@ -182,6 +213,52 @@ async fn settled<T>(mut pending: tilo_actions::remote::Pending<T>) -> T {
             tilo_actions::remote::PendingPoll::Waiting => tokio::task::yield_now().await,
             tilo_actions::remote::PendingPoll::Abandoned => panic!("the call was abandoned"),
         }
+    }
+}
+
+/// The rows the workspace's listing offers `caller` beneath `parent`, the top when `None`.
+fn listed(
+    state: &Arc<AppBrokerState>,
+    caller: &Caller,
+    workspace: &str,
+    parent: Option<&str>,
+) -> Vec<tilo_actions::remote::CatalogueRow> {
+    state
+        .action_query(
+            caller,
+            &tilo_actions::remote::CatalogueQuery {
+                provider: Some(tilo_actions::remote::workspace_provider(workspace)),
+                parent_resource: parent.map(str::to_owned),
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the broker answers")
+        .expect("the listing answers")
+        .rows
+}
+
+/// The call of what `row` offers, as a caller going through the listing makes it: its own
+/// address, with nothing besides.
+fn offered(row: &tilo_actions::remote::CatalogueRow) -> InvokeRequest {
+    let action = row.action.as_ref().expect("the row offers an action");
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: row.provider.clone(),
+            address: action.address.clone(),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
     }
 }
 
@@ -310,5 +387,89 @@ async fn an_open_of_nothing_is_no_put() {
     assert!(
         fixture.recorder.0.lock().unwrap().is_empty(),
         "no put reached the folder"
+    );
+}
+
+/// What the workspace's listing offers on its folder is answered, each called as its row offers
+/// it: the folder's `list` reads what the workspace's own folder holds, a folder's `list` what
+/// that folder does and a file's `read-text` what it says, the path named by the row's own
+/// resource. A person who is no member of the workspace is refused, and nothing is read.
+#[tokio::test]
+async fn what_the_listing_offers_on_the_folder_is_answered_as_offered() {
+    let fixture = fixture();
+    let caller = owner(&fixture.workspace);
+    let folder = format!(
+        "{APPLICATION_RESOURCE_PREFIX}{}",
+        fs_protocol::tree::FILES_APP
+    );
+    let top = listed(&fixture.state, &caller, &fixture.workspace, None);
+    let files = top
+        .iter()
+        .find(|row| row.resource.id == folder)
+        .unwrap_or_else(|| panic!("the top of the listing offers Files: {top:?}"));
+    let beneath = listed(&fixture.state, &caller, &fixture.workspace, Some(&folder));
+    let row = |path: &str| {
+        beneath
+            .iter()
+            .find(|row| row.resource.label == path)
+            .unwrap_or_else(|| panic!("the folder lists {path}: {beneath:?}"))
+    };
+    let calls = [
+        (files, fs_protocol::tree::LIST, json!({})),
+        (
+            row("Inbox"),
+            fs_protocol::tree::LIST,
+            json!({"folder": "Inbox"}),
+        ),
+        (
+            row("Inbox/plan.md"),
+            fs_protocol::tree::READ_TEXT,
+            json!({"file": "Inbox/plan.md"}),
+        ),
+    ];
+    for (at, (row, action, arguments)) in calls.iter().enumerate() {
+        let request = offered(row);
+        assert_eq!(request.target.address.action, *action, "{row:?}");
+        tilo_test_env::within(
+            "the person's read of their folder is admitted",
+            settled(fixture.state.action_invoke(&caller, None, None, &request)),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{action} of {:?} is answered: {error:?}", row.resource));
+        let answer = tilo_test_env::within(
+            "the read of the workspace's folder completes",
+            finished(&fixture.state, &caller, &request),
+        )
+        .await;
+        assert_eq!(
+            answer,
+            json!({"read": action}),
+            "the folder's answer is the call's"
+        );
+        let reads = fixture.recorder.1.lock().unwrap();
+        assert_eq!(reads.len(), at + 1, "one read reached the folder");
+        assert_eq!(reads[at].0, *action);
+        assert_eq!(
+            Value::Object(reads[at].1.clone()),
+            *arguments,
+            "the row's resource names what is read"
+        );
+    }
+
+    // A person who is no member of the workspace reads none of its files.
+    let stranger = Caller::local_person("b2".repeat(32))
+        .in_workspace(&fixture.workspace)
+        .in_new_execution();
+    let request = offered(files);
+    assert!(
+        settled(fixture.state.action_invoke(&stranger, None, None, &request))
+            .await
+            .is_err(),
+        "a person who is no member is refused"
+    );
+    assert_eq!(
+        fixture.recorder.1.lock().unwrap().len(),
+        calls.len(),
+        "nothing was read for a refused caller"
     );
 }

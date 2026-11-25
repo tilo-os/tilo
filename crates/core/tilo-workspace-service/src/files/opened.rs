@@ -327,43 +327,44 @@ impl OpenedFiles {
     ) -> Result<Vec<FilesEntry>, String> {
         let folder = super::paths::path_of(folder)?;
         let mut entries = Vec::new();
-        tilo_rt::app().block_on(self.workspaces.puts().read(workspace, &mut |tree| {
-            entries.clear();
-            let start = tree
-                .resolve_path_ino(&folder)
-                .ok_or_else(|| format!("{folder:?} is no folder of this workspace"))?;
-            let mut folders = vec![(start, folder.clone())];
-            while let Some((ino, path)) = folders.pop() {
-                let children = tree
-                    .readdir(ino)
-                    .ok_or_else(|| format!("{path:?} is no folder of this workspace"))?;
-                for (child, kind, name) in children {
-                    // A name that is not UTF-8 is no path a listing offers, and the tree lists
-                    // its dot entries as any directory does.
-                    let Ok(name) = String::from_utf8(name.as_bytes().to_vec()) else {
-                        continue;
-                    };
-                    if name == "." || name == ".." {
-                        continue;
+        tilo_rt::app()
+            .block_on(self.workspaces.puts().read(workspace, &mut |tree| {
+                entries.clear();
+                let start = tree
+                    .resolve_path_ino(&folder)
+                    .ok_or_else(|| format!("{folder:?} is no folder of this workspace"))?;
+                let mut folders = vec![(start, folder.clone())];
+                while let Some((ino, path)) = folders.pop() {
+                    let children = tree
+                        .readdir(ino)
+                        .ok_or_else(|| format!("{path:?} is no folder of this workspace"))?;
+                    for (child, kind, name) in children {
+                        // A name that is not UTF-8 is no path a listing offers, and the tree lists
+                        // its dot entries as any directory does.
+                        let Ok(name) = String::from_utf8(name.as_bytes().to_vec()) else {
+                            continue;
+                        };
+                        if name == "." || name == ".." {
+                            continue;
+                        }
+                        let path = if path.is_empty() {
+                            name
+                        } else {
+                            format!("{path}/{name}")
+                        };
+                        let is_folder = kind == tilo_fs::node::FileType::Directory;
+                        if is_folder && below {
+                            folders.push((child, path.clone()));
+                        }
+                        entries.push(FilesEntry {
+                            path,
+                            folder: is_folder,
+                        });
                     }
-                    let path = if path.is_empty() {
-                        name
-                    } else {
-                        format!("{path}/{name}")
-                    };
-                    let is_folder = kind == tilo_fs::node::FileType::Directory;
-                    if is_folder && below {
-                        folders.push((child, path.clone()));
-                    }
-                    entries.push(FilesEntry {
-                        path,
-                        folder: is_folder,
-                    });
                 }
-            }
-            Ok(Value::Null)
-        }))
-        .map_err(|error| error.to_string())??;
+                Ok(Value::Null)
+            }))
+            .map_err(|error| error.to_string())??;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
     }
@@ -389,10 +390,24 @@ impl OpenedFiles {
     }
 
     /// The keys the workspace's files are sealed with, `None` where this device takes part in
-    /// no key group of the workspace and its files are kept in the clear.
+    /// no key group of the workspace and its files are kept in the clear. A put opens the key
+    /// group its files are about to be sealed in.
     fn sealing(&self, workspace: WorkspaceId) -> Result<Option<key_group::ContentKeys>, String> {
+        self.keys(workspace, true)
+    }
+
+    /// [`Self::sealing`], opening the key group for writes about to start when `create`, and
+    /// otherwise only reading an existing one, as a read of the files does.
+    fn keys(
+        &self,
+        workspace: WorkspaceId,
+        create: bool,
+    ) -> Result<Option<key_group::ContentKeys>, String> {
         match tilo_rt::app()
-            .block_on(self.workspaces.own_route_keys(&tree_route(workspace), true))
+            .block_on(
+                self.workspaces
+                    .own_route_keys(&tree_route(workspace), create),
+            )
             .map_err(|error| error.to_string())?
         {
             Some(answer) => answer.map(Some),
@@ -556,6 +571,10 @@ impl OpenedFiles {
         .encode())
     }
 }
+
+#[path = "reads.rs"]
+mod reads;
+
 #[cfg(test)]
 #[path = "opened_tests.rs"]
 mod tests;

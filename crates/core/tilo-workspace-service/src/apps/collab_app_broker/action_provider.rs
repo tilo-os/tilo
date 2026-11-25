@@ -2928,6 +2928,14 @@ impl AppBrokerState {
         {
             return Ok(result);
         }
+        // Files' `list` and `read-text` of the workspace's folder, as its listing offers them,
+        // read the tree this device holds.
+        #[cfg(feature = "files")]
+        if let Some(result) =
+            self.start_files_read(caller, origin, request, (&workspace, &policy, now))?
+        {
+            return Ok(result);
+        }
         if let Some(result) = self.start_app_open(
             caller,
             workspace_id,

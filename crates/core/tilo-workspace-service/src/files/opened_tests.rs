@@ -619,3 +619,92 @@ fn a_put_names_its_files_and_refuses_what_the_tree_may_not_hold() {
         .expect("more files than one open puts");
     assert!(said.contains("1 to"), "{said}");
 }
+
+/// What `files` folder's read `action` answers with `arguments`, read as the dispatch reads it:
+/// on a thread of its own, the tree's sync having this device's runtime to itself.
+fn read(put: &Put, action: &str, arguments: &Value) -> Result<Value, String> {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                put.puts
+                    .read_folder(put.workspace, action, arguments.as_object().unwrap())
+            })
+            .join()
+            .expect("the read's thread ends")
+    })
+}
+
+/// Files put into the workspace's folder are read back as a caller with no folder mounted
+/// reads them: the workspace's folder and a folder in it listed by name, a file's text by its
+/// path, put together from the chunks the workspace seals it in, and content a message names by
+/// its address. A file that is no text says what reads it, and a path that is not there says so.
+#[tokio::test]
+async fn files_put_are_listed_and_read_back_as_text() {
+    let put = fixture().await;
+    let notes = "Visa appointment: Tuesday, 10:30.\nBring the passport.\n".repeat(1500);
+    let notes_content = put_content(&put.shelf, put.workspace, notes.as_bytes());
+    put.put(&json!({"content": notes_content, "name": "notes.md", "dir": "trip"}))
+        .unwrap();
+    let scan = b"%PDF-1.7\n\xff\xfe binary\n";
+    let scan_content = put_content(&put.shelf, put.workspace, scan);
+    put.put(&json!({"content": scan_content, "name": "scan.pdf"}))
+        .unwrap();
+    assert!(
+        put.keys().await.is_some(),
+        "the workspace seals its files, so the read opens them"
+    );
+
+    let top = read(&put, tree::LIST, &json!({})).unwrap();
+    let names: Vec<_> = top["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| (entry["name"].clone(), entry["kind"].clone()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (json!("scan.pdf"), json!("file")),
+            (json!("trip"), json!("folder"))
+        ],
+        "{top}"
+    );
+    let trip = read(&put, tree::LIST, &json!({"folder": "trip"})).unwrap();
+    assert_eq!(trip["entries"][0]["path"], "trip/notes.md", "{trip}");
+    assert_eq!(trip["entries"][0]["size"], notes.len(), "{trip}");
+    assert_eq!(trip["total"], 1, "{trip}");
+
+    // The text a page at a time, the next page where the first ends.
+    let first = read(&put, tree::READ_TEXT, &json!({"file": "trip/notes.md"})).unwrap();
+    assert_eq!(first["total"], notes.chars().count(), "{first}");
+    let next = first["next"]
+        .as_u64()
+        .expect("the notes are longer than a page");
+    let second = read(
+        &put,
+        tree::READ_TEXT,
+        &json!({"file": "trip/notes.md", "from": next}),
+    )
+    .unwrap();
+    assert_eq!(second["next"], Value::Null, "{second}");
+    let whole = format!(
+        "{}{}",
+        first["text"].as_str().unwrap(),
+        second["text"].as_str().unwrap()
+    );
+    assert_eq!(whole, notes, "the file reads as it was put");
+
+    // Content a message names is read by its address, as put.
+    let by_address = read(&put, tree::READ_TEXT, &json!({"content": notes_content})).unwrap();
+    assert_eq!(by_address["total"], notes.chars().count(), "{by_address}");
+
+    let error = read(&put, tree::READ_TEXT, &json!({"file": "scan.pdf"})).unwrap_err();
+    assert!(
+        error.contains("is not text") && error.contains("PDF"),
+        "{error}"
+    );
+    let error = read(&put, tree::READ_TEXT, &json!({"file": "trip/missing.md"})).unwrap_err();
+    assert!(error.contains("trip/missing.md"), "{error}");
+    let error = read(&put, tree::READ_TEXT, &json!({"file": "trip"})).unwrap_err();
+    assert!(error.contains("folder"), "{error}");
+}

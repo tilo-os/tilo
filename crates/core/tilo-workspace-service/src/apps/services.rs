@@ -687,8 +687,8 @@ pub type RecordFounding = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
 /// The workspace's own folder, as the dispatch reaches it: where a `files#open` given content
-/// puts its files. A host that keeps no tree of its workspaces serves none, and that open is
-/// refused there.
+/// puts its files, and what Files' `list` and `read-text` read. A host that keeps no tree of its
+/// workspaces serves none, and those calls are refused there.
 pub trait FilesTreePuts: Send + Sync {
     /// Put what `arguments` name into `workspace`'s tree, answering where each file is or how
     /// many went in.
@@ -722,6 +722,19 @@ pub trait FilesTreePuts: Send + Sync {
         folder: &str,
         below: bool,
     ) -> Result<Vec<FilesEntry>, String>;
+
+    /// Answer Files' read `action` (`list` or `read-text`) of `workspace`'s folder with
+    /// `arguments`: what a folder holds, a page at a time, or what a file says.
+    ///
+    /// # Errors
+    /// Why the folder answered nothing, in words a person reads: a path that is none of the
+    /// workspace, a file that is no text, content that has not arrived on this device.
+    fn read(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// One entry of a workspace's folder ([`FilesTreePuts::entries`]).
@@ -761,6 +774,15 @@ impl FilesTreePuts for crate::files::OpenedFiles {
         below: bool,
     ) -> Result<Vec<FilesEntry>, String> {
         crate::files::OpenedFiles::entries(self, workspace, folder, below)
+    }
+
+    fn read(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        crate::files::OpenedFiles::read_folder(self, workspace, action, arguments)
     }
 }
 

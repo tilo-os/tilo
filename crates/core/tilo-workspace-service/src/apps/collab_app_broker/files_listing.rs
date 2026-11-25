@@ -8,23 +8,35 @@
 //! ([`crate::apps::services::FilesTreePuts::entries`]). The workspace's own folder lists its
 //! whole tree by paths; a folder inside it lists what it holds directly, so a listing goes into a
 //! folder the way a person does.
+//!
+//! What a row offers is answered here too: its `list` and `read-text` read the tree this device
+//! holds ([`crate::apps::services::FilesTreePuts::read`]), the folder or file named by the row's
+//! own resource, so a caller going through the listing calls what a row offers as it is.
 
 use std::sync::Arc;
+
+use serde_json::{Map, Value};
 
 use fs_protocol::tree::{
     FILES_APP, FOLDER_KIND, LIST, READ_TEXT, file_of_resource, file_resource, folder_of_resource,
     folder_resource,
 };
-use tilo_action_policy::{ActionKind, Answer};
+use tilo_action_policy::{ActionKind, Answer, TreePath};
 use tilo_actions::remote::{
     APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage,
-    CatalogueQuery, CatalogueRow, FOUND_FILE, Pending, pending, provider_workspace,
+    CatalogueQuery, CatalogueRow, FOUND_FILE, InvokeArgument, InvokeRequest, Pending, pending,
+    provider_workspace,
 };
-use tilo_actions::{ActionAddress, ActionDescriptor, ActionParam, ParamType};
+use tilo_actions::{
+    ActionAddress, ActionDescriptor, ActionFailure, ActionOutput, ActionParam, InvocationUpdate,
+    ParamType,
+};
 use tilo_desktop_model::Workspace;
 use tilo_server_protocol::WorkspaceId;
 
-use super::{AppBrokerState, BrokerActor};
+use super::action_provider::refusal;
+use super::host_action_admission::HostActionAdmission;
+use super::{AppBrokerState, BrokerActor, InvocationCaller};
 
 /// The resource the workspace's folder is listed as: the Files app's.
 fn folder_root() -> String {
@@ -39,6 +51,12 @@ pub(super) fn may_read_tree(workspace: &Workspace, actor: &BrokerActor, now: u64
         &fs_protocol::tree::document_id(),
     );
     actor.answer_in(workspace, &records, ActionKind::Read, now) == Answer::Allow
+}
+
+/// Whether `actor` may read the content `workspace` keeps by its address now: what a read of
+/// the whole workspace lets it, as the content a message names is no file of the folder.
+fn may_read_content(workspace: &Workspace, actor: &BrokerActor, now: u64) -> bool {
+    actor.answer_in(workspace, &TreePath::root(), ActionKind::Read, now) == Answer::Allow
 }
 
 /// A read of the workspace's tree, as a row offers it: `action` on `resource`.
@@ -236,4 +254,136 @@ pub(super) fn top_rows(
     provider: &str,
 ) -> Option<CatalogueRow> {
     (puts.is_some() && may_read_tree(workspace, actor, now)).then(|| folder_row(provider))
+}
+
+/// The read of the workspace's folder `action` on `resource` is, as a row offers it: the
+/// descriptor it is admitted under, and the path the resource names, which a file's `read-text`
+/// reads and a folder's `list` lists. `None` for a resource that is no folder or file of it.
+fn read_target(resource: &str, action: &str) -> Option<(ActionDescriptor, Option<String>)> {
+    if resource == folder_root() {
+        let descriptor = read(folder_root(), APPLICATION_RESOURCE_KIND, "Files", action);
+        return Some((descriptor, None));
+    }
+    let (kind, path) = match (file_of_resource(resource), folder_of_resource(resource)) {
+        (Some(path), _) => (FOUND_FILE, path),
+        (None, Some(path)) => (FOLDER_KIND, path),
+        (None, None) => return None,
+    };
+    let label = path.rsplit_once('/').map_or(path, |(_, leaf)| leaf);
+    let descriptor = read(resource.to_owned(), kind, label, action);
+    Some((descriptor, Some(path.to_owned())))
+}
+
+/// The arguments `request` carries, with the path its resource names under `name`: what a row
+/// offers names its folder or file itself, and its call needs no path besides.
+fn read_arguments(
+    request: &InvokeRequest,
+    named: Option<String>,
+    name: &str,
+) -> Map<String, Value> {
+    let mut arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        InvokeArgument::None | InvokeArgument::Text(_) => Map::new(),
+    };
+    if let Some(path) = named {
+        arguments.insert(name.to_owned(), Value::String(path));
+    }
+    arguments
+}
+
+impl AppBrokerState {
+    /// Files' `list` or `read-text` of the workspace's folder, as its listing offers them: read
+    /// from the tree this device holds and answered as the call's output. `None` when the target
+    /// is another action, or no folder or file of the workspace.
+    ///
+    /// # Errors
+    /// A caller naming no workspace, one the workspace does not let read its files (or, for
+    /// content named by its address, the workspace), an admission that fails, or a host that
+    /// serves no folder.
+    pub(super) fn start_files_read(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&InvocationCaller>,
+        request: &InvokeRequest,
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+    ) -> Result<Option<u64>, ActionCallError> {
+        let address = &request.target.address;
+        let action = address.action.as_str();
+        if action != LIST && action != READ_TEXT {
+            return Ok(None);
+        }
+        let Some((descriptor, named)) = read_target(&address.resource, action) else {
+            return Ok(None);
+        };
+        let workspace_id = workspace.id().to_string();
+        if caller.workspace() != Some(workspace_id.as_str()) {
+            tracing::warn!(
+                "reading a workspace's files was refused: the caller names no such workspace"
+            );
+            return Err(ActionCallError::UnknownAction);
+        }
+        let arguments = read_arguments(
+            request,
+            named,
+            if action == LIST { "folder" } else { "file" },
+        );
+        // Content a message names is read by its address, by whoever may read the workspace;
+        // a file or folder of the tree by whoever may read what Files keeps in it.
+        let allowed = if action == READ_TEXT && arguments.contains_key("content") {
+            may_read_content(workspace, policy, now)
+        } else {
+            may_read_tree(workspace, policy, now)
+        };
+        if !allowed {
+            return Err(ActionCallError::NotPermitted);
+        }
+        let puts =
+            self.services.files_open.clone().ok_or_else(|| {
+                refusal("the workspace's folder is not served on this host".into())
+            })?;
+        let Some(id) = WorkspaceId::parse(&workspace_id) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let admitted = self.admit_host_action(
+            caller,
+            origin,
+            HostActionAdmission {
+                workspace: &workspace_id,
+                app_id: FILES_APP,
+                descriptor: &descriptor,
+                request,
+            },
+        )?;
+        let call = admitted.id;
+        let state = Arc::clone(self);
+        let action = action.to_owned();
+        // The tree is read on a thread of its own, as a listing of it is: its read waits for the
+        // workspace's records, which this device's runtime serves meanwhile.
+        std::thread::spawn(move || {
+            let update = match puts.read(id, &action, &arguments) {
+                Ok(value) => InvocationUpdate::Succeeded {
+                    invocation: admitted.invocation,
+                    output: ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+                // What the folder answered instead is the call's own answer, in words its caller
+                // reads.
+                Err(reason) => InvocationUpdate::Failed {
+                    invocation: admitted.invocation,
+                    error: ActionFailure {
+                        code: "files_read_failed".into(),
+                        message: reason,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            };
+            if let Err(error) = state.complete_host_action(&admitted, update) {
+                tracing::warn!(?error, "a read of the workspace's folder was not answered");
+            }
+        });
+        Ok(Some(call))
+    }
 }
