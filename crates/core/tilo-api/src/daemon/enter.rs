@@ -27,6 +27,12 @@ pub const UNREACHED: &str = "Tilo can't be reached from here right now; try agai
 /// What a computer with no login says.
 pub const NOT_LOGGED_IN: &str = "This computer is not logged in to Tilo. Ask the person to run `tilo device add` on one of their devices and give you the ticket it prints; then run tilo login with it, like: tilo login tilo1…";
 
+/// What a device of the person's says while it reaches none of their servers, which a browser's
+/// sign-in and the steps of a computer's login are answered through: it is logged in, and waits.
+pub const NO_SERVER_YET: &str = "This computer is one of the person's devices, but it reaches none \
+     of their servers yet, and a browser's sign-in is approved through one. `tilo status` says what \
+     it waits for; once it is in sync with a server, run this again.";
+
 /// What a device its person's root confined to one workspace (that workspace's VM) says when asked
 /// to open a session of its own: it has no copy of the workspace to open one on, and reaches it
 /// through the workspace's host, whose session shows who is there.

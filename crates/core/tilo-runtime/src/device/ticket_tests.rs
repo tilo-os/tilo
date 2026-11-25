@@ -2556,18 +2556,19 @@ async fn a_tab_the_root_signs_in_is_listed_with_the_persons_devices() {
         direction: tilo_device_identity::login::Direction::SignIn,
         secret: [9; 32],
     };
-    // The approve is refused after it signs, because this computer's person is not logged in to
-    // tell the browser how it went; what it signed is listed all the same.
+    // The approve is refused after it signs, because this computer reaches no server of its
+    // person's to tell the browser how it went; what it signed is listed all the same.
     let refused = ask_device(
         &tickets,
         APPROVE,
         json!({"ticket": ticket.encode(), "tab": tab}),
     )
     .await
-    .expect_err("a computer with no login tells no browser it signed it in");
-    assert!(
-        refused.contains("not logged in"),
-        "it is told the browser cannot be answered from here: {refused}"
+    .expect_err("a computer that reaches no server tells no browser it signed it in");
+    assert_eq!(
+        refused,
+        tilo_api::daemon::enter::NO_SERVER_YET,
+        "it is told what it waits for before it answers the browser"
     );
     let person = cert.user_public_key;
     let listed =

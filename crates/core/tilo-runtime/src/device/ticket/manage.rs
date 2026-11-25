@@ -385,7 +385,7 @@ pub(super) struct Fleet {
     pub key: SigningKey,
     pub cert: DeviceCert,
     pub endpoint: Endpoint,
-    /// Where this device enters its person's workspaces, on a device a ticket made.
+    /// Where this device enters its person's workspaces, once it knows a server of theirs.
     pub home: Option<Arc<super::super::home::Home>>,
     pub root: RootSource,
     /// The person's workspace here: on a computer no ticket made, the one a computer it adds

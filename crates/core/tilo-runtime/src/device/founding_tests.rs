@@ -942,6 +942,194 @@ fn person_server() -> PersonServer {
     }
 }
 
+const SIGNS_A_BROWSER_IN_TEST: &str =
+    "device::founding_tests::a_person_founded_here_signs_a_browser_in_through_their_server";
+
+/// How long the whole of [`SIGNS_A_BROWSER_IN_TEST`] may take: past it the test fails and its
+/// process ends, whatever step it is in, rather than hanging the run.
+const SIGNS_A_BROWSER_IN_BOUND: Duration = Duration::from_secs(240);
+
+/// A person founded on this computer, which holds their root, gains a server and enters through
+/// it. A tab asks that server to be signed in as them and is shown a ticket, and
+/// `tilo device add <ticket>` here approves it through the daemon as the command asks it: the
+/// daemon reaches the server as the device it entered as, and the tab ends signed in with the
+/// certificate the root here signed for it. A computer that founded its person is as logged in
+/// as one a ticket made.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one browser's sign-in, from founding the person to the tab signed in, read top to bottom"
+)]
+fn a_person_founded_here_signs_a_browser_in_through_their_server() {
+    use tilo_device_identity::login::{APPROVE, FOLLOW, ISSUE, PENDING, Tab, Ticket};
+
+    let Some(profile) = isolated_root(SIGNS_A_BROWSER_IN_TEST) else {
+        return;
+    };
+    std::thread::spawn(|| {
+        std::thread::sleep(SIGNS_A_BROWSER_IN_BOUND);
+        eprintln!(
+            "the test did not finish in {}s: the browser was not signed in",
+            SIGNS_A_BROWSER_IN_BOUND.as_secs()
+        );
+        // SAFETY: `_exit` ends this process at once, as the test's bound means: no destructor
+        // of the step that hung runs, and 101 is the status a failed test ends with.
+        unsafe { libc::_exit(101) };
+    });
+    let environment = isolated_environment();
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let made = ask(
+        &socket,
+        &do_request("devices#found", &json!({"name": "Ada"})),
+    );
+    assert_ne!(
+        made["result"]["isError"], true,
+        "no person was made: {made}"
+    );
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run");
+
+    // The person's server, and this computer logged in at it.
+    let home = person_server();
+    let logged_in = device_call(
+        &socket,
+        tilo_device_identity::login::LOG_IN,
+        json!({ "server": home.line }),
+    );
+    assert!(
+        matches!(
+            logged_in,
+            tilo_actions::remote::ReceiptStatus::Accepted
+                | tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the person's computer logs in at their server: {logged_in:?}"
+    );
+    // What `tilo device add` reads first: where this computer enters, through the server.
+    let named = tilo_user_identity::canonical::canonical_bytes(&home.cert)
+        .map(hex::encode)
+        .unwrap();
+    let started = std::time::Instant::now();
+    let who = loop {
+        wait_for_the_person_serving(&socket);
+        let who = ask(&socket, &json!({"native": "account#who"}));
+        if who["home"]["server_cert"] == json!(named) {
+            break who;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "the person's part does not enter through their server: {who}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        who["holds_root"], true,
+        "this computer holds the root: {who}"
+    );
+    let workspace = who["home"]["workspace"].as_str().unwrap().to_owned();
+    let person = who["person"].as_str().unwrap().to_owned();
+
+    // A tab asks the server to be signed in as the person, and shows its ticket.
+    let host = home.cert.device_public_key;
+    let tab = tilo_session_client::session::TicketLink::new(tilo_server_client::ServerAddress::at(
+        home.server.node_addr(),
+    ));
+    let tab_key = SigningKey::from_bytes(&[0x7a; 32]);
+    let tab_ask = |action: &str, argument: Value| {
+        let Value::Object(argument) = argument else {
+            panic!("a ticket action is asked with its arguments");
+        };
+        home.serving
+            .block_on(tab.ask(
+                Arc::new(tab_key.clone()),
+                tab_key.verifying_key().to_bytes(),
+                host,
+                action,
+                argument,
+                Duration::from_secs(20),
+            ))
+            .expect("the server answers the tab")
+    };
+    let minted = tab_ask(
+        ISSUE,
+        json!({"direction": "sign-in", "user": person, "label": "Firefox on Linux"}),
+    )
+    .expect("the tab asks to be signed in as the person");
+    let shown = minted["ticket"].as_str().expect("a ticket to show");
+    // Copied out of the sentence that shows it, with the comma after it.
+    let ticket = Ticket::parse(&format!("{shown},"))
+        .expect("the ticket reads")
+        .encode();
+
+    // `tilo device add <ticket>`, through the daemon as the command asks it: what waits, then
+    // the approval the root here signs.
+    let calls = |action: &'static str, args: Value| {
+        home.serving.block_on(async {
+            let client =
+                tilo_api::calls::Calls::open_with(tilo_api::calls::Reach::default(), || {
+                    tilo_files::native::socket::connect(&socket).map_err(|error| error.to_string())
+                })
+                .await?;
+            client
+                .act(
+                    Some(&workspace),
+                    "devices",
+                    action,
+                    &args,
+                    "Sign a browser in",
+                )
+                .await
+        })
+    };
+    let pending = calls(PENDING, json!({ "ticket": ticket }))
+        .expect("the daemon reads what waits at the person's server");
+    let waiting = &pending["result"];
+    assert_eq!(
+        waiting["device"],
+        hex::encode(tab_key.verifying_key().to_bytes()),
+        "the tab waits: {pending}"
+    );
+    let asked = Tab {
+        device_public_key: hex::encode(tab_key.verifying_key().to_bytes()),
+        label: waiting["label"].as_str().unwrap_or("a browser").to_owned(),
+        key_for: None,
+    };
+    let approved = calls(
+        APPROVE,
+        json!({ "ticket": ticket, "tab": asked, "label": "this computer" }),
+    )
+    .expect("the daemon approves the tab");
+    assert_eq!(
+        approved["result"]["signed"], true,
+        "the root here signed the tab: {approved}"
+    );
+
+    // The tab, following its ticket, is signed in as the person.
+    let followed = tab_ask(FOLLOW, json!({ "id": minted["id"] })).expect("the tab follows");
+    let certified: tilo_user_identity::DeviceCert = serde_json::from_str(
+        followed["certified"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the tab is signed in: {followed}")),
+    )
+    .unwrap();
+    assert_eq!(
+        certified.device_public_key,
+        tab_key.verifying_key().to_bytes()
+    );
+    assert_eq!(hex::encode(certified.user_public_key), person);
+
+    home.serving.block_on(tab.close());
+    running.stop().unwrap();
+    let PersonServer {
+        server, serving, ..
+    } = home;
+    serving.block_on(server.shutdown());
+    drop(environment);
+}
+
 const KEEPS_THE_PORT_TEST: &str =
     "device::founding_tests::a_part_that_starts_again_takes_the_port_the_part_that_ended_bound";
 

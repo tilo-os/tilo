@@ -2326,7 +2326,11 @@ impl Daemon {
             Tickets::new(
                 (identity.key.clone(), identity.cert.clone()),
                 workspaces.endpoint(),
-                joined.then(|| Arc::clone(&home)),
+                // Where this device enters its person's workspaces, once it knows a server of
+                // theirs: a computer a ticket made, and one that founded its person and later
+                // gained a server, are both reached through it, and approve a browser's sign-in
+                // at the host its ticket names as the device they entered as.
+                Some(Arc::clone(&home)),
                 Arc::new(self::root),
                 Some(Arc::clone(&first)),
                 Some(Arc::clone(&workspaces)),

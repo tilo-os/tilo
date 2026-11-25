@@ -919,7 +919,7 @@ struct Inner {
     key: SigningKey,
     cert: DeviceCert,
     endpoint: Endpoint,
-    /// Where this device enters its person's workspaces, on a device a ticket made.
+    /// Where this device enters its person's workspaces, once it knows a server of theirs.
     home: Option<Arc<super::home::Home>>,
     /// The person's workspace here, on a computer no ticket made: the one a computer it adds
     /// enters, founded when one first does.
@@ -1677,8 +1677,7 @@ impl Tickets {
             .get("ticket")
             .and_then(Value::as_str)
             .context("a ticket is needed")?;
-        let ticket = Ticket::parse(text)
-            .map_err(|_| anyhow!("This is not a Tilo ticket: ask for a new one."))?;
+        let ticket = Ticket::parse(text).map_err(|why| anyhow!("{why}."))?;
         match ticket.direction {
             Direction::Login if direction == Direction::SignIn => bail!(
                 "This ticket logs a computer in: run `tilo login <ticket>` with it, not \
@@ -1700,7 +1699,7 @@ impl Tickets {
         let here = self
             .here()
             .await
-            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NO_SERVER_YET))?;
         let key = self.0.key.clone();
         let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
         let dialed = tilo_server_client::ServerAddress::at(issuer);
@@ -1787,7 +1786,7 @@ impl Tickets {
         let here = self
             .here()
             .await
-            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NO_SERVER_YET))?;
         let answer = self
             .at_host(
                 &ticket,

@@ -187,23 +187,24 @@ pub fn add(
 fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     use tilo_device_identity::login::{APPROVE, Direction, PENDING};
 
-    let parsed = Ticket::parse(ticket).map_err(|_| {
-        anyhow!(
-            "{} is not a Tilo ticket; a browser's sign-in prompt copies one that starts with \
-             tilo1.",
-            ticket.trim().chars().take(24).collect::<String>()
-        )
-    })?;
+    let parsed = Ticket::parse(ticket).map_err(|why| anyhow!("{}: {why}.", shown(ticket)))?;
     if parsed.direction == Direction::Login {
         bail!(
             "That ticket logs a computer in: run `tilo login {}` on the computer it was made \
              for.",
-            ticket.trim()
+            parsed.encode()
         );
     }
     // Read without the device key: a process that reads it makes itself undumpable, and the
-    // daemon then cannot tell it from a sandboxed program and refuses its socket.
-    let here = login::home().ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    // daemon then cannot tell it from a sandboxed program and refuses its socket. A computer
+    // that is one of the person's devices and knows no server of theirs yet is logged in, and
+    // says what it waits for.
+    let Some(here) = login::home() else {
+        if login::logged_in() {
+            bail!(tilo_api::daemon::enter::NO_SERVER_YET);
+        }
+        bail!(login::NOT_LOGGED_IN);
+    };
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
@@ -295,6 +296,17 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `text` as a ticket that does not read is named back: its start, enough to tell which it was.
+fn shown(text: &str) -> String {
+    let text = text.trim();
+    let start: String = text.chars().take(24).collect();
+    if start.len() < text.len() {
+        format!("{start}…")
+    } else {
+        start
+    }
 }
 
 /// The workspace this computer's daemon serves, where its `devices` actions are asked: the one
