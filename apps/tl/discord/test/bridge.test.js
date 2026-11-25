@@ -3,7 +3,7 @@
 // account's name, and an edit, a deletion and a reaction follow it there.
 
 import { test, expect } from "bun:test";
-import { adoptServer, run } from "../main.js";
+import { adoptServer, readBack, run } from "../main.js";
 
 /// Wait until `check()` is true, or fail the test after `timeout`.
 async function until(check, what, timeout = 3_000) {
@@ -661,4 +661,44 @@ test("a server's category is made before the channels in it, which are made insi
     // The next pass reads the record those calls wrote: everything is joined, so it finishes.
     ["finish_import", { tilo_only: [] }],
   ]);
+});
+
+test("what a bridged channel said before, or while the bridge was away, is relayed once, oldest first", async () => {
+  const done = [];
+  const asked = [];
+  const calls = {
+    async webCall(request) {
+      asked.push(request.url);
+      // Discord answers the newest first; one of them is already joined to a message here.
+      return {
+        status: 200,
+        body: JSON.stringify([
+          { id: "803", channel_id: "456", content: "third", timestamp: "2026-11-24T09:03:00Z", author: { id: "3001", username: "ada" } },
+          { id: "802", channel_id: "456", content: "second", timestamp: "2026-11-24T09:02:00Z", author: { id: "3002", username: "bob" } },
+          { id: "801", channel_id: "456", content: "first", timestamp: "2026-11-24T09:01:00Z", author: { id: "3002", username: "bob" } },
+        ]),
+      };
+    },
+    async do(call) {
+      done.push(call);
+      return { id: `m${done.length}` };
+    },
+    async content() {
+      return null;
+    },
+  };
+  const held = account({
+    map: [
+      { kind: "channel", tilo: CONVERSATION, discord: "456" },
+      { kind: "message", tilo: "tl:so.tilo.chat:m0", discord: "803" },
+    ],
+  });
+  await readBack({ calls, account: held });
+  expect(asked).toEqual(["https://discord.com/api/v10/channels/456/messages?limit=50"]);
+  const relayed = done.filter((call) => call.action === "relay");
+  expect(relayed.map((call) => [call.args.body, call.args.by, call.map.discord])).toEqual([
+    ["first", "bob", "801"],
+    ["second", "bob", "802"],
+  ]);
+  expect(relayed[0].args.written).toBe(Date.parse("2026-11-24T09:01:00Z"));
 });

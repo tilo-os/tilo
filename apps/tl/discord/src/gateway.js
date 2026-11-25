@@ -572,6 +572,11 @@ export function voiceStateOf(guild, data) {
 }
 
 /// A gateway message as the client's callers read it.
+/// A message as Discord's REST answers it, read as the gateway's MESSAGE_CREATE is.
+export function restMessage(data) {
+  return discordMessage("MESSAGE_CREATED", messageOf(data));
+}
+
 function messageOf(data) {
   return {
     id: data?.id ?? "",

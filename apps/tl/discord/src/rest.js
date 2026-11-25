@@ -42,6 +42,20 @@ export function createWebhook({ tokenItem, origin = API }, channel) {
   };
 }
 
+/// How many of a channel's newest messages the bridge reads when it meets the server: what was
+/// said there before, and what was said while it was away.
+export const HISTORY = 50;
+
+/// A channel's newest messages, newest first, as Discord answers them.
+export function channelMessages({ tokenItem, origin = API }, channel, limit = HISTORY) {
+  return {
+    url: `${at(origin)}/channels/${channel}/messages?limit=${limit}`,
+    key: tokenItem,
+    method: "GET",
+    reason: "what was said in a bridged channel before the bridge saw it",
+  };
+}
+
 /// Sends a message through a webhook, answering the message it made there. `webhook` is the
 /// webhook's `id/token`, the address Discord executes it at.
 ///

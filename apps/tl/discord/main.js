@@ -36,6 +36,7 @@ import {
   webhookSend,
   webhookEdit,
   webhookDelete,
+  channelMessages,
   channelWebhooks,
   createWebhook,
   WEBHOOK_NAME,
@@ -459,7 +460,38 @@ export async function carryFromDiscord({
     }
   }
   if (event.source === "LAYOUT_CHANGED") {
-    await adoptServer({ calls, account, layout: event.payload, log });
+    const adopted = await adoptServer({ calls, account, layout: event.payload, log });
+    await readBack({ calls, account: adopted, fetch, log });
+  }
+}
+
+/// What each bridged text channel said that the workspace does not hold yet: the channel's newest
+/// messages, oldest first, each relayed as it would have been live. The first time the bridge
+/// meets a server this is the channel's history; on every later start it is what was said while
+/// the bridge was away. A message already joined to one here is not relayed again.
+export async function readBack({ calls, account, fetch = globalThis.fetch, log = () => {} }) {
+  if (!account) return;
+  const { restMessage } = await import("./src/gateway.js");
+  const rest = { tokenItem: account.token_item, origin: account.api_origin };
+  for (const entry of mappings(account)) {
+    if (entry?.kind !== "channel") continue;
+    const shown = (account.channels ?? []).find((channel) => channel.id === entry.discord);
+    if (shown && shown.kind !== "text") continue;
+    if (account.only_channel && account.only_channel !== entry.discord) continue;
+    let listed;
+    try {
+      const answer = await calls.webCall(channelMessages(rest, entry.discord));
+      if (Number(answer?.status ?? 200) >= 300) continue;
+      listed = listedOf(answer);
+    } catch (error) {
+      log(`a bridged channel's earlier messages did not read: ${error?.message ?? error}`);
+      continue;
+    }
+    if (!Array.isArray(listed)) continue;
+    for (const data of [...listed].reverse()) {
+      if (byDiscord(account, "message", String(data?.id ?? ""))) continue;
+      await carryFromDiscord({ calls, account, event: restMessage(data), fetch, log });
+    }
   }
 }
 
@@ -477,10 +509,10 @@ export async function adoptServer({ calls, account, layout, log = () => {} }) {
       sidebar = sidebarOf(await calls.state(SIDEBAR));
     } catch (error) {
       log(`Chat's sidebar did not read, so the server's layout waits: ${error?.message ?? error}`);
-      return;
+      return state;
     }
     const planned = importOf(state, layout, sidebar);
-    if (planned.length === 0) return;
+    if (planned.length === 0) return state;
     // The categories this pass joined or made, by their Discord id: a channel's call names its
     // category by that id until it is made.
     const joined = new Map();
@@ -505,11 +537,12 @@ export async function adoptServer({ calls, account, layout, log = () => {} }) {
     }
     try {
       const accounts = await calls.state(ACCOUNTS);
-      state = accounts?.accounts?.[0] ?? accounts ?? state;
+      state = { ...(accounts?.accounts?.[0] ?? accounts ?? state), token_item: state.token_item };
     } catch {
-      return;
+      return state;
     }
   }
+  return state;
 }
 
 /// The files of a Discord message, each fetched from `url` and kept in the workspace as the
