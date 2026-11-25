@@ -33,6 +33,7 @@ use tilo_user_identity::{
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT};
+use collab_types::CommitNamed as _;
 
 use crate::common::{Linked, TestDevice, TestServer, TestUser, spawn_server};
 use tilo_server::hosted_browser::APP;
@@ -1817,11 +1818,13 @@ async fn heard(linked: &mut Linked, within: std::time::Duration) -> Vec<Heard> {
     out
 }
 
-/// `linked`'s device writes `marker` into `record` of `app`, through the link.
+/// `linked`'s device writes `marker` into `record` of `app`, through the link, as the window's
+/// edit its person makes: a placed device acts for no one of its own.
 fn publish_record(linked: &Linked, device: &TestDevice, app: &str, record: &str, marker: &str) {
     linked
         .write(&device.sk, (app, record), |document| {
             document.put(ROOT, "marker", marker).unwrap();
+            document.commit_edit("window", "marker", &device.cert.user_public_key);
         })
         .unwrap();
 }
@@ -1891,10 +1894,7 @@ fn forged_in(
         .map_or_else(AutoCommit::new, |bytes| AutoCommit::load(bytes).unwrap());
     let heads = document.get_heads();
     document.put(ROOT, "marker", marker).unwrap();
-    document.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-    );
+    document.commit_edit("window", "marker", &device.cert.user_public_key);
     let mutation = match held {
         Some(_) => collab_types::DocumentMutation::Incremental(document.save_after(&heads)),
         None => collab_types::DocumentMutation::Snapshot(document.save()),
