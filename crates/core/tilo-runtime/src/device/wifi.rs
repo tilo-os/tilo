@@ -2,11 +2,15 @@
 //! own workspace ([`Devices::keep_wifi`]): a saved network's `share-with-devices` shares the
 //! passphrase this device learned with the person's other devices, and a join without one uses
 //! the passphrase they shared. Each passphrase is sealed to every
-//! device of theirs ([`Credential`]) and never travels or stays in the clear.
+//! device of theirs ([`Credential`]): it is opened only to hand it to this computer's network
+//! settings, and never leaves this device or stays anywhere in the clear.
 //!
-//! The desktop session reaches it through the device's dispatch ([`PROVIDER`]): its `lookup`
-//! answers the passphrase sealed to this device alone, and its `share` takes one sealed to this
-//! device alone, so what the dispatch records of either call holds no passphrase either.
+//! The person's own session on this device reaches it through the device's dispatch
+//! ([`PROVIDER`]), which hands the passphrase to the system's network settings: its `lookup`
+//! opens a shared passphrase here and answers it, and its `share` takes one and seals it to each
+//! of the person's devices. The device key that opens and seals them never leaves the daemon.
+//! Both answer only the person themselves, never an app or an agent, and both are secret
+//! answers ([`tilo_actions::SECRET_ANSWER_TAG`]): no record of either call keeps the passphrase.
 
 use std::sync::Arc;
 
@@ -26,12 +30,16 @@ use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 pub const PROVIDER: &str = "tilo.wifi";
 /// The resource its actions are on.
 pub const RESOURCE: &str = "wifi";
-/// The passphrase of a network the person's devices share, sealed to this device alone:
-/// `{ssid, security}` answers `{credential}`, the credential's hex or null.
+/// The passphrase of a network the person's devices share, opened on this device:
+/// `{ssid, security}` answers `{password}`, the passphrase or null.
 pub const LOOKUP: &str = "lookup";
-/// Share a passphrase with every device of the person's: `{credential}`, sealed to this device
-/// alone, answers `{ssid}`.
+/// Share a passphrase with every device of the person's: `{ssid, security, password}` answers
+/// `{ssid}`.
 pub const SHARE: &str = "share";
+
+/// Why a caller other than the person themselves is refused a passphrase.
+pub const THE_PERSONS_OWN: &str =
+    "only you, at this computer, get or share a Wi-Fi passphrase: no app or agent does";
 
 /// The person's shared Wi-Fi passphrases as this device keeps and opens them.
 pub(crate) struct Wifi {
@@ -98,25 +106,20 @@ impl Wifi {
         });
         Ok(())
     }
+}
 
-    /// `password` of `ssid`, sealed to this device alone: what goes on the dispatch in its place.
-    fn sealed_here(
-        &self,
-        ssid: &str,
-        security: Security,
-        password: &str,
-    ) -> Result<Credential, String> {
-        let own = self.key.verifying_key().to_bytes();
-        Credential::seal(
-            ssid,
-            security,
-            password,
-            own,
-            [own],
-            tilo_clock::unix_now_ms(),
-        )
-        .map_err(|refused| refused.to_string())
-    }
+/// Whether `caller` is the person themselves on this device, as their own session asks: never an
+/// app, an agent, or a call an app makes for someone it serves.
+///
+/// # Errors
+/// [`THE_PERSONS_OWN`] for anyone else.
+fn the_persons_own(caller: &Caller, admitted: &Admitted) -> Result<(), String> {
+    (caller.acting().person_id().is_some()
+        && caller.acting().app().is_none()
+        && caller.launched_app().is_none()
+        && admitted.serving.is_none())
+    .then_some(())
+    .ok_or_else(|| THE_PERSONS_OWN.to_owned())
 }
 
 /// Whether the person lets this device share Wi-Fi with their other devices: Wi-Fi continuity
@@ -175,6 +178,8 @@ fn descriptors() -> Vec<ActionDescriptor> {
             kind,
             risk: RiskLevel::Low,
             confirmation: ConfirmationPolicy::None,
+            // A passphrase goes to its caller and nowhere else: no record keeps it.
+            tags: vec![tilo_actions::SECRET_ANSWER_TAG.to_owned()],
             ..ActionContract::default()
         },
         input: InputSpec::None,
@@ -195,11 +200,11 @@ fn descriptors() -> Vec<ActionDescriptor> {
             SHARE,
             "Share a Wi-Fi passphrase with your devices",
             ActionKind::Outside,
-            vec![ActionParam::required(
-                "credential",
-                ParamType::Text,
-                "The passphrase, sealed to this device",
-            )],
+            vec![
+                ActionParam::required("ssid", ParamType::Text, "The network's name"),
+                ActionParam::required("security", ParamType::Text, "wpa2 or wpa3"),
+                ActionParam::required("password", ParamType::Secret, "The passphrase"),
+            ],
         ),
     ]
 }
@@ -214,10 +219,11 @@ impl tilo_actions::remote::Admits for Wifi {
 
     fn start(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: &InvokeRequest,
-        _admitted: &Admitted,
+        admitted: &Admitted,
     ) -> Result<Pending<Outcome>, String> {
+        the_persons_own(caller, admitted)?;
         let address = &request.target.address;
         if address.resource != RESOURCE {
             return Err(format!(
@@ -229,29 +235,19 @@ impl tilo_actions::remote::Admits for Wifi {
             return Err("a Wi-Fi action takes its arguments as an object".to_owned());
         };
         let text = |name: &str| arguments.get(name).and_then(Value::as_str);
+        let (Some(ssid), Some(security)) =
+            (text("ssid"), text("security").and_then(Security::named))
+        else {
+            return Err("a Wi-Fi passphrase is of a network and its security".to_owned());
+        };
         let answered = match address.action.as_str() {
-            LOOKUP => {
-                let (Some(ssid), Some(security)) =
-                    (text("ssid"), text("security").and_then(Security::named))
-                else {
-                    return Err("a lookup names a network and its security".to_owned());
-                };
-                self.password(ssid, security)
-                    .map(|password| self.sealed_here(ssid, security, &password))
-                    .transpose()
-                    .map(|credential| json!({"credential": credential.map(|c| c.to_hex())}))
-            }
+            LOOKUP => Ok(json!({
+                "password": self.password(ssid, security).as_deref()
+            })),
             SHARE => {
-                let credential = text("credential")
-                    .and_then(Credential::from_hex)
-                    .ok_or("a share carries a passphrase sealed to this device")?;
-                credential
-                    .open(&self.key)
-                    .map_err(|refused| refused.to_string())
-                    .and_then(|password| {
-                        self.share(&credential.ssid, credential.security, &password)
-                    })
-                    .map(|()| json!({"ssid": credential.ssid}))
+                let password = text("password").ok_or("a share carries the passphrase")?;
+                self.share(ssid, security, password)
+                    .map(|()| json!({"ssid": ssid}))
             }
             other => return Err(format!("Wi-Fi has no action `{other}`")),
         };
@@ -279,6 +275,14 @@ pub fn lookup_arguments(ssid: &str, security: Security) -> Map<String, Value> {
     let mut arguments = Map::new();
     arguments.insert("ssid".to_owned(), json!(ssid));
     arguments.insert("security".to_owned(), json!(security.name()));
+    arguments
+}
+
+/// The arguments of a [`SHARE`] of `password` of `ssid`.
+#[must_use]
+pub fn share_arguments(ssid: &str, security: Security, password: &str) -> Map<String, Value> {
+    let mut arguments = lookup_arguments(ssid, security);
+    arguments.insert("password".to_owned(), json!(password));
     arguments
 }
 
@@ -394,22 +398,18 @@ mod tests {
         let caller =
             Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(own);
 
-        // Settings hands the passphrase over sealed to this device alone.
-        let sealed = wifi
-            .sealed_here("Home", Security::Wpa2, "a passphrase")
-            .expect("a passphrase seals");
-        assert!(
-            !sealed.to_hex().contains(&hex::encode("a passphrase")),
-            "what crosses the dispatch holds no passphrase"
-        );
-        let mut share = Map::new();
-        share.insert("credential".to_owned(), json!(sealed.to_hex()));
         assert_eq!(
-            ask(&wifi, &caller, SHARE, share).await,
+            ask(
+                &wifi,
+                &caller,
+                SHARE,
+                share_arguments("Home", Security::Wpa2, "a passphrase")
+            )
+            .await,
             Ok(json!({"ssid": "Home"}))
         );
 
-        // The person's workspace keeps it, and this device joins with it once it is there.
+        // The person's workspace keeps it sealed, and this device joins with it once it is there.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let answer = loop {
             let answer = ask(
@@ -420,31 +420,23 @@ mod tests {
             )
             .await
             .expect("a lookup answers");
-            if !answer["credential"].is_null() || std::time::Instant::now() > deadline {
+            if !answer["password"].is_null() || std::time::Instant::now() > deadline {
                 break answer;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
-        let credential = answer["credential"]
-            .as_str()
-            .and_then(Credential::from_hex)
-            .expect("the shared passphrase comes back sealed");
-        assert_eq!(
-            credential.open(&key).as_deref().map(String::as_str),
-            Ok("a passphrase")
-        );
-        assert!(
-            credential.open(&SigningKey::from_bytes(&[5; 32])).is_err(),
-            "what the lookup answers opens on this device alone"
-        );
+        assert_eq!(answer, json!({"password": "a passphrase"}));
         let kept = personal
             .read::<Devices>(DEVICES)
             .expect("the devices record");
         assert!(
-            kept.wifi
-                .iter()
-                .all(|(_, network)| !network.credential.contains(&hex::encode("a passphrase"))),
-            "the person's workspace keeps no passphrase in the clear"
+            !kept.wifi.is_empty()
+                && kept.wifi.iter().all(|(_, network)| {
+                    Credential::from_hex(&network.credential)
+                        .is_some_and(|sealed| sealed.open(&key).is_ok())
+                        && !network.credential.contains(&hex::encode("a passphrase"))
+                }),
+            "the person's workspace keeps the passphrase sealed to their devices, never in the clear"
         );
         assert_eq!(
             ask(
@@ -454,12 +446,61 @@ mod tests {
                 lookup_arguments("Nowhere", Security::Wpa2)
             )
             .await,
-            Ok(json!({"credential": null})),
+            Ok(json!({"password": null})),
             "a network nobody shared has no passphrase"
         );
         assert!(
-            ask(&wifi, &caller, SHARE, Map::new()).await.is_err(),
-            "a share carries a sealed passphrase"
+            ask(
+                &wifi,
+                &caller,
+                SHARE,
+                lookup_arguments("Home", Security::Wpa2)
+            )
+            .await
+            .is_err(),
+            "a share carries the passphrase"
+        );
+
+        // Nobody but the person themselves gets or gives one: not an agent acting for them, not
+        // an app, and not an app serving them.
+        let person = hex::encode(cert.user_public_key);
+        let agent = Caller::agent_turn(
+            ("an-agent", person.clone()),
+            person.clone(),
+            tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
+        );
+        let others = [
+            ("an agent", agent),
+            ("an app", Caller::launched("org.example.app")),
+            ("an app's own caller", Caller::local_app("org.example.app")),
+        ];
+        for (who, other) in &others {
+            for (action, arguments) in [
+                (LOOKUP, lookup_arguments("Home", Security::Wpa2)),
+                (
+                    SHARE,
+                    share_arguments("Home", Security::Wpa2, "another passphrase"),
+                ),
+            ] {
+                let refused = ask(&wifi, other, action, arguments).await;
+                assert!(
+                    refused
+                        .as_ref()
+                        .is_err_and(|refusal| refusal.contains(THE_PERSONS_OWN)),
+                    "{who} is refused a {action}: {refused:?}"
+                );
+            }
+        }
+        assert_eq!(
+            ask(
+                &wifi,
+                &caller,
+                LOOKUP,
+                lookup_arguments("Home", Security::Wpa2)
+            )
+            .await,
+            Ok(json!({"password": "a passphrase"})),
+            "a refused share changes nothing"
         );
     }
 }

@@ -2,18 +2,20 @@
 //! other devices (`share-with-devices` on its `saved-network` row), and a network one of them
 //! shared is joined without asking for its password. The passwords are the person's and the
 //! device's daemon keeps them in their own workspace ([`tilo_runtime::device::wifi`]); this session
-//! reads only what this computer's `NetworkManager` holds, and hands the daemon a password only
-//! sealed to this device.
+//! reads only what this computer's `NetworkManager` holds. The daemon opens and seals the passwords
+//! with this device's key, which never leaves it: this session hands it a password to share and
+//! is answered one to join, and hands that straight to `NetworkManager`.
 
 use std::sync::{Arc, OnceLock};
 
-use ed25519_dalek::SigningKey;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_connectivity_service::device::{Change, Device, Readings};
-use tilo_runtime::device::wifi::{LOOKUP, PROVIDER, RESOURCE, SHARE, lookup_arguments, permitted};
+use tilo_runtime::device::wifi::{
+    LOOKUP, PROVIDER, RESOURCE, SHARE, lookup_arguments, permitted, share_arguments,
+};
 use tilo_session_client::daemon_documents::DaemonShell;
-use tilo_workspace_service::workspaces::person_workspace::wifi::{Credential, Security};
+use tilo_workspace_service::workspaces::person_workspace::wifi::Security;
 
 /// This device's way to the person's other devices, which the session attaches once its daemon's
 /// link is up: until then, and on a computer with no identity of theirs, nothing is shared.
@@ -124,8 +126,6 @@ pub(crate) struct WifiContinuity {
     daemon: DaemonShell,
     /// The person's own workspace, where the daemon keeps the passwords.
     workspace: String,
-    /// This device's key: what a password crosses the dispatch sealed to.
-    key: SigningKey,
 }
 
 impl WifiContinuity {
@@ -133,13 +133,11 @@ impl WifiContinuity {
     /// no identity of theirs.
     fn new(daemon: DaemonShell) -> Option<Self> {
         let identity = tilo_session_client::identity::device_identity()?;
-        let key = SigningKey::from_bytes(&identity.signer.endpoint_secret()?);
         Some(Self {
             daemon,
             workspace: tilo_server_protocol::servers::person_workspace_id(
                 &identity.device_cert.user_public_key,
             ),
-            key,
         })
     }
 
@@ -171,36 +169,16 @@ impl WifiContinuity {
             .map_err(|_| "the daemon's connection stopped before it answered".to_owned())?
     }
 
-    /// The password of `ssid` the person's devices share, opened here.
+    /// The password of `ssid` the person's devices share, which the daemon opened.
     fn lookup(&self, ssid: &str, security: Security) -> Result<Option<String>, String> {
         let answer = self.ask(LOOKUP, lookup_arguments(ssid, security))?;
-        let Some(credential) = answer["credential"].as_str() else {
-            return Ok(None);
-        };
-        let credential = Credential::from_hex(credential)
-            .ok_or("the daemon answered a password that does not read")?;
-        credential
-            .open(&self.key)
-            .map(|password| Some(password.to_string()))
-            .map_err(|refused| refused.to_string())
+        Ok(answer["password"].as_str().map(str::to_owned))
     }
 
-    /// Share `password` of `ssid` with the person's devices: sealed to this device for the daemon,
-    /// which seals it to each of theirs.
+    /// Share `password` of `ssid` with the person's devices: the daemon seals it to each of theirs.
     fn share(&self, ssid: &str, security: Security, password: &str) -> Result<(), String> {
-        let own = self.key.verifying_key().to_bytes();
-        let sealed = Credential::seal(
-            ssid,
-            security,
-            password,
-            own,
-            [own],
-            tilo_clock::unix_now_ms(),
-        )
-        .map_err(|refused| refused.to_string())?;
-        let mut arguments = Map::new();
-        arguments.insert("credential".to_owned(), json!(sealed.to_hex()));
-        self.ask(SHARE, arguments).map(|_| ())
+        self.ask(SHARE, share_arguments(ssid, security, password))
+            .map(|_| ())
     }
 }
 
