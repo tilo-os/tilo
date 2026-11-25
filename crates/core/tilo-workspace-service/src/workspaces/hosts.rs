@@ -1478,7 +1478,7 @@ impl Workspaces {
     ///
     /// No other device keeps the workspace, or none of them said it keeps
     /// every change this one does.
-    async fn caught_up_elsewhere(
+    pub(super) async fn caught_up_elsewhere(
         &self,
         workspace: &str,
         workspace_id: WorkspaceId,

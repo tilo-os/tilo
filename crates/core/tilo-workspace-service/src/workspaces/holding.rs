@@ -594,11 +594,19 @@ impl Workspaces {
             .iter()
             .any(|holder| holder.device_certificate.device_public_key == own);
         if governed.holders.named && !names_this {
-            governed.holders = Holders::default();
+            // Its links to the other holders stay up until they took in what this host keeps,
+            // the change taking it out among it: the device that signed that change may have
+            // reached this host alone.
+            let linked = std::mem::take(&mut governed.holders);
             let workspace = governed.workspace().to_owned();
+            let workspace_id = governed.workspace_id();
             let this = self.clone();
             tokio::spawn(async move {
                 tracing::info!(%workspace, "the workspace's governance no longer names this host");
+                if let Err(error) = this.caught_up_elsewhere(&workspace, workspace_id).await {
+                    tracing::info!(%workspace, %error, "no other holder said it took in what this host keeps before it let the workspace go");
+                }
+                drop(linked);
                 if let Err(error) = this.release(&workspace).await {
                     tracing::warn!(%workspace, %error, "a workspace no longer held here was not let go");
                 }
