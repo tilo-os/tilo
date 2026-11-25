@@ -1610,6 +1610,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the row pressed at a wide and a narrow window, each with its own expectations"
+    )]
     fn a_press_on_a_tasks_row_opens_it_where_it_stands() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
