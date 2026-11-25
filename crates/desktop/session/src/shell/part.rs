@@ -1222,12 +1222,15 @@ impl ShellPart {
         &mut self.widgets
     }
 
-    fn window(&mut self) -> Option<&mut AppWindow> {
-        self.widgets
-            .host_mut()
-            .root_widget_mut()
-            .as_any_mut()?
-            .downcast_mut::<AppWindow>()
+    /// Hand the shell's window to `change`, which says whether it changed what the window shows:
+    /// only then does the next frame lay the tree out again, so a turn that brought nothing
+    /// does no work. Without a window, nothing changed.
+    fn change_window(&mut self, change: impl FnOnce(&mut AppWindow) -> bool) -> bool {
+        self.widgets.host_mut().change_root(|root| {
+            root.as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .is_some_and(change)
+        })
     }
 
     fn window_ref(&self) -> Option<&AppWindow> {
@@ -1276,15 +1279,13 @@ impl ShellPart {
         };
         for _ in 0..EXCHANGES {
             let mut at = std::time::Instant::now();
-            if let Some(window) = self.window() {
-                window.flush();
-            }
+            self.change_window(AppWindow::flush);
             let updated = self.instance.update();
             self.hand_own_calls();
             self.work.updating = self.work.updating.saturating_add(lap(&mut at));
             let committed = self.commit();
             self.work.committing = self.work.committing.saturating_add(lap(&mut at));
-            let received = self.window().is_some_and(AppWindow::receive);
+            let received = self.change_window(AppWindow::receive);
             self.hear_notices();
             self.work.receiving = self.work.receiving.saturating_add(lap(&mut at));
             shown |= received;
@@ -1310,7 +1311,7 @@ impl ShellPart {
             self.instance.update();
             self.work.updating = self.work.updating.saturating_add(at.elapsed());
             at = std::time::Instant::now();
-            shown |= self.window().is_some_and(AppWindow::receive);
+            shown |= self.change_window(AppWindow::receive);
             self.work.receiving = self.work.receiving.saturating_add(at.elapsed());
             if shown {
                 self.widgets.relayout();
@@ -1377,13 +1378,16 @@ impl ShellPart {
     /// What the shell's views said that a part has no window to show: a refusal is the
     /// session's to hear and is kept for whoever asks ([`Self::refusals`]).
     fn hear_notices(&mut self) {
-        let Some(window) = self.window() else {
-            return;
-        };
-        let notices = window.take_notices();
+        let mut heard = None;
         // A window that refused what the view sent shows the platform's error state: that
         // is the shell refusing to show itself, heard once.
-        let failed = window.failed().map(str::to_owned);
+        self.change_window(|window| {
+            heard = Some((window.take_notices(), window.failed().map(str::to_owned)));
+            false
+        });
+        let Some((notices, failed)) = heard else {
+            return;
+        };
         for (kind, text) in notices {
             match kind {
                 tilo_render_protocol::patch::NoticeKind::Error => {

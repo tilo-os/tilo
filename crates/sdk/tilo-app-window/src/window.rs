@@ -1774,10 +1774,18 @@ impl AppWindow {
         self.fired > self.took
     }
 
-    pub fn flush(&mut self) {
+    /// Send the app what the window holds for it, and take up what the person did and what the
+    /// page answered. Whether there was any of it: a flush that found nothing changed nothing,
+    /// so a host that flushes every turn owes no frame for it.
+    pub fn flush(&mut self) -> bool {
+        // What the person did in the window since the last flush: the keys it took, the events
+        // its controls raised. What they lead to changes the window, as what goes out does.
+        let input = std::mem::take(&mut self.keys.input);
+        let mut took = input || !self.events.is_empty();
         // A file input the person clicked in the page waits on their choice: the host's picker
         // asks, in its own time, and answers the page with what they picked.
         for chooser in crate::page_runner::choosers(&self.page) {
+            took = true;
             self.ask_page_picker(chooser);
         }
         // A page the app asked does its work in its own time: what it answered since the last
@@ -1807,7 +1815,7 @@ impl AppWindow {
         }
         // What was typed while the keyboard was on its way to the field a press opened goes there
         // once it arrived.
-        self.release_landing();
+        took |= self.release_landing();
         if let Some(answer) = self.take_ask_answer() {
             self.answers.borrow_mut().push(answer);
         }
@@ -1822,7 +1830,7 @@ impl AppWindow {
         if self.save.take_bar_action().is_some() {
             self.out.push(ToApp::SaveAgain);
         }
-        if std::mem::take(&mut self.keys.input) {
+        if input {
             self.follow_focus();
         }
         let wanted: Vec<(Level, String, crate::rows::Asked)> = self
@@ -1842,7 +1850,7 @@ impl AppWindow {
             });
         }
         if self.out.is_empty() {
-            return;
+            return took;
         }
         let messages = std::mem::take(&mut self.out);
         match wire::encode_batch(&messages) {
@@ -1853,6 +1861,7 @@ impl AppWindow {
             }
             Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
         }
+        true
     }
 
     /// Ask the person for the files the page's input takes, in the host's picker, and answer the
@@ -2271,14 +2280,15 @@ impl AppWindow {
 
     /// What the person typed while the keyboard was on its way to the field a press opened goes
     /// there once the app took the window's request for it.
-    fn release_landing(&mut self) {
+    fn release_landing(&mut self) -> bool {
         if self.landing.is_some() || !self.typed.iter().any(|typed| typed.waits_focus) {
-            return;
+            return false;
         }
         for typed in &mut self.typed {
             typed.waits_focus = false;
         }
         self.send_typed();
+        true
     }
 
     /// Hold the text the person typed while the keyboard was on its way to `field`, the field a

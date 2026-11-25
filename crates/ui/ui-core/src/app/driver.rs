@@ -1432,6 +1432,18 @@ impl Driver {
         self.app.root_widget.as_mut()
     }
 
+    /// Hand the root widget to `change`, which says whether it changed the tree: only a change
+    /// is what the next frame takes up. A host that hands its window what arrived on every turn
+    /// owes no frame for a turn that brought nothing, so an idle tree does no work.
+    pub fn change_root(&mut self, change: impl FnOnce(&mut dyn Widget) -> bool) -> bool {
+        let changed = change(self.app.root_widget.as_mut());
+        if changed {
+            self.app.needs_sync = true;
+            self.app.layout.layout_dirty = true;
+        }
+        changed
+    }
+
     /// The first widget of type `T` in the tree, changed by `visit`, and the frame that shows it.
     pub fn with_widget_mut<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
         let output = visit(self.widget_mut::<T>()?);

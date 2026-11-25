@@ -567,7 +567,7 @@ impl Staged {
         for _ in 0..EXCHANGES {
             // A widget that took a layout switch after its parts were placed asks for the frame
             // that lays them out again, as a live window draws it.
-            if self.window.harness.root_widget_mut().is_layout_dirty() {
+            if self.window.harness.root_widget().is_layout_dirty() {
                 self.window.harness.relayout();
             }
             if !self.window.harness.frame_schedule().needs_animation_frame
@@ -577,8 +577,8 @@ impl Staged {
             }
             // A live window sends the app what its frames asked for on every frame: a list laid
             // out where it stands asks for the rows it shows there. Answer it, then settle again.
-            let owing =
-                self.window().is_some_and(|window| window.owes()) || self.window.instance.pending();
+            let owing = self.window.app_window_ref().is_some_and(AppWindow::owes)
+                || self.window.instance.pending();
             if !owing {
                 break;
             }
@@ -591,14 +591,17 @@ impl Staged {
         let now = ui::time::now();
         Err(format!(
             "the window still moves after {} frames: {:?} asked, {:?} started motions, \
-             {:?} waiting on an answer, the frame held until {:?}, \
-             the schedule {:?} with {} images on their way",
+             {:?} waiting on an answer, a press still drawn moving: {}, the frame held until \
+             {:?}, the schedule {:?} owed for {:?} with {} images on their way",
             ui::headless::capture_frames(SETTLE_BOUND),
             self.window.harness.frame_requesters(),
             ui::motion::frames_wanted_by(now),
             self.window.harness.pending_visual_work(),
+            (self.window.harness.presence())
+                .interaction_animation_demand(now, self.window.harness.theme()),
             self.window.harness.root_widget().holds_frame_until(now),
             self.window.harness.frame_schedule(),
+            self.window.harness.queued_work_sources(),
             ui::image_store::loads_in_flight(),
         ))
     }

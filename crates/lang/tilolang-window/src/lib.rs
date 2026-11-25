@@ -222,18 +222,35 @@ impl Window {
             .downcast_mut::<AppWindow>()
     }
 
+    /// The app window's half of the window, to read what it holds without changing it.
+    #[must_use]
+    pub fn app_window_ref(&self) -> Option<&AppWindow> {
+        self.harness
+            .root_widget()
+            .as_any()?
+            .downcast_ref::<AppWindow>()
+    }
+
+    /// Hand the app window to `change`, which says whether it changed what the window shows:
+    /// only then is the tree laid out again, so an exchange that brought nothing does no work.
+    pub fn change_app_window(&mut self, change: impl FnOnce(&mut AppWindow) -> bool) -> bool {
+        self.harness.change_root(|root| {
+            root.as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .is_some_and(change)
+        })
+    }
+
     /// Let the window and its instance answer each other until neither has more to say, laying the
     /// window out after each answer.
     pub fn exchange(&mut self) {
         for _ in 0..EXCHANGES {
             self.instance.settle_pending();
-            if let Some(window) = self.app_window() {
-                window.flush();
-            }
+            self.change_app_window(AppWindow::flush);
             let moved = self.instance.update();
-            let received = self.app_window().is_some_and(AppWindow::receive);
+            let received = self.change_app_window(AppWindow::receive);
             let owing =
-                self.app_window().is_some_and(|window| window.owes()) || self.instance.pending();
+                self.app_window_ref().is_some_and(AppWindow::owes) || self.instance.pending();
             if !moved && !received && !owing {
                 break;
             }
