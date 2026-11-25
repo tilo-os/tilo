@@ -18,6 +18,8 @@ use tilo_actions::remote::{
     workspace_governance_child, workspace_governance_resource,
 };
 use tilo_peer_state::actions::RemoteDevice;
+use tilo_peer_state::members::MembershipOpCommand;
+use tilo_peer_state::workspace::GovernanceRow;
 use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall};
 use tilo_server::workspaces::WorkspaceSummary;
 use tilo_server_protocol::WorkSetting;
@@ -49,6 +51,44 @@ async fn copies_once(
     .await
 }
 
+/// The changes to who is in `workspace` that `devices` signed, as `holder`
+/// keeps its member list: what it admits, takes out or lets back, and every
+/// governance change to device rows, invitations or the owner.
+async fn membership_signed_by(
+    holder: &Hosted,
+    workspace: &str,
+    devices: &[[u8; 32]],
+) -> Vec<(
+    tilo_peer_state::members::OpId,
+    [u8; 32],
+    MembershipOpCommand,
+)> {
+    let state = holder
+        .host
+        .workspaces()
+        .state(workspace)
+        .await
+        .expect("the holder keeps the workspace");
+    let doc = state
+        .admitted_workspace()
+        .expect("the workspace's member list is admitted");
+    tilo_peer_state::members::ops(doc)
+        .into_iter()
+        .filter(|(_, op)| devices.contains(&op.author.device_public_key))
+        .filter(|(_, op)| match &op.command {
+            MembershipOpCommand::Governance { rows } => rows.iter().any(|row| {
+                matches!(
+                    row,
+                    GovernanceRow::Identities | GovernanceRow::Membership | GovernanceRow::Owner
+                )
+            }),
+            MembershipOpCommand::Compact { .. } => false,
+            _ => true,
+        })
+        .map(|(id, op)| (id, op.author.device_public_key, op.command.clone()))
+        .collect()
+}
+
 /// Wait until `hosted` admits `device` to `workspace`: the link it opens.
 async fn member_at(hosted: &Hosted, device: &TestDevice, workspace: WorkspaceId) -> Linked {
     tilo_test_env::within("the host admits the member", async {
@@ -68,6 +108,11 @@ async fn member_at(hosted: &Hosted, device: &TestDevice, workspace: WorkspaceId)
 /// too few. Back from its files, it takes in what it missed from the other
 /// holders by itself: a member that reaches only it gets what was written
 /// meanwhile, and every holder says nothing falls short any more.
+///
+/// No person tells the servers to do any of it, so neither signs a change to
+/// who is in the workspace: handed the workspace, each signs at most its own
+/// row, and the catch-up, the reconnect and the repair after it add
+/// no membership change of theirs to what any holder keeps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
@@ -131,6 +176,20 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
                 .holders
                 .iter()
                 .all(|holder| holder.role == CopyRole::KeyHolder)
+        );
+    }
+
+    // Handed the workspace, each server signed its own row and nothing else.
+    let servers = [nas.device_pubkey(), server.device_pubkey()];
+    let handed =
+        membership_signed_by(holders[0].as_ref().unwrap(), &workspace.workspace, &servers).await;
+    for device in servers {
+        let own: Vec<_> = handed.iter().filter(|(_, by, _)| *by == device).collect();
+        assert!(
+            own.len() <= 1
+                && own.iter().all(|(_, _, command)| matches!(command,
+                    MembershipOpCommand::Governance { rows } if rows == &[GovernanceRow::Identities])),
+            "a server handed a workspace signs its own row and nothing else: {handed:?}"
         );
     }
 
@@ -206,6 +265,11 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
             |status| status.satisfied() && status.holders.iter().all(|holder| holder.current),
         )
         .await;
+        assert_eq!(
+            membership_signed_by(holder, &workspace.workspace, &servers).await,
+            handed,
+            "catching up, reconnecting and repairing, a server signs no membership change"
+        );
     }
     drop((on_laptop, on_server));
     for holder in holders.into_iter().flatten() {
