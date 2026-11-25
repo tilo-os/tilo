@@ -12,6 +12,9 @@ use super::{Activation, Card};
 pub struct CardProps {
     /// What the card stands for, named in its head.
     pub title: Option<String>,
+    /// What assistive technology calls the card, when its title alone does not say it: the title
+    /// unless given.
+    pub accessible_name: Option<String>,
     /// How many things the card lists, as a count beside its title.
     pub count: Option<i64>,
     /// The resource the card summarizes.
@@ -51,6 +54,7 @@ impl Described for Card {
     fn from_props(key: &str, props: CardProps) -> Self {
         let CardProps {
             title,
+            accessible_name,
             count,
             item: _,
             selected,
@@ -66,6 +70,9 @@ impl Described for Card {
             |column, part| column.push_part(crate::widget::arrange::Part::new(part)),
         );
         let mut card = Self::new(Box::new(column)).selected(selected);
+        if let Some(name) = accessible_name.filter(|name| !name.is_empty()) {
+            card = card.with_accessible_name(name);
+        }
         if !activate.is_none() {
             card.activation = Activation::new(key);
             card.activation.set_event(activate);
@@ -87,6 +94,7 @@ impl Described for Card {
     fn set_props(&mut self, props: CardProps) -> bool {
         let CardProps {
             title,
+            accessible_name,
             count,
             item: _,
             selected,
@@ -94,6 +102,7 @@ impl Described for Card {
             activate,
             hover,
         } = props;
+        self.accessible_name = accessible_name.filter(|name| !name.is_empty());
         self.hover = hover;
         self.set_selected(selected);
         let title = title.filter(|title| !title.is_empty());

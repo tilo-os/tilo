@@ -229,6 +229,7 @@ fn card_body(
         key,
         CardProps {
             title: None,
+            accessible_name: None,
             count: None,
             item,
             selected,

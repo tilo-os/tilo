@@ -9,10 +9,13 @@
 view osd_readout() {
     let o = device.osd
     if o.visible {
-        row(at: .bottom, fill, align: .center, distribute: .center, padding: .related) {
+        row(fill, align: .center, distribute: .center, padding: .related) {
             if let level = o.level {
                 let glyph = o.glyph ?? ""
-                ui.Card(title: osd_name(o)) {
+                // A screen reader hears whose level it is and what it now reads, as one reading:
+                // the pill's two rows are one answer.
+                let spoken = "{osd_name(o)}, {osd_value(o, level)}"
+                ui.Card(title: osd_name(o), accessible_name: spoken) {
                     row(gap: .related, align: .center) {
                         ui.Icon(
                             if glyph == "headphones" {

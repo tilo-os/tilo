@@ -897,6 +897,13 @@
           }
         },
         {
+          "name": "accessible_name",
+          "doc": "What assistive technology calls the card, when its title alone does not say it: the title unless given.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "count",
           "doc": "How many things the card lists, as a count beside its title.",
           "type": {

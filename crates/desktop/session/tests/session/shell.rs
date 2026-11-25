@@ -91,7 +91,8 @@ pub(super) fn held_clock() -> ui::time::testing::SharedWall {
 }
 
 /// The readout names the device it changed, and the level is the bar: a pill as wide as what it
-/// reads, two rows (the device and the value above the bar) for a level, one for a mode change.
+/// reads, standing at the foot of the display, two rows (the device and the value above the bar)
+/// for a level, one for a mode change.
 #[test]
 fn the_readout_names_its_device_and_the_level_is_the_bar() {
     let _settled = ui::motion::testing::settled();
@@ -128,25 +129,27 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
         played.accessible_labels()
     );
 
-    // On a 1280 by 800 output the pill rests one step of sixty-four above the screen's foot,
-    // centred, two rows of a device name and value above the bar: nothing of the shell lights up
-    // outside it, so it takes no more room than what it reads.
+    // The pill stands on the display, at the foot the shell anchors the readout to and centred on
+    // it, as wide as what it reads: nothing of the shell lights up outside it, so it takes no more
+    // room than what it reads.
     let (left, top, right, bottom) =
         lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
             .expect("the readout paints something");
     let (width, centre) = (right - left, usize::midpoint(left, right));
-    assert!((668..=676).contains(&top), "the pill's top is at {top}");
-    assert!(
-        (733..=739).contains(&bottom),
-        "the pill's bottom is at {bottom}"
+    let (screen_width, screen_height) = (
+        usize::try_from(WIDTH).expect("width"),
+        usize::try_from(HEIGHT).expect("height"),
     );
     assert!(
-        (60..=68).contains(&(bottom - top)),
-        "the pill is {} high",
-        bottom - top
+        right <= screen_width && bottom <= screen_height,
+        "the readout stands on the display: ({left}, {top}, {right}, {bottom})"
     );
     assert!(
-        (636..=644).contains(&centre),
+        top > screen_height / 2,
+        "the readout stands at the foot, clear of the bar: its top is at {top}"
+    );
+    assert!(
+        (screen_width / 2 - 4..=screen_width / 2 + 4).contains(&centre),
         "the pill is centred at {centre}"
     );
     assert!(
@@ -181,16 +184,32 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
         "a mode change is said in words: {:?}",
         changed.accessible_labels()
     );
-    let (_, top, _, bottom) = lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
-        .expect("the hint paints something");
+    let (hint_left, hint_top, hint_right, hint_bottom) =
+        lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
+            .expect("the hint paints something");
     assert!(
-        (44..=52).contains(&(bottom - top)),
-        "the hint pill is {} high: one row",
-        bottom - top
+        hint_right <= screen_width && hint_bottom <= screen_height,
+        "the hint stands on the display: \
+         ({hint_left}, {hint_top}, {hint_right}, {hint_bottom})"
     );
     assert!(
-        (733..=739).contains(&bottom),
-        "the hint's bottom is at {bottom}"
+        hint_top > screen_height / 2,
+        "the hint stands at the foot too: its top is at {hint_top}"
+    );
+    assert!(
+        hint_bottom.abs_diff(bottom) <= 1,
+        "a mode change rests on the same line as a level: {hint_bottom} and {bottom}"
+    );
+    assert!(
+        hint_bottom - hint_top < bottom - top,
+        "a mode change is one row of words, so its pill is shorter than the level's: {} and {}",
+        hint_bottom - hint_top,
+        bottom - top
+    );
+    let hint_centre = usize::midpoint(hint_left, hint_right);
+    assert!(
+        (screen_width / 2 - 4..=screen_width / 2 + 4).contains(&hint_centre),
+        "the hint is centred at {hint_centre}"
     );
 }
 

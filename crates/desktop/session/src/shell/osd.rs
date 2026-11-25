@@ -3,10 +3,10 @@
 //! just switched, shown on the display whose key changed it and gone a moment after the last
 //! press.
 //!
-//! The session raises it ([`crate::Shared::show_readout`]) and publishes it as `device.osd`, so a
-//! shell in tilolang draws the same pill the native readout draws, from the same words and the same
-//! level, and the two never disagree. Nothing here holds a view: it keeps what the last press said
-//! and when it goes.
+//! The session raises it ([`crate::Shared::show_readout`], or the readout's own `show` action) and
+//! publishes it as `device.osd`, so the shell in tilolang draws the pill from the same words and
+//! the same level whoever asked for it. Nothing here holds a view: it keeps what the last press
+//! said and when it goes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
+use tilo_resource::Effect as _;
 use tilo_resource::NoEffect;
 use tilo_service::{Service, Started, offer, reading};
-use tilo_session_core::desktop::osd::Osd;
+use tilo_session_core::desktop::osd::{OSD_RESOURCE, Osd, OsdShow, osd_resource};
 
 /// The resource the readout is published as.
 pub(crate) const RESOURCE: &str = "session:osd";
@@ -115,10 +116,15 @@ impl Served {
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<NoEffect>(
-            tilo_resource::LiveRow::typed::<OsdRoot>(RESOURCE, crate::i18n::t("session-osd"))
-                .into_resource(),
-        )]
+        vec![
+            // A key, an agent or a script raises the readout through its published action, as any
+            // caller would.
+            osd_resource(),
+            offer::<NoEffect>(
+                tilo_resource::LiveRow::typed::<OsdRoot>(RESOURCE, crate::i18n::t("session-osd"))
+                    .into_resource(),
+            ),
+        ]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -132,9 +138,22 @@ impl Service for Served {
         &mut self,
         resource: &str,
         action: &str,
-        _arguments: &Map<String, Value>,
+        arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        Err(ApiError::Unknown(ActionAddress::new(resource, action)))
+        let address = ActionAddress::new(resource, action);
+        if resource != OSD_RESOURCE {
+            return Err(ApiError::Unknown(address));
+        }
+        let encoded = tilo_actions::api::encode_json(&[osd_resource()], &address, arguments)?;
+        let show = OsdShow::from_payload(&encoded.payload)
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
+        // The action's caller names the display it shows on; a key's press has the session say
+        // which one changed, and both land in the same reading the shell draws.
+        let display = arguments.get("display").and_then(Value::as_str);
+        self.shown
+            .borrow_mut()
+            .show(readout_of(&show.osd(), display));
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 
     fn poll(&mut self) -> bool {
