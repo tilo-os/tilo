@@ -162,6 +162,8 @@ pub struct Daemon {
     api: std::sync::OnceLock<Arc<tilo_api::direct::Direct>>,
     /// What hands agents' connections on the native endpoint to the device's session.
     agents: super::serve::Agents,
+    /// The connections this part of the daemon serves, closed when it ends.
+    connections: Arc<crate::daemon::Connections>,
     place: DaemonPlace,
     /// The device's directory: its login, its synced folders' settings and its migrations.
     dir: PathBuf,
@@ -1471,6 +1473,13 @@ impl Daemon {
         &self.agents
     }
 
+    /// The connections this part of the daemon serves: each is closed when it ends
+    /// ([`crate::daemon::Connections::end`]), so its clients connect again to the part that
+    /// starts next rather than being answered by this one's services after they ended.
+    pub(crate) fn connections(&self) -> &Arc<crate::daemon::Connections> {
+        &self.connections
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one start, each service opened in the order the next ones need it"
@@ -2195,6 +2204,7 @@ impl Daemon {
             account: Mutex::new(None),
             api: std::sync::OnceLock::new(),
             agents: super::serve::Agents::default(),
+            connections: Arc::default(),
             place,
             dir: identity.place.dir().to_path_buf(),
             _lock: lock,

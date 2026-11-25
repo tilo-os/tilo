@@ -994,6 +994,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         frames,
         to_agents: None,
         launch: None,
+        connections: None,
     });
     let who = ask(OWN, json!({"native": "account#who"}));
     let person = who["person"].as_str().expect("a person now").to_owned();
@@ -1159,6 +1160,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         frames,
         to_agents: None,
         launch: None,
+        connections: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -1402,6 +1404,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         frames,
         to_agents: None,
         launch: None,
+        connections: None,
     });
     // Another person's connection is served by an endpoint of the key it acts as, which says
     // that key and its person as the workspace it serves.
@@ -1442,6 +1445,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
                 frames: crate::device::local::Frames::of_the_device(answers),
                 to_agents: None,
                 launch: None,
+                connections: None,
             }
             .take(stream, slot, Some(seated))
         },
@@ -1771,6 +1775,7 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
         frames,
         to_agents: None,
         launch: None,
+        connections: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -2303,6 +2308,7 @@ fn root_reaches_the_person_in_their_own_daemon_and_the_device_under_the_system_u
             frames,
             to_agents: None,
             launch: None,
+            connections: None,
         });
         let socket = dir.path().join("native.sock");
         let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -2396,6 +2402,7 @@ fn a_plain_socket_peer_is_the_person_only_from_the_persons_own_account() {
         frames,
         to_agents: None,
         launch: None,
+        connections: None,
     });
     // A process the daemon started is the app it runs.
     let launched = 424_242;

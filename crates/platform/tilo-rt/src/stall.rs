@@ -107,6 +107,10 @@ pub fn heartbeat(handle: &tokio::runtime::Handle) {
             return;
         }
         handle.spawn(async move {
+            // A runtime that shuts down drops this task: its heartbeat ends with it, and the
+            // next runtime given one beats in its place. One left marked as beating would read
+            // as a runtime quiet for ever, and hide every later stall behind that one.
+            let _ends = Unbeat(watch);
             loop {
                 watch
                     .beat
@@ -117,6 +121,18 @@ pub fn heartbeat(handle: &tokio::runtime::Handle) {
     }
     #[cfg(target_family = "wasm")]
     let _ = handle;
+}
+
+/// What ends a runtime's heartbeat when its task is dropped with its runtime.
+#[cfg(not(target_family = "wasm"))]
+struct Unbeat(&'static Watch);
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for Unbeat {
+    fn drop(&mut self) {
+        self.0.beat.store(0, Ordering::Release);
+        self.0.beating.store(false, Ordering::Release);
+    }
 }
 
 /// The work `what` is under way until the answer is dropped: past the watch's threshold it is
@@ -346,6 +362,44 @@ mod tests {
             lines[0].starts_with("the runtime's heartbeat: quiet for"),
             "{lines:?}"
         );
+    }
+
+    /// A runtime that shuts down takes its heartbeat with it, and is no stall from then on; the
+    /// next runtime given one beats in its place, so a stall of that one is heard.
+    #[test]
+    fn a_heartbeat_ends_with_its_runtime_and_the_next_one_beats() {
+        watch(Duration::from_secs(3600));
+        let watching = WATCH.get().unwrap();
+        // A runtime driven for a moment, while its heartbeat is waited for.
+        let beats = |runtime: &tokio::runtime::Runtime| {
+            heartbeat(runtime.handle());
+            std::thread::scope(|scope| {
+                scope.spawn(|| runtime.block_on(crate::sleep(Duration::from_millis(300))));
+                let started = Instant::now();
+                while watching.beat.load(Ordering::Acquire) == 0 {
+                    assert!(started.elapsed() < Duration::from_secs(10), "no beat");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+        };
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        };
+        let first = runtime();
+        beats(&first);
+        first.shutdown_timeout(Duration::from_secs(1));
+        assert_eq!(
+            watching.beat.load(Ordering::Acquire),
+            0,
+            "a runtime that shut down still beats"
+        );
+        assert!(!watching.beating.load(Ordering::Acquire));
+        let next = runtime();
+        beats(&next);
+        next.shutdown_timeout(Duration::from_secs(1));
     }
 
     /// The threads' states read on this machine, one per thread.

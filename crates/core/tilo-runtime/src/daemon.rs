@@ -596,7 +596,15 @@ fn serve_device(
         if stop.told() {
             return Ok(());
         }
-        let mut stage = |stage: &str| tracing::debug!(stage, "starting the person's services");
+        // Each stage is the work under way until the next begins: a start that hangs is named
+        // by the stage it hangs in, in the stall's report.
+        let mut watched = None;
+        let mut stage = |stage: &str| {
+            tracing::debug!(stage, "starting the person's services");
+            watched = Some(tilo_rt::stall::doing(format!(
+                "starting the person's services: {stage}"
+            )));
+        };
         let session = match Daemon::start_locked(
             profile,
             &mut stage,
@@ -621,6 +629,8 @@ fn serve_device(
             }
             Err(error) => return Err(error),
         };
+        drop(watched);
+        tracing::info!("this daemon's person's part started");
         // The origin connectors this device starts reach the one dispatch on the connection
         // handed them, admitted as the app the launch record says they run.
         session.hand_actions_to_connectors();
@@ -657,11 +667,36 @@ fn serve_device(
         let held = crate::device::hold(&session, stop);
         person.set(None);
         native.forget_the_person();
+        let closed = session.connections().end();
+        tracing::info!(closed, "the person's part closed the connections it served");
+        // Its workspace service stops answering and saves what it took in, and its endpoint
+        // closes, before the next part opens the same stores and enters as the same device.
+        let workspaces = Arc::clone(session.serving());
+        crate::device::serve::ending_step(
+            "the person's part's workspace service",
+            CLOSING_WORKSPACES,
+            move || {
+                crate::device::workspaces::block_on_owned(async move {
+                    workspaces.shutdown().await;
+                });
+            },
+        );
+        let left = Arc::downgrade(&session);
         drop(session);
         match held.map_err(|error| io::Error::other(format!("{error:#}")))? {
             crate::device::Ended::Stopped => return Ok(()),
             crate::device::Ended::LoggedIn(device) => entered = Some(*device),
         }
+        // What still holds the part that ended keeps its workspaces' stores and links open,
+        // which the part that starts now opens again: said, so a start that waits on them
+        // names why.
+        if left.strong_count() > 0 {
+            tracing::error!(
+                held = left.strong_count(),
+                "the person's part that ended is still held; its services were not let go"
+            );
+        }
+        tracing::info!("this daemon's person's part starts again");
     }
 }
 
@@ -833,8 +868,13 @@ fn the_persons(
         launch: Some(launch_take(session)),
         #[cfg(not(unix))]
         launch: None,
+        connections: Some(Arc::clone(session.connections())),
     }
 }
+
+/// How long the workspace service of a person's part that ended may take to save what it took
+/// in and close its endpoint before the next part starts without waiting for it.
+const CLOSING_WORKSPACES: Duration = Duration::from_secs(10);
 
 /// What finds the app a process the daemon started runs, from the launch records `session`
 /// keeps.
@@ -864,7 +904,9 @@ fn serve_app(
     session: &Arc<Daemon>,
     app: &AppAt,
 ) -> io::Result<()> {
-    serve_as_app(stream, Frames::of_an_app(session, app), slot)
+    // Closed when the person's part ends, as every connection it serves is.
+    let held = session.connections().hold(&stream);
+    serve_as_app(stream, Frames::of_an_app(session, app), (slot, held))
 }
 
 /// Answer `stream` with `frames`, an app's own connection, on a thread of its own while it lasts,
@@ -926,7 +968,9 @@ pub(crate) fn own_lines(session: &Arc<Daemon>) -> crate::device::processes::OwnL
             workspace: workspace.to_owned(),
             pid,
         };
-        serve_as_app(ours, Frames::of_an_app(&session, &at), ())?;
+        // Closed when the person's part ends, as every connection it serves is.
+        let held = session.connections().hold(&ours);
+        serve_as_app(ours, Frames::of_an_app(&session, &at), held)?;
         Ok(runtime_portal::packet::descriptor_of(theirs))
     })
 }
@@ -1044,6 +1088,7 @@ impl Native {
             frames,
             to_agents: None,
             launch: None,
+            connections: None,
         }
         .take(stream, slot, Some(seated))
     }
@@ -1237,6 +1282,9 @@ pub(crate) struct Endpoint<H> {
     /// What starts an app this computer's person asks it to run (`--run-app`): the daemon makes
     /// the launch, so the app is attested as one. `None` for an endpoint that starts nothing.
     launch: Option<Arc<LaunchTake>>,
+    /// The connections of the person's part this endpoint serves for, each closed when that part
+    /// ends; `None` for an endpoint that serves the device alone, which outlives every part.
+    connections: Option<Arc<Connections>>,
 }
 
 /// A launcher's request to start an app on this computer, with what the connection sent with it.
@@ -1265,6 +1313,7 @@ pub(crate) fn agents_endpoint(
         frames: Frames::of_a_persons_program(daemon),
         to_agents: None,
         launch: None,
+        connections: Some(Arc::clone(daemon.connections())),
     }
 }
 
@@ -1287,6 +1336,7 @@ fn key_endpoint(session: &Arc<Daemon>) -> KeyTake {
             agents: None,
             to_agents: None,
             launch: None,
+            connections: Some(Arc::clone(daemon.connections())),
         }
         .take(stream, slot, Some(seated))
     })
@@ -1398,6 +1448,7 @@ impl<H> Clone for Endpoint<H> {
             frames: self.frames.clone(),
             to_agents: self.to_agents.clone(),
             launch: self.launch.clone(),
+            connections: self.connections.clone(),
         }
     }
 }
@@ -1418,6 +1469,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
 
     /// Serve `stream` on this thread until it ends, `read` being what was read of it already.
     pub(crate) fn serve(&self, stream: Stream, read: Vec<u8>, seated: Option<&Seated>) {
+        let _held = self
+            .connections
+            .as_ref()
+            .and_then(|connections| connections.hold(&stream));
         // The first line says whether the client asks to be carried to another device's MCP
         // server, or to have a shell started; anything else is served here, that line first. A
         // descriptor sent with it (a session's window connection, on its start) comes along.
@@ -1510,6 +1565,59 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             self.agents.as_ref(),
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
+        }
+    }
+}
+
+/// The connections a part of the daemon serves for its person: each is closed when that part
+/// ends ([`Self::end`]). One left open would be answered by the services of a part that ended,
+/// refusing every call, and would hold those services' stores and links open under the part
+/// that starts next; closed, its client connects again and reaches the new part.
+#[derive(Default)]
+pub(crate) struct Connections {
+    open: Mutex<std::collections::BTreeMap<u64, Stream>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl Connections {
+    /// Keep `stream` to be closed when the part ends, while the answer is held: the connection
+    /// is served until then. `None` when it cannot be kept, which is said.
+    pub(crate) fn hold(self: &Arc<Self>, stream: &Stream) -> Option<HeldConnection> {
+        let kept = match stream.try_clone() {
+            Ok(kept) => kept,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "a connection to the person's part cannot be closed when the part ends"
+                );
+                return None;
+            }
+        };
+        let number = self.next.fetch_add(1, Ordering::Relaxed);
+        self.open.lock_recover().insert(number, kept);
+        Some(HeldConnection(Arc::downgrade(self), number))
+    }
+
+    /// Close every connection the part serves: what each is reading ends and what it writes
+    /// fails, so its serving ends and lets go of the part's services. The number closed.
+    pub(crate) fn end(&self) -> usize {
+        let open = std::mem::take(&mut *self.open.lock_recover());
+        for stream in open.values() {
+            // A shutdown wakes the reader and never waits: a connection already gone is
+            // closed already.
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        open.len()
+    }
+}
+
+/// A connection [`Connections::hold`] keeps, until its serving ends.
+pub(crate) struct HeldConnection(std::sync::Weak<Connections>, u64);
+
+impl Drop for HeldConnection {
+    fn drop(&mut self) {
+        if let Some(connections) = self.0.upgrade() {
+            connections.open.lock_recover().remove(&self.1);
         }
     }
 }

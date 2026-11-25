@@ -436,8 +436,8 @@ impl ServiceWorkspaces {
     }
 
     /// Close the service and its endpoint, as the process ending would: what the service holds
-    /// is kept, and the next service opened under this device's directory takes it up.
-    #[cfg(test)]
+    /// is kept, and the next service opened under this device's directory takes it up. The
+    /// person's part that ends closes its own so, before the next part opens the same stores.
     pub(crate) async fn shutdown(&self) {
         self.service.shutdown().await;
         self.endpoint.close().await;
