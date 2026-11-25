@@ -1479,39 +1479,6 @@ impl Native {
                 _ => self.device_only(stream, slot, seated),
             };
         }
-        // A caller following a call this device took reads it where it is kept, whichever part
-        // answers by now: the stages it waits on are written there while the person's part
-        // starts, and its answer never waits on that part admitting its first session.
-        if self.answers.keeps_calls() {
-            let native = Arc::clone(self);
-            return std::thread::Builder::new()
-                .name("tilo-native-follow".into())
-                .spawn(move || {
-                    if follow_of_a_call(&stream).is_some_and(|id| native.answers.keeps(&id)) {
-                        if let Err(error) = native.device_only(stream, slot, seated) {
-                            tracing::debug!(
-                                %error,
-                                "a native connection following a call was not served"
-                            );
-                        }
-                        return;
-                    }
-                    if let Err(error) = native.take_person(stream, slot, seated) {
-                        tracing::debug!(%error, "a native connection was not served");
-                    }
-                })
-                .map(drop);
-        }
-        self.take_person(stream, slot, seated)
-    }
-
-    /// Serve `stream` as the person's part, or as the device while it starts ([`Self::take`]).
-    fn take_person(
-        self: &Arc<Self>,
-        stream: Stream,
-        slot: ConnectionSlot,
-        seated: Seated,
-    ) -> io::Result<()> {
         match self.person() {
             // What the device key does is answered by the device's own actions, from the key the
             // daemon took: the person's services do not answer it. The first line is looked at
@@ -1538,14 +1505,17 @@ impl Native {
                 std::thread::Builder::new()
                     .name("tilo-native-wait".into())
                     .spawn(move || {
-                        // What the device key does is answered at once, from the key the daemon
-                        // took: never after the person's services start or a workspace is
+                        // A caller following a call this device already took reads its stage
+                        // where the device keeps it: answered here, not once the person's part
+                        // starts. The call's progress is what a founding waits on.
+                        // What the device key does is answered at once too, from the key the
+                        // daemon took: never after the person's services start or a workspace is
                         // admitted, which a signature does not depend on.
-                        if asks_the_device_key(&stream) {
+                        if follows_a_call(&stream) || asks_the_device_key(&stream) {
                             if let Err(error) = native.device_only(stream, slot, seated) {
                                 tracing::debug!(
                                     %error,
-                                    "a native connection asking the device key was not served"
+                                    "a native connection following a call was not served"
                                 );
                             }
                             return;
@@ -2245,22 +2215,33 @@ fn read_some(stream: &Stream) -> io::Result<Vec<u8>> {
     Ok(chunk.get(..taken).unwrap_or_default().to_vec())
 }
 
-/// The invocation `stream`'s first line follows, when it follows one: the request a caller
-/// makes while it waits on a call. The line is looked at without being read, so the endpoint
-/// that serves the connection reads it, descriptors and all, as it always has.
-fn follow_of_a_call(stream: &Stream) -> Option<tilo_actions::InvocationId> {
+/// Whether `stream`'s first line follows a call by its invocation: the request a caller makes
+/// while it waits on a call the device took. The line is looked at without being read, so the
+/// endpoint that serves the connection reads it, descriptors and all, as it always has.
+#[cfg(unix)]
+fn follows_a_call(stream: &Stream) -> bool {
+    use rustix::net::RecvFlags;
     // What follows an invocation id is written as the connection opens: a client that says
-    // nothing by then follows nothing, and waits as any other connection does.
+    // nothing by then is no follow, and waits as any other connection does.
     const SAYS_WITHIN: Duration = Duration::from_secs(1);
-    let capacity = usize::try_from(FIRST_LINE).unwrap_or(usize::MAX);
-    let mut line = vec![0_u8; capacity];
-    let read = tilo_socket::peek(stream, &mut line, SAYS_WITHIN).unwrap_or(0);
-    let request: Value = serde_json::from_slice(line.get(..read)?).ok()?;
-    request
-        .pointer("/params/arguments/invocation_id")?
-        .as_str()?
-        .parse()
-        .ok()
+    const SAYS: &[u8] = b"\"invocation_id\"";
+    let mut line = [0_u8; 512];
+    if stream.set_read_timeout(Some(SAYS_WITHIN)).is_err() {
+        return false;
+    }
+    let read = match rustix::net::recv(stream, &mut line[..], RecvFlags::PEEK) {
+        Ok((read, _)) => read,
+        Err(_) => 0,
+    };
+    let _ = stream.set_read_timeout(None);
+    line.get(..read)
+        .is_some_and(|read| read.windows(SAYS.len()).any(|window| window == SAYS))
+}
+
+/// No Unix socket to look at: a Windows pipe's first line is left to the endpoint that serves it.
+#[cfg(not(unix))]
+fn follows_a_call(_stream: &Stream) -> bool {
+    false
 }
 
 /// Whether `stream`'s first line asks what the device key does ([`crate::device::key_use`]): one
