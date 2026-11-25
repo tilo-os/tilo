@@ -2013,25 +2013,7 @@ mod tests {
         crate::workspaces::fixtures::list_workspace(desk_workspaces, &made, "Desk", &hint).await;
 
         let server_device = server_cert.device_public_key;
-        tilo_test_env::within(
-            "the server keeps the person's workspace and reads its entry there",
-            async {
-                while !(crate::servers::holds_person_workspace(kept).await
-                    && crate::servers::read(kept)
-                        .await
-                        .is_ok_and(|servers| servers.active(&server_device).is_some()))
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-            },
-        )
-        .await;
-        tilo_test_env::within("the person's list reaches the server", async {
-            while !crate::workspaces::fixtures::lists(kept, &made).await {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await;
+        waits_until_listed(kept, &made, server_device).await;
         // The server keeps it on its own. Should it not, entering it by hand says why, so the
         // failure names the cause rather than only that it waited.
         let on_its_own = tokio::time::timeout(std::time::Duration::from_secs(60), async {
@@ -2052,6 +2034,34 @@ mod tests {
         }
         server.shutdown().await;
         desk.shutdown().await;
+    }
+
+    /// Wait until `kept`, a server's workspaces, keeps the person's workspace, reads its own
+    /// entry there, and holds `made` as the person's list names it.
+    async fn waits_until_listed(
+        kept: &tilo_workspace_service::workspaces::Workspaces,
+        made: &str,
+        server_device: [u8; 32],
+    ) {
+        tilo_test_env::within(
+            "the server keeps the person's workspace and reads its entry there",
+            async {
+                while !(crate::servers::holds_person_workspace(kept).await
+                    && crate::servers::read(kept)
+                        .await
+                        .is_ok_and(|servers| servers.active(&server_device).is_some()))
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+        )
+        .await;
+        tilo_test_env::within("the person's list reaches the server", async {
+            while !crate::workspaces::fixtures::lists(kept, made).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
     }
 
     #[test]

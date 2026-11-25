@@ -73,10 +73,10 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
 
     // B links from what it held before: the change it missed reaches it over
     // the link, not from the seed.
-    let mut b_link = Linked::open_seeded(&server.server, &b, WORKSPACE, seed)
+    let b_link = Linked::open_seeded(&server.server, &b, WORKSPACE, seed)
         .await
         .expect("the workspace admits B's device");
-    crate::common::receives(&mut b_link, |peer| peer.document(APP, RECORD).is_some()).await;
+    crate::common::receives(&b_link, |peer| peer.document(APP, RECORD).is_some()).await;
 
     // Phase `home_host_remembers_authenticated_devices_for_offline_delivery`.
     // Both devices are on the workspace's signed member list, the one record

@@ -46,60 +46,62 @@ fn sealed(
 
 /// `person`'s `device` redeems an editor's invitation to `workspace` that `issuer` issues, and
 /// links to the workspace from what its join alone gave it: the link brings the rest.
-pub(super) async fn joined(
-    server: &Server,
-    issuer: &TestDevice,
-    workspace: &WorkspaceListing,
-    person: &TestUser,
-    device: &TestDevice,
+pub(super) fn joined<'a>(
+    server: &'a Server,
+    issuer: &'a TestDevice,
+    workspace: &'a WorkspaceListing,
+    person: &'a TestUser,
+    device: &'a TestDevice,
     request_id: [u8; 32],
-) -> Result<Linked, String> {
-    let invitation = invite(
-        server,
-        issuer,
-        &workspace.workspace,
-        Role::Editor,
-        person.user_pk,
-    )
-    .await;
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    let admission = WorkspaceJoinClient::new(device_endpoint(device).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.sk,
-            request_id,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Linked, String>> + Send + 'a>> {
+    Box::pin(async move {
+        let invitation = invite(
+            server,
+            issuer,
+            &workspace.workspace,
+            Role::Editor,
+            person.user_pk,
         )
-        .await
-        .map_err(|error| error.to_string())?;
-    let bootstrap = admission.bootstrap;
-    let mut peer = StatePeer::new(
-        &bootstrap.workspace_id.to_string(),
-        bootstrap.host.clone(),
-        bootstrap.certified_roster.clone(),
-        RevocationList::new(),
-        SystemTime::now(),
-    )?;
-    peer.select_exact_admissions()
-        .map_err(|error| error.to_string())?;
-    for bytes in &bootstrap.governance_messages {
-        peer.receive_from(
-            TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
-            postcard::from_bytes(bytes).map_err(|error| error.to_string())?,
+        .await;
+        let verified = decode_and_verify_invitation(
+            &invitation.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        let admission = WorkspaceJoinClient::new(device_endpoint(device).await)
+            .redeem_hint(
+                &verified.grant().transport[0],
+                invitation.signed_invitation.clone(),
+                device.cert.clone(),
+                &device.sk,
+                request_id,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let bootstrap = admission.bootstrap;
+        let mut peer = StatePeer::new(
+            &bootstrap.workspace_id.to_string(),
+            bootstrap.host.clone(),
+            bootstrap.certified_roster.clone(),
+            RevocationList::new(),
             SystemTime::now(),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    Linked::open_seeded(server, device, workspace.workspace_id, peer)
-        .await
-        .map_err(|refusal| refusal.to_string())
+        )?;
+        peer.select_exact_admissions()
+            .map_err(|error| error.to_string())?;
+        for bytes in &bootstrap.governance_messages {
+            peer.receive_from(
+                TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
+                postcard::from_bytes(bytes).map_err(|error| error.to_string())?,
+                SystemTime::now(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Linked::open_seeded(server, device, workspace.workspace_id, peer)
+            .await
+            .map_err(|refusal| refusal.to_string())
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -112,13 +114,13 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
     let workspace = create_and_enter(&server, &laptop, "Lounge").await;
-    let mut bob_link = joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
+    let bob_link = joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
         .await
         .expect("the workspace admits Bob's phone");
-    let mut alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
+    let alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
         .await
         .expect("the workspace admits Alice's laptop");
-    crate::common::receives(&mut alice_link, |peer| {
+    crate::common::receives(&alice_link, |peer| {
         role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
     })
     .await;
@@ -140,7 +142,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
             )
         })
         .expect("Alice's write goes out on her link");
-    crate::common::receives(&mut bob_link, |peer| {
+    crate::common::receives(&bob_link, |peer| {
         text(peer, "topic").as_deref() == Some("welcome")
     })
     .await;

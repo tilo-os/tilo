@@ -11,7 +11,7 @@
 //!
 //! The same sender reaches an app of the person's that is closed, where its
 //! system takes web push instead of the system's own service: a phone
-//! whose UnifiedPush distributor gave it an endpoint hands that endpoint to
+//! whose `UnifiedPush` distributor gave it an endpoint hands that endpoint to
 //! this host with a key of its own (`workspaces::push_addresses`), and is
 //! pushed the title, the body and the buttons of what it is told, encrypted
 //! for that key alone. Nothing in that push says where the thing is, nor a
@@ -610,7 +610,10 @@ impl WebPush {
                 }) else {
                     continue;
                 };
-                if let Err(Pushed::Gone) = self.post(&address.endpoint, &key, &plain).await {
+                if matches!(
+                    self.post(&address.endpoint, &key, &plain).await,
+                    Err(Pushed::Gone)
+                ) {
                     workspaces.forget_push_address(person, address.reached_as(), None);
                     break;
                 }

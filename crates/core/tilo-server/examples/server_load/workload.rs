@@ -303,14 +303,14 @@ impl Fleet {
             .map_err(|error| anyhow!("{error}"))?;
         let sync = DirectSync::new(seed, sk.clone());
         let transport: Arc<dyn Transport> = link.clone();
-        let dialed = sync
+        let running_session = sync
             .dial_over(transport, server_device)
             .await
             .map_err(|refusal| anyhow!("{refusal}"))?;
         let reader = sync.reader();
         let running = sync.clone();
         let task = tokio::spawn(async move {
-            let _ = dialed.run(&running).await;
+            let _ = running_session.run(&running).await;
         });
         let mut caught_up = sync.caught_up();
         tokio::time::timeout(READY, caught_up.wait_for(|caught_up| *caught_up))

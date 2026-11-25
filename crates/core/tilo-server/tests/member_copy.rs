@@ -7,7 +7,7 @@ use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{TestUser, own_service, spawn_server};
 
-const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x6d65_6d62_6572_2d63_6f70_79);
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x006d_656d_6265_722d_636f_7079);
 
 /// A laptop that holds the workspace as a member copy of its server reaches that server, proving
 /// its device there first as the server's workspace link asks, and reads and writes the

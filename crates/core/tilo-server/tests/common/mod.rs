@@ -943,10 +943,10 @@ impl Linked {
         link.prove_member(&device.cert, &device.sk, &host_cert)
             .await
             .map_err(refused)?;
-        let dialed = sync.dial_over(Arc::new(link), host).await?;
+        let running_session = sync.dial_over(Arc::new(link), host).await?;
         let reader = sync.reader();
         let running = sync.clone();
-        let running = tokio::spawn(async move { dialed.run(&running).await });
+        let running = tokio::spawn(async move { running_session.run(&running).await });
         Ok(Self {
             sync,
             actions,
@@ -1020,10 +1020,7 @@ pub async fn next(linked: &mut Linked, mut want: impl FnMut(&Heard) -> bool) -> 
 
 /// Wait until `linked`'s copy holds what `holds` asks of it. The workspace's own changes
 /// before it are passed over.
-pub async fn receives(
-    linked: &mut Linked,
-    mut holds: impl FnMut(&tilo_peer_state::StatePeer) -> bool,
-) {
+pub async fn receives(linked: &Linked, mut holds: impl FnMut(&tilo_peer_state::StatePeer) -> bool) {
     let mut changes = linked.changes();
     tilo_test_env::within("the change arrives", async move {
         loop {

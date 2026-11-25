@@ -253,17 +253,17 @@ fn governed_workspace(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Go
 
         // Bob's link starts from that copy and brings the rest; Alice's holds what the
         // host holds now.
-        let mut bob_link = Linked::open_seeded(&server, &phone, workspace.workspace_id, bob_copy)
+        let bob_link = Linked::open_seeded(&server, &phone, workspace.workspace_id, bob_copy)
             .await
             .expect("the workspace admits Bob's phone");
-        let mut alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
+        let alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
             .await
             .expect("the workspace admits Alice's laptop");
-        crate::common::receives(&mut bob_link, |peer| {
+        crate::common::receives(&bob_link, |peer| {
             role(peer, phone.device_pubkey()) == Some(granted)
         })
         .await;
-        crate::common::receives(&mut alice_link, |peer| {
+        crate::common::receives(&alice_link, |peer| {
             role(peer, laptop.device_pubkey()) == Some(collab_types::Role::Owner)
                 && role(peer, phone.device_pubkey()) == Some(granted)
         })
@@ -319,7 +319,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
             )
         })
         .expect("Alice's write goes out on her link");
-    crate::common::receives(&mut bob_link, |peer| {
+    crate::common::receives(&bob_link, |peer| {
         text(peer, "topic").as_deref() == Some("from Alice")
     })
     .await;
@@ -340,7 +340,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
             )
         })
         .expect("Bob's write goes out on his link");
-    crate::common::receives(&mut alice_link, |peer| {
+    crate::common::receives(&alice_link, |peer| {
         text(peer, "reply").as_deref() == Some("from Bob")
     })
     .await;
@@ -359,7 +359,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
                 ))
             })
             .expect("Alice's turn goes out on her link");
-        crate::common::receives(&mut bob_link, |peer| {
+        crate::common::receives(&bob_link, |peer| {
             text(peer, "turn").as_deref() == Some(said.as_str())
         })
         .await;
@@ -375,7 +375,7 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
                 ))
             })
             .expect("Bob's turn goes out on his link");
-        crate::common::receives(&mut alice_link, |peer| {
+        crate::common::receives(&alice_link, |peer| {
             text(peer, "turn").as_deref() == Some(said.as_str())
         })
         .await;
@@ -582,8 +582,8 @@ type = "String"
         state: _state,
         laptop,
         server,
-        mut alice_link,
-        mut bob_link,
+        alice_link,
+        bob_link,
         ..
     } = governed_workspace(Role::Editor).await;
 
@@ -635,7 +635,7 @@ type = "String"
             )
         })
         .unwrap();
-    crate::common::receives(&mut bob_link, |peer| {
+    crate::common::receives(&bob_link, |peer| {
         text(peer, "topic").is_some() || text(peer, "smuggled").is_some()
     })
     .await;
@@ -695,8 +695,8 @@ params = []
         phone,
         server,
         workspace,
-        mut alice_link,
-        mut bob_link,
+        alice_link,
+        bob_link,
         ..
     } = governed_workspace(Role::Commenter).await;
 
@@ -715,7 +715,7 @@ params = []
             )
         })
         .unwrap();
-    crate::common::receives(&mut bob_link, |peer| text(peer, "topic").is_some()).await;
+    crate::common::receives(&bob_link, |peer| text(peer, "topic").is_some()).await;
     // Signed as Bob's device signs, without his own copy checking it.
     let sign = |doc: &mut AutoCommit, seq: u64| {
         let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&[]));
@@ -764,7 +764,7 @@ params = []
     bob_link
         .send(sign(&mut doc, 1_001))
         .expect("Bob's comment goes out on his link");
-    crate::common::receives(&mut alice_link, |peer| text(peer, "comment").is_some()).await;
+    crate::common::receives(&alice_link, |peer| text(peer, "comment").is_some()).await;
     assert_eq!(
         alice_link.read(|peer| text(peer, "topic")).as_deref(),
         Some("from Alice"),

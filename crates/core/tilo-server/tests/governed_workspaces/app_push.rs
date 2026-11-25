@@ -101,7 +101,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     let mut bob_link = Linked::open(&server, &phone, workspace.workspace_id)
         .await
         .expect("the workspace admits Bob's phone");
-    crate::common::receives(&mut bob_link, |peer| {
+    crate::common::receives(&bob_link, |peer| {
         role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
     })
     .await;
@@ -158,7 +158,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         .unwrap();
 
     // Bob, still on v1, edits: the workspace holds it.
-    crate::common::receives(&mut bob_link, |peer| {
+    crate::common::receives(&bob_link, |peer| {
         peer.governance().app_version(APP).is_some()
     })
     .await;

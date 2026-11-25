@@ -19,7 +19,8 @@ use std::future::Future;
 use tilo_actions::remote::Caller;
 use tilo_server_client::frame::{read_frame_or_eof, write_frame};
 use tilo_server_protocol::page::{
-    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageCall, PageNotice, PageRefusal,
+    MAX_PAGE_FRAME_BYTES, PageAction, PageAddress, PageAnswer, PageAsk, PageCall, PageNotice,
+    PageRefusal, PointerEvent,
 };
 use tilo_server_protocol::web::LINK_PAGE_PATH;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -140,94 +141,8 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                 let Some(ask) = frame.and_then(|frame| serde_json::from_slice::<PageAsk>(&frame).ok()) else {
                     break;
                 };
-                match ask {
-                    PageAsk::Open(address) => {
-                        if let Some((workspace_id, page)) = open.take() {
-                            pages.close(workspace_id, page);
-                        }
-                        // Another page of the same browser: what it was told of the person's
-                        // notifications is told again for the one it opens now.
-                        notices.clear();
-                        let opened = open_page(pages, person, &ready, address, &mut send).await;
-                        if let Ok((workspace_id, page, _)) = &opened {
-                            open = Some((*workspace_id, *page));
-                        }
-                        Some(match opened {
-                            Ok((_, _, answer)) => answer,
-                            Err(refusal) => {
-                                tracing::debug!(?refusal, "a page was refused");
-                                PageAnswer::Refused(refusal)
-                            }
-                        })
-                    }
-                    PageAsk::Act {
-                        id,
-                        target,
-                        action,
-                        signed,
-                    } => Some(match open {
-                        Some((workspace_id, page)) => patched(
-                            pages
-                                .act(
-                                    workspace_id,
-                                    page,
-                                    Some(crate::app_serving::PageAct {
-                                        id,
-                                        target,
-                                        action,
-                                        signed,
-                                    }),
-                                )
-                                .await,
-                        ),
-                        None => PageAnswer::Refused(PageRefusal::Unavailable(
-                            "no page is open".to_owned(),
-                        )),
-                    }),
-                    // The browser carried a call step the page's view asked for: an answer to
-                    // an answer, which the page is not told again.
-                    PageAsk::CallResult { request_id, answer } => {
-                        if let Some((_, page)) = open {
-                            pages.answer_call(page, request_id, answer);
-                        }
-                        None
-                    }
-                    // The browser changed its appearance: the page is drawn in the look it asks
-                    // for, as a window follows the system it runs on.
-                    PageAsk::Appearance { dark } => Some(match open {
-                        Some((workspace_id, page)) => {
-                            match pages.appearance(workspace_id, page, dark).await {
-                                Some(Ok(Some(opened))) => PageAnswer::Shown {
-                                    title: opened.title,
-                                    css: opened.css,
-                                    body: opened.body,
-                                },
-                                Some(Ok(None)) | None => PageAnswer::Patched(Vec::new()),
-                                Some(Err(refusal)) => PageAnswer::Refused(refusal),
-                            }
-                        }
-                        // Nothing is shown yet: no page's look changes.
-                        None => PageAnswer::Patched(Vec::new()),
-                    }),
-                    // The pointer moved on the page: the gesture is the view's, carried into
-                    // its widgets as a device's pointer is, and the page hears what it changed.
-                    PageAsk::Pointer(event) => Some(match open {
-                        Some((workspace_id, page)) => {
-                            patched(pages.pointer(workspace_id, page, event).await)
-                        }
-                        None => PageAnswer::Refused(PageRefusal::Unavailable(
-                            "no page is open".to_owned(),
-                        )),
-                    }),
-                    // The person dismissed a notification the record of their devices holds: it
-                    // is answered there, so it leaves every device of theirs.
-                    PageAsk::AnswerNotice { id } => {
-                        if let (Some(_), Some(device)) = (open, person.device_public_key()) {
-                            pages.answer_notice(&person, device, &id).await;
-                        }
-                        None
-                    }
-                }
+                answer_ask(pages, person, &ready, &mut open, &mut notices, &mut send, ask)
+                    .await
             }
             () = tokio::time::sleep(follow_in), if open.is_some() => {
                 followed = true;
@@ -247,10 +162,10 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
             }
             () = asked_for_a_call, if open.is_some() => None,
         };
-        if let Some(answer) = answer {
-            if write(&mut send, &answer).await.is_err() {
-                break;
-            }
+        if let Some(answer) = answer
+            && write(&mut send, &answer).await.is_err()
+        {
+            break;
         }
         // What the person's devices show now, read from the record they all share: a page raised
         // as a browser notification while it is not in front, and taken away when the record no
@@ -258,7 +173,7 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
         if followed && open.is_some() && notices_read.elapsed() >= FOLLOW_EVERY {
             notices_read = std::time::Instant::now();
             let now_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-            if let Some(shown) = pages.notices(&person, now_ms).await
+            if let Some(shown) = pages.notices(person, now_ms).await
                 && shown != notices
             {
                 notices.clone_from(&shown);
@@ -292,6 +207,131 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
     reader.abort();
     if let Some((workspace_id, page)) = open {
         pages.close(workspace_id, page);
+    }
+}
+
+/// Answer one ask from the page.
+async fn answer_ask<W, F, Fut>(
+    pages: &dyn AppPages,
+    person: &Caller,
+    ready: &F,
+    open: &mut Option<(WorkspaceId, u64)>,
+    notices: &mut Vec<PageNotice>,
+    send: &mut W,
+    ask: PageAsk,
+) -> Option<PageAnswer>
+where
+    W: AsyncWrite + Unpin + Send,
+    F: Fn(WorkspaceId, String) -> Fut + Sync,
+    Fut: Future<Output = Result<bool, PageRefusal>> + Send,
+{
+    match ask {
+        PageAsk::Open(address) => {
+            if let Some((workspace_id, page)) = open.take() {
+                pages.close(workspace_id, page);
+            }
+            // Another page of the same browser: what it was told of the person's
+            // notifications is told again for the one it opens now.
+            notices.clear();
+            let opened = open_page(pages, person, ready, address, send).await;
+            if let Ok((workspace_id, page, _)) = &opened {
+                *open = Some((*workspace_id, *page));
+            }
+            Some(match opened {
+                Ok((_, _, answer)) => answer,
+                Err(refusal) => {
+                    tracing::debug!(?refusal, "a page was refused");
+                    PageAnswer::Refused(refusal)
+                }
+            })
+        }
+        PageAsk::Act {
+            id,
+            target,
+            action,
+            signed,
+        } => Some(answer_act(pages, *open, id, target, action, signed).await),
+        // The browser carried a call step the page's view asked for: an answer to
+        // an answer, which the page is not told again.
+        PageAsk::CallResult { request_id, answer } => {
+            if let Some((_, page)) = *open {
+                pages.answer_call(page, request_id, answer);
+            }
+            None
+        }
+        PageAsk::Appearance { dark } => Some(answer_appearance(pages, *open, dark).await),
+        PageAsk::Pointer(event) => Some(answer_pointer(pages, *open, event).await),
+        // The person dismissed a notification the record of their devices holds: it
+        // is answered there, so it leaves every device of theirs.
+        PageAsk::AnswerNotice { id } => {
+            if let (Some(_), Some(device)) = (*open, person.device_public_key()) {
+                pages.answer_notice(person, device, &id).await;
+            }
+            None
+        }
+    }
+}
+
+/// What the person did on the open page: `action` on the element numbered `id`.
+async fn answer_act(
+    pages: &dyn AppPages,
+    open: Option<(WorkspaceId, u64)>,
+    id: u32,
+    target: Option<String>,
+    action: PageAction,
+    signed: Option<Box<tilo_actions::remote::SignedCall>>,
+) -> PageAnswer {
+    match open {
+        Some((workspace_id, page)) => patched(
+            pages
+                .act(
+                    workspace_id,
+                    page,
+                    Some(crate::app_serving::PageAct {
+                        id,
+                        target,
+                        action,
+                        signed,
+                    }),
+                )
+                .await,
+        ),
+        None => PageAnswer::Refused(PageRefusal::Unavailable("no page is open".to_owned())),
+    }
+}
+
+/// The browser asked for the look it runs in: the page is drawn in it, as a
+/// window follows the system it runs on.
+async fn answer_appearance(
+    pages: &dyn AppPages,
+    open: Option<(WorkspaceId, u64)>,
+    dark: bool,
+) -> PageAnswer {
+    match open {
+        Some((workspace_id, page)) => match pages.appearance(workspace_id, page, dark).await {
+            Some(Ok(Some(opened))) => PageAnswer::Shown {
+                title: opened.title,
+                css: opened.css,
+                body: opened.body,
+            },
+            Some(Ok(None)) | None => PageAnswer::Patched(Vec::new()),
+            Some(Err(refusal)) => PageAnswer::Refused(refusal),
+        },
+        // Nothing is shown yet: no page's look changes.
+        None => PageAnswer::Patched(Vec::new()),
+    }
+}
+
+/// The pointer moved on the page: the gesture is the view's, carried into its
+/// widgets as a device's pointer is, and the page hears what it changed.
+async fn answer_pointer(
+    pages: &dyn AppPages,
+    open: Option<(WorkspaceId, u64)>,
+    event: PointerEvent,
+) -> PageAnswer {
+    match open {
+        Some((workspace_id, page)) => patched(pages.pointer(workspace_id, page, event).await),
+        None => PageAnswer::Refused(PageRefusal::Unavailable("no page is open".to_owned())),
     }
 }
 

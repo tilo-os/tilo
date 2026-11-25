@@ -314,7 +314,7 @@ fn says(bytes: &[u8], body: &str) -> bool {
         doc.get(ROOT, "body")
             .ok()
             .flatten()
-            .is_some_and(|(said, _)| said.to_str() == Some(body))
+            .is_some_and(|(said, _)| said.as_str() == Some(body))
     })
 }
 
@@ -445,12 +445,12 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
         &laptop.cert,
         "the host is this device"
     );
-    let mut remote = own_device_enters(&alice, &phone, &hosted, &home).await;
+    let remote = own_device_enters(&alice, &phone, &hosted, &home).await;
 
     // What the device serving the workspace writes in process reaches the
     // remote member's link.
     host_writes(&hosted, home.workspace_id, "note:laptop", "from the laptop").await;
-    receives(&mut remote, |peer| {
+    receives(&remote, |peer| {
         copy_says(peer, "note:laptop", "from the laptop")
     })
     .await;
@@ -542,9 +542,9 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
     let link = dial_records(&dialer, &phone, &laptop.cert)
         .await
         .expect("the installed host admits the device that entered it");
-    let dialed = sync.dial_over(Arc::new(link), laptop.device_pubkey()).await;
+    let joined = sync.dial_over(Arc::new(link), laptop.device_pubkey()).await;
     assert!(
-        dialed.is_ok(),
+        joined.is_ok(),
         "the installed host serves the workspace to the device that entered it"
     );
     router.shutdown().await.unwrap();

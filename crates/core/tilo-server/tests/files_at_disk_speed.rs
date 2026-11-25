@@ -24,7 +24,7 @@ use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{TestUser, own_service, spawn_server};
 
-const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x6669_6c65_7370_6565_64);
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x0066_696c_6573_7065_6564);
 
 /// How long the move may take against the plain copy of the same bytes.
 const WITHIN_COPY: u32 = 2;
@@ -65,10 +65,18 @@ impl Size {
     /// The length of the `index`th file: most are small, as a workspace's files are, from 1 KiB
     /// to about 60 KiB, and every so often one is large.
     fn len_of(&self, index: usize) -> usize {
-        if index % self.large_every == self.large_every - 1 {
+        if index.checked_rem(self.large_every) == Some(self.large_every.saturating_sub(1)) {
             return self.large;
         }
-        1024 + (index.wrapping_mul(7919) % 59) * 1024 + index % 1000
+        1024_usize
+            .saturating_add(
+                index
+                    .wrapping_mul(7919)
+                    .checked_rem(59)
+                    .unwrap_or(0)
+                    .saturating_mul(1024),
+            )
+            .saturating_add(index.checked_rem(1000).unwrap_or(0))
     }
 }
 
@@ -126,10 +134,23 @@ fn plain_copy(from: &Path, to: &Path, names: &[String]) -> Duration {
     started.elapsed()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "run by the files-at-disk-speed check"]
-async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
-    // `TILO_FILES_SPEED_LOG` names what to log while the files move (a tracing filter).
+/// Where the host signs it is reached, as the server names its own address.
+async fn host_hint(
+    hosted: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+    server_key: [u8; 32],
+) -> tilo_peer_state::join::TransportHint {
+    hosted
+        .hosts(workspace)
+        .await
+        .expect("the server signs where it is reached")
+        .into_iter()
+        .find(|hint| hint.host.device_public_key == server_key)
+        .expect("the server names its own address")
+}
+
+/// `TILO_FILES_SPEED_LOG` names what to log while the files move (a tracing filter).
+fn init_speed_log() {
     if let Ok(filter) = std::env::var("TILO_FILES_SPEED_LOG") {
         let _ = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -137,60 +158,88 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
             .with_writer(std::io::stderr)
             .try_init();
     }
-    let size = Size::chosen();
-    let ada = TestUser::fresh("Ada");
-    let server_device = ada.enrol("home-server", DeviceCapabilities::member());
-    let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
-    let server_key = server_device.device_pubkey();
-    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop]).await;
-    let hosted = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces");
-    let workspace = WORKSPACE.to_string();
-    let hint = hosted
-        .hosts(&workspace)
-        .await
-        .expect("the server signs where it is reached")
-        .into_iter()
-        .find(|hint| hint.host.device_public_key == server_key)
-        .expect("the server names its own address");
+}
 
-    let state = tempfile::tempdir().unwrap();
-    let (service, keys) = own_service(state.path(), &laptop).await;
-    let copies = service.workspaces().clone();
-    tilo_test_env::within(
-        "the laptop holds the workspace as a member copy",
-        copies.hold_as_member(WORKSPACE, &hint),
+/// How long the move may take, or longer when `TILO_FILES_SPEED_WAIT` (seconds) says so: a run
+/// that waits past the bound measures how long a slower move is.
+fn waited_for(allowed: Duration) -> Duration {
+    std::env::var("TILO_FILES_SPEED_WAIT")
+        .ok()
+        .and_then(|seconds| seconds.parse().ok())
+        .map_or(allowed, Duration::from_secs)
+        .max(allowed)
+}
+
+/// What a move measured, for its report.
+struct Figures {
+    files: usize,
+    pieces: usize,
+    total: u64,
+    copy_took: Duration,
+    naming_took: Duration,
+    arrived: usize,
+    took: Duration,
+    rate: f64,
+    live: Option<Duration>,
+}
+
+fn move_report(figures: &Figures) -> String {
+    let Figures {
+        files,
+        pieces,
+        total,
+        copy_took,
+        naming_took,
+        arrived,
+        took,
+        rate,
+        live,
+    } = *figures;
+    format!(
+        "{} files, {pieces} pieces, {} MB: the plain copy took {copy_took:.2?}; the move named \
+         them in {naming_took:.2?} and the server kept {arrived} of {pieces} pieces in {took:.2?} \
+         ({rate:.0} pieces/s, {:.1} MB/s, {:.1}x the copy); a record written meanwhile took \
+         {live:.2?}",
+        files,
+        total / 1_000_000,
+        (f64::from(u32::try_from(total).unwrap_or(u32::MAX))
+            * f64::from(u32::try_from(arrived).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(pieces).unwrap_or(u32::MAX)))
+            / 1_000_000.0
+            / took.as_secs_f64(),
+        took.as_secs_f64() / copy_took.as_secs_f64(),
     )
-    .await
-    .expect("the server admits the laptop's membership");
+}
 
-    // The laptop's files, as its mounted folder keeps them: their bytes in its content store,
-    // answered to whoever asks the workspace for them, and the tree that names them synced.
-    let store = Arc::new(
-        tilo_fs::ContentStore::open(state.path().join("content"))
-            .await
-            .expect("the laptop's content store opens"),
+/// The move met the bound, and the record written while it moved reached the server within a
+/// frame.
+fn assert_move(
+    lacking: &[String],
+    took: Duration,
+    allowed: Duration,
+    live: Option<Duration>,
+    report: &str,
+) {
+    assert!(
+        lacking.is_empty() && took <= allowed,
+        "the move took more than {WITHIN_COPY}x the plain copy ({allowed:.2?}): {report}"
     );
-    let routed = tilo_workspace_service::content::routes_content(
-        &copies,
-        Arc::new(tilo_workspace_service::files::StoreShelf(Arc::clone(
-            &store,
-        ))),
+    let live = live.expect("a record was written while the files moved");
+    assert!(
+        live <= LIVE_WITHIN,
+        "a record written while the files moved took longer than a frame: {report}"
     );
-    let tree = tilo_workspace_service::files::start(
-        &copies,
-        WORKSPACE,
-        &state.path().join("tree"),
-        (laptop.device_pubkey(), laptop.cert.user_public_key),
-        Some(Arc::clone(&store)),
-        Some(Arc::clone(&routed.content)),
-    )
-    .await
-    .expect("the laptop's tree opens");
+}
 
-    // The same files twice: in a directory, for the plain copy, and in the laptop's store.
+/// Write this run's files twice — into a directory for the plain copy and into the laptop's
+/// content store — time the plain copy, and name every file in the laptop's tree. Answers what
+/// the store names, their bytes, the copy's time, and when the tree was named and how long that
+/// took.
+async fn prepare_files(
+    store: &tilo_fs::ContentStore,
+    size: &Size,
+    tree: &tilo_fs::tree_sync::TreeSync,
+) -> (Vec<String>, u64, Duration, Instant, Duration) {
     let plain = tempfile::tempdir().unwrap();
     let (from, to) = (plain.path().join("from"), plain.path().join("to"));
     std::fs::create_dir_all(&from).unwrap();
@@ -209,27 +258,23 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
             .expect("the laptop keeps the file")
             .expect("a file with bytes has content");
         let manifest = store.manifest(hash).await.expect("its manifest is kept");
-        blobs.push(hash.to_hex().to_string());
+        blobs.push(hash.to_hex().clone());
         blobs.extend(
             manifest
                 .chunks()
                 .iter()
                 .map(|chunk| hex::encode(chunk.hash)),
         );
-        total += bytes.len() as u64;
+        total = total.saturating_add(bytes.len() as u64);
         files.push((name.clone(), hash, bytes.len() as u64));
         names.push(name);
     }
     blobs.sort_unstable();
     blobs.dedup();
-    let pieces = blobs.len();
 
-    let copied = plain_copy(&from, &to, &names);
+    let copy_took = plain_copy(&from, &to, &names);
     drop(plain);
 
-    // Subscribed before the move: the write made while the files move is the first the server
-    // takes after it, since moving content writes no record.
-    let mut writes = hosted.document_writes();
     // The move: the tree names the files, and the server takes in all they are made of.
     let started = Instant::now();
     tree.change(None, |namespace| {
@@ -252,21 +297,24 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
     })
     .await
     .expect("the workspace takes the laptop's tree");
-    let named = started.elapsed();
+    let naming_took = started.elapsed();
+    (blobs, total, copy_took, started, naming_took)
+}
 
-    let kept = server
-        .server
-        .content()
-        .get(&workspace)
-        .expect("the server keeps the workspace's content");
-    let allowed = copied.saturating_mul(WITHIN_COPY).max(AT_LEAST);
-    // `TILO_FILES_SPEED_WAIT` (seconds) waits longer than the move is allowed, to measure how
-    // long it takes when it is slower than that.
-    let waited = std::env::var("TILO_FILES_SPEED_WAIT")
-        .ok()
-        .and_then(|seconds| seconds.parse().ok())
-        .map_or(allowed, Duration::from_secs)
-        .max(allowed);
+/// Wait until the server keeps the pieces the laptop's tree named, writing a record once a
+/// quarter of them are kept: answers the pieces still lacking and how long that write took.
+async fn wait_for_move(
+    kept: &tilo_content::ContentStore,
+    tree: &tilo_fs::tree_sync::TreeSync,
+    writes: &mut tokio::sync::broadcast::Receiver<
+        tilo_workspace_service::workspaces::ResourceWrite,
+    >,
+    workspace: &str,
+    started: Instant,
+    waited: Duration,
+    blobs: Vec<String>,
+    pieces: usize,
+) -> (Vec<String>, Option<Duration>) {
     let mut lacking = blobs;
     let mut told = Instant::now();
     let mut live = None;
@@ -274,7 +322,10 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
         lacking.retain(|blob| !kept.has(blob));
         // Once a quarter of the pieces are kept, with the rest on their way, the laptop writes a
         // record, and the server takes it in as fast as when nothing else moves.
-        if live.is_none() && lacking.len() * 4 <= pieces * 3 && !lacking.is_empty() {
+        if live.is_none()
+            && lacking.len().saturating_mul(4) <= pieces.saturating_mul(3)
+            && !lacking.is_empty()
+        {
             while writes.try_recv().is_ok() {}
             let edited = Instant::now();
             tree.change(None, |namespace| {
@@ -304,7 +355,7 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
             eprintln!(
                 "{:>6.1?}: {} of {pieces} pieces kept",
                 started.elapsed(),
-                pieces - lacking.len()
+                pieces.saturating_sub(lacking.len())
             );
         }
         // Each look costs a lookup per piece still lacking: often enough to time the move
@@ -312,29 +363,100 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     lacking.retain(|blob| !kept.has(blob));
+    (lacking, live)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "run by the files-at-disk-speed check"]
+async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
+    init_speed_log();
+    let size = Size::chosen();
+    let ada = TestUser::fresh("Ada");
+    let server_device = ada.enrol("home-server", DeviceCapabilities::member());
+    let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
+    let server_key = server_device.device_pubkey();
+    let server = spawn_server(&ada, server_device, &[WORKSPACE], &[&laptop]).await;
+    let hosted = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let workspace = WORKSPACE.to_string();
+    let hint = host_hint(hosted, &workspace, server_key).await;
+
+    let state = tempfile::tempdir().unwrap();
+    let (service, keys) = own_service(state.path(), &laptop).await;
+    let copies = service.workspaces().clone();
+    tilo_test_env::within(
+        "the laptop holds the workspace as a member copy",
+        copies.hold_as_member(WORKSPACE, &hint),
+    )
+    .await
+    .expect("the server admits the laptop's membership");
+
+    // The laptop's files, in its content store, answered for the workspace and named by its tree.
+    let store = Arc::new(
+        tilo_fs::ContentStore::open(state.path().join("content"))
+            .await
+            .expect("the laptop's content store opens"),
+    );
+    let routed = tilo_workspace_service::content::routes_content(
+        &copies,
+        Arc::new(tilo_workspace_service::files::StoreShelf(Arc::clone(
+            &store,
+        ))),
+    );
+    let tree = tilo_workspace_service::files::start(
+        &copies,
+        WORKSPACE,
+        &state.path().join("tree"),
+        (laptop.device_pubkey(), laptop.cert.user_public_key),
+        Some(Arc::clone(&store)),
+        Some(Arc::clone(&routed.content)),
+    )
+    .await
+    .expect("the laptop's tree opens");
+
+    // The same files twice: in a directory, for the plain copy, and in the laptop's store.
+    // Subscribed before the move, since moving content writes no record.
+    let mut writes = hosted.document_writes();
+    let (blobs, total, copy_took, started, naming_took) = prepare_files(&store, &size, &tree).await;
+    let pieces = blobs.len();
+
+    let kept = server
+        .server
+        .content()
+        .get(&workspace)
+        .expect("the server keeps the workspace's content");
+    let allowed = copy_took.saturating_mul(WITHIN_COPY).max(AT_LEAST);
+    let waited = waited_for(allowed);
+    let (mut lacking, live) = wait_for_move(
+        &kept,
+        &tree,
+        &mut writes,
+        &workspace,
+        started,
+        waited,
+        blobs,
+        pieces,
+    )
+    .await;
+    lacking.retain(|blob| !kept.has(blob));
     let took = started.elapsed();
     let arrived = pieces - lacking.len();
-    let rate = arrived as f64 / took.as_secs_f64();
-    let report = format!(
-        "{} files, {pieces} pieces, {} MB: the plain copy took {copied:.2?}; the move named \
-         them in {named:.2?} and the server kept {arrived} of {pieces} pieces in {took:.2?} \
-         ({rate:.0} pieces/s, {:.1} MB/s, {:.1}x the copy); a record written meanwhile took \
-         {live:.2?}",
-        size.files,
-        total / 1_000_000,
-        (total as f64 * arrived as f64 / pieces as f64) / 1_000_000.0 / took.as_secs_f64(),
-        took.as_secs_f64() / copied.as_secs_f64(),
-    );
+    let rate = f64::from(u32::try_from(arrived).unwrap_or(u32::MAX)) / took.as_secs_f64();
+    let report = move_report(&Figures {
+        files: size.files,
+        pieces,
+        total,
+        copy_took,
+        naming_took,
+        arrived,
+        took,
+        rate,
+        live,
+    });
     eprintln!("{report}");
-    assert!(
-        lacking.is_empty() && took <= allowed,
-        "the move took more than {WITHIN_COPY}x the plain copy ({allowed:.2?}): {report}"
-    );
-    let live = live.expect("a record was written while the files moved");
-    assert!(
-        live <= LIVE_WITHIN,
-        "a record written while the files moved took longer than a frame: {report}"
-    );
+    assert_move(&lacking, took, allowed, live, &report);
 
     drop(tree);
     drop(routed);

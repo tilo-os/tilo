@@ -124,7 +124,7 @@ fn says(bytes: &[u8], body: &str) -> bool {
         doc.get(ROOT, "body")
             .ok()
             .flatten()
-            .is_some_and(|(said, _)| said.to_str() == Some(body))
+            .is_some_and(|(said, _)| said.as_str() == Some(body))
     })
 }
 
@@ -739,7 +739,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
         "from the laptop",
     )
     .await;
-    receives(&mut on_holder, |peer| {
+    receives(&on_holder, |peer| {
         copy_says(peer, "note:laptop", "from the laptop")
     })
     .await;
@@ -890,7 +890,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         "from the laptop",
     )
     .await;
-    receives(&mut on_holder, |peer| {
+    receives(&on_holder, |peer| {
         copy_says(peer, "note:laptop", "from the laptop")
     })
     .await;
@@ -1549,7 +1549,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
     }
 
     // A change made on the laptop reaches the tablet through the store.
-    let mut on_store = member_at(&store, &tablet, workspace.workspace_id).await;
+    let on_store = member_at(&store, &tablet, workspace.workspace_id).await;
     assert!(
         names(&governor, &workspace.workspace, &laptop).await,
         "the governor's workspace names its own device"
@@ -1561,7 +1561,7 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
         "through the store",
     )
     .await;
-    receives(&mut on_store, |peer| {
+    receives(&on_store, |peer| {
         copy_says(peer, "note:store", "through the store")
     })
     .await;
@@ -1725,9 +1725,9 @@ async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     }
 
     let on_one = member_at(&one, &phone, workspace.workspace_id).await;
-    let mut on_other = member_at(&other, &tablet, workspace.workspace_id).await;
+    let on_other = member_at(&other, &tablet, workspace.workspace_id).await;
     write(&on_one, &phone, "note:founder", "after the founder went").unwrap();
-    receives(&mut on_other, |peer| {
+    receives(&on_other, |peer| {
         copy_says(peer, "note:founder", "after the founder went")
     })
     .await;

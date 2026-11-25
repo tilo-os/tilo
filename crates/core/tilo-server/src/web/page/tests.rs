@@ -154,6 +154,9 @@ fn the_page_script_speaks_the_handshake_as_its_types_encode_it() {
     );
 }
 
+/// What the browser answered of a notice: the person it was for, the device, and the notice.
+type AnsweredNotice = ([u8; 32], [u8; 32], String);
+
 /// Pages that answer from memory: each act echoed as one changed element.
 #[derive(Default)]
 struct Echo {
@@ -165,8 +168,7 @@ struct Echo {
     waker: std::sync::Arc<tokio::sync::Notify>,
     /// The notifications the person's devices show, as the record of them holds them.
     notices: Mutex<Vec<PageNotice>>,
-    /// What the browser answered of them: the person it was for, the device, and the notice.
-    answered_notices: Mutex<Vec<([u8; 32], [u8; 32], String)>>,
+    answered_notices: Mutex<Vec<AnsweredNotice>>,
 }
 
 impl Echo {

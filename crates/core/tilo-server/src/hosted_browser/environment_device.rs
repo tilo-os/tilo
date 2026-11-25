@@ -92,17 +92,24 @@ impl HostedBrowsers {
     /// record lists and confines it to that workspace, with what answering it needs.
     fn asking_device(&self, workspace_id: WorkspaceId, caller: &Caller) -> Option<Asked> {
         let device = *caller.device_public_key()?;
-        let authority = self.authority.lock_recover();
-        let authority = authority.as_ref()?;
-        let scope =
-            crate::environment::environment_of(&authority.environments, &device)?.placed()?;
-        if scope.workspace != workspace_id {
-            return None;
-        }
+        let guard = self.authority.lock_recover();
+        let (certificate, workspaces) = {
+            let authority = guard.as_ref()?;
+            let scope =
+                crate::environment::environment_of(&authority.environments, &device)?.placed()?;
+            if scope.workspace != workspace_id {
+                return None;
+            }
+            (
+                authority.environments.certificate(&device)?,
+                authority.workspaces.clone(),
+            )
+        };
+        drop(guard);
         Some(Asked {
-            device: authority.environments.certificate(&device)?,
+            device: certificate,
             workspace: workspace_id.to_string(),
-            workspaces: authority.workspaces.clone(),
+            workspaces,
         })
     }
 }

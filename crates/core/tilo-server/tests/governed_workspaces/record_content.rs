@@ -32,7 +32,7 @@ async fn asked_for_each(linked: &mut Linked, addresses: &[&str]) -> Vec<Vec<u8>>
             if let NeighbourMsg::DocumentContentWant { hash, .. } = &heard.message
                 && let Some(at) = addresses.iter().position(|address| *address == hash)
             {
-                asks[at].get_or_insert(postcard::to_stdvec(&heard.message).unwrap());
+                asks[at].get_or_insert_with(|| postcard::to_stdvec(&heard.message).unwrap());
             }
         }
         asks.into_iter().flatten().collect()

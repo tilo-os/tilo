@@ -71,7 +71,7 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
     let first = Linked::open_relayed(&server, &a, workspace_id)
         .await
         .expect("the relay admits the first device");
-    let mut second = Linked::open_relayed(&server, &b, workspace_id)
+    let second = Linked::open_relayed(&server, &b, workspace_id)
         .await
         .expect("the relay admits the second device");
     // A page checks its server connection after a network change (an `online`
@@ -99,7 +99,7 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
             )
         })
         .unwrap();
-    crate::common::receives(&mut second, |peer| peer.document(APP, RECORD).is_some()).await;
+    crate::common::receives(&second, |peer| peer.document(APP, RECORD).is_some()).await;
 
     // A valid certificate of a person the operator does not list is still
     // rejected: membership follows the person, never a bare certificate.

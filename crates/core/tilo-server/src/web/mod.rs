@@ -112,7 +112,7 @@ impl Web {
                     let push = push.telling(workspaces.clone());
                     let teller = tilo_workspace_service::agents::telling::Teller::new(
                         workspaces.clone(),
-                        Arc::new(push.clone()),
+                        Arc::new(push),
                     );
                     // An app of theirs that is closed hears of it through
                     // Apple's push service, where this server was given a
@@ -1529,9 +1529,8 @@ async fn route(
                     tilo_identity::policy_change::announce();
                     // A profile's name is the person's in every workspace here: each names them
                     // by it from now on.
-                    if let (Some(workspaces), Some(name)) =
-                        (web.workspaces.clone(), web.profiles.kept_name(&root))
-                    {
+                    let kept = (web.workspaces.clone(), web.profiles.kept_name(&root));
+                    if let (Some(workspaces), Some(name)) = kept {
                         tokio::spawn(async move {
                             workspaces
                                 .name_person_everywhere(root, &name, tilo_clock::unix_now_ns())

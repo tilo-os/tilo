@@ -187,7 +187,7 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
             (CHAT, ""),
             |doc| -> Result<(), String> {
                 for bytes in posted {
-                    post_into(doc, &blake3::hash(bytes).to_hex().to_string());
+                    post_into(doc, blake3::hash(bytes).to_hex().as_str());
                 }
                 Ok(())
             },
@@ -487,7 +487,7 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
             (CHAT, ""),
             |doc| -> Result<(), String> {
                 for bytes in posted {
-                    post_into(doc, &blake3::hash(bytes).to_hex().to_string());
+                    post_into(doc, blake3::hash(bytes).to_hex().as_str());
                 }
                 Ok(())
             },
@@ -657,10 +657,6 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
 /// stopped (25 MiB a file, 250 MiB a member and an hour), and the policy's own
 /// tests cover that no size at all bounds it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: a whole folder is posted and streamed to the host piece by piece"
-)]
 async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
     /// The folder's size: files of the largest size a content address is asked
     /// for whole, adding up to more than every size the defaults stopped.
@@ -780,7 +776,13 @@ fn folder_piece(file: usize, offset: usize, len: usize) -> Vec<u8> {
     const BLOCK: usize = 4096;
     let mut bytes = vec![0_u8; len];
     for (index, block) in bytes.chunks_mut(BLOCK).enumerate() {
-        let at = u64::try_from(offset / BLOCK + index).unwrap_or(u64::MAX);
+        let at = u64::try_from(
+            offset
+                .checked_div(BLOCK)
+                .and_then(|block| block.checked_add(index))
+                .unwrap_or(usize::MAX),
+        )
+        .unwrap_or(u64::MAX);
         let seed = at.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ u64::try_from(file)
                 .unwrap_or(u64::MAX)
@@ -795,8 +797,10 @@ fn folder_hash(file: usize) -> String {
     let mut hasher = blake3::Hasher::new();
     let mut offset = 0;
     while offset < THREE_GIB_FILE_BYTES {
-        let end = (offset + neighbour_wire::content::PIECE_BYTES).min(THREE_GIB_FILE_BYTES);
-        hasher.update(&folder_piece(file, offset, end - offset));
+        let end = offset
+            .saturating_add(neighbour_wire::content::PIECE_BYTES)
+            .min(THREE_GIB_FILE_BYTES);
+        hasher.update(&folder_piece(file, offset, end.saturating_sub(offset)));
         offset = end;
     }
     hasher.finalize().to_hex().to_string()
@@ -812,7 +816,9 @@ fn folder_piece_frame(
     hash: &str,
     from: usize,
 ) -> Vec<u8> {
-    let end = (from + neighbour_wire::content::PIECE_BYTES).min(THREE_GIB_FILE_BYTES);
+    let end = from
+        .saturating_add(neighbour_wire::content::PIECE_BYTES)
+        .min(THREE_GIB_FILE_BYTES);
     postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
         responder: neighbour_wire::peer_handle(poster),
         requester: neighbour_wire::peer_handle(host),
@@ -821,7 +827,7 @@ fn folder_piece_frame(
         hash: hash.into(),
         total: u64::try_from(THREE_GIB_FILE_BYTES).unwrap(),
         offset: u64::try_from(from).unwrap(),
-        bytes: folder_piece(file, from, end - from),
+        bytes: folder_piece(file, from, end.saturating_sub(from)),
     })
     .unwrap()
 }

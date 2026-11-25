@@ -144,7 +144,7 @@ const HOUR_MS: u64 = 3_600_000;
 /// its governance last said it, and what its person lets it keep for one
 /// workspace. Both are read when the host opens a workspace and again as the
 /// governance of its policy or the entry of its budget moves, never on a timer.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct Limits {
     /// Bytes of kept content each workspace may take; `None` when its person
     /// set no budget, which is no limit of its own.
@@ -154,24 +154,13 @@ struct Limits {
     policies: BTreeMap<String, ContentPolicy>,
 }
 
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            workspace_bytes: None,
-            policies: BTreeMap::new(),
-        }
-    }
-}
-
 impl Limits {
     /// The limits `workspace` keeps its content within.
     fn of(&self, workspace: &str) -> KeptLimits {
-        KeptLimits::of(
-            self.policies
-                .get(workspace)
-                .unwrap_or(&ContentPolicy::default()),
-            self.workspace_bytes,
-        )
+        match self.policies.get(workspace) {
+            Some(policy) => KeptLimits::of(policy, self.workspace_bytes),
+            None => KeptLimits::of(&ContentPolicy::default(), self.workspace_bytes),
+        }
     }
 }
 
@@ -433,6 +422,17 @@ async fn counted(
     Some(Tally { blobs, lacked })
 }
 
+/// One piece of content a limit refused: where it belongs and what it is.
+#[derive(Clone, Copy)]
+struct RefusedContent<'a> {
+    workspace: &'a str,
+    app: &'a str,
+    record: &'a str,
+    hash: &'a str,
+    member: [u8; 32],
+    bytes: u64,
+}
+
 impl KeptContent {
     /// A host that keeps what the records of `workspaces` name in each workspace's
     /// store of `store`, asking and answered as the device they are certified as.
@@ -482,7 +482,7 @@ impl KeptContent {
                             && write.workspace == servers
                         {
                             self.read_kept_bytes().await;
-                            self.limits_changed().await;
+                            self.limits_changed();
                         }
                         self.written(&write);
                     }
@@ -605,7 +605,7 @@ impl KeptContent {
         if workspace == self.servers_workspace() {
             self.read_kept_bytes().await;
         }
-        self.limits_changed().await;
+        self.limits_changed();
         self.membership_moved(workspace).await;
     }
 
@@ -613,7 +613,7 @@ impl KeptContent {
     /// its refusal no longer enforced, and the record of that refusal is
     /// withdrawn once the content is kept. What the store no longer holds is
     /// not what the workspace keeps, so the totals count what stands.
-    async fn limits_changed(&self) {
+    fn limits_changed(&self) {
         // What the store no longer holds is not what the workspace keeps, so
         // the totals a refusal is weighed against count what stands.
         self.recount_kept();
@@ -746,6 +746,37 @@ impl KeptContent {
         })
     }
 
+    /// Whether `hash`'s content of `workspace` is refused by a refusal that
+    /// still stands. One whose limit was raised is withdrawn, so its poster's
+    /// next answer is kept.
+    fn already_refused(
+        state: &mut State,
+        limits: &KeptLimits,
+        workspace: &str,
+        hash: &str,
+        now: u64,
+    ) -> bool {
+        let recorded = state
+            .refused
+            .get(workspace)
+            .and_then(|held| held.get(hash))
+            .cloned();
+        let Some(refusal) = recorded else {
+            return false;
+        };
+        if !refusal.withdrawn && Self::standing(state, limits, workspace, &refusal, now) {
+            return true;
+        }
+        if let Some(held) = state
+            .refused
+            .get_mut(workspace)
+            .and_then(|held| held.get_mut(hash))
+        {
+            held.withdrawn = true;
+        }
+        false
+    }
+
     /// Count `bytes` of the content `hash` the host kept for `workspace` from
     /// `member`'s answer: their share, their intake this hour, what the
     /// workspace keeps together, and the ledger it is read back from.
@@ -871,15 +902,18 @@ impl KeptContent {
     fn refuse(
         &self,
         state: &mut State,
-        workspace: &str,
-        app: &str,
-        record: &str,
-        hash: &str,
-        member: [u8; 32],
-        bytes: u64,
+        content: &RefusedContent<'_>,
         limit: ContentLimit,
         allowed: u64,
     ) -> ContentRefusalRecord {
+        let RefusedContent {
+            workspace,
+            app,
+            record,
+            hash,
+            member,
+            bytes,
+        } = *content;
         let hash = hash.to_ascii_lowercase();
         tracing::info!(
             %workspace,
@@ -900,7 +934,7 @@ impl KeptContent {
         let mut readers = vec![self.workspaces.device_person()];
         readers.extend(people.owner);
         readers.extend(poster);
-        readers.sort();
+        readers.sort_unstable();
         readers.dedup();
         let refusal = ContentRefusalRecord {
             record: ContentRefusal::address(app, record),
@@ -934,7 +968,11 @@ impl KeptContent {
         let workspace = workspace.to_owned();
         tokio::spawn(async move {
             for refusal in refusals {
-                if let Err(error) = workspaces.record_refusal(&workspace, &refusal).await {
+                // The workspace service's write path keeps its draft and seal
+                // state on the future, so it is heap-bound here rather than
+                // carried by this task's frame.
+                if let Err(error) = Box::pin(workspaces.record_refusal(&workspace, &refusal)).await
+                {
                     tracing::warn!(
                         %workspace,
                         hash = %refusal.hash,
@@ -958,7 +996,8 @@ impl KeptContent {
         tokio::spawn(async move {
             for refusal in &mut refusals {
                 refusal.withdrawn = true;
-                if let Err(error) = workspaces.record_refusal(&workspace, refusal).await {
+                // As [`Self::record_refusals`]: the write's future is large.
+                if let Err(error) = Box::pin(workspaces.record_refusal(&workspace, refusal)).await {
                     tracing::warn!(
                         %workspace,
                         hash = %refusal.hash,
@@ -1100,6 +1139,7 @@ impl KeptContent {
                 for blob in &arrived {
                     state.storing.remove(&blob.hash);
                 }
+                drop(state);
                 return;
             }
         };
@@ -1154,6 +1194,7 @@ impl KeptContent {
                 }
                 kept.push(blob.hash);
             }
+            drop(state);
         }
         for ask in asks {
             if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
@@ -1504,24 +1545,8 @@ impl ContentKeeper for KeptContent {
         {
             let total = *total;
             let hash = hash.to_ascii_lowercase();
-            let recorded = state
-                .refused
-                .get(workspace)
-                .and_then(|held| held.get(&hash))
-                .cloned();
-            if let Some(refusal) = recorded {
-                if !refusal.withdrawn
-                    && Self::standing(&mut state, &limits, workspace, &refusal, now)
-                {
-                    return Ok(());
-                }
-                // The limit that refused it was raised: it is kept now, if its
-                // poster answers again, and its refusal is withdrawn then.
-                state
-                    .refused
-                    .get_mut(workspace)
-                    .and_then(|held| held.get_mut(&hash))
-                    .map(|refusal| refusal.withdrawn = true);
+            if Self::already_refused(&mut state, &limits, workspace, &hash, now) {
+                return Ok(());
             }
             if let Some(file_bytes) = limits.file_bytes
                 && total > file_bytes
@@ -1529,12 +1554,14 @@ impl ContentKeeper for KeptContent {
             {
                 refused.push(self.refuse(
                     &mut state,
-                    workspace,
-                    app_id,
-                    "",
-                    &hash,
-                    from,
-                    total,
+                    &RefusedContent {
+                        workspace,
+                        app: app_id,
+                        record: "",
+                        hash: &hash,
+                        member: from,
+                        bytes: total,
+                    },
                     ContentLimit::File,
                     file_bytes,
                 ));
@@ -1567,12 +1594,14 @@ impl ContentKeeper for KeptContent {
         {
             refused.push(self.refuse(
                 &mut state,
-                workspace,
-                &arrived.tag.1,
-                &arrived.tag.2,
-                &arrived.hash,
-                from,
-                size,
+                &RefusedContent {
+                    workspace,
+                    app: &arrived.tag.1,
+                    record: &arrived.tag.2,
+                    hash: &arrived.hash,
+                    member: from,
+                    bytes: size,
+                },
                 limit,
                 allowed,
             ));
@@ -2065,7 +2094,7 @@ mod tests {
 
         let (whole, lacking) =
             still_missing(&store, &BTreeSet::new(), vec![file.clone(), absent.clone()]);
-        assert_eq!(whole, [file.clone()]);
+        assert_eq!(whole.as_slice(), std::slice::from_ref(&file));
         assert_eq!(lacking, [vec![absent.clone()]]);
 
         // Remembered as whole, it is skipped without opening the store.

@@ -1043,53 +1043,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     stop(server, serving).await;
 }
 
-/// POST `body` as JSON to `path`, as `forwarded_for` behind a proxy when
-/// named: the status, the header block and the body. HTTP/1.0, so the
-/// body arrives whole rather than chunked.
-async fn call_json(
-    addr: SocketAddr,
-    path: &str,
-    body: &serde_json::Value,
-    forwarded_for: Option<&str>,
-) -> (u16, String, serde_json::Value) {
-    call_json_named(addr, "localhost", path, body, forwarded_for).await
-}
-
-/// [`call_json`] by a request that names `named` as the one it reached.
-async fn call_json_named(
-    addr: SocketAddr,
-    named: &str,
-    path: &str,
-    body: &serde_json::Value,
-    forwarded_for: Option<&str>,
-) -> (u16, String, serde_json::Value) {
-    let body = serde_json::to_vec(body).unwrap();
-    let forwarded = forwarded_for
-        .map(|client| format!("X-Forwarded-For: {client}\r\n"))
-        .unwrap_or_default();
-    let mut socket = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let header = format!(
-        "POST {API_PREFIX}{path} HTTP/1.0\r\nHost: {named}\r\nConnection: close\r\n\
-         Content-Type: application/json\r\n{forwarded}Content-Length: {}\r\n\r\n",
-        body.len()
-    );
-    socket.write_all(header.as_bytes()).await.unwrap();
-    socket.write_all(&body).await.unwrap();
-    let mut reply = Vec::new();
-    tilo_test_env::within("HTTP reply", socket.read_to_end(&mut reply))
-        .await
-        .unwrap();
-    let split = reply
-        .windows(4)
-        .position(|bytes| bytes == b"\r\n\r\n")
-        .unwrap();
-    let header = String::from_utf8_lossy(&reply[..split]).to_ascii_lowercase();
-    let status = header.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let body = &reply[split.checked_add(4).unwrap()..];
-    let json = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
-    (status, header, json)
-}
-
 /// The secret `mail` carries for `parameter`, as the page it lands on reads
 /// it: the hex after `?<parameter>=` (or `&<parameter>=`) in the mail's text.
 fn link_secret(mail: &crate::entry::mail::Mail, parameter: &str) -> String {
@@ -1491,6 +1444,7 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
 )]
 async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it() {
     use tilo_user_identity::root_statement;
+    const PHOTO: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
 
     let signer = SigningKey::from_bytes(&[61; 32]);
     let host = host(&signer, 62, DeviceCapabilities::member());
@@ -1499,7 +1453,6 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
     let web = Arc::new(web_of(&server, &host));
     let root = signer.verifying_key().to_bytes();
     let hex_root = hex::encode(root);
-    const PHOTO: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
     let photo = collab_types::photo_bytes(PHOTO).expect("the picture's bytes");
     let at = 1_000_u64;
     let profile = serde_json::json!({
@@ -1509,14 +1462,14 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
         "photo": PHOTO,
     })
     .to_string();
-    let signed = serde_json::to_vec(&serde_json::json!({
+    let body = serde_json::to_vec(&serde_json::json!({
         "profile": profile,
         "issued_at_ms": at,
         "signature": hex::encode(root_statement::sign(&signer, at, &profile).unwrap()),
     }))
     .unwrap();
     web.profiles
-        .publish(&signed, at, |_| async { true })
+        .publish(&body, at, |_| async { true })
         .await
         .unwrap();
 
@@ -1538,14 +1491,14 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
         "display_name": "Ada",
     })
     .to_string();
-    let signed = serde_json::to_vec(&serde_json::json!({
+    let body = serde_json::to_vec(&serde_json::json!({
         "profile": replaced,
         "issued_at_ms": later,
         "signature": hex::encode(root_statement::sign(&signer, later, &replaced).unwrap()),
     }))
     .unwrap();
     web.profiles
-        .publish(&signed, later, |_| async { true })
+        .publish(&body, later, |_| async { true })
         .await
         .unwrap();
     let (status, _, _) = exchange(addr, &head, b"").await;

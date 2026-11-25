@@ -143,7 +143,7 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
     enter(&server, &phone, &plans.workspace).await;
     let tablet_copy = join(&server, &laptop, &plans.workspace, &bob, &tablet).await;
     let bob_laptop_copy = join(&server, &laptop, &plans.workspace, &bob, &bob_laptop).await;
-    let mut tablet_link = Linked::open_seeded(&server, &tablet, plans.workspace_id, tablet_copy)
+    let tablet_link = Linked::open_seeded(&server, &tablet, plans.workspace_id, tablet_copy)
         .await
         .expect("Plans admits Bob's tablet");
     let bob_laptop_link =
@@ -206,7 +206,7 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
     );
 
     // Bob's copy refuses the laptop from the workspace's own governance.
-    crate::common::receives(&mut tablet_link, |peer| {
+    crate::common::receives(&tablet_link, |peer| {
         peer.permissions(laptop.device_pubkey(), SystemTime::now())
             .is_err()
     })

@@ -672,7 +672,7 @@ struct Fixture {
     agent: TestDevice,
     /// The person's own device, which answers what their agents ask them.
     laptop: TestDevice,
-    server: TestServer,
+    server: Box<TestServer>,
     browsers: Arc<HostedBrowsers>,
     environments: Arc<InProcessEnvironments>,
     meter: Arc<Counting>,
@@ -706,92 +706,98 @@ async fn operated() -> Fixture {
 
 /// The fixture before it places anything: its host places as the person's own device, or, where
 /// `operated`, as a device of an operator's.
-async fn unplaced(meter: Arc<Counting>, reconnect: Duration, operated: bool) -> Fixture {
-    let user = TestUser::fresh("Ada");
-    let host = user.enrol("home", DeviceCapabilities::member());
-    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let agent = user.enrol("agent", DeviceCapabilities::member());
-    let home = host.device_pubkey();
-    let host_device = host.clone();
-    let placing = if operated {
-        TestUser::fresh("Operator").enrol("hosting", DeviceCapabilities::member())
-    } else {
-        host.clone()
-    };
-    let environments = Arc::new(InProcessEnvironments::default());
-    let browsers = Arc::new(
-        HostedBrowsers::new(
-            Arc::clone(&environments) as Arc<dyn BrowserSessions>,
-            Box::new(SharedMeter(Arc::clone(&meter))),
-            "acct_ada".into(),
-        )
-        .with_reconnect(reconnect),
-    );
-    let server = Box::pin(spawn_server(&user, host, &[], &[])).await;
-    // The person made both workspaces on their server, and their agent's
-    // device entered each.
-    let workspaces = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces");
-    for workspace in [WS, OTHER_WS] {
-        let workspace = workspace.to_string();
-        workspaces
-            .create_workspace("Workspace", Some(&workspace))
-            .await
-            .expect("the person makes the workspace on their server");
-        workspaces
-            .enter(&workspace, (&agent.cert, &agent.sk))
-            .await
-            .expect("the agent's device enters it");
-        workspaces
-            .enter(&workspace, (&laptop.cert, &laptop.sk))
-            .await
-            .expect("the person's own device enters it");
-    }
-    // The person's own workspace, where their devices record is, is on their server too.
-    if !tilo_server::servers::holds_person_workspace(workspaces).await {
-        tilo_server::servers::found(workspaces)
-            .await
-            .expect("the person's own workspace is founded on their server");
-    }
-    // The host answers the workspace's open of Browser and the page actions of the window it
-    // places through its one dispatch, as production registers it.
-    browsers.provide_in(&workspaces.providers());
-    let _ = environments
-        .tickets
-        .set(workspaces.action_service().tickets());
-    let _ = environments.registry.set(server.server.environments());
-    browsers.serve_from(tilo_server::hosted_browser::Authority {
-        user_public_key: user.user_pk,
-        host: placing.cert.clone(),
-        host_key: placing.sk.clone(),
-        server: server.server.node_addr(),
-        workspaces: server.server.workspaces().cloned(),
-        environments: server.server.environments(),
-        runtime: tokio::runtime::Handle::current(),
-        hand: server.server.hand(),
-        actions: workspaces.action_service(),
-    });
-    // The server keeps one store for every call that waits for a person's yes here; the
-    // Browser window's own questions wait in it, and the person's answer comes back to the
-    // window that asked.
-    let asked = workspaces
-        .asked_store()
-        .expect("the server keeps the calls that wait");
-    browsers.keep_asked_in(&asked);
-    Fixture {
-        user,
-        host_device,
-        home,
-        agent,
-        laptop,
-        server,
-        browsers,
-        environments,
-        meter,
-        placing,
-    }
+fn unplaced(
+    meter: Arc<Counting>,
+    reconnect: Duration,
+    operated: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Fixture> + Send>> {
+    Box::pin(async move {
+        let user = TestUser::fresh("Ada");
+        let host = user.enrol("home", DeviceCapabilities::member());
+        let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+        let agent = user.enrol("agent", DeviceCapabilities::member());
+        let home = host.device_pubkey();
+        let host_device = host.clone();
+        let placing = if operated {
+            TestUser::fresh("Operator").enrol("hosting", DeviceCapabilities::member())
+        } else {
+            host.clone()
+        };
+        let environments = Arc::new(InProcessEnvironments::default());
+        let browsers = Arc::new(
+            HostedBrowsers::new(
+                Arc::clone(&environments) as Arc<dyn BrowserSessions>,
+                Box::new(SharedMeter(Arc::clone(&meter))),
+                "acct_ada".into(),
+            )
+            .with_reconnect(reconnect),
+        );
+        let server = Box::new(Box::pin(spawn_server(&user, host, &[], &[])).await);
+        // The person made both workspaces on their server, and their agent's
+        // device entered each.
+        let workspaces = server
+            .server
+            .workspaces()
+            .expect("the server holds workspaces");
+        for workspace in [WS, OTHER_WS] {
+            let workspace = workspace.to_string();
+            workspaces
+                .create_workspace("Workspace", Some(&workspace))
+                .await
+                .expect("the person makes the workspace on their server");
+            workspaces
+                .enter(&workspace, (&agent.cert, &agent.sk))
+                .await
+                .expect("the agent's device enters it");
+            workspaces
+                .enter(&workspace, (&laptop.cert, &laptop.sk))
+                .await
+                .expect("the person's own device enters it");
+        }
+        // The person's own workspace, where their devices record is, is on their server too.
+        if !tilo_server::servers::holds_person_workspace(workspaces).await {
+            tilo_server::servers::found(workspaces)
+                .await
+                .expect("the person's own workspace is founded on their server");
+        }
+        // The host answers the workspace's open of Browser and the page actions of the window it
+        // places through its one dispatch, as production registers it.
+        browsers.provide_in(&workspaces.providers());
+        let _ = environments
+            .tickets
+            .set(workspaces.action_service().tickets());
+        let _ = environments.registry.set(server.server.environments());
+        browsers.serve_from(tilo_server::hosted_browser::Authority {
+            user_public_key: user.user_pk,
+            host: placing.cert.clone(),
+            host_key: placing.sk.clone(),
+            server: server.server.node_addr(),
+            workspaces: server.server.workspaces().cloned(),
+            environments: server.server.environments(),
+            runtime: tokio::runtime::Handle::current(),
+            hand: server.server.hand(),
+            actions: workspaces.action_service(),
+        });
+        // The server keeps one store for every call that waits for a person's yes here; the
+        // Browser window's own questions wait in it, and the person's answer comes back to the
+        // window that asked.
+        let asked = workspaces
+            .asked_store()
+            .expect("the server keeps the calls that wait");
+        browsers.keep_asked_in(&asked);
+        Fixture {
+            user,
+            host_device,
+            home,
+            agent,
+            laptop,
+            server,
+            browsers,
+            environments,
+            meter,
+            placing,
+        }
+    })
 }
 
 /// The meter a test counts with, behind the trait the server holds.
@@ -2070,9 +2076,12 @@ async fn an_environment_hears_its_own_record_and_no_other() {
         environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
         "no other record of the workspace is its to read"
     );
-    // The person's own devices read the workspace's devices from its roster
-    // and its member list: the environment is in neither, so none of them
-    // admits it or hands it a key.
+    named_by_no_roster(&fixture, &environment_device).await;
+}
+
+/// Neither the person's laptop nor the host knows the environment's device: it is in no
+/// certificate list and no member list, so none of them admits it or hands it a key.
+async fn named_by_no_roster(fixture: &Fixture, environment_device: &TestDevice) {
     let laptop = member_link(&fixture.server.server, &fixture.laptop).await;
     let device = environment_device.device_pubkey();
     let now = tilo_clock::wall();
@@ -2124,6 +2133,21 @@ async fn an_environment_hears_its_own_record_and_no_other() {
             "{whose} lists the environment's device as no member's"
         );
     }
+}
+
+/// The write `device` made, as the host's store keeps it, once it is kept: a server says
+/// nothing back to a write's writer, so the store is read until the write is there.
+async fn kept_write(server: &tilo_server::Server, device: [u8; 32]) -> Vec<([u8; 32], Vec<u8>)> {
+    tilo_test_env::within("the window's write is kept", async {
+        loop {
+            let kept = written_by(server, device).await;
+            if !kept.is_empty() {
+                return kept;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
 }
 
 /// What the workspace's store keeps that `device` wrote, as each write's
@@ -2244,18 +2268,7 @@ async fn an_environment_writes_its_record_and_no_other() {
         WINDOW_RECORD,
         "the page clicked",
     );
-    // The server keeps a write as it takes it in, and says nothing back to its writer: the
-    // store is read until the write is there, however long a loaded server takes.
-    let retained = tilo_test_env::within("the window's write is kept", async {
-        loop {
-            let kept = written_by(&fixture.server.server, device).await;
-            if !kept.is_empty() {
-                return kept;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await;
+    let retained = kept_write(&fixture.server.server, device).await;
     assert_eq!(
         retained
             .iter()

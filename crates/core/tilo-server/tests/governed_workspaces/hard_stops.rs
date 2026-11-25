@@ -32,14 +32,14 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
     let workspace = create_and_enter(&server, &laptop, "Lounge").await;
-    let mut bob_link =
+    let bob_link =
         super::sealed_documents::joined(&server, &laptop, &workspace, &bob, &phone, [7; 32])
             .await
             .unwrap();
-    let mut alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
+    let alice_link = Linked::open(&server, &laptop, workspace.workspace_id)
         .await
         .expect("the workspace admits Alice's laptop");
-    crate::common::receives(&mut alice_link, |peer| {
+    crate::common::receives(&alice_link, |peer| {
         role(peer, phone.device_pubkey()) == Some(collab_types::Role::Editor)
     })
     .await;
@@ -61,7 +61,7 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
             )
         })
         .expect("Alice's write goes out on her link");
-    crate::common::receives(&mut bob_link, |peer| {
+    crate::common::receives(&bob_link, |peer| {
         text(peer, "topic").as_deref() == Some("welcome")
     })
     .await;
@@ -84,11 +84,11 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
         loop {
             match answers.recv().await {
                 Ok(answered) => {
-                    if let Kept::Durable = answered.kept {
+                    if answered.kept == Kept::Durable {
                         return;
                     }
                 }
-                Err(_) => panic!("the link ended before the server kept Bob's write"),
+                Err(error) => panic!("the link ended before the server kept Bob's write: {error}"),
             }
         }
     })

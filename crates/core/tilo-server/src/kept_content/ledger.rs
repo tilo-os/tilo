@@ -61,8 +61,8 @@ impl Ledger {
         // What the store let go of is no longer counted: a ledger much longer
         // than what stands is written again, so it stays the size of the
         // content it counts.
-        if kept.len().saturating_mul(2) + 32 < written {
-            self.rewrite(&path, &kept);
+        if kept.len().saturating_mul(2).saturating_add(32) < written {
+            Self::rewrite(&path, &kept);
         }
         kept.into_values().collect()
     }
@@ -98,12 +98,14 @@ impl Ledger {
     }
 
     /// Write the ledger again, holding only what `kept` counts.
-    fn rewrite(&self, path: &Path, kept: &BTreeMap<String, Entry>) {
-        let text: String = kept
-            .values()
-            .filter_map(|entry| serde_json::to_string(entry).ok())
-            .map(|line| format!("{line}\n"))
-            .collect();
+    fn rewrite(path: &Path, kept: &BTreeMap<String, Entry>) {
+        let mut text = String::new();
+        for entry in kept.values() {
+            if let Ok(line) = serde_json::to_string(entry) {
+                text.push_str(&line);
+                text.push('\n');
+            }
+        }
         let partial = path.with_extension("partial");
         let written = std::fs::write(&partial, text).and_then(|()| std::fs::rename(&partial, path));
         if let Err(error) = written {

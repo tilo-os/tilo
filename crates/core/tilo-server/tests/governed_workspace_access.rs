@@ -37,7 +37,7 @@ fn carries(linked: &Linked, marker: &str) -> bool {
                 doc.get(ROOT, "marker")
                     .ok()
                     .flatten()
-                    .is_some_and(|(value, _)| value.to_str() == Some(marker))
+                    .is_some_and(|(value, _)| value.as_str() == Some(marker))
             })
         })
 }
@@ -131,7 +131,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     let alice_shared = Linked::open(&server, &alice_a, shared)
         .await
         .expect("the shared workspace admits Alice's device");
-    let mut bob_shared = Linked::open(&server, &bob_device, shared)
+    let bob_shared = Linked::open(&server, &bob_device, shared)
         .await
         .expect("the shared workspace admits Bob's device");
     // Charlie's device may serve workspaces of his own; here it is one member
@@ -178,7 +178,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
             match answers.recv().await {
                 // A kept write would be the refusal failing; a refused one is the evidence.
                 Ok(answered) => {
-                    if let Kept::Durable = answered.kept {
+                    if answered.kept == Kept::Durable {
                         return false;
                     }
                 }
@@ -246,7 +246,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     );
 
     write(&bob_shared, &bob_device, "after-removal").unwrap();
-    crate::common::receives(&mut bob_shared, |peer| peer.document(APP, RECORD).is_some()).await;
+    crate::common::receives(&bob_shared, |peer| peer.document(APP, RECORD).is_some()).await;
 
     drop(alice_shared);
     drop(alice_workspace_b);
@@ -267,10 +267,10 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     .unwrap();
     // A server holds no list of workspaces of its own: on start, each
     // workspace's governance restates who it admits.
-    let mut bob_after_restart = Linked::open(&restarted, &bob_device, shared)
+    let bob_after_restart = Linked::open(&restarted, &bob_device, shared)
         .await
         .expect("the restarted host admits Bob to the shared workspace");
-    crate::common::receives(&mut bob_after_restart, |peer| {
+    crate::common::receives(&bob_after_restart, |peer| {
         peer.document(APP, RECORD).is_some()
     })
     .await;

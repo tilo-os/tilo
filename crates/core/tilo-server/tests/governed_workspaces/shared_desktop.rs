@@ -256,7 +256,7 @@ async fn commit(linked: &Linked, message: &NeighbourMsg) -> Result<Option<u64>, 
                     };
                 }
                 Ok(_) => {}
-                Err(_) => panic!("the link ended before the host answered the write"),
+                Err(error) => panic!("the link ended before the host answered the write: {error}"),
             }
         }
     })

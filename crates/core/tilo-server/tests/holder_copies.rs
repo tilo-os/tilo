@@ -198,7 +198,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     .await;
     // A member that reaches only the returned server gets the sealed write made while it was
     // away, as the bytes the other holders carried to it.
-    receives(&mut on_server, |peer| {
+    receives(&on_server, |peer| {
         holds_writes(peer, (APP, "note:away"), &written)
     })
     .await;

@@ -81,9 +81,9 @@ struct Fixture {
     laptop: TestDevice,
     /// Another of the person's devices, which asks the host its operations.
     phone: TestDevice,
-    desktop: Hosted,
+    desktop: Box<Hosted>,
     admin: String,
-    server: Hosted,
+    server: Box<Hosted>,
     state: tempfile::TempDir,
     _policy: tempfile::TempDir,
     _following: Vec<tokio::task::JoinHandle<()>>,
@@ -103,51 +103,53 @@ impl Fixture {
     }
 }
 
-async fn person_with_a_server() -> Fixture {
-    let alice = TestUser::fresh("Alice");
-    let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let phone = alice.enrol("phone", DeviceCapabilities::member());
-    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let desktop = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
-    let state = tempfile::tempdir().unwrap();
-    let policy = tempfile::tempdir().unwrap();
-    let mut following = vec![applied::follow(
-        server.host.workspaces(),
-        applied::Requests::at(policy.path().join("nas.request")),
-        None,
-        state.path().to_path_buf(),
-    )];
-    // The person's own device makes the Servers workspace when it is first
-    // needed, enters the server among their servers there, and hands it the
-    // workspace as it hands a server any workspace its entry names.
-    let admin = person_workspace_id(&alice.user_pk);
-    servers::found(desktop.host.workspaces()).await.unwrap();
-    desktop
-        .host
-        .workspaces()
-        .enter(&admin, (&phone.cert, &phone.sk))
-        .await
-        .expect("the workspace takes the person's other device in");
-    join_person_workspace(&desktop, &nas, &server).await;
-    following.push(applied::follow(
-        desktop.host.workspaces(),
-        applied::Requests::at(policy.path().join("laptop.request")),
-        None,
-        state.path().join("laptop-state"),
-    ));
-    Fixture {
-        admin,
-        root: alice.user_sk.clone(),
-        nas,
-        laptop,
-        phone,
-        desktop,
-        server,
-        state,
-        _policy: policy,
-        _following: following,
-    }
+fn person_with_a_server() -> std::pin::Pin<Box<dyn std::future::Future<Output = Fixture> + Send>> {
+    Box::pin(async move {
+        let alice = TestUser::fresh("Alice");
+        let nas = alice.enrol("nas", DeviceCapabilities::member());
+        let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+        let phone = alice.enrol("phone", DeviceCapabilities::member());
+        let server = Box::new(serve_on(&alice, &nas, WorkSetting::own_person()).await);
+        let desktop = Box::new(serve_on(&alice, &laptop, WorkSetting::own_person()).await);
+        let state = tempfile::tempdir().unwrap();
+        let policy = tempfile::tempdir().unwrap();
+        let mut following = vec![applied::follow(
+            server.host.workspaces(),
+            applied::Requests::at(policy.path().join("nas.request")),
+            None,
+            state.path().to_path_buf(),
+        )];
+        // The person's own device makes the Servers workspace when it is first
+        // needed, enters the server among their servers there, and hands it the
+        // workspace as it hands a server any workspace its entry names.
+        let admin = person_workspace_id(&alice.user_pk);
+        servers::found(desktop.host.workspaces()).await.unwrap();
+        desktop
+            .host
+            .workspaces()
+            .enter(&admin, (&phone.cert, &phone.sk))
+            .await
+            .expect("the workspace takes the person's other device in");
+        join_person_workspace(&desktop, &nas, &server).await;
+        following.push(applied::follow(
+            desktop.host.workspaces(),
+            applied::Requests::at(policy.path().join("laptop.request")),
+            None,
+            state.path().join("laptop-state"),
+        ));
+        Fixture {
+            admin,
+            root: alice.user_sk.clone(),
+            nas,
+            laptop,
+            phone,
+            desktop,
+            server,
+            state,
+            _policy: policy,
+            _following: following,
+        }
+    })
 }
 
 /// The revocation of `device`'s key `root` signs, as the identity step answers
