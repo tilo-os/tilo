@@ -35,7 +35,8 @@
 //! Turning a workspace's unattended runs on asks the person on their approving device, and the
 //! invocation waits for them; off is done at once. On, a key for that workspace alone runs
 //! commands in its Linux machine without the person being asked each time. A model asked is the
-//! person's own, kept by the server that keeps the workspace (`tilo.models`, `ask`): while it
+//! person's own, kept by the device that keeps the workspace: a server, or the computer that
+//! keeps its person's account itself (`tilo.models`, `ask`). While it
 //! writes, the invocation's newest item holds the answer so far.
 
 use crate::grant_key::GrantKey;
@@ -650,6 +651,8 @@ pub(crate) enum Outcome {
     /// Asked of a workspace's host, which holds it for the person to allow: the caller is
     /// answered that it waits for them, and the same invocation answers how they decided.
     Held(SessionActions),
+    /// Run at a provider, recorded so its caller follows it there by its receipt.
+    Ran(Box<InvocationReceipt>),
     Failed {
         code: &'static str,
         message: String,
@@ -922,6 +925,7 @@ impl Account {
                     error: ActionCallError::confirmation_required(),
                 }
             }
+            Outcome::Ran(receipt) => receipt.status,
             Outcome::Failed {
                 code,
                 message,
@@ -1057,7 +1061,7 @@ impl Account {
         here: &dyn crate::session::Here,
         grant: &Grant,
         op: Op,
-        _id: InvocationId,
+        id: InvocationId,
         args: &Value,
     ) -> Option<Outcome> {
         if matches!(
@@ -1071,7 +1075,7 @@ impl Account {
             return Some(refused(&ServerError::NoAccountHere));
         };
         Some(
-            self.serve_here(here, host.as_ref(), key, grant, op, args)
+            self.serve_here(here, host.as_ref(), key, grant, op, id, args)
                 .await,
         )
     }
@@ -1088,6 +1092,7 @@ impl Account {
         key: GrantKey,
         grant: &Grant,
         op: Op,
+        id: InvocationId,
         args: &Value,
     ) -> Outcome {
         let Some(server) = self.0.server.upgrade() else {
@@ -1202,11 +1207,50 @@ impl Account {
                 "a device keeps no plan or usage of its own to read",
                 "read the account on the server that keeps the workspaces",
             ),
-            Op::AskModel => failed(
-                "unavailable",
-                "a model is asked on the device that keeps it",
-                "open Tilo on a device that keeps the workspace's model, then try again",
-            ),
+            Op::AskModel => {
+                let (Some(workspace), Some(Value::Object(request))) =
+                    (field(args, "workspace"), args.get("request"))
+                else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` and `request` are required",
+                        "pass {workspace, request: {messages, …}}",
+                    );
+                };
+                let asked = InvokeRequest {
+                    invocation: id,
+                    target: model_providers::models::ask(),
+                    argument: InvokeArgument::Json(request.clone()),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                };
+                // The workspace's model is asked where the workspace is kept, which is here.
+                let Some((receipt, answers, runs_as)) =
+                    host.ask(key, workspace.to_owned(), asked.clone()).await
+                else {
+                    return failed(
+                        "unavailable",
+                        "a model is asked on the device that keeps it",
+                        "open Tilo on a device that keeps the workspace's model, then try again",
+                    );
+                };
+                // Recorded as the device's own, so the caller follows the answer where it runs.
+                if let Some(server) = self.0.server.upgrade() {
+                    server.invocations.record(
+                        &self.0.caller,
+                        &runs_as,
+                        &asked,
+                        Some(workspace),
+                        (answers, runs_as.clone()),
+                    );
+                }
+                Outcome::Ran(Box::new(receipt))
+            }
             Op::ListWebhooks => {
                 let workspace = field(args, "workspace").map(str::to_owned);
                 match host.webhooks(key, workspace).await {

@@ -1044,6 +1044,16 @@ impl ActionProvider for Answers {
             });
             return Some(change);
         }
+        // What the workspace's governance keeps for its members' devices changes as it writes:
+        // a model's answer while it streams, a signing-in while it waits.
+        let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
+        if let Some(change) = self
+            .work
+            .governance()
+            .and_then(|governance| governance.in_workspace(workspace).next_change(caller, id))
+        {
+            return Some(change);
+        }
         self.apps()?.next_change(caller, id)
     }
 

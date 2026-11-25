@@ -4777,6 +4777,34 @@ impl tilo_api::session::AccountHere for Daemon {
             .collect()
     }
 
+    /// Ask `workspace`'s model one turn as `key`: the workspace's own host answers it for the
+    /// device that keeps it, as it answers a page's ask of the same model. `None` for a key this
+    /// device does not know, or a workspace it keeps no model for.
+    fn ask(
+        &self,
+        key: GrantKey,
+        workspace: String,
+        request: InvokeRequest,
+    ) -> AccountAnswer<tilo_api::session::AskedModel> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let device = self.cert.clone();
+        Box::pin(async move {
+            known(&device, &key).ok()?;
+            // The key's run, entered as its session enters it: the model the workspace keeps is
+            // asked by the caller the workspace admits for that key.
+            let admission = workspaces
+                .admit_key(&workspace, key.key(), key.cert())
+                .await
+                .ok()?;
+            // The workspace's own dispatch answers its models for its members' devices, as it
+            // does for this device's own calls.
+            let answers: tilo_api::session::Provider = workspaces.copies().device_actions();
+            let caller = admission.caller().clone();
+            let receipt = answers.invoke(&caller, request).await?.ok()?;
+            Some((receipt, answers, caller))
+        })
+    }
+
     fn create(
         &self,
         key: GrantKey,

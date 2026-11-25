@@ -169,6 +169,18 @@ pub trait AccountHere: Send + Sync {
     ) -> AccountAnswer<Result<serde_json::Value, ServerError>> {
         Box::pin(async { Err(ServerError::NoAccountHere) })
     }
+    /// Ask `workspace`'s model one turn, `request` (its `tilo.models`, `ask`),
+    /// as `key`, and answer where it runs: the receipt, the provider the key's run asks it at, and
+    /// the caller it runs as, which a follower observes it through. `None` where this device keeps
+    /// no model to ask for the workspace.
+    fn ask(
+        &self,
+        _key: crate::grant_key::GrantKey,
+        _workspace: String,
+        _request: tilo_actions::remote::InvokeRequest,
+    ) -> AccountAnswer<AskedModel> {
+        Box::pin(async { None })
+    }
     /// Register a webhook of the key's in `workspace`, answered as it was made, with the key
     /// its deliveries are signed with.
     fn create_webhook(
@@ -194,6 +206,14 @@ pub trait AccountHere: Send + Sync {
 /// What an [`AccountHere`] method answers, awaited where the account runs it.
 pub type AccountAnswer<T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
+
+/// What [`AccountHere::ask`] answers: the receipt, the provider the key's run asks its turn at,
+/// and the caller it runs as there.
+pub type AskedModel = Option<(
+    tilo_actions::remote::InvocationReceipt,
+    Provider,
+    tilo_actions::remote::Caller,
+)>;
 
 /// The Tilo desktop a server is part of, answering its person's workspaces itself: a desktop
 /// session serving the API to its own person's programs on this computer.
