@@ -46,9 +46,13 @@ pub trait PublishesResources: Widget {
         ActionDirectoryInvocationDomain::Unsupported
     }
 
-    /// Resolve an addressable resource omitted from the contextual snapshot.
-    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::ResourceSpec> {
-        None
+    /// Resolve an addressable resource omitted from the contextual snapshot: a publisher that
+    /// lists its tree answers here from that list, so one resolver serves every caller; a
+    /// publisher whose lookup is cheaper by id overrides this.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        self.resources(doc)
+            .into_iter()
+            .find(|spec| spec.id.as_str() == id)
     }
 
     /// The item resources the published tree leaves out because their collection holds more than one
