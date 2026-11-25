@@ -46,17 +46,22 @@ of Tilo Sans (tools/font-web-cuts.py) are in no installed catalog: tilo-server's
 them beside a workspace's page.
 
 Cargo source builds prepare the fixture catalog through tilo-font-catalog's
-build script, into the crate's OUT_DIR: the catalog is part of the build's
-output, so anything that reuses the build finds it there. SDK packaging
-prepares the selected checkout's product catalog; OS staging prepares its OS
-catalog. No application downloads fonts at runtime.
-CI prewarms the digest cache and runs subsequent preparation offline.
+build script, from the verified artifact cache or the image's seed, into the
+profile directory's `font-catalogs`: the catalog is part of the build's
+output, so anything that reuses the build finds it there. A machine with
+neither fetches the pins the first time from the store; a check runs without
+network, so it is given the `font-seed` check's output as
+TILO_FONT_IMAGE_SEED, or a prewarmed cache, and a build given neither fails
+naming both. SDK packaging prepares the selected checkout's product
+catalog; OS staging prepares its OS catalog. No application downloads fonts at
+runtime.
+CI's `font-seed` check lays out every pin of the tree, and the checks that
+build with fonts read it.
 
 For a self-contained offline SDK, set TILO_FONT_CATALOG_ROOT to a prepared
 catalog whose manifest matches this checkout. The build verifies every selected
-font and license before accepting it. Set CARGO_NET_OFFLINE=true or
-TILO_FONT_ASSETS_OFFLINE=1 to require offline preparation. A fresh checkout with
-neither a prewarmed cache nor a prepared catalog fails clearly.
+font and license before accepting it. A fresh checkout with neither a prewarmed
+cache nor a prepared catalog fails clearly, naming the tool that prepares them.
 
 Font regeneration scripts write candidates to target/font-candidates (or --out).
 Review and publish changed bytes with corresponding manifest and artifact pins;

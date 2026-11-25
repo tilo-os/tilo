@@ -92,9 +92,6 @@ fn prepared(
         .args(["--scope", scope])
         .arg("--catalogs")
         .arg(catalogs);
-    // Offline only when asked by TILO_FONT_ASSETS_OFFLINE, which the tool reads itself.
-    // CARGO_NET_OFFLINE says cargo has its crates already; it says nothing about whether
-    // the pinned fonts are in the cache, and a build with network access fetches them.
     let output = command.output().map_err(|error| {
         format!(
             "could not launch `{}` to prepare fonts with {}: {error}; \
@@ -106,8 +103,15 @@ fn prepared(
     })?;
     if !output.status.success() {
         return Err(format!(
-            "font preparation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "font preparation failed: {}\n\
+             the pinned fonts come from TILO_FONT_IMAGE_SEED (the font-seed check's output) or \
+             TILO_FONT_ASSET_CACHE; a machine with neither fetches them from the store, which a \
+             check's sandbox has no egress for. Prepare a cache with `{} -I {} root {} --scope \
+             {scope} --cache <directory>` and give the build it as TILO_FONT_ASSET_CACHE",
+            String::from_utf8_lossy(&output.stderr),
+            python.to_string_lossy(),
+            tool.display(),
+            source.display(),
         )
         .into());
     }

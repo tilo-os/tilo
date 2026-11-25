@@ -514,6 +514,26 @@ class CatalogBuildTest(unittest.TestCase):
                 self.assertIn("dnf install python3", result.stderr)
                 self.assertNotIn("cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT=", result.stdout)
 
+    def test_missing_fonts_name_the_inputs_a_build_reads_them_from(self):
+        """A build given no pins and no network says where they come from and how to prepare them."""
+        out = self.profile() / "build/font-catalog-test/out"
+        with tempfile.TemporaryDirectory() as empty:
+            environment = dict(os.environ, PYTHON=sys.executable, OUT_DIR=str(out),
+                               HOME=empty, TILO_FONT_IMAGE_SEED=str(Path(empty) / "no-seed"),
+                               TILO_FONT_ASSET_CACHE=str(Path(empty) / "no-cache"),
+                               TILO_FONT_ASSETS_OFFLINE="1")
+            for unset in ("TILO_TEST_CACHE_DIR", "XDG_CACHE_HOME", "TILO_FONT_CATALOG_ROOT"):
+                environment.pop(unset, None)
+            result = subprocess.run([str(self.build)], env=environment,
+                                    capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("font artifact unavailable offline", result.stderr)
+        self.assertIn("TILO_FONT_IMAGE_SEED", result.stderr)
+        self.assertIn("TILO_FONT_ASSET_CACHE", result.stderr)
+        # The tool that prepares them, so a fresh checkout can be brought up from the message.
+        self.assertIn("font-catalog.py", result.stderr)
+        self.assertNotIn("could not fetch", result.stderr)
+
     def test_installed_python_prepares_the_real_verified_catalog_offline(self):
         source = ROOT / "crates/ui/ui-core/assets/fonts"
         fc.prepared_root(source, "fixtures")

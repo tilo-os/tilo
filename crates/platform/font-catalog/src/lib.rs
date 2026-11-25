@@ -2,10 +2,11 @@
 //!
 //! The catalog is one directory of unmodified font files plus a
 //! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
-//! `crates/ui/ui-core/assets/fonts`; a build fetches the pinned font bytes into
-//! a verified artifact cache and prepares this crate's catalog from it in its
-//! profile directory's `font-catalogs`. The OS image installs its catalog once,
-//! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
+//! `crates/ui/ui-core/assets/fonts`; a build reads the pinned font bytes from a
+//! verified artifact cache (or the image's seed) and prepares this crate's catalog
+//! from it in its profile directory's `font-catalogs`, fetching them only on a
+//! machine that has the store's network and no cache. The OS image installs its
+//! catalog once, at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
 //! installed manifest must be byte-identical to the one compiled in here, and

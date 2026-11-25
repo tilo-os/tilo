@@ -315,7 +315,8 @@ def cached_font(entry, cache, offline):
         verify_artifact(provided, entry)
         return provided
     if offline:
-        raise ValueError(f"font artifact unavailable offline: {entry['file']}")
+        raise ValueError(f"font artifact unavailable offline: {entry['file']} "
+                         f"(not in {IMAGE_SEED}, {path.parent.parent} or TILO_FONT_CATALOG_ROOT)")
     path.parent.mkdir(parents=True, exist_ok=True)
     fetch(entry, path)
     return path
