@@ -749,6 +749,7 @@ impl Theme {
         Self::configured_with_applied(&text, applied, reduce_motion_override)
     }
 
+    #[cfg(test)]
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
         Self::configured_with_applied(text, None, reduce_motion_override)
     }

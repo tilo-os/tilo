@@ -872,22 +872,6 @@ fn install_theme_package() -> (std::path::PathBuf, Vec<u8>) {
 const PACKAGE: &str = "so.tilo.theme.triangle";
 const APPEARANCE: &str = "settings/appearance";
 
-/// One frame of a theme: a button drawn into a scene, as the toolkit draws one.
-fn frame(theme: &ui::Theme) -> ui::vello::Scene {
-    use ui::widget::{Button, Widget as _};
-    let mut button = Button::new("go", "Go");
-    button.apply_layout_external(ui::kurbo::Rect::new(100.0, 50.0, 220.0, 90.0));
-    let mut scene = ui::vello::Scene::new();
-    button.draw(&mut ui::draw::DrawCtx::new(
-        &mut scene,
-        ui::kurbo::Affine::IDENTITY,
-        &mut ui::text_render::TextRenderer::new(),
-        theme,
-        ui::presence::PresenceCtx::default().draw_env(),
-    ));
-    scene
-}
-
 /// Applying an installed theme package: the appearance names it, its painters draw the frame on
 /// the machine code the device compiled when the package arrived, and undo puts the previous
 /// theme back.
@@ -906,7 +890,6 @@ fn a_theme_package_is_applied_by_its_action_and_undo_returns_the_previous_theme(
     let before = crate::prefs::AppearancePrefs::default()
         .user_document()
         .expect("the stock theme");
-    let before_frame = frame(&ui::Theme::from_document(&before).expect("the stock theme draws"));
 
     // The store the daemon wrote holds the set's machine code before anything applies it: what
     // the install compiled, and the only thing the apply path reads.
@@ -940,25 +923,17 @@ fn a_theme_package_is_applied_by_its_action_and_undo_returns_the_previous_theme(
         "applying read the device's compiled store rather than compiling on that path"
     );
 
-    // The theme the appearance now draws is the bundle's, drawn by the set it ships on that
-    // machine code, and its frame is not the stock theme's.
+    // The theme the appearance now draws is the bundle's, and the set it ships is the one the
+    // toolkit draws each part with: the frame a session draws is in the session's own test.
     let prefs: crate::prefs::AppearancePrefs =
         serde_json::from_value(services.read(APPEARANCE).expect("published")).expect("the section");
     let applied = prefs.user_document().expect("the applied theme");
+    assert_ne!(applied.id, before.id, "the applied theme is another one");
     let theme = ui::Theme::from_document(&applied).expect("the bundle's theme draws");
     assert_eq!(
         theme.finish(ui::tokens::SurfaceRole::Control).painter(),
         "test.theme-triangle",
         "the set the bundle names is the one that draws the parts"
-    );
-    let applied_frame = frame(&theme);
-    assert!(
-        !applied_frame.encoding().is_empty(),
-        "the applied theme's frame drew nothing"
-    );
-    assert!(
-        !before_frame.encoding_eq(&applied_frame),
-        "the applied theme draws another frame than the stock theme"
     );
 
     // Undo takes back the person's step: the appearance names no package again, and the theme
