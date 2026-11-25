@@ -2743,3 +2743,132 @@ fn a_system_daemons_services_are_the_accounts_and_its_native_endpoint_is_everyon
         shared
     );
 }
+
+/// A connection whose session cannot be made is told so within seconds: a daemon whose person's
+/// part is not up never holds a caller unanswered.
+#[test]
+fn a_session_that_cannot_be_made_is_refused_within_seconds() {
+    let started = std::time::Instant::now();
+    let refused = super::admit_within::<crate::device::unclaimed::DeviceOnly>(|| {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        Err(std::io::Error::other("too late"))
+    });
+    let Err(refused) = refused else {
+        panic!("a session that is not made is refused");
+    };
+    assert!(
+        refused.to_string().contains("no person signed in yet"),
+        "the refusal says why: {refused}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the refusal came within seconds: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A daemon of the computer's that no person's certificate names yet answers root's sign-in over
+/// its native endpoint as one typed action, as `pam_tilo` says it; the account then founds its
+/// person through the same endpoint, and root's next sign-in answers a person. An action that
+/// needs a person before one exists is refused at once.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the first sign-in on a fresh computer, its founding and what it refuses, read top to bottom"
+)]
+fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
+    use io::{BufRead as _, Write as _};
+    use serde_json::{Value, json};
+    use std::sync::atomic::Ordering;
+    const DAEMON: u32 = 990;
+    const ADA: u32 = 1000;
+
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let root = home.root().to_owned();
+    let keys = tilo_api::calls::device_keys();
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
+    let admission: &'static tilo_api::daemon::admission::Admission =
+        Box::leak(Box::new(tilo_api::daemon::admission::Admission::new(DAEMON, true)));
+    let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
+    let native = std::sync::Arc::new(super::Native::new(
+        answers.clone(),
+        founding_peer,
+        admission,
+    ));
+    let sockets = root.join("sockets");
+    std::fs::create_dir_all(&sockets).unwrap();
+    let listener =
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+            .unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    let native_socket = sockets.join(tilo_paths::machine::DAEMON_NATIVE);
+    let ask = |uid: u32, request: Value| {
+        FOUNDING_PEER.store(uid, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&native_socket).unwrap();
+        // A request nothing answers fails here, rather than in a wait the walk would report.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        writeln!(writer, "{request}").unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers at once");
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let call = |uid: u32, path: &str, args: Value| {
+        let answer = ask(
+            uid,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "tilo_do", "arguments": {"path": path, "args": args}}}),
+        );
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        (answer["result"]["isError"] == true, text)
+    };
+
+    // An action that needs a person is refused at once, before any person exists.
+    let started = std::time::Instant::now();
+    let (refused, why) = call(0, "notes#create", json!({}));
+    assert!(refused, "an action needing a person answered: {why}");
+    assert!(
+        why.contains("no person"),
+        "the refusal says the device has no person: {why}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the refusal came at once: {:?}",
+        started.elapsed()
+    );
+
+    // Root says the account signed in, as `pam_tilo` says it: one typed action over the native
+    // endpoint, answered the same way by every caller.
+    let (failed, said) = call(0, "seats#signed-in", json!({"uid": ADA}));
+    assert!(!failed, "{said}");
+    assert!(said.contains("\"founding\":true"), "a person is to be made: {said}");
+
+    // The account's first command founds its person through the same endpoint.
+    let (failed, said) = call(ADA, "devices#found", json!({}));
+    assert!(!failed, "the account founded its person: {said}");
+
+    // Root says it signed in again, and the daemon answers the person, not a second founding.
+    let (failed, said) = call(0, "seats#signed-in", json!({"uid": ADA}));
+    assert!(!failed, "{said}");
+    assert!(
+        said.contains("\"person\""),
+        "the sign-in answers the person: {said}"
+    );
+    assert!(
+        !said.contains("\"founding\":true"),
+        "the person is made already: {said}"
+    );
+}

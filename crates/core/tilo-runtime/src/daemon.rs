@@ -1449,8 +1449,8 @@ impl Native {
                         let Some(person) = person else {
                             crate::device::serve::refuse(
                                 &stream,
-                                "this computer's Tilo has not started its person's part yet: run \
-                                 `tilo status` to see how it stands, then try again",
+                                "this computer has no person signed in yet: run `tilo status` to \
+                                 see how it stands, then try again",
                             );
                             return;
                         };
@@ -1465,8 +1465,13 @@ impl Native {
 }
 
 /// How long a connection waits for the person's part to take it before it is told why it is not
-/// served. The agents' endpoint bounds its own handoff by the same name.
-const WAITED_WITHIN: Duration = Duration::from_secs(120);
+/// served. The agents' endpoint bounds its own handoff by the same name. A caller is told within
+/// seconds: a person's part that is not up is said, never waited on.
+const WAITED_WITHIN: Duration = Duration::from_secs(10);
+
+/// How long a connection's session is made within before it is told why it was not: a daemon whose
+/// person's part cannot be made answers a caller at once, never holding the connection.
+const ADMIT_WITHIN: Duration = Duration::from_secs(10);
 
 /// What serves a workspace VM's tenant at the socket its keeper made: one account, the person's
 /// unnamed agent, and every other account refused by name.
@@ -1788,6 +1793,30 @@ fn search_once_held(
     Ok(())
 }
 
+/// [`ADMIT_WITHIN`] as a connection's session is made: the answer when it was made in time, or
+/// why one was not.
+fn admit_within<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
+    make: impl FnOnce() -> io::Result<Arc<McpServer<H>>> + Send + 'static,
+) -> io::Result<Arc<McpServer<H>>> {
+    let (said, answer) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("tilo-native-admit".into())
+        .spawn(move || {
+            let _ = said.send(make());
+        })
+        .map_err(io::Error::other)?;
+    match answer.recv_timeout(ADMIT_WITHIN) {
+        Ok(made) => made,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "this computer has no person signed in yet: its daemon admitted no session in time",
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
+            "this computer's daemon is stopping",
+        )),
+    }
+}
+
 /// The longest first line a native connection is read for before it is served: a forward to
 /// another device, or the first request of any other.
 const FIRST_LINE: u64 = 64 * 1024;
@@ -1928,9 +1957,14 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // workspaces over, a computer whose person's part is still starting) must be answered
         // without founding a workspace or waiting for one, and goes on asking as it likes.
         let hand = seated.map(|seated| Arc::clone(&seated.handed));
-        let admit = || {
-            let made = crate::seats::making_for(hand.clone(), || (self.session_factory)())?;
-            Ok::<_, io::Error>(Arc::new(made.with_media(self.media.clone())))
+        let factory = Arc::clone(&self.session_factory);
+        let media = self.media.clone();
+        let admit = move || {
+            let (hand, factory, media) = (hand.clone(), Arc::clone(&factory), media.clone());
+            admit_within(move || {
+                let made = crate::seats::making_for(hand.clone(), || factory())?;
+                Ok::<_, io::Error>(Arc::new(made.with_media(media.clone())))
+            })
         };
         if let Err(error) = serve_connection(
             &stream,

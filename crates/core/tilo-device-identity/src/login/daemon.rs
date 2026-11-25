@@ -36,8 +36,8 @@ const FOLLOW_WAIT_MS: u64 = 60_000;
 
 /// How long a device action's answer is waited for before the caller is told the daemon took it
 /// and did not answer. A daemon whose person's part is still starting, or whose workspace cannot
-/// be read, answers nothing at all: what a command does meanwhile is say so.
-const ANSWERING_WITHIN: Duration = Duration::from_secs(300);
+/// be read, answers nothing at all: what a command does meanwhile is say so, within seconds.
+const ANSWERING_WITHIN: Duration = Duration::from_secs(10);
 
 /// Why the daemon did not do a device action: its stable code, and its words.
 #[derive(Clone, Debug, PartialEq, Eq)]
