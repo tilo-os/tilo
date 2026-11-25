@@ -321,6 +321,20 @@ impl PeerGovernance<'_> {
             .is_some_and(|held| held.as_ref().user_public_key == device.user_public_key)
     }
 
+    /// Whether the member list holds `device`'s own row, under this certificate and not marked
+    /// removed: what a device that signed its way in finds once its row arrived. A server that
+    /// keeps the workspace has its row as any device of its person does, though the workspace
+    /// counts it among its servers rather than its members' devices ([`Self::member_list_access`]).
+    pub fn lists_device(self, device: &DeviceCert) -> bool {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        matches!(
+            doc.identities().get(&hex::encode(device.device_public_key)),
+            Some(Ok(row)) if !row.removed && row.device_cert == *device
+        )
+    }
+
     /// Whether `key`'s device may issue an invitation into the workspace at
     /// `now`: a current member whose part there grants inviting. What the
     /// surfaces that offer inviting show; an invitation's write path asks it

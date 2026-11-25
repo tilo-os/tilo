@@ -1984,11 +1984,13 @@ fn own_row_settled(
 ) -> bool {
     let peer = hosted.peer();
     let governance = peer.governance();
+    // The server's own row, not the member devices: the workspace counts a device it names
+    // among its servers apart from its members' devices, so a server that keeps it is never one.
     let settled = governance.removed_device(handed.device_public_key)
-        || governance.member_list_access(now).is_ok_and(|access| {
-            !access.member_user_roots.contains(&handed.user_public_key)
-                || access.member_devices.contains(&handed.device_public_key)
-        });
+        || governance.lists_device(handed)
+        || governance
+            .member_list_access(now)
+            .is_ok_and(|access| !access.member_user_roots.contains(&handed.user_public_key));
     drop(peer);
     settled
 }

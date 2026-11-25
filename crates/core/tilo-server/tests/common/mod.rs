@@ -100,6 +100,10 @@ pub fn signed_by_hand(
 pub struct TestUser {
     pub user_sk: SigningKey,
     pub user_pk: [u8; 32],
+    /// The keys of the groups of this person's workspaces, which every device of theirs holds:
+    /// each reads what the others seal, as the person's devices do once their groups let them
+    /// in. Another person's devices hold their own.
+    pub keys: Arc<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>,
 }
 
 impl TestUser {
@@ -108,6 +112,7 @@ impl TestUser {
         Self {
             user_sk: sk,
             user_pk: u.public_key,
+            keys: Arc::default(),
         }
     }
 
@@ -516,7 +521,8 @@ pub async fn join_person_workspace(hosting_device: &Hosted, device: &TestDevice,
 }
 
 /// A host as [`serve_on`] makes one, over the state `state` holds. Its device takes part in
-/// its workspaces' channels, as every device that founds a workspace or seals its records does.
+/// its workspaces' channels with its person's keys ([`TestUser::keys`]), as every device that
+/// founds a workspace or seals its records does, and opens with them again after a restart.
 pub async fn serve_in(
     user: &TestUser,
     device: &TestDevice,
@@ -524,7 +530,7 @@ pub async fn serve_in(
     state: TempDir,
 ) -> Hosted {
     let channels = tilo_workspace_service::workspaces::DeviceKeyGroups {
-        keys: Arc::<tilo_workspace_service::workspaces::fixtures::TestGroupKeys>::default(),
+        keys: Arc::clone(&user.keys) as _,
         sink: None,
     };
     serve_with_keys(user, device, work, state, Some(channels)).await

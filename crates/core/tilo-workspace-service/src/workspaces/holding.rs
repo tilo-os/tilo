@@ -321,6 +321,10 @@ impl Workspaces {
         }
         let now = tilo_clock::wall();
         let admitted = self.admitted_hand_over(request, now)?;
+        // Held while the copy is looked up and taken in, as a member hold takes it: two hand-overs
+        // that arrive together take the workspace in once, and the second finds the first's copy
+        // rather than adopting a second one that writes as the same device.
+        let holding = self.inner.member.holding.lock().await;
         let held = self.inner.workspaces.lock().await.get(&workspace).cloned();
         let state = if let Some(held) = held {
             let member = {
@@ -339,6 +343,7 @@ impl Workspaces {
             self.take_in(&workspace, caller, request, admitted, &holder, now)
                 .await?
         };
+        drop(holding);
         let mut hosted = state.lock().await;
         self.settle(&mut hosted).await?;
         // A copy another host hands over starts here without the workspace's group keys: the
@@ -479,7 +484,8 @@ impl Workspaces {
     /// stops syncing as a member of the device that served it, takes in the
     /// governance the hand-over carries, and is served over the workspace's
     /// link as every copy held here is: the device handing it over asks that
-    /// link whether this host keeps all it does.
+    /// link whether this host keeps all it does. The caller holds the member copies' `holding`
+    /// lock, so a member hold never takes the copy in while it is handed over.
     async fn govern_joined(
         &self,
         workspace: &str,
@@ -488,8 +494,6 @@ impl Workspaces {
         holder: &WorkspaceDeviceHintV1,
         now: SystemTime,
     ) -> Result<(), String> {
-        // Taken before the copy, as a member hold takes them, so neither waits on the other.
-        let _holding = self.inner.member.holding.lock().await;
         let mut hosted = state.lock().await;
         let Some(_) = hosted.member.take() else {
             return Ok(());
@@ -574,10 +578,11 @@ impl Workspaces {
     /// the device that handed it over; let the workspace go once its
     /// governance named this device and names it no more.
     ///
-    /// Every holder links to the others over the device link, exactly once
-    /// per pair: each dials the holders whose device keys are greater than
-    /// its own and answers the rest, so whichever holder goes away, the
-    /// others stay linked.
+    /// Every holder dials every other holder it lists, so a link never depends
+    /// on both still listing each other: a holder the others no longer name
+    /// still reaches them, and hears why they refuse it. A pair that comes to
+    /// hold two links keeps the one the lesser device key dialled
+    /// ([`tilo_peer_state::direct::DirectSync::pair_carried_by`]).
     pub(super) fn dial_holders(&self, hosted: &mut HostedWorkspace) {
         let host = &self.inner.host;
         let own = host.cert.device_public_key;
@@ -617,14 +622,13 @@ impl Workspaces {
             .map(|holder| holder.device_certificate.device_public_key)
             .collect();
         // The device that handed the workspace over is dialled beside the
-        // holders, never in place of one: a device keeping no store of it (the
-        // owner's computer adding a server) would otherwise be the one this
-        // holder dials, and the holders it outranks would never be linked.
+        // holders even where the governance names it nowhere: a device keeping
+        // no store of it (the owner's computer adding a server).
         let handed = hosted
             .handed_by
             .clone()
             .filter(|handed| !keeping.contains(&handed.device_certificate.device_public_key));
-        named.extend(handed.clone());
+        named.extend(handed);
         let links = hosted.holders.links.clone();
         hosted.holders.sessions.retain(|device, _| {
             let kept = named
@@ -642,40 +646,26 @@ impl Workspaces {
                 links.clone(),
             ))));
         }
-        // The holders this device dials: every other keeper whose device key is
-        // greater than its own, so each two holders are linked once and any one
-        // can go away without leaving the rest apart; and the device that handed
-        // it over, when that keeps none.
-        for dialled in keeping
-            .iter()
-            .copied()
-            .filter(|device| *device > own)
-            .chain(handed.map(|handed| handed.device_certificate.device_public_key))
-        {
+        let Some(link) = self.inner.direct.link(hosted.workspace_id()) else {
+            return;
+        };
+        for holder in &named {
+            let dialled = holder.device_certificate.device_public_key;
             if dialled == own || hosted.holders.sessions.contains_key(&dialled) {
                 continue;
             }
             // The address the hand-over itself carried is fresher than the one
             // the device's naming in the governance keeps, and it is the device
             // that just answered here: dial it at that one.
-            let handed = hosted
+            let addr = hosted
                 .handed_by
-                .clone()
-                .filter(|handed| handed.device_certificate.device_public_key == dialled);
-            let Some(holder) = handed.as_ref().or_else(|| {
-                named
-                    .iter()
-                    .find(|holder| holder.device_certificate.device_public_key == dialled)
-            }) else {
-                continue;
-            };
-            let Some(link) = self.inner.direct.link(hosted.workspace_id()) else {
-                return;
-            };
+                .as_ref()
+                .filter(|handed| handed.device_certificate.device_public_key == dialled)
+                .map_or(&holder.endpoint_addr, |handed| &handed.endpoint_addr);
             let dialing = tokio::spawn(dial_holder(
-                link,
+                link.clone(),
                 host.endpoint.clone(),
-                holder.endpoint_addr.clone(),
+                addr.clone(),
                 dialled,
                 links.clone(),
                 hosted.workspace().to_owned(),
@@ -705,6 +695,9 @@ pub(super) async fn dial_holder(
     const MOST: std::time::Duration = std::time::Duration::from_secs(60);
     let mut backoff = FIRST;
     loop {
+        // A link the other holder dialled carries the pair while it is up, when its key is the
+        // lesser: one this device dialled would end at once.
+        link.pair_carried_by(device).await;
         links.set(device, Link::Reaching);
         match link.dial(&endpoint, addr.clone(), device).await {
             Ok(dialed) => {

@@ -902,6 +902,66 @@ impl Pairing {
     }
 }
 
+/// How many links are up between this device and another, by which end dialled them.
+///
+/// Two devices that list each other both dial, so a pair can come to hold two links. The one the
+/// lesser device key dialled carries the pair and the other ends, on both ends alike: a link never
+/// depends on both devices still listing each other, and a pair keeps one link once both are up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PairLinks {
+    /// Links this device dialled.
+    dialled: u32,
+    /// Links the other device dialled.
+    accepted: u32,
+}
+
+/// A link counted in [`PairLinks`] while it runs.
+struct PairLink {
+    links: watch::Sender<BTreeMap<[u8; 32], PairLinks>>,
+    remote: [u8; 32],
+    dialing: bool,
+}
+
+impl PairLink {
+    fn new(
+        links: &watch::Sender<BTreeMap<[u8; 32], PairLinks>>,
+        remote: [u8; 32],
+        dialing: bool,
+    ) -> Self {
+        links.send_modify(|links| {
+            let pair = links.entry(remote).or_default();
+            if dialing {
+                pair.dialled += 1;
+            } else {
+                pair.accepted += 1;
+            }
+        });
+        Self {
+            links: links.clone(),
+            remote,
+            dialing,
+        }
+    }
+}
+
+impl Drop for PairLink {
+    fn drop(&mut self) {
+        let (remote, dialing) = (self.remote, self.dialing);
+        self.links.send_modify(|links| {
+            if let Some(pair) = links.get_mut(&remote) {
+                if dialing {
+                    pair.dialled = pair.dialled.saturating_sub(1);
+                } else {
+                    pair.accepted = pair.accepted.saturating_sub(1);
+                }
+                if *pair == PairLinks::default() {
+                    links.remove(&remote);
+                }
+            }
+        });
+    }
+}
+
 /// The streams of a dialled link after the other device admitted this one:
 /// what runs it, once its dialer has answered.
 pub struct Dialed {
@@ -1045,6 +1105,8 @@ struct Inner {
     /// its access is sent nothing and refused a new link until a host admits
     /// it again ([`DirectSync::end_link`]).
     ended_links: Arc<RwLock<BTreeMap<[u8; 32], Refusal>>>,
+    /// The links up to each other device, by which end dialled them ([`PairLinks`]).
+    pair_links: watch::Sender<BTreeMap<[u8; 32], PairLinks>>,
     /// Told each link whose device's links this device ends, while it runs
     /// ([`DirectSync::end_link`]).
     endings: broadcast::Sender<([u8; 32], Refusal)>,
@@ -1150,6 +1212,7 @@ impl DirectSync {
             catch_up_written: watch::channel(false).0,
             ended: watch::channel(None).0,
             ended_links: Arc::default(),
+            pair_links: watch::channel(BTreeMap::new()).0,
             endings: broadcast::channel(ENDINGS).0,
             replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
@@ -1184,6 +1247,7 @@ impl DirectSync {
             catch_up_written: self.0.catch_up_written.clone(),
             ended: self.0.ended.clone(),
             ended_links: Arc::clone(&self.0.ended_links),
+            pair_links: self.0.pair_links.clone(),
             endings: self.0.endings.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
@@ -2468,6 +2532,29 @@ impl DirectSync {
         let dialing = dialled.is_some();
         let remote = dialled.unwrap_or_else(|| transport.remote());
         let mut control = control;
+        // Counted while it runs: of two links between this device and `remote`, the one the
+        // greater device key dialled ends once the other is up ([`PairLinks`]).
+        let _pair = PairLink::new(&self.0.pair_links, remote, dialing);
+        let own = self.device();
+        let dialler_greater = if dialing { own > remote } else { remote > own };
+        let superseded = async {
+            if !dialler_greater {
+                return std::future::pending().await;
+            }
+            let mut pairs = self.0.pair_links.subscribe();
+            let other = |pairs: &BTreeMap<[u8; 32], PairLinks>| {
+                pairs.get(&remote).is_some_and(|pair| {
+                    if dialing {
+                        pair.accepted > 0
+                    } else {
+                        pair.dialled > 0
+                    }
+                })
+            };
+            if pairs.wait_for(other).await.is_err() {
+                return std::future::pending().await;
+            }
+        };
         // Subscribed before the ended devices are read: an ending sent
         // between the two is seen by the channel or by the read, whichever.
         let mut endings = self.0.endings.subscribe();
@@ -2675,6 +2762,7 @@ impl DirectSync {
             result = history => result,
             Some(refused) = ending => Err(refused),
             Some(refused) = ended => Err(refused),
+            () = superseded => Err(SUPERSEDED.into()),
         };
         tracing::debug!(
             workspace = ?self.workspace().ok(),
@@ -2751,6 +2839,19 @@ impl DirectSync {
     /// links of is admitted once more ([`Self::end_link`]).
     pub fn reopen_link(&self, remote: [u8; 32]) {
         self.0.ended_links.write_recover().remove(&remote);
+    }
+
+    /// Wait while a link `remote` dialled carries this device's pair with it, when this device's
+    /// key is the greater of the two: a link this device dials then ends as soon as it is up
+    /// ([`PairLinks`]), so it dials again only once that one ended.
+    pub async fn pair_carried_by(&self, remote: [u8; 32]) {
+        if self.device() < remote {
+            return;
+        }
+        let mut pairs = self.0.pair_links.subscribe();
+        let _ = pairs
+            .wait_for(|pairs| pairs.get(&remote).is_none_or(|pair| pair.accepted == 0))
+            .await;
     }
 
     /// Why this device ended its links to `remote`, while it has them ended
@@ -4541,6 +4642,10 @@ fn arrived_late(error: &crate::AdmissionError) -> bool {
 /// Why a link to a device ends, or is refused: the workspace removed its
 /// person.
 pub const REMOVED: &str = "the workspace removed the device's person";
+
+/// Why a link ends that the greater device key of its pair dialled, once the link the lesser one
+/// dialled is up ([`DirectSync::pair_carried_by`]).
+pub const SUPERSEDED: &str = "the link the lesser device key dialled carries this pair";
 
 /// Why a record's write in the clear is refused.
 pub const WRITTEN_CLEAR: &str =
