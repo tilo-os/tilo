@@ -712,6 +712,77 @@ pub(crate) fn root_for(uid: u32) -> anyhow::Result<Option<tilo_identity::store::
     }
 }
 
+/// Renew this device's certificates of the account `uid`'s person that are due, with the root
+/// this computer keeps for that account. `device` is this device's key, which each renewed
+/// certificate names. The root is sealed with the device key, so only the daemon opens it: an
+/// account's session asks this rather than renew its certificates itself. Each keeps its
+/// lifetime from the time it is renewed. Answers how many were renewed.
+///
+/// # Errors
+/// The account holds no person here, this computer keeps no root of theirs while one of their
+/// certificates is due, or a certificate cannot be signed or written.
+pub(crate) fn renew_certificates(uid: u32, device: [u8; 32]) -> Result<u64, String> {
+    use tilo_device_identity::persist;
+    use tilo_user_identity::DeviceCert;
+    /// One renewal at a time, so two never reissue one certificate.
+    static RENEWING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = RENEWING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = account_identity_dir(uid).map_err(|error| error.to_string())?;
+    let record = tilo_identity::store::resolve_active_identity(&dir)
+        .ok_or("this account holds no person on this computer")?;
+    let person = tilo_identity::store::load_metadata_from_path(&record)
+        .map_err(|error| error.to_string())?
+        .group_public_key;
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    let now = tilo_clock::unix_now_ns();
+    let mut due: Vec<(std::path::PathBuf, DeviceCert)> = Vec::new();
+    for path in [paths.device_cert_for_user(&person), paths.device_cert.clone()] {
+        let Ok(cert) = persist::read_device_cert(&path) else {
+            continue;
+        };
+        if cert.user_public_key == person
+            && cert.device_public_key == device
+            && tilo_identity::provisioning::renewal_due_at(&cert).is_some_and(|at| at <= now)
+            && !due.iter().any(|(held, _)| *held == path)
+        {
+            due.push((path, cert));
+        }
+    }
+    if due.is_empty() {
+        return Ok(0);
+    }
+    let root = root_for(uid)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            "this computer keeps no root of this person's: a device of theirs that does renews \
+             this one's certificate"
+                .to_owned()
+        })?;
+    if root.group_public_key() != person {
+        return Err(
+            "the root this computer keeps is another person's than the account's".to_owned(),
+        );
+    }
+    for (path, held) in &due {
+        let lifetime = held
+            .expires_at_ns
+            .map(|expires| expires.saturating_sub(held.issued_at_ns));
+        let mut cert = DeviceCert {
+            issued_at_ns: now,
+            expires_at_ns: lifetime.map(|lifetime| now.saturating_add(lifetime)),
+            signature: [0; 64],
+            issuer: None,
+            ..held.clone()
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root)
+            .map_err(|error| format!("the certificate is not signed: {error}"))?;
+        persist::write_device_cert(path, &cert).map_err(|error| error.to_string())?;
+    }
+    Ok(u64::try_from(due.len()).unwrap_or(u64::MAX))
+}
+
 /// Whether this computer keeps the account `uid`'s person's root.
 #[must_use]
 pub fn holds_a_root(uid: u32) -> bool {

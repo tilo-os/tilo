@@ -332,6 +332,25 @@ impl DeviceActions {
             })
     }
 
+    /// Renew this device's certificates of the asking account's person that are due, with the
+    /// root the daemon keeps for that account ([`super::RENEW_CERTIFICATES`]): only the daemon
+    /// opens it. Answers how many were renewed.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or refused: it keeps no root of the person's while one of
+    /// their certificates is due, or one could not be renewed.
+    pub fn renew_certificates(&self) -> Result<u64, DeviceRefusal> {
+        let renewed = self.ask(super::RENEW_CERTIFICATES, serde_json::json!({}))?;
+        renewed
+            .get("renewed")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                DeviceRefusal::said(format!(
+                    "the device service answered no renewal: {renewed}"
+                ))
+            })
+    }
+
     /// The device action `action` called with `args`: its result.
     ///
     /// # Errors

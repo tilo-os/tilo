@@ -123,6 +123,11 @@ pub const OPEN_TERMINAL: &str = "openTerminal";
 /// `message` (hex) with the device key. Answers the Ed25519 `signature` (hex). A program that
 /// needs the device to prove who it is asks this; the key never leaves the daemon.
 pub const SIGN: &str = "sign";
+/// The action a person's session asks the device's daemon: renew this device's certificates of
+/// the asking account's person that are due, with the root the daemon keeps for that account.
+/// The root is sealed with the device key, so only the daemon opens it. Answers `renewed`, how
+/// many were.
+pub const RENEW_CERTIFICATES: &str = "renewCertificates";
 /// The actions a daemon answers the person about the identities it keeps: listing them without
 /// secrets, and using (new apps sign in as it), removing and protecting (its key moves into
 /// protected storage) identity `id`, each change with `confirm`.

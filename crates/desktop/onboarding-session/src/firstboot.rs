@@ -89,18 +89,14 @@ pub fn verify_existing_collaboration_identity(
     verify_collaboration_identity(identity_dir, paths, now)
 }
 
-/// The identity whose certificates this session renews, once
-/// [`keep_device_certificates_renewed`] started. Held while renewing, so
-/// renewals are made one at a time.
-static RENEWING: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
-
 /// Keep this device's expiring certificates for the identity in
 /// `identity_dir` renewed while the session runs
 /// ([`tilo_identity::provisioning::keep_device_certificates_renewed`]),
 /// on a thread of its own that sleeps until the next one is due. Started
 /// once per session; a session whose certificates never expire ends it at
 /// once. Called again, as when ownership is provisioned anew, it tells a
-/// renewal waiting on what it failed on that ownership changed.
+/// renewal waiting on what it failed on that ownership changed. The device's
+/// daemon renews each ([`renew_device_certificates`]).
 pub fn keep_device_certificates_renewed(identity_dir: &Path) {
     use tilo_identity::provisioning::RENEWAL_CAUSES;
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -108,9 +104,6 @@ pub fn keep_device_certificates_renewed(identity_dir: &Path) {
         RENEWAL_CAUSES.changed();
         return;
     }
-    *RENEWING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_dir.to_path_buf());
     let identity_dir = identity_dir.to_path_buf();
     let spawned = std::thread::Builder::new()
         .name("tilo-device-certificate-renewal".into())
@@ -120,12 +113,7 @@ pub fn keep_device_certificates_renewed(identity_dir: &Path) {
                 &identity_dir,
                 &paths,
                 &SystemRenewalClock,
-                || {
-                    let _renewing = RENEWING
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    renew_device_certificates(&identity_dir, &paths)
-                },
+                || renew_device_certificates(&paths),
             );
         });
     if let Err(error) = spawned {
@@ -141,12 +129,12 @@ pub fn keep_device_certificates_renewed(identity_dir: &Path) {
 /// This device's identity is the one its environment names — the session's
 /// own (`TILO_IDENTITY_ROOT`, `XDG_CONFIG_HOME`), not whichever identity
 /// started the renewal loop: a test binary keeps several devices' identities
-/// side by side, and each joins as its own. A renewal runs with the loop's
-/// lock held, so two never reissue one certificate at once.
+/// side by side, and each joins as its own. The device's daemon renews them
+/// ([`renew_device_certificates`]).
 ///
 /// # Errors
 ///
-/// As the provisioning that renews them.
+/// The daemon does not answer, or did not renew them.
 pub fn renew_due_device_certificates() -> std::io::Result<()> {
     use tilo_startup_metrics::JOIN_FLOW_TARGET;
     let Some(identity_dir) = this_device_identity_dir() else {
@@ -184,11 +172,7 @@ pub fn renew_due_device_certificates() -> std::io::Result<()> {
         now_ns = now,
         "renewal: a certificate is due; renewing it now, before this device is presented"
     );
-    let renewing = RENEWING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let renewed = renew_device_certificates(&identity_dir, &paths);
-    drop(renewing);
+    let renewed = renew_device_certificates(&paths);
     match &renewed {
         Ok(()) => tracing::info!(
             target: JOIN_FLOW_TARGET,
@@ -216,14 +200,15 @@ fn this_device_identity_dir() -> Option<std::path::PathBuf> {
     tilo_identity::store::account_identity_dir_from_env().ok()
 }
 
-/// Reissue what is due of this device's certificates for the identity in
-/// `identity_dir`, through the provisioning the session started with.
-fn renew_device_certificates(identity_dir: &Path, paths: &IdentityPaths) -> std::io::Result<()> {
-    if tilo_identity::provisioning::is_throwaway_test_identity(identity_dir) {
-        ensure_throwaway_test_identity(identity_dir, paths).map(drop)
-    } else {
-        ensure_collaboration_identity(identity_dir, paths).map(drop)
-    }
+/// Have the device's daemon reissue what is due of this device's certificates
+/// for this account's person. Their root is sealed with the device key, which
+/// only the daemon opens, so the session never renews them itself.
+fn renew_device_certificates(paths: &IdentityPaths) -> std::io::Result<()> {
+    tilo_device_identity::login::daemon::DeviceActions::here(paths.clone())
+        .map_err(io::Error::other)?
+        .renew_certificates()
+        .map(drop)
+        .map_err(|refusal| io::Error::other(refusal.message))
 }
 
 /// The wall clock a running session renews its certificates by, and the

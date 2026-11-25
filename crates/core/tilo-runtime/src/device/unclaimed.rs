@@ -822,6 +822,29 @@ impl DeviceOnly {
         Pending::ready(Ok(InvocationState::new(invocation, update).receipt()))
     }
 
+    /// Renew this device's certificates of the asking account's person that are due, with the
+    /// root kept here for that account ([`super::services::renew_certificates`]): the account's
+    /// session asks, since only this process opens the root. Any account this device serves
+    /// asks for its own person's alone.
+    fn renew_certificates(
+        &self,
+        invocation: InvocationId,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(uid) = self.1.as_ref().and_then(|seated| {
+            seated.seat.admitted.served().then_some(seated.seat.uid)
+        }) else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "only an account this device serves renews its certificates".into(),
+            }));
+        };
+        let device = self.0.key.verifying_key().to_bytes();
+        let update = match super::services::renew_certificates(uid, device) {
+            Ok(renewed) => succeeded(invocation, serde_json::json!({ "renewed": renewed })),
+            Err(error) => failed(invocation, &error),
+        };
+        Pending::ready(Ok(InvocationState::new(invocation, update).receipt()))
+    }
+
     /// Answer `action`, one the device's own system asks with the device key: root, or the
     /// daemon's own account, alone.
     fn for_the_system(
@@ -1002,6 +1025,9 @@ impl ActionProvider for DeviceOnly {
         }
         if super::key_use::FOR_A_PERSON.contains(&address.action.as_str()) {
             return self.for_a_person(invocation, &address.action, &request.argument);
+        }
+        if address.action == tilo_device_identity::login::RENEW_CERTIFICATES {
+            return self.renew_certificates(invocation);
         }
         match address.action.as_str() {
             INFO => Pending::ready(Ok(self.keep(

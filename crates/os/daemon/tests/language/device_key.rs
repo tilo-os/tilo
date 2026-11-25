@@ -278,3 +278,59 @@ fn a_fresh_computer_signs_at_once_through_its_first_sign_in() {
         );
     });
 }
+
+/// A session whose certificate is due asks the daemon to renew it, through the client every
+/// program uses: the person's root is sealed with the device key, so the daemon, which alone
+/// took the key, opens it and reissues the certificate. The session reads only the person's
+/// public record and their certificates.
+#[test]
+fn the_daemon_renews_a_due_certificate_a_session_asks_it_to() {
+    host::in_own_process(|profile| {
+        const HOUR: u64 = 3_600_000_000_000;
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        let running = tilo_runtime::daemon::Running::start(profile).unwrap();
+        let actions = DeviceActions::at(running.native_socket().to_owned());
+        let record =
+            tilo_runtime::device::services::device_root_record().expect("the person founded here");
+        let person = tilo_identity::store::load_metadata_from_path(&record)
+            .unwrap()
+            .group_public_key;
+        let path = paths.device_cert_for_user(&person);
+        let held = tilo_device_identity::persist::read_device_cert(&path).unwrap();
+
+        // Nothing is due yet: asking renews none.
+        assert_eq!(actions.renew_certificates().unwrap(), 0);
+
+        // The certificate falls due: it was issued two hours ago for three.
+        let now = tilo_clock::unix_now_ns();
+        let due = tilo_user_identity::DeviceCert {
+            issued_at_ns: now - 2 * HOUR,
+            expires_at_ns: Some(now + HOUR),
+            ..held.clone()
+        };
+        assert!(
+            tilo_identity::provisioning::renewal_due_at(&due).is_some_and(|at| at <= now),
+            "the certificate is due"
+        );
+        tilo_device_identity::persist::write_device_cert(&path, &due).unwrap();
+
+        assert_eq!(
+            actions.renew_certificates().expect("the daemon renews it"),
+            1,
+            "the due certificate is renewed"
+        );
+        let renewed = tilo_device_identity::persist::read_device_cert(&path).unwrap();
+        assert!(renewed.issued_at_ns >= now, "{renewed:?}");
+        assert_eq!(
+            renewed.expires_at_ns.map(|expires| expires - renewed.issued_at_ns),
+            Some(3 * HOUR),
+            "a renewal keeps the certificate's lifetime"
+        );
+        assert_eq!(renewed.user_public_key, person);
+        assert_eq!(renewed.device_public_key, held.device_public_key);
+        tilo_user_identity::verify_device_cert_at(&renewed, tilo_clock::unix_now_ns())
+            .expect("the person's root signed the renewal");
+        assert_eq!(actions.renew_certificates().unwrap(), 0, "nothing is due once renewed");
+        running.stop().unwrap();
+    });
+}

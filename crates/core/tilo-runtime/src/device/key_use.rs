@@ -12,7 +12,9 @@
 //!   person's root gave it;
 //! - [`SET_UP_UNLOCK`]: this device's boot key enrolled for disk unlock, certified by the person's
 //!   root where it is kept and asked of them there;
-//! - [`SIGN`]: a message the device signs, for a program that proves it is this device.
+//! - [`SIGN`]: a message the device signs, for a program that proves it is this device;
+//! - [`RENEW_CERTIFICATES`]: this device's certificates of the asking account's person renewed
+//!   with the root kept here, which is sealed with the device key.
 //!
 //! The daemon answers these from the moment it took the key, before its person's services run
 //! or any workspace is admitted: what the key signs depends on neither.
@@ -24,7 +26,7 @@ use serde_json::{Value, json};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_device_identity::login::{
     CHECK_CALLER_PROOF, ENDORSE_IMAGE, SET_UP_UNLOCK, MALFORMED_ASK, OPEN_VAULT, SEAL_VAULT,
-    SEALED_BY_ANOTHER_KEY, SIGN,
+    RENEW_CERTIFICATES, SEALED_BY_ANOTHER_KEY, SIGN,
 };
 use tilo_user_identity::ImageEndorsement;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
@@ -40,7 +42,9 @@ pub(crate) const FOR_THE_SYSTEM: [&str; 2] = [ENDORSE_IMAGE, SET_UP_UNLOCK];
 
 /// Whether `action` is one of what the device key does.
 pub(crate) fn asked_of_the_key(action: &str) -> bool {
-    FOR_A_PERSON.contains(&action) || FOR_THE_SYSTEM.contains(&action)
+    FOR_A_PERSON.contains(&action)
+        || FOR_THE_SYSTEM.contains(&action)
+        || action == RENEW_CERTIFICATES
 }
 
 /// Why one of these actions was not done: its stable code, and its words.
@@ -226,6 +230,13 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
                 ParamType::Text,
                 "The message, its bytes in hex.",
             )],
+        ),
+        descriptor(
+            RENEW_CERTIFICATES,
+            "Renew my certificates here",
+            "Renew this computer's certificates for my person that are due, with my root kept \
+             here.",
+            &[],
         ),
         descriptor(
             SET_UP_UNLOCK,
