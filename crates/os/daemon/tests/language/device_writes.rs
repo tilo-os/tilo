@@ -12,6 +12,8 @@ use crate::language::host;
 
 /// Chat's package id, as the workspace runs it.
 const CHAT: &str = ui::apps::CHAT;
+/// Chat's package under the tree's `apps/tl`, which the device installs to run it.
+const CHAT_PACKAGE: &str = "chat";
 
 /// The text of an MCP tool's result, and whether it failed.
 fn said(result: &Value) -> (String, bool) {
@@ -153,22 +155,19 @@ fn a_members_device_takes_what_its_role_lets_it() {
 /// commenter who files a report is refused triage, which is the workspace's moderators'.
 #[test]
 fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_triage() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
-        let (started, is_error) = said(
-            &owner
-                .tool("tilo_do", &json!({"path": "chat#start", "args": {}}))
-                .await,
-        );
-        assert!(!is_error, "Chat starts in the workspace: {started}");
+        host::start_app(host.as_ref(), CHAT)
+            .await
+            .unwrap_or_else(|refused| panic!("Chat starts with no window: {refused:?}"));
         for at in 0..2 {
             let (filed, is_error) = said(
                 &owner
                     .tool(
                         "tilo_do",
-                        &json!({"path": "chat#report_problem",
+                        &json!({"path": format!("{CHAT}#report_problem"),
                                 "args": {"body": format!("The book failed to open {at}")}}),
                     )
                     .await,
@@ -242,7 +241,7 @@ async fn feedback_channel(agent: &host::Agent) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let reply = agent
-            .tool_structured("tilo_ls", &json!({"path": "chat"}))
+            .tool_structured("tilo_ls", &json!({"path": CHAT}))
             .await;
         assert_ne!(reply["isError"], true, "{reply}");
         let rows = reply["structuredContent"]["rows"]

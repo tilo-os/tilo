@@ -16,6 +16,11 @@ use serde_json::{Value, json};
 
 use crate::language::host;
 
+/// Chat's package under the tree's `apps/tl`, which the device installs to run it.
+const CHAT_PACKAGE: &str = "chat";
+/// Chat's id, as the workspace runs it.
+const CHAT: &str = ui::apps::CHAT;
+
 /// The action answer of `path#action` with `args` in `workspace`, through `key`.
 async fn act(key: &host::Key, workspace: &str, path: &str, action: &str, args: &Value) -> Value {
     let (status, answer) = key
@@ -100,15 +105,8 @@ async fn opened_and_written(key: &host::Key, workspace: &str) {
 /// The channel `name` made in the workspace's chat through `key`: the address its messages go
 /// to, as the call that made it names the resource.
 async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
-    let answer = act(
-        key,
-        workspace,
-        "chat",
-        "new_channel",
-        &json!({"name": name}),
-    )
-    .await;
-    assert_eq!(answer["status"], "ok", "chat#new_channel: {answer}");
+    let answer = act(key, workspace, CHAT, "new_channel", &json!({"name": name})).await;
+    assert_eq!(answer["status"], "ok", "{CHAT}#new_channel: {answer}");
     answer["resources"]
         .as_array()
         .and_then(|made| made.first())
@@ -244,13 +242,15 @@ fn history_names_a_keys_agent_by_the_name_it_was_minted_with() {
 /// them, and the last posts cost about what the first did.
 #[test]
 fn a_members_key_posts_a_long_history_into_the_chat() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         const MESSAGES: usize = 60;
         const EACH_END: usize = 10;
         let workspace = host.workspace().to_owned();
         let key = host.key("Lounge history");
-        did(&key, &workspace, "chat", "start", &json!({})).await;
-        let conversation = format!("chat/{}", did_channel(&key, &workspace, "general").await);
+        host::start_app(host.as_ref(), CHAT)
+            .await
+            .unwrap_or_else(|refused| panic!("Chat starts with no window: {refused:?}"));
+        let conversation = format!("{CHAT}/{}", did_channel(&key, &workspace, "general").await);
 
         let mut took: Vec<Duration> = Vec::with_capacity(MESSAGES);
         for index in 0..MESSAGES {
@@ -305,12 +305,14 @@ fn a_members_key_posts_a_long_history_into_the_chat() {
 /// conversation's read lists is read at the path the read gave for it.
 #[test]
 fn every_message_a_long_conversation_lists_is_read_at_its_path() {
-    host::run(|host| async move {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
         const MESSAGES: usize = 45;
         let workspace = host.workspace().to_owned();
         let key = host.key("Long conversation");
-        did(&key, &workspace, "chat", "start", &json!({})).await;
-        let conversation = format!("chat/{}", did_channel(&key, &workspace, "general").await);
+        host::start_app(host.as_ref(), CHAT)
+            .await
+            .unwrap_or_else(|refused| panic!("Chat starts with no window: {refused:?}"));
+        let conversation = format!("{CHAT}/{}", did_channel(&key, &workspace, "general").await);
 
         let mut posted = Vec::with_capacity(MESSAGES);
         for index in 0..MESSAGES {
