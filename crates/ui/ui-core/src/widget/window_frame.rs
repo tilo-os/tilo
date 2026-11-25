@@ -35,7 +35,7 @@ use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::DrawChild;
 use crate::widget::arrange::{Align, At, Fit, Layers, Length, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
-use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
+use crate::widget::tabs::{TAB_BAR_HEIGHT, TabBar, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::{
     Decorator, Element, IconSize, IconWidget, Spacer, Text, Widget, WindowBar, WindowBarPart,
@@ -281,6 +281,23 @@ fn holds_tabs(widget: &dyn Widget) -> bool {
         .and_then(|any| any.downcast_ref::<TabStrip>())
         .is_some();
     tabs || widget.children().iter().any(|child| holds_tabs(*child))
+}
+
+/// The bar's tab strip under `widget`, handed to `ask`: a window of one tab is its title, so the
+/// frame around it takes the whole window from a press the strip would otherwise keep.
+fn with_tabs_bar<R>(widget: &mut dyn Widget, ask: &mut dyn FnMut(&mut TabBar) -> R) -> Option<R> {
+    if let Some(strip) = widget
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<TabStrip>())
+    {
+        return Some(ask(TabStrip::bar_mut(strip)));
+    }
+    for child in widget.children_mut() {
+        if let Some(asked) = with_tabs_bar(child, ask) {
+            return Some(asked);
+        }
+    }
+    None
 }
 
 fn part(element: Element, fit: Fit) -> Part {
@@ -844,11 +861,26 @@ impl Decorator for WindowFrame {
                 ..
             } => {
                 self.layers.handle_event(event, ctx);
-                if *ctx.handled || !self.bar.contains(self.cursor) {
+                if !self.bar.contains(self.cursor) {
                     return;
                 }
                 if !self.enabled {
                     return;
+                }
+                if *ctx.handled {
+                    // The bar's tabs took the press. A window of one tab shows it as the bar's
+                    // title, so the bar is the window's handle: the pill's own press gives way,
+                    // and the whole window is taken from there.
+                    let lifts = with_tabs_bar(&mut self.layers, &mut |tabs| {
+                        if !(tabs.pressed_a_tab() && tabs.lifts_the_window()) {
+                            return false;
+                        }
+                        tabs.cancel_press_for_carry();
+                        true
+                    });
+                    if lifts != Some(true) {
+                        return;
+                    }
                 }
                 self.lift = Some(Lift {
                     start: self.cursor,
@@ -1163,6 +1195,34 @@ mod tests {
                 reorder: Event::None,
                 detach: Event::None,
                 tabs,
+            },
+        ))
+    }
+
+    /// A window's one tab, as the strip of a window of one place hands it to its frame.
+    fn one_place() -> Box<TabStrip> {
+        let tab = TabItemProps {
+            key: "a".to_owned(),
+            item: Some(ResourceId("@notes.Note:a".to_owned())),
+            title: Some("Groceries — Notes".to_owned()),
+            name: None,
+            icon: None,
+            attention: false,
+            modified: false,
+            busy: false,
+            presence: Vec::new(),
+        };
+        Box::new(TabStrip::from_props(
+            "frame",
+            TabStripProps {
+                key: "frame".to_owned(),
+                active: tab.item.clone(),
+                focused: true,
+                activate: Event::None,
+                close: Event::None,
+                reorder: Event::None,
+                detach: Event::None,
+                tabs: vec![tab],
             },
         ))
     }
@@ -1804,6 +1864,97 @@ mod tests {
         assert!(
             queue.take().is_empty(),
             "a press on the body is the content's, never the bar's"
+        );
+    }
+
+    /// A window of one tab is its title: a press on that pill reaches for the whole window — its
+    /// `press`, which the shell answers by bringing it forward and giving it the keyboard — and a
+    /// travel from there carries the resource the window holds, never the pill's own drag.
+    #[test]
+    fn a_one_tab_bar_lifts_the_whole_window() {
+        use crate::widget::drag_bus;
+        use taffy::TaffyTree;
+        let queue = crate::Intents::default();
+        let mut frame = Box::new(WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                key: "w".to_owned(),
+                name: Some("Groceries — Notes".to_owned()),
+                carries: Some("notes.workspace/notes/n_groceries".to_owned()),
+                press: Event::View(crate::component::Intent::new(&queue, "w", "press")),
+                tabs: Some(one_place()),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        ));
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
+            let _ = taffy.set_style(node, style);
+        }
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(480.0),
+                    height: taffy::AvailableSpace::Definite(360.0),
+                },
+            )
+            .expect("the window solves its layout");
+        Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
+        let bar = frame.bar;
+        let mut send = |event: &WindowEvent| {
+            let mut doc = automerge::AutoCommit::new();
+            crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node)
+                .send(frame.as_mut(), event);
+        };
+        // A point on the pill: the one tab's title stands at the bar's leading edge.
+        let (from_x, from_y) = (bar.x0 + 24.0, bar.center().y);
+        send(&crate::synthetic_input::cursor_moved(from_x, from_y));
+        send(&crate::synthetic_input::mouse_press());
+        assert_eq!(
+            queue
+                .take()
+                .iter()
+                .map(|fired| fired.event.as_str())
+                .collect::<Vec<_>>(),
+            ["press"],
+            "a press on the window's title reaches for the whole window"
+        );
+        for step in 1..=4 {
+            let dx = 12.0 * f64::from(step);
+            send(&crate::synthetic_input::cursor_moved(from_x + dx, from_y));
+        }
+        let in_flight = drag_bus::current();
+        let target = Rect::new(60.0, 200.0, 400.0, 320.0);
+        send(&crate::synthetic_input::cursor_moved(200.0, 260.0));
+        send(&crate::synthetic_input::mouse_release());
+        let landed = drag_bus::take("composer", target);
+        drag_bus::end(None);
+        let in_flight = in_flight.expect("the bar published what the window carries");
+        assert_eq!(
+            in_flight.source, "w",
+            "the drag is the window's, not the pill's"
+        );
+        assert_eq!(
+            in_flight.label, "Groceries — Notes",
+            "the ghost says the window's name"
+        );
+        let landed = landed.expect("the drop landed in the target it was let go over");
+        let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
+            panic!("the bar carries a resource");
+        };
+        assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);
+        assert_eq!(
+            String::from_utf8(blob).expect("an address"),
+            "notes.workspace/notes/n_groceries",
+            "the drop carries the resource the window shows"
         );
     }
 }

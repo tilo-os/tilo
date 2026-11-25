@@ -431,6 +431,11 @@ impl TabStrip {
         &self.bar
     }
 
+    /// The bar's strip, to answer a press the frame around it takes for the whole window.
+    pub fn bar_mut(&mut self) -> &mut TabBar {
+        &mut self.bar
+    }
+
     /// Bring the strip in step with the tabs it remembers.
     fn draw(&mut self) {
         let Some(props) = self.tabs.props.as_ref().map(TabStripProps::again) else {
