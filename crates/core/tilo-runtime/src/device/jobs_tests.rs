@@ -46,9 +46,7 @@ async fn reading(
         wait_ms,
         answer: ReadAnswer::Reading,
     };
-    let answer = Arc::clone(jobs)
-        .answer_read(caller, 0, request)
-        .await;
+    let answer = Arc::clone(jobs).answer_read(caller, 0, request).await;
     let RemoteActionMessage::ResourceReading { result, .. } = answer else {
         panic!("a read is answered by a reading");
     };

@@ -2269,7 +2269,10 @@ impl RemoteDevice {
 }
 
 /// A read of `address` that answers `answer`.
-fn read_of(address: &ResourceAddress, answer: tilo_actions::remote::ReadAnswer) -> ResourceReadRequest {
+fn read_of(
+    address: &ResourceAddress,
+    answer: tilo_actions::remote::ReadAnswer,
+) -> ResourceReadRequest {
     ResourceReadRequest {
         workspace: address.workspace.clone(),
         app: address.app.clone(),
@@ -2308,11 +2311,7 @@ impl ResourceReads for RemoteDevice {
         Box::pin(async move { reading_of(&reading.await?, &address.record) })
     }
 
-    fn may_read<'a>(
-        &'a self,
-        _: &'a Caller,
-        address: &'a ResourceAddress,
-    ) -> ReadsAnswer<'a, ()> {
+    fn may_read<'a>(&'a self, _: &'a Caller, address: &'a ResourceAddress) -> ReadsAnswer<'a, ()> {
         let decision =
             self.read_there(read_of(address, tilo_actions::remote::ReadAnswer::Decision));
         Box::pin(async move { decision.await.map(|_| ()) })
@@ -2333,11 +2332,12 @@ impl ResourceReads for RemoteDevice {
             tilo_actions::remote::ReadAnswer::Listing,
         ));
         Box::pin(async move {
-            let listing: serde_json::Value = serde_json::from_str(&listing.await?).map_err(
-                |error| ActionCallError::Unavailable {
-                    reason: format!("the listing does not read: {error}"),
-                },
-            )?;
+            let listing: serde_json::Value =
+                serde_json::from_str(&listing.await?).map_err(|error| {
+                    ActionCallError::Unavailable {
+                        reason: format!("the listing does not read: {error}"),
+                    }
+                })?;
             Ok(listing
                 .get("records")
                 .and_then(serde_json::Value::as_array)

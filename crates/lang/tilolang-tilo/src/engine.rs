@@ -483,7 +483,9 @@ pub fn begin_here(
     input: &str,
     also: impl Fn(State, &serde_json::Value) + Send + Sync + 'static,
 ) -> Result<(), String> {
-    begin_here_with(app, job, op, also, |moved| begin(app, job, op, input, moved))
+    begin_here_with(app, job, op, also, |moved| {
+        begin(app, job, op, input, moved)
+    })
 }
 
 /// [`begin_here`], with the job started by `start` rather than by `app`'s registered engine: an

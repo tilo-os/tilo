@@ -425,7 +425,10 @@ mod cases {
         engine: tilolang_grayjay::Engine,
         handlers: Rc<RefCell<HashMap<String, JobHandlers>>>,
         /// The record of each job the bridge told ended, as the device keeps it.
-        ended: Arc<(std::sync::Mutex<HashMap<String, serde_json::Value>>, std::sync::Condvar)>,
+        ended: Arc<(
+            std::sync::Mutex<HashMap<String, serde_json::Value>>,
+            std::sync::Condvar,
+        )>,
     }
 
     impl Bridge {
@@ -442,9 +445,11 @@ mod cases {
         fn ended(&self, job: &str) -> serde_json::Value {
             let (held, told) = &*self.ended;
             let (held, waited) = told
-                .wait_timeout_while(held.lock().unwrap(), std::time::Duration::from_secs(6), |held| {
-                    !held.contains_key(job)
-                })
+                .wait_timeout_while(
+                    held.lock().unwrap(),
+                    std::time::Duration::from_secs(6),
+                    |held| !held.contains_key(job),
+                )
                 .unwrap();
             assert!(!waited.timed_out(), "the Grayjay job {job} did not end");
             held[job].clone()

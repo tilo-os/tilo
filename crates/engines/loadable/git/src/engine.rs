@@ -140,10 +140,7 @@ fn begin(job: &str, op: &str, ask: TransferAsk, moved: JobSink) -> Result<(), St
             match result {
                 _ if worker.cancel.load(Ordering::Relaxed) => moved.moved("cancelled", "{}"),
                 Ok(()) => moved.moved("done", "{}"),
-                Err(why) => moved.moved(
-                    "failed",
-                    &serde_json::json!({ "error": why }).to_string(),
-                ),
+                Err(why) => moved.moved("failed", &serde_json::json!({ "error": why }).to_string()),
             }
         })
         .map_err(|error| error.to_string())?;

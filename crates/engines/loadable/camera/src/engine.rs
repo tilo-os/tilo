@@ -77,13 +77,7 @@ fn call(device: &Device, op: &str, input: &str) -> Result<String, String> {
 /// # Errors
 ///
 /// An op this engine does not start, or the input does not read.
-fn start(
-    device: &Device,
-    job: &str,
-    op: &str,
-    input: &str,
-    moved: &JobSink,
-) -> Result<(), String> {
+fn start(device: &Device, job: &str, op: &str, input: &str, moved: &JobSink) -> Result<(), String> {
     let told = Told {
         device: *device,
         moved: *moved,
@@ -641,12 +635,14 @@ fn scan(told: Told, job: &str, input: &str) -> Result<(), String> {
     let scanner = ask.scanner;
     std::thread::Builder::new()
         .name("camera-scan".to_owned())
-        .spawn(move || match tilo_capture::scanner::scan_page(&scanner, settings) {
-            // A scan stopped part way keeps nothing: the job told it ended when it was stopped.
-            Ok(_) if worker.stopped.load(Ordering::Relaxed) => {}
-            Ok(png) => worker.keep(&name, "image/png", &png),
-            Err(error) => worker.fail(error),
-        })
+        .spawn(
+            move || match tilo_capture::scanner::scan_page(&scanner, settings) {
+                // A scan stopped part way keeps nothing: the job told it ended when it was stopped.
+                Ok(_) if worker.stopped.load(Ordering::Relaxed) => {}
+                Ok(png) => worker.keep(&name, "image/png", &png),
+                Err(error) => worker.fail(error),
+            },
+        )
         .map_err(|error| format!("could not start the scan: {error}"))?;
     Ok(())
 }

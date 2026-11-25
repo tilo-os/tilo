@@ -379,7 +379,10 @@ impl EngineHost for Transfers {
         }
         self.asked.borrow_mut().push(ask);
         self.handlers.borrow_mut().push(handlers.clone());
-        Ok(format!("devices/ab/jobs/transfer-{}", self.asked.borrow().len()))
+        Ok(format!(
+            "devices/ab/jobs/transfer-{}",
+            self.asked.borrow().len()
+        ))
     }
 
     fn job(&self, _path: &str) -> Result<Option<serde_json::Value>, String> {

@@ -6,8 +6,8 @@
 //! still, a waveform and a probe answer now; a render starts as a job whose progress is asked by
 //! its id and which can be stopped.
 
-use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -405,7 +405,6 @@ fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Resul
         return Err("could not start the render".to_owned());
     }
     Ok(())
-
 }
 
 /// One live play running now: the cut it shows, and what stops it.

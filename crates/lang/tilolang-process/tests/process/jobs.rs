@@ -542,8 +542,7 @@ mod clipper {
             match device.keep_content("clip.avi", "video/x-msvideo", b"a moving picture") {
                 Ok(kept) => moved.moved(
                     "done",
-                    &serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) })
-                        .to_string(),
+                    &serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string(),
                 ),
                 Err(why) => moved.moved("failed", &serde_json::json!({ "error": why }).to_string()),
             }
@@ -601,10 +600,16 @@ fn a_loaded_engines_job_reaches_its_done_after_its_window_closed() {
 
     // The device is told of it first, and the engine runs it in the app's own process.
     let FromProcess::EngineStart(job) = said(&device) else {
-        panic!("the device is told of the clip: {}", root_text(&process, "words"));
+        panic!(
+            "the device is told of the clip: {}",
+            root_text(&process, "words")
+        );
     };
     assert!(job.job.starts_with(UNDER), "{}", job.job);
-    assert!(job.here, "a loaded engine's job runs in the app's own process");
+    assert!(
+        job.here,
+        "a loaded engine's job runs in the app's own process"
+    );
     assert!(
         job.handlers.get("done").is_some_and(|done| !done.is_null()),
         "the start named its end: {}",

@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
     ActionCallError, Caller, DEVICE_JOBS, ReadingAnswer, ReadsAnswer, RemoteActionMessage,
-    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_job_address,
-    device_record_space,
+    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
+    device_job_address, device_record_space,
 };
 
 use super::{DeviceJobReads, RecordReads};
@@ -86,7 +86,9 @@ impl ResourceReads for OwnJobs {
         caller: &'a Caller,
         address: &'a ResourceAddress,
     ) -> ReadsAnswer<'a, ResourceCopy> {
-        Box::pin(std::future::ready(DeviceJobReads::read(self, caller, address)))
+        Box::pin(std::future::ready(DeviceJobReads::read(
+            self, caller, address,
+        )))
     }
 
     fn may_read<'a>(
@@ -94,7 +96,9 @@ impl ResourceReads for OwnJobs {
         caller: &'a Caller,
         address: &'a ResourceAddress,
     ) -> ReadsAnswer<'a, ()> {
-        Box::pin(std::future::ready(DeviceJobReads::may_read(self, caller, address)))
+        Box::pin(std::future::ready(DeviceJobReads::may_read(
+            self, caller, address,
+        )))
     }
 
     fn list<'a>(
@@ -103,7 +107,9 @@ impl ResourceReads for OwnJobs {
         workspace: &'a str,
         app: &'a str,
     ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
-        Box::pin(std::future::ready(DeviceJobReads::list(self, caller, workspace, app)))
+        Box::pin(std::future::ready(DeviceJobReads::list(
+            self, caller, workspace, app,
+        )))
     }
 
     fn watch<'a>(
@@ -112,7 +118,9 @@ impl ResourceReads for OwnJobs {
         address: &'a ResourceAddress,
         wake: &'a ResourceWake,
     ) -> ReadsAnswer<'a, ()> {
-        Box::pin(std::future::ready(DeviceJobReads::watch(self, caller, address, wake)))
+        Box::pin(std::future::ready(DeviceJobReads::watch(
+            self, caller, address, wake,
+        )))
     }
 
     fn answer_read(

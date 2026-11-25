@@ -197,13 +197,7 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
 }
 
 /// Puts one entry into `folder` under a name the folder does not hold yet.
-fn put(
-    job: &Job,
-    from: &Path,
-    folder: &Path,
-    moving: bool,
-    tell: &dyn Fn(),
-) -> Result<(), String> {
+fn put(job: &Job, from: &Path, folder: &Path, moving: bool, tell: &dyn Fn()) -> Result<(), String> {
     let name = from
         .file_name()
         .ok_or_else(|| format!("{} has no name", from.display()))?;
