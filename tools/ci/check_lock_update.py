@@ -50,6 +50,21 @@ only the crate a `cargo update` names in the diff. Use
 
 to write it (the pre-commit hook does this on a staged lock); CI runs
 ``--verify``.
+
+The staged lock and manifests resolve together
+----------------------------------------------
+A manifest that names a dependency the lock lacks builds only when cargo is
+allowed to rewrite the lock, so every ``cargo ... --locked`` build of that
+commit fails. Nothing else in the commit path catches it: CI's ``lockfile``
+check runs after it reached main. The pre-commit hook therefore runs
+``--staged-consistency`` whenever a commit stages a manifest or the lock:
+
+    python3 tools/ci/check_lock_update.py --staged-consistency
+
+It refuses when the working tree's manifests or lock are not the staged ones
+(cargo reads the tree), then resolves the staged tree with ``cargo metadata
+--locked --offline``. A stale lock is refused with the update that moves the
+crate it names, never a regenerated lock.
 """
 
 from __future__ import annotations
@@ -59,6 +74,7 @@ from dataclasses import dataclass
 import json
 import os
 import re
+import time
 from collections.abc import Sequence
 from pathlib import Path
 import shlex
@@ -67,6 +83,16 @@ import sys
 import tomllib
 
 INTENT_VARIABLE = "TILO_CARGO_UPDATE"
+# The workspace's own manifest, whose `members` add lock entries.
+WORKSPACE_MANIFEST = "Cargo.toml"
+
+# The paths cargo reads to decide whether the lock describes the manifests.
+RESOLUTION_PATHS = ("Cargo.lock", ":(glob)**/Cargo.toml")
+# What cargo says when the lock does not describe the manifests, whenever it
+# cannot write one: "the lock file ... needs to be updated but --locked was
+# passed" (older) and "cannot update the lock file ... because --locked was
+# passed" (current). Every other failure means the resolve could not run.
+LOCK_STALE = re.compile(r"--locked was passed")
 
 
 class IntentError(ValueError):
@@ -583,6 +609,122 @@ REFERENCE_HINT = (
 )
 
 
+def _resolve(root: Path, offline: bool) -> subprocess.CompletedProcess[str]:
+    """`cargo metadata --locked` over the tree, writing nothing either way."""
+    command = [os.environ.get("CARGO", "cargo"), "metadata", "--locked"]
+    if offline:
+        command.append("--offline")
+    command += ["--format-version", "1"]
+    return subprocess.run(
+        command, cwd=root, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def _dependency_specs(document: dict) -> dict[str, object]:
+    """Every dependency a manifest names, and its spec, across the tables it may use."""
+    tables = [document.get(table) for table in
+              ("dependencies", "dev-dependencies", "build-dependencies")]
+    targets = document.get("target")
+    if isinstance(targets, dict):
+        for spec in targets.values():
+            if isinstance(spec, dict):
+                tables += [spec.get(table) for table in
+                           ("dependencies", "dev-dependencies", "build-dependencies")]
+    workspace = document.get("workspace")
+    if isinstance(workspace, dict):
+        tables.append(workspace.get("dependencies"))
+    specs: dict[str, object] = {}
+    for table in tables:
+        if isinstance(table, dict):
+            specs.update(table)
+    return specs
+
+
+def staged_dependencies(root: Path) -> list[str]:
+    """The crates the staged manifests add or move, for the message that names the update."""
+    staged = _git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--",
+                  ":(glob)**/Cargo.toml")
+    if staged.returncode != 0:
+        return []
+    names: set[str] = set()
+    for path in staged.stdout.split():
+        before = _git(root, "show", f"HEAD:{path}")
+        after = _git(root, "show", f":{path}")
+        if after.returncode != 0:
+            continue
+        try:
+            old = tomllib.loads(before.stdout) if before.returncode == 0 else {}
+            new = tomllib.loads(after.stdout)
+        except tomllib.TOMLDecodeError:
+            continue
+        old_specs, new_specs = _dependency_specs(old), _dependency_specs(new)
+        names |= set(new_specs) - set(old_specs)
+        names |= {name for name in set(old_specs) & set(new_specs)
+                  if old_specs[name] != new_specs[name]}
+        # Refreshing the member whose manifest changed re-resolves what it now
+        # names; the dependency itself may be new to the lock, so it cannot.
+        package = new.get("package")
+        if isinstance(package, dict) and isinstance(package.get("name"), str):
+            names.add(package["name"])
+        if path != WORKSPACE_MANIFEST:
+            continue
+        old_members = set(old.get("workspace", {}).get("members", ()))
+        new_members = set(new.get("workspace", {}).get("members", ()))
+        for member in new_members - old_members:
+            if any(character in member for character in "*?["):
+                continue
+            shown = _git(root, "show", f":{Path(member) / 'Cargo.toml'}")
+            if shown.returncode != 0:
+                continue
+            try:
+                names.add(tomllib.loads(shown.stdout)["package"]["name"])
+            except (tomllib.TOMLDecodeError, KeyError):
+                continue
+    return sorted(names)
+
+
+def staged_consistency(root: Path) -> tuple[list[str], float]:
+    """Problems with the staged manifests and lock resolving together, and how long it took.
+
+    Cargo reads the working tree, so the staged manifests and lock must be the
+    ones on disk: a commit that stages one version and leaves another there is
+    refused rather than judged on the wrong tree. `--offline` answers from the
+    cache in seconds; when it cannot (a machine that never fetched them), cargo
+    may reach its network once, and the lock's verdict is the same.
+    """
+    started = time.monotonic()
+    unstaged = _git(root, "diff", "--name-only", "--", *RESOLUTION_PATHS)
+    if unstaged.returncode != 0:
+        return [f"git diff failed: {unstaged.stderr.strip()}"], time.monotonic() - started
+    if unstaged.stdout.strip():
+        elapsed = time.monotonic() - started
+        return [
+            "cargo metadata reads the working tree, which differs from what this commit "
+            f"stages ({', '.join(unstaged.stdout.split())}); stage or revert those first"
+        ], elapsed
+    run = _resolve(root, offline=True)
+    if run.returncode != 0 and not LOCK_STALE.search(run.stderr):
+        run = _resolve(root, offline=False)
+    elapsed = time.monotonic() - started
+    if run.returncode == 0:
+        return [], elapsed
+    said = next((line.strip() for line in run.stderr.splitlines()
+                 if line.startswith("error")), "")
+    if not LOCK_STALE.search(run.stderr):
+        return [f"cargo metadata --locked could not check the staged tree:\n    {said}"], elapsed
+    candidates = staged_dependencies(root)
+    commands = "\n    ".join(
+        f"cargo update -p {name} --precise <version>" for name in candidates
+    ) or "cargo update -p <crate> --precise <version>"
+    return [
+        "Cargo.lock does not describe the manifests this commit stages, so every "
+        "`cargo ... --locked` build of it fails. Move the crate your change adds or moves, "
+        f"and stage Cargo.lock; never regenerate the lock:\n    {commands}"
+        + (f"\n    ({said})" if said else "")
+    ], elapsed
+
+
 def tree_reference_problems(root: Path) -> list[str]:
     """Why the working tree's Cargo.lock has a reference that is not canonical."""
     metadata, error = _metadata(root)
@@ -671,7 +813,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fail when the working tree's Cargo.lock is not in canonical form",
     )
+    parser.add_argument(
+        "--staged-consistency",
+        action="store_true",
+        help="fail when the staged manifests and Cargo.lock do not resolve together",
+    )
     args = parser.parse_args(argv)
+    if args.staged_consistency:
+        problems, elapsed = staged_consistency(args.root)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        if not problems:
+            print(f"  Cargo.lock matches the staged manifests "
+                  f"(cargo metadata --locked, {elapsed:.1f}s)", file=sys.stderr)
+        return 1 if problems else 0
     if args.write:
         for change in write_canonical_references(args.root):
             print(f"  {change}", file=sys.stderr)

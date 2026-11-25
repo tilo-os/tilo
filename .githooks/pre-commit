@@ -151,6 +151,20 @@ if grep -qE '^(os/image/|os/Containerfile$|tools/ci/os/pieces\.py$)' <<< "$lock_
   fi
 fi
 
+# A manifest that names a dependency the lock does not leaves every `--locked`
+# build of this commit broken, and nothing before CI resolves the two together:
+# the lock-only check above only judges a lock with no manifest beside it. Judge
+# the staged pair here, before cargo hakari's regeneration below resolves it as
+# a side effect, so the commit says what to move instead of the lock quietly
+# being written. `cargo metadata --locked` writes nothing, costs a couple of
+# seconds, and runs only for a commit that stages a manifest or the lock. The
+# real index is read even in a merge, where the checks below see a filtered
+# copy: the lock the commit lands is the one the merge result has.
+if grep -qE '(^|/)Cargo\.toml$|^Cargo\.lock$' <<< "$lock_staged_names"; then
+  GIT_INDEX_FILE="$full_index" python3 "$root/tools/ci/check_lock_update.py" \
+    --root "$root" --staged-consistency || fail=1
+fi
+
 # crates/workspace-hack (cargo-hakari) unifies third-party features across the workspace and
 # each member's selectable features; it is generated from the manifests and must name every
 # workspace member, so a crate added or a dependency changed without regenerating splits the

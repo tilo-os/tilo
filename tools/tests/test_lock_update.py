@@ -317,6 +317,60 @@ class LockUpdateAllowanceTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("differs from the staged lock", problems[0])
 
+    def _consistency(self) -> tuple[list[str], float]:
+        old_env = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(self.env)
+        try:
+            return checker.staged_consistency(self.root)
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    def test_a_manifest_naming_a_dependency_the_lock_lacks_is_refused(self) -> None:
+        # What landed before this check existed: a manifest gained a dependency and
+        # the lock did not, so every cargo --locked build of the commit failed.
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8") + 'dep-z = "1"\n', encoding="utf-8")
+        self._run("git", "add", "app/Cargo.toml")
+
+        problems, elapsed = self._consistency()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Cargo.lock does not describe the manifests this commit stages", problems[0])
+        self.assertIn("cargo update -p app --precise <version>", problems[0])
+        self.assertIn("cargo update -p dep-z --precise <version>", problems[0])
+        self.assertIn("never regenerate the lock", problems[0])
+        self.assertGreaterEqual(elapsed, 0)
+
+    def test_a_manifest_change_the_lock_describes_is_admitted(self) -> None:
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8") + "# the lock is unchanged\n",
+                            encoding="utf-8")
+        self._run("git", "add", "app/Cargo.toml")
+
+        self.assertEqual(self._consistency()[0], [])
+
+    def test_a_manifest_staged_with_its_resolved_lock_is_admitted(self) -> None:
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8") + 'dep-z = "1"\n', encoding="utf-8")
+        # The sanctioned fix moves the crate the manifest adds.
+        self._cargo("update", "-p", "app")
+        self._run("git", "add", "app/Cargo.toml", "Cargo.lock")
+
+        self.assertEqual(self._consistency()[0], [])
+
+    def test_an_unstaged_manifest_edit_is_refused(self) -> None:
+        # cargo metadata reads the working tree: these are not the staged manifests.
+        manifest = self.root / "app/Cargo.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8") + "# staged\n", encoding="utf-8")
+        self._run("git", "add", "app/Cargo.toml")
+        manifest.write_text(manifest.read_text(encoding="utf-8") + 'dep-z = "1"\n', encoding="utf-8")
+
+        problems, _elapsed = self._consistency()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("differs from what this commit stages", problems[0])
+        self.assertIn("app/Cargo.toml", problems[0])
+
     def test_a_reference_cargo_drifted_down_is_refused_until_canonical(self) -> None:
         # What a re-resolve does to a wide requirement: dep-span may take either
         # dep-w, and cargo answers with the older one after an unrelated update.
