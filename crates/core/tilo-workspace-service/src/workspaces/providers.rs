@@ -825,6 +825,7 @@ async fn permits(
     let permitted =
         kept.peer()
             .permits_app_action(device, (app, resource, action), kind, tilo_clock::wall());
+    drop(kept);
     match permitted {
         Ok(true) => Ok(()),
         Ok(false) => Err(ActionCallError::Refused {

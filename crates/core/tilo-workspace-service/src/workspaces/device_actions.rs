@@ -1121,9 +1121,14 @@ impl super::Workspaces {
         let Some(kind) = kept.call_kind(&self.inner.host.surfaces, app, action) else {
             return false;
         };
-        kept.peer()
-            .permits_app_action(device, (app, resource, action), kind, tilo_clock::wall())
-            .unwrap_or(false)
+        let permitted = kept.peer().permits_app_action(
+            device,
+            (app, resource, action),
+            kind,
+            tilo_clock::wall(),
+        );
+        drop(kept);
+        permitted.unwrap_or(false)
     }
 
     /// Whether `device` may open `app`'s record `resource` in `workspace` now.
