@@ -110,8 +110,9 @@ tilo_test_env::scenario! {
             imports.iter().any(|name| name == "act_blur"),
             "a view's blur() reaches the host: {imports:?}"
         );
-        // It needs a view, and it takes no argument: it ends the edit it is in.
-        assert_eq!(codes("fn f() {\n    blur()\n}"), vec!["E066"]);
+        // It needs a view, and it takes no argument: it ends the edit it is in. A function is
+        // written with the result it answers, so `blur()` in one reaches the checker.
+        assert_eq!(codes("fn f() -> Action {\n    blur()\n}"), vec!["E066"]);
         assert_eq!(
             codes("view v() {\n    button(label: \"Done\", on: blur(1))\n}"),
             vec!["E022"]
