@@ -349,7 +349,7 @@ impl super::ShellPart {
     /// A floating window's bar the person lifted, as its frame carries it on the toolkit's drag
     /// bus: the desktop carries that window from where the press took it, and it follows the hand
     /// until it is let go.
-    fn follow_lifted_float(&mut self) {
+    fn follow_lifted_float(&self) {
         let Some(desktop) = &self.floats else {
             return;
         };
