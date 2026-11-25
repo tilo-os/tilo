@@ -45,6 +45,7 @@ build() {
   cargo build --locked -p tilo-daemon --bin tilo-runtime -p tilo-runtime --example sdk-daemon
   cargo build --locked -p launcher --bin tilo-launcher
   cargo build --locked -p tilo-runtime-bundle -p tilo-app-package-cli
+  cargo build --locked -p tilolang-cli --bin tilolang -p tilolang-process --bin tilolang-process
   local target=${CARGO_TARGET_DIR:-$root/target}
   rm -rf "$out"
   mkdir -p "$out/python/tilo" "$out/typescript"
@@ -72,6 +73,10 @@ APP_RUNTIME=0.0.1
 #                                       where TILO_RUNTIME_BUNDLE_DIR finds them installed
 #   bun.provides, app.runtime           what an app's manifest names them by
 #   tilo-app-package                    what the suite packs and signs the app with
+#   runtimes/<tilolang version>/        the tilolang runtime bundle, which a tilolang app's
+#                                       entrypoint executes
+#   apps/<name>.tapp                    the tilolang packages the suite installs as they ship:
+#                                       Chat, and Discord's bridge with its bun program
 app_kit() {
   local bin=$1 kit=$2 work provides
   mkdir -p "$kit/runtimes"
@@ -96,6 +101,20 @@ app_kit() {
   mv "$work/packages/runtime/bun/${provides#*/}" "$kit/runtimes/${provides#*/}"
   printf '%s\n' "$provides" > "$kit/bun.provides"
   rm -rf -- "$work"
+  # The tilolang runtime and packages, built the way a release and an image build them.
+  (
+    # shellcheck source=/dev/null
+    . tools/apps/tilolang_packages.sh
+    local version app
+    version=$(tilolang_runtime_version "$root")
+    tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$bin/tilolang-process" \
+      "$kit/publisher.json" "$kit/runtimes/$version" "$version"
+    mkdir -p "$kit/apps"
+    for app in chat discord; do
+      tilolang_build_package "$bin/tilolang" "$root" "apps/tl/$app" "$app" "$kit/apps" \
+        "$kit/publisher.json" 0.1.0 "tilo-runtime/$APP_RUNTIME"
+    done
+  )
 }
 
 scratch=
