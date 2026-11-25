@@ -644,7 +644,7 @@ impl FloatingSurfaceHostMessage {
             #[cfg(feature = "local-daemons")]
             let compiled = runtime_portal::process_link::compiled_modules();
             #[cfg(not(feature = "local-daemons"))]
-            let compiled = None;
+            let compiled: Option<std::path::PathBuf> = None;
             let _ = crate::theme_bundle::load_from(
                 std::path::Path::new(directory),
                 compiled.as_deref(),
