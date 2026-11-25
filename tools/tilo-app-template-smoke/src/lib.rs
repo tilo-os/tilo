@@ -239,3 +239,103 @@ mod tests {
         }
     }
 }
+
+/// Each template's committed surface against the code it is written from: the
+/// comparison `tilolang check` makes for an app `tilolang new` made from it, so
+/// a resource the framework grows a verb on cannot leave a new app's first
+/// `check` failing.
+#[cfg(test)]
+mod surface_tests {
+    use serde_json::Value;
+    use ui::tilo_resource::surface::file::filed;
+
+    /// The line every surface file starts with.
+    const HEADER: &str = "# Written by `tilolang surface`; review changes like an API change.\n\n";
+
+    /// Each template's name, the surface report its app prints for `--surface`,
+    /// and the committed surface it ships.
+    fn templates() -> [(&'static str, Value, &'static str); 4] {
+        [
+            (
+                "starter",
+                ui::framework::headless::surface_report::<super::starter::App>(),
+                include_str!(
+                    "../../../crates/lang/tilo-app-builder/templates/starter.surface.toml"
+                ),
+            ),
+            (
+                "document",
+                ui::framework::headless::surface_report::<super::document::App>(),
+                include_str!(
+                    "../../../crates/lang/tilo-app-builder/templates/document.surface.toml"
+                ),
+            ),
+            (
+                "collection",
+                ui::framework::headless::surface_report::<super::collection::App>(),
+                include_str!(
+                    "../../../crates/lang/tilo-app-builder/templates/collection.surface.toml"
+                ),
+            ),
+            (
+                "graph",
+                ui::framework::headless::surface_report::<super::graph::App>(),
+                include_str!("../../../crates/lang/tilo-app-builder/templates/graph.surface.toml"),
+            ),
+        ]
+    }
+
+    /// The surface `file` holds, as the report names it.
+    fn committed(file: &str) -> Value {
+        serde_json::to_value(
+            toml::from_str::<toml::Value>(file).expect("a committed surface is TOML"),
+        )
+        .expect("a surface file as JSON")
+    }
+
+    fn resources(surface: &Value) -> &[Value] {
+        surface["resources"]
+            .as_array()
+            .expect("a surface names its resources")
+    }
+
+    #[test]
+    fn every_templates_surface_is_what_its_code_publishes() {
+        for (name, report, file) in templates() {
+            let committed = committed(file);
+            let (now, before) = (resources(&report), resources(&committed));
+            assert_eq!(
+                now.len(),
+                before.len(),
+                "the {name} template's code publishes {} resources and its surface.toml names {}",
+                now.len(),
+                before.len()
+            );
+            for expected in before {
+                let kind = expected["kind"].as_str().expect("a resource kind");
+                let published = now
+                    .iter()
+                    .find(|resource| resource["kind"] == *kind)
+                    .unwrap_or_else(|| panic!("the {name} template's code publishes no `{kind}`"));
+                assert_eq!(
+                    filed(published),
+                    filed(expected),
+                    "the {name} template's `{kind}` surface is behind its code; write it with `tilolang surface`"
+                );
+            }
+        }
+    }
+
+    /// Print each template's surface as its code publishes it now, for writing
+    /// the committed files: `t cargo test -p tilo-app-template-smoke --lib
+    /// print_template_surfaces -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "prints each template's surface instead of comparing it"]
+    fn print_template_surfaces() {
+        for (name, report, _) in templates() {
+            let surface = ui::tilo_resource::surface::file::render(HEADER, resources(&report), &[])
+                .expect("a rendered surface");
+            println!("== {name}\n{surface}");
+        }
+    }
+}

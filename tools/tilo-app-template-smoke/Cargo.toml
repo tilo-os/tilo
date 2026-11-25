@@ -15,6 +15,12 @@ workspace-hack = { version = "0.1" }
 [build-dependencies]
 tilo-app-builder = { path = "../../crates/lang/tilo-app-builder" }
 
+# The templates' committed surfaces are compared with the code they are
+# written from, as `tilolang check` compares an app's.
+[dev-dependencies]
+serde_json.workspace = true
+toml.workspace = true
+
 # The smoke crate compiles sources emitted by `tilolang add` through `include!`, so
 # cargo-machete cannot observe these dependencies in the crate's handwritten
 # source or its build script even though removing them breaks the compile.
