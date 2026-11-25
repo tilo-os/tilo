@@ -42,7 +42,6 @@ def default_apps() -> list[str]:
 def render(ids: list[str]) -> str:
     lines = [
         HEADER,
-        "",
         "/// The default collection's package ids, sorted: the apps a workspace is created with.",
         "pub(super) const DEFAULT: &[&str] = &[",
     ]
