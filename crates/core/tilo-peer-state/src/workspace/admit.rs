@@ -239,7 +239,8 @@ impl From<WorkspaceRefusal> for AdmissionFailure {
 ///
 /// 1. With nothing held, the batch is a first governance ([`first_member_list`]).
 /// 2. A sender holding no role writes only its own admission
-///    ([`enrolling_writes`]).
+///    ([`enrolling_writes`]), and so does one who only reads, beyond their
+///    own receipts and shares.
 /// 3. Otherwise the sender may make undoable changes on the workspace, or
 ///    only what one who reads it writes ([`may_write`]); every governance
 ///    change is an operation its author's role permits, the owner's included.
@@ -271,9 +272,11 @@ pub fn admit_workspace_changes(
             let pruned = super::base::pruned(input.before, replaced);
             let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)?;
             // One who only reads the workspace records only their own receipts
-            // and gives only their own shares.
+            // and gives only their own shares, and writes their own way in as
+            // a device holding no role does: a reader's device redeeming its
+            // invitation, or listing itself.
             if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
-                return Err(WorkspaceRefusal::WriteForbidden.into());
+                return enrolling_writes(&input, &changes);
             }
             // What a batch changes in the workspace's governance is what its
             // operations say it changes, each of them its author's to make: a

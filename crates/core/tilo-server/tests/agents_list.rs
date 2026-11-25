@@ -72,7 +72,7 @@ async fn a_members_agent_list_reaches_their_second_device_over_its_link() {
     .unwrap();
     server
         .server
-        .register_agent(&agent.cert, delegation)
+        .register_agent((&agent.cert, &agent.sk), delegation)
         .await
         .expect("the host takes on the workspace's agent");
 

@@ -150,6 +150,13 @@ tilo_test_env::scenario! {
         assert!(
             peer.governance_mut()
                 .renew_member_certificate(&renewed, &authority, now)
+                .unwrap_err()
+                .contains("only its own"),
+            "no other device renews a device's certificate"
+        );
+        assert!(
+            peer.governance_mut()
+                .renew_member_certificate(&renewed, &device, now)
                 .unwrap()
         );
 
@@ -164,7 +171,7 @@ tilo_test_env::scenario! {
         assert!(
             !peer
                 .governance_mut()
-                .renew_member_certificate(&renewed, &authority, now)
+                .renew_member_certificate(&renewed, &device, now)
                 .unwrap(),
             "renewing again changes nothing"
         );
@@ -174,7 +181,6 @@ tilo_test_env::scenario! {
     {
         let Fixture {
             mut peer,
-            authority,
             device,
             now,
             ..
@@ -184,7 +190,7 @@ tilo_test_env::scenario! {
         assert!(peer.governance().renewal_of(&forged, now).is_err());
         assert!(
             peer.governance_mut()
-                .renew_member_certificate(&forged, &authority, now)
+                .renew_member_certificate(&forged, &device, now)
                 .is_err()
         );
     }
@@ -193,15 +199,15 @@ tilo_test_env::scenario! {
     {
         let Fixture {
             mut peer,
-            authority,
             root,
             device,
             held,
             renewed,
             now,
+            ..
         } = fixture();
         peer.governance_mut()
-            .renew_member_certificate(&renewed, &authority, now)
+            .renew_member_certificate(&renewed, &device, now)
             .unwrap();
         // The certificate it replaced, and one issued between the two.
         let between = cert(&root, &device, 1800 * SECOND, Some(2800 * SECOND));

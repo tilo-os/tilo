@@ -707,7 +707,7 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
             .write(|peer| peer.governance_mut().admit_agent(
                 helper.1.clone(),
                 delegation,
-                &a.0,
+                &helper.0,
                 started
             ))
             .unwrap()
@@ -797,7 +797,7 @@ async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
             .write(|peer| peer.governance_mut().admit_agent(
                 helper.1.clone(),
                 delegation,
-                &a.0,
+                &helper.0,
                 now
             ))
             .unwrap()
@@ -858,7 +858,7 @@ async fn a_key_the_workspace_lists_not_or_retired_is_refused() {
             .write(|peer| peer.governance_mut().admit_agent(
                 retired.1.clone(),
                 delegation,
-                &a.0,
+                &retired.0,
                 now
             ))
             .unwrap()
@@ -1910,7 +1910,7 @@ async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
             .write(|peer| peer.governance_mut().admit_agent(
                 helper.1.clone(),
                 delegation,
-                &a.0,
+                &helper.0,
                 started
             ))
             .unwrap()

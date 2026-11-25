@@ -3,8 +3,8 @@
 //! An agent is a device of its person: its own key, a certificate the
 //! person's root signed, and a root-signed [`Delegation`] naming the
 //! device an agent, how it is shown, the workspaces and apps it may act in and
-//! until when. The workspace's governor admits it as a governed identity that
-//! carries that delegation ([`PeerGovernanceMut::admit_agent`](crate::PeerGovernanceMut::admit_agent)), so every member
+//! until when. The agent writes its own governed identity, carrying that
+//! delegation ([`PeerGovernanceMut::admit_agent`](crate::PeerGovernanceMut::admit_agent)), so every member
 //! knows the device, the person it acts for, and its window: its changes
 //! are signed by its own key and attributed to it, never to the device that
 //! launched it.
@@ -183,8 +183,9 @@ impl PeerGovernance<'_> {
 }
 impl PeerGovernanceMut<'_> {
     /// Admit the certified agent device `cert` to this workspace as a delegated
-    /// agent of its person, bound to `delegation`. Only the pinned workspace
-    /// authority may, and only an agent of one of the workspace's members: one
+    /// agent of its person, bound to `delegation`, written by the agent itself
+    /// with `key`: no other device writes its row. Only an agent of one of the
+    /// workspace's members is admitted: one
     /// whose certificate holds no capability and whose delegation verifies
     /// against that root, names this device and this workspace, and is current.
     /// A newer delegation of the same agent replaces the one recorded; a
@@ -199,6 +200,9 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
+        if key.device_public_key() != cert.device_public_key {
+            return Err("an agent writes only its own row".into());
+        }
         if delegation.delegate.agent_id().is_none() {
             return Err("the delegation is not an agent's".into());
         }

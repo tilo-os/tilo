@@ -443,3 +443,143 @@ fn an_owners_device_comes_in_on_an_expired_invitation_and_nobody_else_does() {
         .unwrap_err();
     assert!(refused.contains("expired"), "{refused}");
 }
+
+/// The batch `key`'s device signs writing `listed`'s row onto `peer`'s member
+/// list, put there by hand as a device that skips its own checks would: the
+/// row, and the operation naming it under `key`'s device.
+fn row_written_by(
+    peer: &StatePeer,
+    listed: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Vec<Vec<u8>> {
+    let mut doc = peer.core.workspace_doc.clone().unwrap();
+    let before = doc.get_heads();
+    doc.set_actor(peer.workspace_actor_of(key));
+    let row = GovernedIdentity {
+        device_cert: listed.clone(),
+        revocations: Vec::new(),
+        admission: None,
+        admissions: Vec::new(),
+        delegate: None,
+        workspace_delegations: Vec::new(),
+        removed: false,
+    };
+    let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+    doc.put(
+        &identities,
+        hex::encode(listed.device_public_key),
+        automerge::ScalarValue::Bytes(row.encode().unwrap()),
+    )
+    .unwrap();
+    super::governance_writes::commit_governance(&mut doc, super::now_secs(now), None);
+    peer.record_governance(
+        &mut doc,
+        vec![crate::workspace::GovernanceRow::Identities],
+        key,
+        now,
+    )
+    .unwrap();
+    super::governance_writes::commit_governance(&mut doc, super::now_secs(now), None);
+    doc.get_changes(&before)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// A member's device forges the row of a further device of its own person
+/// and sends it on through another person's server that holds the
+/// workspace: the holder refuses it, and so does a member's copy the holder
+/// hands it to, with the refusal of a change its writer may not make.
+/// The forged device reaches nothing. The same row its own device signs is
+/// taken in everywhere.
+#[test]
+fn every_receiver_refuses_a_row_one_device_writes_for_another() {
+    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    assert_eq!(
+        editor.device_public_key,
+        editor_key.verifying_key().to_bytes()
+    );
+    let (holder_key, holder) = device(90, 91);
+    let hint = tilo_workspace_join::sign_transport_hint(
+        "iroh",
+        "an address",
+        holder,
+        [3; 32],
+        &holder_key,
+    )
+    .unwrap();
+    assert!(
+        peer.governance_mut()
+            .author_keeping_device(&hint, &owner_key, now)
+            .unwrap()
+    );
+    // A further device of the editor's own person, root 5.
+    let further_key = SigningKey::from_bytes(&[77; 32]);
+    let mut further = editor.clone();
+    further.device_public_key = further_key.verifying_key().to_bytes();
+    further.device_label = "further".into();
+    sign_device_cert(&mut further, &SigningKey::from_bytes(&[5; 32])).unwrap();
+    assert_eq!(further.user_public_key, user);
+
+    let forged = row_written_by(&peer, &further, &editor_key, now);
+    let refused = |receiver: &mut StatePeer, from: TransportOrigin| {
+        let refusal = receiver
+            .receive_from(
+                from,
+                NeighbourMsg::SyncResp {
+                    changes: forged.clone(),
+                    workspace: receiver.workspace_id().to_owned(),
+                },
+                now,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &refusal,
+                crate::AdmissionError::Rejected {
+                    reason: neighbour_wire::RefusalReason::Forbidden,
+                    detail,
+                } if detail.contains("writes its own row")
+            ),
+            "{refusal:?}"
+        );
+        assert!(
+            receiver
+                .permissions(further.device_public_key, now)
+                .is_err(),
+            "the forged device reaches nothing"
+        );
+        assert!(!receiver.certificates().contains(&further));
+    };
+    // The holder takes it live from the editor's device, and a member's copy
+    // as the holder hands on what it kept, under the device that wrote it.
+    let editor_device = editor.device_public_key;
+    let mut on_holder = peer.clone();
+    refused(&mut on_holder, TransportOrigin::ServerDelta(editor_device));
+    let mut on_member = peer.clone();
+    refused(
+        &mut on_member,
+        TransportOrigin::RetainedServerDelta(editor_device),
+    );
+
+    // The device signing its own row is taken in, handed on by the holder too.
+    let own = row_written_by(&peer, &further, &further_key, now);
+    let mut on_member = peer.clone();
+    on_member
+        .receive_from(
+            TransportOrigin::RetainedServerDelta(further.device_public_key),
+            NeighbourMsg::SyncResp {
+                changes: own,
+                workspace: peer.workspace_id().to_owned(),
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        on_member.role(&further.device_public_key, now).unwrap(),
+        Role::Editor
+    );
+}

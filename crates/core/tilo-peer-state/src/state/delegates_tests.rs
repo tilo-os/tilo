@@ -169,7 +169,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     );
     let mut member = governor.clone();
 
-    // Only the owner's devices admit, and only within the delegation.
+    // Only the agent writes its own row, and only within the delegation.
     assert!(
         governor
             .governance_mut()
@@ -186,7 +186,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     assert!(
         governor
             .governance_mut()
-            .admit_agent(cert.clone(), elsewhere, &authority, now)
+            .admit_agent(cert.clone(), elsewhere, &key, now)
             .unwrap_err()
             .contains("not delegated this workspace")
     );
@@ -200,15 +200,15 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     assert!(
         governor
             .governance_mut()
-            .admit_agent(cert.clone(), lapsed, &authority, now)
+            .admit_agent(cert.clone(), lapsed, &key, now)
             .unwrap_err()
             .contains("not current")
     );
-    let (_, someone_else) = agent(&person, 9);
+    let (someone_key, someone_else) = agent(&person, 9);
     assert!(
         governor
             .governance_mut()
-            .admit_agent(someone_else, granted.clone(), &authority, now)
+            .admit_agent(someone_else, granted.clone(), &someone_key, now)
             .unwrap_err()
             .contains("another device")
     );
@@ -218,11 +218,11 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     assert!(
         governor
             .governance_mut()
-            .admit_agent(powerful, granted.clone(), &authority, now)
+            .admit_agent(powerful, granted.clone(), &key, now)
             .is_err()
     );
     let stranger = SigningKey::from_bytes(&[33; 32]);
-    let (_, foreign) = agent(&stranger, 10);
+    let (foreign_key, foreign) = agent(&stranger, 10);
     let foreign_grant = delegation(
         &stranger,
         foreign.device_public_key,
@@ -233,7 +233,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     assert!(
         governor
             .governance_mut()
-            .admit_agent(foreign, foreign_grant, &authority, now)
+            .admit_agent(foreign, foreign_grant, &foreign_key, now)
             .unwrap_err()
             .contains("only an agent of one of the workspace's members is admitted")
     );
@@ -249,12 +249,20 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
         governor
             .governance_mut()
             .admit_agent(cert.clone(), granted.clone(), &authority, now)
+            .unwrap_err()
+            .contains("only its own row"),
+        "no other device writes the agent's row"
+    );
+    assert!(
+        governor
+            .governance_mut()
+            .admit_agent(cert.clone(), granted.clone(), &key, now)
             .unwrap()
     );
     assert!(
         !governor
             .governance_mut()
-            .admit_agent(cert, granted, &authority, now)
+            .admit_agent(cert, granted, &key, now)
             .unwrap(),
         "admitting the same delegation again changes nothing"
     );
@@ -391,7 +399,7 @@ tilo_test_env::scenario! {
         );
         governor
             .governance_mut()
-            .admit_agent(cert.clone(), granted, &authority, now)
+            .admit_agent(cert.clone(), granted, &key, now)
             .unwrap();
         let mut member = governor.clone();
         let before = edit(&mut member, (&key, &cert), now);
@@ -471,7 +479,7 @@ tilo_test_env::scenario! {
         assert!(
             governor
                 .governance_mut()
-                .admit_agent(cert.clone(), renewed, &authority, withdrawn)
+                .admit_agent(cert.clone(), renewed, &key, withdrawn)
                 .unwrap_err()
                 .contains("withdrawn")
         );
@@ -486,7 +494,8 @@ tilo_test_env::scenario! {
 
     phase members_and_agents_never_trade_places;
     {
-        let (mut governor, authority, _, member_cert, now) = crate::admission_tests::seeded();
+        let (mut governor, authority, member_key, member_cert, now) =
+            crate::admission_tests::seeded();
         let workspace = governor.workspace_id().to_owned();
         let person = SigningKey::from_bytes(&ROOT_SEED);
         let window = |device| {
@@ -511,7 +520,7 @@ tilo_test_env::scenario! {
                 .admit_agent(
                     plain.clone(),
                     window(plain.device_public_key),
-                    &authority,
+                    &plain_key,
                     now
                 )
                 .unwrap_err()
@@ -535,7 +544,7 @@ tilo_test_env::scenario! {
                 .admit_agent(
                     as_agent,
                     window(member_cert.device_public_key),
-                    &authority,
+                    &member_key,
                     now
                 )
                 .unwrap_err()

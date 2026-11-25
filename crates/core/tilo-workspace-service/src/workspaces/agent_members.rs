@@ -12,8 +12,8 @@
 //! workspace this server governs asks the one admission decision,
 //! [`WorkspaceOperation::DelegateMembership`], with the agent's certificate: only a
 //! live delegated agent whose delegation names its person, in a workspace the
-//! delegation names and governance owns here. If admitted, the agent goes on the
-//! roster bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
+//! delegation names and governance owns here. If admitted, the agent writes its
+//! own row bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
 //! server then admits it to the workspace and a key holder to the channels it asks
 //! for, like any member. Every member admits its changes as its own: signed
 //! by its key, at its person's role but never above Editor, and only inside
@@ -141,35 +141,6 @@ impl Workspaces {
                 .is_ok()
     }
 
-    /// Admit this signing device to its one workspace, refusing a different
-    /// certified device that still holds the same roster assignment.
-    pub async fn admit_roster_agent(
-        &self,
-        workspace: WorkspaceId,
-        agent: &str,
-        cert: &DeviceCert,
-    ) -> Result<(), String> {
-        let governed = self
-            .workspace(&workspace.to_string())
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut governed = governed.lock().await;
-        let device = cert.device_public_key;
-        if governed
-            .peer()
-            .governance()
-            .governed_agents(tilo_clock::wall())?
-            .iter()
-            .any(|entry| {
-                entry.acting && entry.agent_id == agent && entry.device_public_key != device
-            })
-        {
-            return Err("another device already holds this roster assignment".into());
-        }
-        self.reconcile_agent_in(&mut governed, device, Some(cert))
-            .await
-    }
-
     /// The certified device of an exact, currently approved agent on this workspace's
     /// governed roster. The host register and the roster must hold the same delegation.
     /// Two live assignments of the same roster id are ambiguous.
@@ -221,13 +192,18 @@ impl Workspaces {
 
     /// Bring agent `device`'s place in every workspace this server governs in line
     /// with its delegation now: after its grant was approved, restored,
-    /// renewed, narrowed, withdrawn or ended. `cert` is its certificate when
-    /// known; without it only the workspaces whose roster already lists it are
-    /// looked at. A workspace the decision admits it to records its newest
-    /// delegation; a workspace whose roster lists it and whose decision no longer
-    /// admits it withdraws it, which takes it out of the workspace and every
-    /// channel of it.
-    pub async fn reconcile_agent(&self, device: [u8; 32], cert: Option<&DeviceCert>) {
+    /// renewed, narrowed, withdrawn or ended. `agent` is its certificate and
+    /// what signs as it, when the agent is here to sign: it writes its own row,
+    /// bound to its newest delegation, in each workspace the decision admits it
+    /// to, and no other device writes that row in its place. Without it only
+    /// the workspaces whose member list already has it are looked at. A workspace
+    /// whose member list has it and whose decision no longer admits it withdraws
+    /// it, which takes it out of the workspace and every channel of it.
+    pub async fn reconcile_agent(
+        &self,
+        device: [u8; 32],
+        agent: Option<(&DeviceCert, &dyn collab_types::signer::DeviceSigner)>,
+    ) {
         let workspaces = self
             .inner
             .workspaces
@@ -238,7 +214,7 @@ impl Workspaces {
             .collect::<Vec<_>>();
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
-            if let Err(error) = self.reconcile_agent_in(&mut workspace, device, cert).await {
+            if let Err(error) = self.reconcile_agent_in(&mut workspace, device, agent).await {
                 tracing::warn!(workspace = %workspace.workspace(), device = %hex::encode(device), %error,
                     "an agent's place in the workspace was not brought up to date");
             }
@@ -249,9 +225,10 @@ impl Workspaces {
         &self,
         workspace: &mut GovernedWorkspace,
         device: [u8; 32],
-        offered: Option<&DeviceCert>,
+        agent: Option<(&DeviceCert, &dyn collab_types::signer::DeviceSigner)>,
     ) -> Result<(), String> {
         let recorded = workspace.peer().governance().governed_agent(&device);
+        let offered = agent.map(|(cert, _)| cert);
         let cert = match (&recorded, offered) {
             // Withdrawal is final.
             (Some((_, _, Some(_))), _) | (None, None) => return Ok(()),
@@ -274,16 +251,16 @@ impl Workspaces {
         };
         let mut candidate = workspace.peer().clone();
         let changed = match (live, recorded) {
-            (Some(delegation), recorded) => {
-                let known = recorded.is_some_and(|(_, known, _)| known == delegation);
-                !known
-                    && candidate.governance_mut().admit_agent(
-                        peer.cert,
-                        delegation,
-                        &self.inner.host.key,
-                        now,
-                    )?
-            }
+            // The agent writes its own row: without it here to sign, its
+            // place waits for it.
+            (Some(delegation), recorded) => match agent {
+                Some((_, signer)) if !recorded.is_some_and(|(_, known, _)| known == delegation) => {
+                    candidate
+                        .governance_mut()
+                        .admit_agent(peer.cert, delegation, signer, now)?
+                }
+                _ => false,
+            },
             (None, Some(_)) => {
                 candidate
                     .governance_mut()
