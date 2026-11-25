@@ -6,7 +6,6 @@
 //! document, builds the view again with editing disabled, and lays it out in
 //! History mode's preview pane. Restoring a version is equally generic: the
 //! restore schema comes from the resource's stored [`Shape`].
-use tilo_resource::AppNamed;
 
 use std::any::TypeId;
 
@@ -486,6 +485,7 @@ fn draw_over(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_resource::AppNamed;
     use crate::prelude::*;
     use ui_core::Theme;
     use ui_core::text_render::TextRenderer;
