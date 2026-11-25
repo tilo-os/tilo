@@ -15,10 +15,11 @@
 //! one that closed it mid-frame ([`FrameError::Truncated`]).
 //!
 //! The blocking API works on any [`std::io::Read`]/[`std::io::Write`]. The `tokio`
-//! feature adds the same operations for tokio's `AsyncRead` and `AsyncWrite`, and the
-//! `postcard` feature adds typed helpers that encode and decode payloads with postcard.
-//! [`FrameReader`] owns a payload buffer that is reused across frames, for receive
-//! loops on hot paths.
+//! feature adds the same operations for tokio's `AsyncRead` and `AsyncWrite`, the
+//! `postcard` feature adds typed helpers that encode and decode payloads with postcard,
+//! and the `serde_json` feature adds [`wire_json_len`], the JSON text a message
+//! carries, counted before it is sent. [`FrameReader`] owns a payload buffer that is
+//! reused across frames, for receive loops on hot paths.
 //!
 //! ```
 //! use wire_frame::Framing;
@@ -39,12 +40,16 @@ use std::io::{self, Read, Write};
 
 #[cfg(feature = "tokio")]
 mod async_io;
+#[cfg(feature = "serde_json")]
+mod json;
 mod line;
 mod reader;
 pub mod sse;
 #[cfg(feature = "postcard")]
 mod value;
 
+#[cfg(feature = "serde_json")]
+pub use json::wire_json_len;
 pub use line::{BoundedLines, LINE_BYTES, read_line, read_line_or_eof};
 #[cfg(feature = "tokio")]
 pub use line::{read_line_async, read_line_or_eof_async};

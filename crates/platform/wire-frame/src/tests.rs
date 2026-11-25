@@ -5,6 +5,18 @@ use super::*;
 const LE: Framing = Framing::little_endian(16);
 const BE: Framing = Framing::big_endian(16);
 
+/// A JSON value's wire length is the text it encodes as, and one that cannot be
+/// encoded at all is unbounded.
+#[cfg(feature = "serde_json")]
+#[test]
+fn json_wire_length_counts_the_encoded_text() {
+    let value = serde_json::json!({"record": "note", "text": "a \"quoted\" word"});
+    assert_eq!(
+        wire_json_len(&value),
+        serde_json::to_string(&value).unwrap().len()
+    );
+}
+
 /// Hands out one byte per read and an `Interrupted` error before each, so
 /// every read path has to cope with short and interrupted reads.
 struct Trickle {

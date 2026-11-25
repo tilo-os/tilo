@@ -2770,7 +2770,7 @@ impl CommandQueue {
         result
     }
     fn push_owned(&self, value: &mut Value) -> Result<(), &'static str> {
-        let encoded = match runtime_collab::wire_json_len(&value) {
+        let encoded = match wire_frame::wire_json_len(&value) {
             usize::MAX => return Err("encoding failed"),
             bytes if bytes >= protocol::MAX_PACKET as usize => return Err("command too large"),
             bytes => bytes,

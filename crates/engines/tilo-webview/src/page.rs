@@ -1624,7 +1624,7 @@ pub(crate) fn decode_result(
             serde_json::Value::Null => None,
             data @ serde_json::Value::Object(_) => {
                 let findings = without_image(data);
-                if runtime_collab::wire_json_len(&findings) > MAX_DATA_BYTES {
+                if wire_frame::wire_json_len(&findings) > MAX_DATA_BYTES {
                     return None;
                 }
                 Some(findings)
@@ -1715,7 +1715,7 @@ pub(crate) fn decode_resource_event(value: &serde_json::Value) -> Option<(u64, s
     if entry
         .get("seq")
         .is_some_and(|own| whole_number(own) != Some(seq))
-        || runtime_collab::wire_json_len(entry) > MAX_DATA_BYTES
+        || wire_frame::wire_json_len(entry) > MAX_DATA_BYTES
     {
         return None;
     }
@@ -1822,7 +1822,7 @@ fn decode_resource_note(value: &serde_json::Value) -> Option<PageResourceNote> {
             if entries.is_empty()
                 || entries.len() > MAX_OTHERS
                 || !entries.iter().all(serde_json::Value::is_object)
-                || runtime_collab::wire_json_len(&value["others"]) > MAX_DATA_BYTES
+                || wire_frame::wire_json_len(&value["others"]) > MAX_DATA_BYTES
             {
                 return None;
             }

@@ -111,27 +111,7 @@ pub const MAX_DIRECTORY_PARAMS_WIRE_BYTES: usize = 32 * 1024;
 /// presentation is well under 1 KiB of text even fully escaped.
 pub const MAX_DIRECTORY_PRESENTATION_WIRE_BYTES: usize = 8 * 1024;
 
-/// Bytes `value` occupies as the JSON text the wire carries for it, or
-/// `usize::MAX` when it cannot be encoded at all.
-#[must_use]
-pub fn wire_json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.saturating_add(bytes.len());
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
-    match serde_json::to_writer(&mut counter, value) {
-        Ok(()) => counter.0,
-        Err(_) => usize::MAX,
-    }
-}
+pub use wire_frame::wire_json_len;
 
 impl ActionDirectoryRow {
     /// Whether this row, read from the app that published it, is in bounds:

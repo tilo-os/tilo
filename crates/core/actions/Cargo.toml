@@ -19,6 +19,10 @@ path = "src/lib.rs"
 # `winit`, or rendering dependencies.
 
 [features]
+# Reading a record's committed bytes as JSON (`ResourceCopy::readable`): the document reader in
+# tilo-automerge. A build that only passes actions and their resources around reads a document
+# copy as none; a provider that answers readers with a record's document as data turns it on.
+document-read = ["dep:tilo-automerge"]
 # `remote::TestProvider`, a closure-built action host for other crates' tests.
 test-support = []
 # A host driving calls off an async runtime enables this: its state reads run on a blocking thread.
@@ -41,7 +45,8 @@ tilo-selector = { version = "0.1.0", path = "../tilo-selector" }
 tilo-words = { version = "0.1.0", path = "../tilo-words" }
 hex.workspace = true
 automerge.workspace = true
-tilo-automerge.workspace = true
+# The document reader a record's bytes are read as JSON through (feature `document-read`).
+tilo-automerge = { workspace = true, optional = true }
 jiff.workspace = true
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
@@ -67,6 +72,8 @@ tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical
 zeroize.workspace = true
 
 [dev-dependencies]
+# The tests read documents as JSON, which the feature carries.
+tilo-actions = { path = ".", features = ["document-read"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 postcard = { workspace = true, features = ["alloc"] }
 tilo-test-env = { path = "../../../tools/test-env" }

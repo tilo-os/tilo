@@ -18,6 +18,11 @@ description = "The services an app borrows from its process."
 # paths.
 
 [features]
+default = ["models"]
+# The model services (`models`): the provider protocol an app's inference and provider
+# administration travel as. A process that hands no app a model backend turns it off, and
+# carries neither the provider configuration nor the settings store it reads.
+models = ["dep:agent-provider-config"]
 # Thread-local chooser and URI backends a test selects for scoped requests.
 test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
@@ -44,7 +49,7 @@ mpris = ["native", "dep:zbus", "dep:tilo-media"]
 
 [dependencies]
 tilo-model-client = { default-features = false, features = ["runtime-client"], version = "0.1.0", path = "../model-client", optional = true }
-agent-provider-config = { package = "tilo-agent-provider-config", version = "0.1.0", path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", version = "0.1.0", path = "../../integrations/provider-config", optional = true }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The authenticated host updates the app process's portable network hints.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }

@@ -18,11 +18,14 @@ path = "src/lib.rs"
 [features]
 tokio = ["dep:tokio"]
 postcard = ["dep:postcard", "dep:serde"]
+# Counting the JSON text a message carries before it is sent.
+serde_json = ["dep:serde_json", "dep:serde"]
 
 [dependencies]
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 postcard = { workspace = true, optional = true, features = ["alloc"] }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde.workspace = true

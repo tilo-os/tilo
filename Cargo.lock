@@ -14914,6 +14914,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-action-policy",
+ "tilo-actions",
  "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -21675,7 +21676,6 @@ dependencies = [
  "tilo-presentation",
  "tilo-process",
  "tilo-rt",
- "tilo-runtime-collab",
  "tilo-runtime-portal",
  "tilo-sort",
  "tilo-test-env",
@@ -21810,6 +21810,7 @@ version = "0.1.0"
 dependencies = [
  "postcard",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

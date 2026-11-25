@@ -693,9 +693,9 @@ async fn listing<Reads: ResourceReads + ?Sized>(
 }
 
 impl ResourceReadings {
-    /// The readings as a reader that keeps the documents is answered: as [`Self::readable`], with
+    /// The readings as a reader that keeps the documents is answered: as `readable`, with
     /// each document `{"record", "document"}`, whole, in hex. A reading a provider publishes
-    /// itself, which is no document, is answered as [`Self::readable`] answers it.
+    /// itself, which is no document, is answered as `readable` answers it.
     ///
     /// # Panics
     /// Never: a reading's JSON always encodes.
@@ -710,10 +710,9 @@ impl ResourceReadings {
                 Some(ResourceCopy::Document(bytes)) => {
                     serde_json::json!({"record": record, "document": hex::encode(bytes)})
                 }
-                Some(copy) => serde_json::json!({
-                    "record": record,
-                    "value": copy.readable().unwrap_or(serde_json::Value::Null),
-                }),
+                Some(ResourceCopy::Read(value) | ResourceCopy::Reading { value, .. }) => {
+                    serde_json::json!({"record": record, "value": value})
+                }
             })
             .collect();
         serde_json::json!({"revision": self.revision, "records": records})
@@ -726,7 +725,7 @@ impl ResourceReadings {
     ///
     /// # Errors
     ///
-    /// When a copy is no Automerge document.
+    /// When a copy is a document this build reads none of (feature `document-read`).
     pub fn readable(self) -> Result<serde_json::Value, String> {
         let mut records = Vec::with_capacity(self.records.len());
         for (record, copy) in self.records {
@@ -749,22 +748,32 @@ impl ResourceCopy {
     /// A rich text reads with its paragraphs as lists in their order, each paragraph with its
     /// id, its kind, its words and its attributes, and without the key of bytes that places
     /// it: its body, its page header and footer, a note's and a comment's lines, and what a
-    /// paragraph holds ([`tilo_automerge::rich_text`]). So every reader shows a text in order
+    /// paragraph holds (`tilo_automerge::rich_text`). So every reader shows a text in order
     /// and none orders it again.
     ///
     /// # Errors
     ///
-    /// When the copy is no Automerge document.
+    /// When the copy is no Automerge document, or is one this build reads none of (feature
+    /// `document-read` carries the reader).
     pub fn readable(&self) -> Result<serde_json::Value, String> {
         match self {
             Self::Absent => Ok(serde_json::Value::Null),
             Self::Read(value) | Self::Reading { value, .. } => Ok(value.clone()),
             Self::Document(bytes) => {
-                let doc = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
-                let mut value =
-                    tilo_automerge::json::read_document(&doc).map_err(|error| error.to_string())?;
-                name_variant_fields(&mut value);
-                Ok(value)
+                #[cfg(feature = "document-read")]
+                {
+                    let doc =
+                        automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
+                    let mut value = tilo_automerge::json::read_document(&doc)
+                        .map_err(|error| error.to_string())?;
+                    name_variant_fields(&mut value);
+                    Ok(value)
+                }
+                #[cfg(not(feature = "document-read"))]
+                {
+                    let _ = bytes;
+                    Err("this build reads no record as a document".to_owned())
+                }
             }
         }
     }
@@ -772,6 +781,7 @@ impl ResourceCopy {
 
 /// Each data enum in `value` with its fields by name: a record keeps a variant's fields under
 /// `$field/<variant>/<field>` (`%` and `/` escaped), so no two variants' fields share a key.
+#[cfg(feature = "document-read")]
 fn name_variant_fields(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(items) => items.iter_mut().for_each(name_variant_fields),
