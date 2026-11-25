@@ -594,3 +594,101 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
         clipped.join("\n")
     );
 }
+
+/// The empty shell's start cards follow the person's theme: the title's ink stands out from what
+/// it is drawn on — the wallpaper where there is one, the shell's own ground where there is not —
+/// on a desktop and on a phone, each written as a picture.
+#[test]
+fn the_start_cards_read_in_the_persons_theme() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = super::shell::held_clock();
+    let cards = |presentation: fn() -> ui::application::ComponentRunnerInputs,
+                 width: i32,
+                 name: &str| {
+        let mut session = session_with(width, presentation);
+        settle(&mut session, 8);
+        let (x, y, w, h) = crate::common::wait_for(&mut session, "the start cards", |session| {
+            crate::common::on_screen_at(session, "Start something", width, HEIGHT)
+        });
+        super::shell::capture_to(&mut session, &shots_dir(), name);
+        let shot = session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .expect("the display is shown");
+        let scale = f64::from(shot.width) / f64::from(width);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a control's place on the drawn frame"
+        )]
+        let at = |v: f64| (v * scale) as usize;
+        theme_contrast(
+            &shot.rgba,
+            (shot.width, shot.height),
+            (at(x), at(y), at(w), at(h)),
+        )
+    };
+    // Every size and theme is drawn and kept before any is judged, so a picture of each stands
+    // beside the one that fails.
+    let mut measured = Vec::new();
+    let themes: [(fn() -> ui::application::ComponentRunnerInputs, &str); 2] = [
+        (ui::headless::fixture_runner_inputs, "dark"),
+        (super::shell::light_runner_inputs, "light"),
+    ];
+    for (presentation, theme) in themes {
+        measured.push((
+            format!("a desktop in the {theme} theme"),
+            cards(presentation, WIDTH, &format!("start-cards-{theme}")),
+        ));
+        measured.push((
+            format!("a phone in the {theme} theme"),
+            cards(
+                presentation,
+                PHONE_WIDTH,
+                &format!("start-cards-phone-{theme}"),
+            ),
+        ));
+    }
+    // Every measurement is said before any is judged, so a failure names all four at once.
+    for (what, contrast) in &measured {
+        println!("{what}: {contrast:.2}:1");
+    }
+    for (what, contrast) in measured {
+        assert!(
+            contrast >= 4.5,
+            "the title reads on {what}: contrast {contrast:.2}:1"
+        );
+    }
+}
+
+/// The contrast ratio between the darkest and the lightest pixel of the title's own run in
+/// `rect` of a `size` frame: its ink and the ground it is drawn on, as WCAG computes it. Only the
+/// run's leading few line heights are read, so a card beside the text — the start cards under the
+/// title, a chip at the page's centre — is never mistaken for its ink.
+fn theme_contrast(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, usize)) -> f64 {
+    let (width, height) = (size.0 as usize, size.1 as usize);
+    let (x0, y0, w, h) = rect;
+    let x1 = (x0 + w.min(h.saturating_mul(4).max(64))).min(width);
+    let y1 = (y0 + h).min(height);
+    let linear = |channel: u8| {
+        let c = f64::from(channel) / 255.0;
+        if c <= 0.040_45 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (mut darkest, mut lightest) = (1.0_f64, 0.0_f64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let at = (y * width + x) * 4;
+            let luminance = 0.0722f64.mul_add(
+                linear(frame[at + 2]),
+                0.2126f64.mul_add(linear(frame[at]), 0.7152 * linear(frame[at + 1])),
+            );
+            darkest = darkest.min(luminance);
+            lightest = lightest.max(luminance);
+        }
+    }
+    (lightest + 0.05) / (darkest + 0.05)
+}
