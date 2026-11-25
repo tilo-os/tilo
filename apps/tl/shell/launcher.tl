@@ -148,13 +148,14 @@ view launcher() {
                         )
                     }
                 }
+                // Enter is the field's own: it takes the row the person reached, or what they
+                // typed, so the button names no key of its own and one Enter runs one choice.
                 ui.Button(
                     "Open",
                     icon: .arrow_right,
                     icon_only: true,
                     role: .primary,
                     size: .small,
-                    key: "Enter",
                 ) {
                     on press: choose_launcher_row(query, current)
                 }

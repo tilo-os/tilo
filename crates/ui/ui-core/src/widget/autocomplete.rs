@@ -992,8 +992,12 @@ impl Autocomplete {
     }
 
     fn accept(&mut self, value: String) {
-        self.input.set_text(&value);
-        self.edited = true;
+        // Taking what the field already holds is a choice, not an edit: the host hears the text
+        // again only when the row taken changed it.
+        if self.input.value() != value {
+            self.input.set_text(&value);
+            self.edited = true;
+        }
         self.taken = true;
         self.close();
         self.outcome = AutocompleteOutcome::Accepted(value);
@@ -1243,16 +1247,18 @@ impl Widget for Autocomplete {
             // A letter typed is an edit, which the host hears as the text and as the edit it made;
             // only a row or the text taken is a choice.
             if let Some(changed) = &self.changed {
-                changed.fire(Some(tilo_ui_base::component::Value::Text(text.clone())));
+                changed.fire(Some(tilo_ui_base::component::Value::Text(text)));
             }
-            if std::mem::take(&mut self.taken) {
-                if let Some(pending) = self.alternate_pending.take() {
-                    if let Some(alternate) = &self.alternate {
-                        alternate.fire(Some(tilo_ui_base::component::Value::Text(pending)));
-                    }
-                } else if let Some(accepted) = &self.accepted {
-                    accepted.fire(Some(tilo_ui_base::component::Value::Text(text)));
+        }
+        if std::mem::take(&mut self.taken) {
+            if let Some(pending) = self.alternate_pending.take() {
+                if let Some(alternate) = &self.alternate {
+                    alternate.fire(Some(tilo_ui_base::component::Value::Text(pending)));
                 }
+            } else if let Some(accepted) = &self.accepted {
+                accepted.fire(Some(tilo_ui_base::component::Value::Text(
+                    self.input.value().to_owned(),
+                )));
             }
         }
         inner
