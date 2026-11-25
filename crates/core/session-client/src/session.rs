@@ -68,6 +68,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(8);
 /// How often overdue channel access requests are sent again, and a link that is
 /// down is tried again.
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
+/// How many of this device's writes a link carries unanswered: well within what it queues.
+const IN_FLIGHT: usize = 256;
 /// The most commands the session takes in one pass before it settles its links.
 const MAX_TAKEN_AT_ONCE: usize = 256;
 /// Consecutive refusals with no reason after which the host is taken to no
@@ -882,7 +884,9 @@ impl Task {
         // The person's own workspace, whose record holds their list of their workspaces: read
         // from its record as it changes. A host that holds none answers nothing, which is no
         // failure of this session.
-        let own = self.own_workspace();
+        let own = WorkspaceId::from(collab_types::person_workspace(
+            &self.config.cert.user_public_key,
+        ));
         if !self.workspaces.contains(&own) {
             let _ = self.dial_link(own).await;
         }
@@ -1587,6 +1591,11 @@ impl Task {
                         "a workspace's link is refused for good; the session stops"
                     );
                     return Some(Exit::Reconnect);
+                }
+                // With no link up, a server that does not answer is lost: the session says it
+                // is offline and dials it again as it waits.
+                if self.links.is_empty() && matches!(refusal(&error), Refusal::Reachability) {
+                    return Some(Exit::Lost(error.to_string()));
                 }
                 tracing::info!(%workspace_id, %error, "a workspace's link is not up yet");
             }
@@ -2364,16 +2373,24 @@ impl Task {
         // own writes are before each of them.
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         for workspace_id in self.workspaces.clone() {
-            let Some(workspace) = self.held_workspace(workspace_id) else {
+            if !self.engine.holds(workspace_id) {
                 continue;
-            };
-            if let Err(error) = self
+            }
+            match self
                 .engine
                 .owner()
-                .compact_outgoing(workspace, self.signer.as_ref(), now)
+                .compact_outgoing(workspace_id, self.signer.as_ref(), now)
                 .await
             {
-                tracing::warn!(%error, "sealed histories stay uncompacted");
+                Ok(0) => {}
+                // A compacted history has room for the writes that waited for it.
+                Ok(_) => {
+                    self.outbound_due |= self
+                        .kept_why
+                        .values()
+                        .any(|why| *why == crate::Waits::History);
+                }
+                Err(error) => tracing::warn!(%error, "sealed histories stay uncompacted"),
             }
         }
         for workspace_id in self.workspaces.clone() {
@@ -2470,11 +2487,6 @@ impl Task {
             crate::engine::SealKeys::Here(keys) => Some(keys),
             _ => None,
         }
-    }
-
-    /// The workspace `workspace_id`, when this device holds it.
-    fn held_workspace(&self, workspace_id: WorkspaceId) -> Option<WorkspaceId> {
-        self.engine.holds(workspace_id).then_some(workspace_id)
     }
 
     fn with_workspace<T>(
@@ -2723,13 +2735,6 @@ impl Task {
         });
     }
 
-    /// The person's own workspace: the one their list of their workspaces is kept in.
-    fn own_workspace(&self) -> WorkspaceId {
-        WorkspaceId::from(collab_types::person_workspace(
-            &self.config.cert.user_public_key,
-        ))
-    }
-
     /// Whether this device reads `route`'s workspace as a member: its replica's governance
     /// admitted it on this session.
     fn reads_as_member(&mut self, route: &DocumentRoute) -> bool {
@@ -2806,7 +2811,9 @@ impl Task {
                     None => _ = status.workspace_devices.remove(&workspace),
                 });
             }
-            let calls = self.call_rules(workspace_id);
+            let calls = self
+                .with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))
+                .and_then(Result::ok);
             if self.reports.status().workspace_calls.get(&workspace) != calls.as_ref() {
                 self.reports.change(|status| match calls {
                     Some(calls) => _ = status.workspace_calls.insert(workspace.clone(), calls),
@@ -3521,7 +3528,9 @@ impl Task {
                 match self.commit_held_write(&route, &mutation).await {
                     None => break,
                     Some(Ok(())) => {
-                        self.drop_held(&route, 1);
+                        if let Some(writes) = self.held.lock().get_mut(&route) {
+                            writes.remove(0);
+                        }
                         drained = true;
                     }
                     Some(Err(reason)) => {
@@ -3535,6 +3544,7 @@ impl Task {
                 }
             }
         }
+        self.held.lock().retain(|_, writes| !writes.is_empty());
         if drained && self.held.lock().is_empty() {
             self.reports.change(|status| {
                 status.failures.retain(|failure| {
@@ -3549,17 +3559,6 @@ impl Task {
         }
         self.persist_keys(drained);
         self.release_barriers(&refused);
-    }
-
-    /// Take `count` writes of `route` out of what this session holds of it.
-    fn drop_held(&self, route: &DocumentRoute, count: usize) {
-        let mut held = self.held.lock();
-        if let Some(writes) = held.get_mut(route) {
-            writes.drain(..count.min(writes.len()));
-            if writes.is_empty() {
-                held.remove(route);
-            }
-        }
     }
 
     /// Draft, seal, sign and admit `mutation` of `route` through this device's holder, which
@@ -3607,7 +3606,7 @@ impl Task {
             Err(tilo_peer_state::owner::WriteRefusal::HistoryFull { .. }) => {
                 tracing::warn!(app = %route.app_id, record = %route.document,
                     "writes wait for their record's history to be compacted");
-                self.keep_for(route, crate::Waits::History);
+                self.kept_why.insert(route.clone(), crate::Waits::History);
                 self.fail(
                     RECORD_FULL,
                     "This record is too large to share your latest changes. They are kept on this device.",
@@ -3616,7 +3615,7 @@ impl Task {
             }
             Err(tilo_peer_state::owner::WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
-                self.keep_for(route, crate::Waits::Signature);
+                self.kept_why.insert(route.clone(), crate::Waits::Signature);
                 self.fail(
                     SIGNING_FAILED,
                     "This device could not sign your latest changes. They are kept on this device.",
@@ -3624,7 +3623,8 @@ impl Task {
                 None
             }
             Err(tilo_peer_state::owner::WriteRefusal::Waiting(prerequisite)) => {
-                self.keep_for(route, crate::Waits::Prerequisite(prerequisite.to_string()));
+                let waits = crate::Waits::Prerequisite(prerequisite.to_string());
+                self.kept_why.insert(route.clone(), waits);
                 tracing::debug!(app = %route.app_id, record = %route.document, %prerequisite,
                     "writes wait for what the workspace has not admitted here yet");
                 None
@@ -3634,18 +3634,11 @@ impl Task {
                 | tilo_peer_state::owner::WriteRefusal::Declined { .. }
                 | tilo_peer_state::owner::WriteRefusal::Restoring
                 | tilo_peer_state::owner::WriteRefusal::ChangeRefused(_)),
-            ) => Some(self.refused_write(route, &refusal)),
+            ) => {
+                self.note_refused(route, &refusal);
+                Some(Err(refusal.to_string()))
+            }
         }
-    }
-
-    /// Say that the workspace refused this device's write to `route` for good.
-    fn refused_write(
-        &self,
-        route: &DocumentRoute,
-        refusal: &tilo_peer_state::owner::WriteRefusal,
-    ) -> Result<(), String> {
-        self.note_refused(route, refusal);
-        Err(refusal.to_string())
     }
 
     fn note_refused(&self, route: &DocumentRoute, refusal: &tilo_peer_state::owner::WriteRefusal) {
@@ -3673,10 +3666,21 @@ impl Task {
             return;
         };
         let owner = self.engine.owner();
-        for (id, bytes, ..) in self.ownership(workspace_id) {
+        let kept = self.ownership(workspace_id);
+        // A link a queue behind ends, and the next sends it all again: each answer makes room.
+        let mut room = IN_FLIGHT.saturating_sub(
+            kept.iter()
+                .filter(|(id, ..)| self.sent.contains(&(workspace_id, *id)))
+                .count(),
+        );
+        for (id, bytes, ..) in kept {
+            if room == 0 {
+                break;
+            }
             if !self.sent.insert((workspace_id, id)) {
                 continue;
             }
+            room -= 1;
             let message = match neighbour_wire::NeighbourMsg::decode(&bytes) {
                 Ok(message) => message,
                 Err(error) => {
@@ -3826,10 +3830,6 @@ impl Task {
                 Ok(view.peer().holds_document(&route.app_id, &route.document))
             }) == Ok(false)
         })
-    }
-
-    fn keep_for(&mut self, route: &DocumentRoute, waits: crate::Waits) {
-        self.kept_why.insert(route.clone(), waits);
     }
 
     fn owes(&mut self, route: &DocumentRoute) {
@@ -4005,7 +4005,9 @@ impl Task {
                 self.engine.arrivals().landed();
                 self.reports.emit(&refused);
             }
-            let refusal = outcome.err().map(|refusal| refusal_text(&refusal));
+            let refusal = outcome
+                .err()
+                .map(|refusal| format!("the workspace refused the change: {refusal}"));
             let mut heard = false;
             let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
                 .into_iter()
@@ -4135,11 +4137,6 @@ async fn signed_host_message(
         request.signed = Some(Box::new(signed));
     }
     RemoteActionMessage::Invoke(request)
-}
-
-/// What this session reports when the host would not take a change it read.
-fn refusal_text(refusal: &tilo_server_protocol::refusal::Refusal) -> String {
-    format!("the workspace refused the change: {refusal}")
 }
 
 /// Ask `to`, a device of `workspace`, `message` through the host's action service, and answer the
@@ -4463,15 +4460,6 @@ impl Task {
                 .collect())
         })?
         .ok()
-    }
-
-    /// What each call of `workspace_id` allows, by channel, as the workspace keeps it.
-    fn call_rules(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Option<BTreeMap<String, collab_types::calls::CallRule>> {
-        self.with_workspace(workspace_id, |view| Ok(view.peer().governance().calls()))?
-            .ok()
     }
 
     /// The devices that hold the keys of `route`'s workspace, as the channels' directory names
