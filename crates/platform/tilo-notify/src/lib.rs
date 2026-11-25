@@ -15,7 +15,7 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux | the notification portal, else `org.freedesktop.Notifications`; Tilo's service also owns durable deadlines |
+//! | Linux | the connection the app's session serves it ([`service`]); with `host-portals`, the notification portal or `org.freedesktop.Notifications` on the session bus instead |
 //! | macOS | `UNUserNotificationCenter`, which needs the app bundle's identifier: an unbundled binary answers [`NotifyError::Unavailable`] |
 //! | Web | the Notifications API, while the page is open |
 
@@ -25,10 +25,12 @@ mod calendar;
 mod caps;
 pub use calendar::{AlarmSchedule, CalendarAlarm};
 pub mod conformance;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "host-portals"))]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(unix)]
+pub mod service;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 #[cfg(windows)]
@@ -44,6 +46,7 @@ pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use tilo_clock::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub struct Notification {
     /// A stable tag: showing the same tag again replaces the earlier one. Keep it to
     /// 15 ASCII characters, the shortest limit among the platforms.
@@ -69,6 +72,7 @@ pub struct Notification {
 /// Who a notification is from: their name, the stable id their face is drawn from, and whether
 /// they are an agent rather than a person.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub struct NotificationSender {
     pub name: String,
     pub id: String,
@@ -78,12 +82,14 @@ pub struct NotificationSender {
 pub const MAX_BUTTONS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub struct NotificationButton {
     pub label: String,
     pub activation: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub enum Severity {
     #[default]
     Info,
@@ -231,6 +237,7 @@ pub(crate) fn activated(uri: &str) {
 /// Why the platform closed a notification the app showed, before the app took it
 /// back itself, as `org.freedesktop.Notifications`' `NotificationClosed` names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub enum CloseReason {
     Expired,
     Dismissed,
@@ -333,6 +340,7 @@ impl std::fmt::Display for NotifyError {
 impl std::error::Error for NotifyError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub struct Scheduled {
     pub tag: String,
     pub at: SystemTime,
@@ -445,7 +453,15 @@ pub(crate) fn validate_tag(tag: &str) -> Result<(), NotifyError> {
 /// notifications to an app, so without an id (a tool, a test, the shell) they are
 /// unavailable there; a browser attributes them to the page's origin and needs
 /// none.
+///
+/// An app process the launcher started holds a connection to its session's
+/// notifier ([`service`]), and the session attributes what it sends to the app the
+/// connection is for: this process needs no id of its own there.
 pub fn system(app_id: Option<&str>) -> Arc<dyn Notifier> {
+    #[cfg(unix)]
+    if let Some(notifier) = service::ServiceNotifier::from_env() {
+        return Arc::new(notifier);
+    }
     match app_id.filter(|id| !id.is_empty()) {
         Some(app_id) => backend(app_id),
         None if cfg!(all(target_arch = "wasm32", target_os = "unknown")) => backend(""),
@@ -454,8 +470,17 @@ pub fn system(app_id: Option<&str>) -> Arc<dyn Notifier> {
 }
 
 #[cfg(target_os = "linux")]
-fn backend(app_id: &str) -> Arc<dyn Notifier> {
-    Arc::new(linux::SessionNotifier::new(app_id))
+fn backend(_app_id: &str) -> Arc<dyn Notifier> {
+    #[cfg(feature = "host-portals")]
+    {
+        Arc::new(linux::SessionNotifier::new(_app_id))
+    }
+    #[cfg(not(feature = "host-portals"))]
+    {
+        // An app process inside Tilo, handed no connection, and a build of the SDK that speaks
+        // no D-Bus: this host has no notification service to reach.
+        unavailable()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -523,6 +548,7 @@ fn schedule_refusal() -> NotifyError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 pub struct PriorityContact {
     pub id: String,
     pub name: String,
@@ -533,6 +559,10 @@ pub struct PriorityContact {
 /// `contacts`. Only the Tilo shell takes such a list, and only from an app it
 /// launched as `app_id` ([`Feature::PriorityContacts`]). Blocks on the session bus:
 /// call it off the UI thread.
+///
+/// An app process the launcher started sends it over its session connection, where
+/// the connection names the app; `app_id` is checked only on a host that reaches the
+/// shell's service directly ([`host-portals`](crate::service)).
 pub fn publish_priority_contacts(
     app_id: &str,
     contacts: &[PriorityContact],
@@ -540,12 +570,24 @@ pub fn publish_priority_contacts(
     priority_contacts(app_id, contacts)
 }
 
-#[cfg(target_os = "linux")]
-fn priority_contacts(app_id: &str, contacts: &[PriorityContact]) -> Result<(), NotifyError> {
-    linux::publish_priority_contacts(app_id, contacts)
+#[cfg(unix)]
+fn priority_contacts(_app_id: &str, contacts: &[PriorityContact]) -> Result<(), NotifyError> {
+    if service::inherited_service() {
+        return service::publish_priority_contacts(contacts);
+    }
+    #[cfg(all(target_os = "linux", feature = "host-portals"))]
+    {
+        linux::publish_priority_contacts(_app_id, contacts)
+    }
+    #[cfg(not(all(target_os = "linux", feature = "host-portals")))]
+    {
+        Err(NotifyError::Unsupported(Unsupported::of(
+            Feature::PriorityContacts,
+        )))
+    }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 fn priority_contacts(_app_id: &str, _contacts: &[PriorityContact]) -> Result<(), NotifyError> {
     Err(NotifyError::Unsupported(Unsupported::of(
         Feature::PriorityContacts,

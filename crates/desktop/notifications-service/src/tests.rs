@@ -1214,3 +1214,51 @@ fn a_deadline_scheduled_through_its_resource_rings_after_a_restart() {
         "tilo-clocks:alarm/1"
     );
 }
+
+#[test]
+fn a_producer_hears_every_tap_and_close_with_its_own_id() {
+    let notifications = Notifications::new();
+    let taken: Arc<Mutex<Vec<(u32, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Mutex::new(Vec::new()));
+    let receiving = Arc::clone(&taken);
+    notifications.on_taken(move |id, what| {
+        let (kind, text) = match what {
+            Taken::Action { key, .. } => ("action", key.to_owned()),
+            Taken::Reply { text } => ("reply", text.to_owned()),
+        };
+        receiving.lock().unwrap().push((id, kind.to_owned(), text));
+    });
+    let hearing = Arc::clone(&closed);
+    notifications.on_closed(move |id, reason| {
+        hearing.lock().unwrap().push((id, reason));
+    });
+
+    let mut shown = Notification::new(notifications.alloc_id());
+    shown.summary = "Ada wrote".to_owned();
+    notifications.push(shown);
+    let id = notifications.live()[0].id;
+    notifications.action_invoked(id, "default", None);
+    notifications.replied(id, "on my way");
+    assert_eq!(
+        *taken.lock().unwrap(),
+        [
+            (id, "action".to_owned(), "default".to_owned()),
+            (id, "reply".to_owned(), "on my way".to_owned()),
+        ]
+    );
+
+    assert!(
+        notifications.closed(id, CloseReason::Dismissed),
+        "it was live"
+    );
+    assert_eq!(
+        *closed.lock().unwrap(),
+        [(id, CloseReason::Dismissed)],
+        "a close is told once, with its reason"
+    );
+    assert!(
+        !notifications.closed(id, CloseReason::Closed),
+        "a notification that is gone is told to nobody again"
+    );
+    assert_eq!(closed.lock().unwrap().len(), 1);
+}

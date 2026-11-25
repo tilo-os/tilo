@@ -6,7 +6,7 @@
 //! connects it, names the app it is for, and hands the app its end as the descriptor
 //! [`fd_env`] names; [`crate::service_fd`] is the app's side of that.
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use wire_frame::Framing;
 
@@ -20,6 +20,9 @@ pub const CLIPBOARD: &str = "clipboard";
 pub const MODEL_GATEWAY: &str = "model-gateway";
 /// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING: &str = "messaging";
+/// Notifications, served by the session's notifications daemon: an app shows, replaces, withdraws
+/// and schedules them here, and what the person does with one comes back on the same connection.
+pub const NOTIFY: &str = "notify";
 
 /// The version of the chooser handshake.
 const CHOOSER_PROTOCOL: u16 = 1;
@@ -78,4 +81,34 @@ pub fn write_app_id(stream: &mut impl Write, app_id: &str) -> std::io::Result<()
     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     APP_ID_FRAMING.write(stream, &bytes)?;
     stream.flush()
+}
+
+/// The app a connection to a service that answers each app by its id is for, as the launcher named
+/// it ([`write_app_id`]).
+///
+/// # Errors
+/// The handshake could not be read, or names no app.
+pub fn read_app_id(stream: &mut impl Read) -> std::io::Result<String> {
+    let frame = APP_ID_FRAMING
+        .read(stream)
+        .map_err(std::io::Error::from)?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the connection ended before it named its app",
+            )
+        })?;
+    let handshake: serde_json::Value = serde_json::from_slice(&frame)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    handshake
+        .get("app_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|app_id| !app_id.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the connection names no app",
+            )
+        })
 }

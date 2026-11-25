@@ -667,6 +667,12 @@ impl SessionNotifications {
         self.desktop.clone()
     }
 
+    /// The notifications daemon these arrive in: what an app's own connection shows into, so a
+    /// notification it sent is a banner and a row like the desktop's own notices.
+    pub(crate) fn daemon(&self) -> Notifications {
+        self.daemon.clone()
+    }
+
     /// Keep this device's notifications in the record of the person's devices `resources` reads
     /// and writes from now on, while their `continuity` lets them continue, and show what their
     /// other devices keep there: each move of the record wakes the session's pass with `wake`.

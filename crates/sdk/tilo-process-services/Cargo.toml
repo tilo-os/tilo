@@ -37,7 +37,7 @@ portal = ["native", "dep:ashpd"]
 # The desktop's own chooser, opener and wallpaper portals, for a runner hosting an app on a
 # foreign desktop. A Tilo app process reaches the session's chooser and opener over their
 # sockets and never enables this.
-host-portals = ["tilo-dialogs/portal-client"]
+host-portals = ["tilo-dialogs/portal-client", "tilo-notify/host-portals"]
 # The desktop's NetworkMonitor portal, for a runner hosting an app on a foreign desktop. An app
 # process inside Tilo takes the network's state over its window's shell-ui connection.
 system-status = ["tilo-net/system-status"]

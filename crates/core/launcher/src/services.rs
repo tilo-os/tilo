@@ -36,7 +36,7 @@ pub const SHELL_UI_SERVICE: &str = "shell-ui";
 pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 pub use runtime_portal::session_services::{
     CHOOSER as CHOOSER_SERVICE, CLIPBOARD as CLIPBOARD_SERVICE, MESSAGING as MESSAGING_SERVICE,
-    MODEL_GATEWAY as MODEL_GATEWAY_SERVICE, chooser_handshake,
+    MODEL_GATEWAY as MODEL_GATEWAY_SERVICE, NOTIFY as NOTIFY_SERVICE, chooser_handshake,
 };
 pub const COMPAT_SERVICE: &str = "compat";
 /// The system interface: the image-owned grant through which the device's control panel reaches the
@@ -72,6 +72,8 @@ const IDENTITY_CHILD_FD: i32 = 31;
 const CHOOSER_CHILD_FD: i32 = 32;
 /// Slot of the automatic clipboard service.
 const CLIPBOARD_CHILD_FD: i32 = 38;
+/// Slot of the automatic notification service.
+const NOTIFY_CHILD_FD: i32 = 39;
 /// Where the shell-UI connection every window gets lands in the sandbox.
 const SHELL_UI_CHILD_FD: i32 = 35;
 /// Slot of the automatic render broker connection (`tilo_render_protocol::broker`).
@@ -88,6 +90,7 @@ pub const HANDED_SERVICES: &[&str] = &[
     SHELL_UI_SERVICE,
     CHOOSER_SERVICE,
     CLIPBOARD_SERVICE,
+    NOTIFY_SERVICE,
     COMPAT_SERVICE,
     SYSTEM_SERVICE,
     MODEL_GATEWAY_SERVICE,
@@ -115,6 +118,7 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
     CLIPBOARD_CHILD_FD,
+    NOTIFY_CHILD_FD,
     SHELL_UI_CHILD_FD,
     RENDER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
@@ -434,6 +438,52 @@ fn clipboard_bind(stream: Stream) -> ResolvedService {
     }
 }
 
+/// Connect the session's notification service on an app's behalf and name the app before the
+/// sandboxed app can write to it: everything it shows is attributed to that app, and what the
+/// person does with a notification comes back to it.
+///
+/// Only a launch that opens a window is handed one, as only a graphical app reaches the
+/// notification portal today: notifications are how an app calls the person, and an app with no
+/// window has none to call them to. A launch without services, or a session that serves none,
+/// hands none, and the app's notifications are refused.
+///
+/// # Errors
+/// The socket could not be reached, or the handshake could not be written.
+pub fn resolve_notify_bind(
+    app_id: &str,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_notify_bind_at(&socket_for(NOTIFY_SERVICE), app_id, no_services)
+}
+
+fn resolve_notify_bind_at(
+    path: &Path,
+    app_id: &str,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    if no_services || !path.exists() {
+        return Ok(None);
+    }
+    let mut stream = match tilo_files::native::socket::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "notification service refused connection");
+            return Ok(None);
+        }
+    };
+    runtime_portal::session_services::write_app_id(&mut stream, app_id).map_err(|source| {
+        ServiceError::OpenFailed {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(Some(ResolvedService {
+        name: NOTIFY_SERVICE.to_string(),
+        host: descriptor_of(stream),
+        child_fd: NOTIFY_CHILD_FD,
+    }))
+}
+
 /// Connect the session's render broker on the app's behalf and name the app and its workspace before
 /// the sandboxed app can write to it: the broker picks the render service that draws the app from this,
 /// never from the app (`tilo_render_protocol::broker`).
@@ -661,7 +711,7 @@ fn authenticate_service(
         };
     }
 
-    if name == MODEL_GATEWAY_SERVICE || name == MESSAGING_SERVICE {
+    if name == MODEL_GATEWAY_SERVICE || name == MESSAGING_SERVICE || name == NOTIFY_SERVICE {
         let Some(launch) = context else {
             let error = ServiceError::OpenFailed {
                 path: path.to_path_buf(),
@@ -1385,6 +1435,41 @@ mod tests {
                     "--no-services refuses the clipboard"
                 );
                 drop(listener);
+            }
+            {
+                let dir = tempfile::tempdir().expect("socket dir");
+                let path = dir.path().join("notify.sock");
+                assert!(
+                    resolve_notify_bind_at(&path, "so.tilo.mail", false)
+                        .expect("an absent notification service gives no connection")
+                        .is_none(),
+                    "an absent notification service degrades"
+                );
+                let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+                let reader = std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().expect("accept");
+                    runtime_portal::session_services::read_app_id(&mut stream).expect("handshake")
+                });
+                let bind = resolve_notify_bind_at(&path, "so.tilo.mail", false)
+                    .expect("resolve")
+                    .expect("notification bind");
+                assert_eq!(bind.name, NOTIFY_SERVICE);
+                assert_eq!(bind.child_fd, NOTIFY_CHILD_FD);
+                assert_eq!(
+                    crate::sandbox::svc_env_var(&bind.name),
+                    "TILO_SVC_NOTIFY_FD"
+                );
+                assert_eq!(
+                    reader.join().expect("reader"),
+                    "so.tilo.mail",
+                    "the session learns which app the connection is for"
+                );
+                assert!(
+                    resolve_notify_bind_at(&path, "so.tilo.mail", true)
+                        .expect("no services")
+                        .is_none(),
+                    "--no-services hands no notification service"
+                );
             }
             {
                 // No Tilo session serves the clipboard here: the launcher serves the same wire
