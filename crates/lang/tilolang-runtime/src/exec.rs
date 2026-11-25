@@ -250,6 +250,31 @@ impl Core {
         want == r.target.ty || crate::foreign::foreign_type(&r.target.ty).as_ref() == Some(key)
     }
 
+    /// The value a parameter of type `ty` holds when `v` is given for it: a handle-represented
+    /// value of an option's own type given without its box is that option's `some`, as a caller
+    /// outside the language names the thing it passes (a resource reference for
+    /// `Option<Project>`) where the code reads an option. A record value is no such thing: an
+    /// action handed one reads it and cannot change it, and a copy inside an option says
+    /// nothing of that, so it is still refused. Anything else is the value as it is, and
+    /// [`Self::check_param`] says when it does not fit.
+    fn param_value(&self, ty: &Ty, v: &Value, app: &str) -> Result<Value, String> {
+        if let Ty::Option(inner) = ty
+            && inner.abi_repr() == Some(Repr::Handle)
+            && !matches!(v, Value::Opt(_) | Value::Rec(_))
+        {
+            self.check_param(inner, v, app).map_err(|_| {
+                format!(
+                    "a {} does not fit a parameter of type {}",
+                    v.kind_name(),
+                    ty.display(app)
+                )
+            })?;
+            return Ok(Value::some(v.clone()));
+        }
+        self.check_param(ty, v, app)?;
+        Ok(v.clone())
+    }
+
     /// Check a handle-represented argument before allocating it in the call frame.
     /// Called only from the `Repr::Handle` arm of [`Self::marshal`].
     fn check_param(&self, ty: &Ty, v: &Value, app: &str) -> Result<(), String> {
@@ -370,10 +395,11 @@ impl Core {
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
                     Some(Repr::Handle) => {
-                        self.check_param(&ty, v, &pkg.meta.app)
+                        let held = self
+                            .param_value(&ty, v, &pkg.meta.app)
                             .map_err(|e| format!("argument `{}`: {e}", p.name))?;
-                        let handle = self.frames.borrow_mut().alloc(v.clone())?;
-                        if into_action && matches!(v, Value::Rec(_)) {
+                        let handle = self.frames.borrow_mut().alloc(held.clone())?;
+                        if into_action && matches!(held, Value::Rec(_)) {
                             self.frames.borrow_mut().hand(handle)?;
                         }
                         Ok(Wasm::I32(handle))
