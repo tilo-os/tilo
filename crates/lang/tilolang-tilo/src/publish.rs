@@ -959,7 +959,7 @@ pub fn publish_resource(
     // as and the id it keeps. A host that approves work on one resource, and a caller that
     // names it from another device, bind to exactly it by this.
     resource.semantic_identity =
-        tilo_actions::ResourceSemanticIdentity::new(resource.kind.clone(), resource.id.to_string());
+        tilo_actions::ResourceSemanticIdentity::new(resource.kind.clone(), resource.id.as_str());
     resource
 }
 
