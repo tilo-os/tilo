@@ -1840,7 +1840,7 @@ tilo_test_env::scenario! {
     // A node's margins are its parent's (a layout puts its gaps there), and a count stands
     // inside the button's face: a button with a count leaves its parent's margins as they are,
     // and a second layout pass finds nothing to change, so the layout settles. The count itself
-    // never leaves the face downward, so the bar's top edge cannot cut it; across it overhangs.
+    // never leaves the face on any side, so no edge that cuts the control can cut it.
     {
         let theme = Theme::light();
         let mut text = TextRenderer::new();
@@ -1888,17 +1888,37 @@ tilo_test_env::scenario! {
         let icon = button.metrics.icon.min(button.rect.height());
         assert!(
             (badge.center().x - (button.rect.center().x + icon / 2.0)).abs() < 0.5,
-            "across, on the icon's corner even past the face's edge: {badge:?} in {:?}",
+            "across, on the icon's corner where the face holds it: {badge:?} in {:?}",
             button.rect
         );
         assert_eq!(
             Widget::paint_bounds(&button),
             button.rect.union(badge),
-            "a count past the face is painted, not culled"
+            "the count is painted, not culled"
+        );
+        let held = |badge: Rect, face: Rect| {
+            badge.x0 >= face.x0
+                && badge.x1 <= face.x1
+                && badge.y0 >= face.y0
+                && badge.y1 <= face.y1
+        };
+        assert!(
+            held(badge, button.rect),
+            "inside the face on every side: {badge:?} in {:?}",
+            button.rect
+        );
+        // A face no wider than its icon cannot hold the count on the corner's outer half, so
+        // the count gives up the corner rather than leave the face.
+        button.apply_layout_external(Rect::new(100.0, 0.0, 116.0, 28.0));
+        let badge = button.count_rect().expect("a count where there is unread");
+        assert!(
+            badge.center().x < button.rect.center().x + icon / 2.0,
+            "past the corner's outer half, the face holds the count back: {badge:?} in {:?}",
+            button.rect
         );
         assert!(
-            badge.y0 >= button.rect.y0 && badge.y1 <= button.rect.y1,
-            "inside the face down: {badge:?} in {:?}",
+            held(badge, button.rect),
+            "inside a face no wider than its icon: {badge:?} in {:?}",
             button.rect
         );
     }

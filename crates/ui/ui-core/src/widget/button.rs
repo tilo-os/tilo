@@ -505,11 +505,13 @@ impl Button {
             self.rect.center().y - icon / 2.0,
         );
         let count = Rect::from_center_size(corner, self.count_size);
-        // Across, the count overhangs the face's corner as far as it must to sit on the icon's
-        // corner rather than over the icon: a face barely wider than its icon (a bar's bell)
-        // would otherwise push it back over the glyph. Down, it stays inside the face, so the
-        // edge of a bar the face fills never cuts it.
-        let left = count.x0.max(self.rect.x0);
+        // The face is what paints and presses the control, so the count stands on the icon's
+        // corner only as far as that leaves it inside the face, on every side: a count that
+        // hung past the face's edge would be cut by whatever clips the control.
+        let left = count.x0.clamp(
+            self.rect.x0,
+            (self.rect.x1 - count.width()).max(self.rect.x0),
+        );
         let top = count.y0.clamp(
             self.rect.y0,
             (self.rect.y1 - count.height()).max(self.rect.y0),
