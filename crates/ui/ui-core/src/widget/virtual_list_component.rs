@@ -30,7 +30,8 @@ use crate::widget::{
     MenuEntry, MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
-use super::{ListModel, ListModelChange, TreeMarks, VirtualList};
+use super::{ListModel, TreeMarks, VirtualList};
+use crate::collection_transition::ListModelChange;
 use crate::widget::ChangeMarkProps;
 
 #[path = "virtual_list_facts.rs"]

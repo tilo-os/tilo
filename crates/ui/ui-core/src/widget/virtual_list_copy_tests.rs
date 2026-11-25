@@ -18,6 +18,7 @@ use vello::Scene;
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
+use crate::collection_transition::ListModelChange;
 use crate::offscreen::OffscreenRenderer;
 use std::cell::RefCell;
 use std::rc::Rc;

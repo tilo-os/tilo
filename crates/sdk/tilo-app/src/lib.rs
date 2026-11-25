@@ -305,6 +305,7 @@ pub mod prelude {
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::arriving::{Arrival, Arriving};
+    pub use ui_core::collection_transition::ListModelChange;
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::resource::{
         DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, ResourceSaveStatus, ResourceType,
@@ -319,7 +320,7 @@ pub mod prelude {
     };
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
-    pub use ui_core::widget::virtual_list::{ListModel, ListModelChange, VirtualList};
+    pub use ui_core::widget::virtual_list::{ListModel, VirtualList};
     pub use ui_core::widget::{
         ActionEmitter, AudiencePresentationProvider, Banner, Button, Card, Checkbox, Collaborative,
         Column, CompleteContentProvider, Container, ContentKind, Continuable, ControlBindingKind,

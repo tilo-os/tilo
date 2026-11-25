@@ -679,24 +679,9 @@ choice!(crate::tokens::TextRole, "TextRole", {
     Code => "code",
 });
 
-choice!(crate::widget::ButtonRole, "ButtonRole", {
-    Primary => "primary",
-    Secondary => "secondary",
-    Destructive => "destructive",
-    Plain => "plain",
-    Key => "key",
-    Bar => "bar",
-});
-
 choice!(crate::a11y::Politeness, "Politeness", {
     Polite => "polite",
     Assertive => "assertive",
-});
-
-choice!(crate::widget::ControlSize, "ControlSize", {
-    Small => "small",
-    Regular => "regular",
-    Large => "large",
 });
 
 /// What happens when one of a component's events happens. Data, never a closure: an action
@@ -854,7 +839,7 @@ pub struct Bound<T> {
     pub name: String,
     /// Where the bound value lives, for presence: members at the same path see each other's
     /// carets and selections in it.
-    pub path: Vec<crate::presence::PathSegment>,
+    pub path: Vec<tilo_action_policy::presence::PathSegment>,
     /// What the value edits, as the identity anyone looks it up by: the kind of record, the one
     /// record and the declared id of the field. `None` for a view's own state, and for a host whose
     /// values answer to nothing but their names.
@@ -1188,7 +1173,7 @@ pub trait RowSource {
     fn key_presenting(&self, id: &str) -> Option<String>;
 
     /// What changed since it was asked last, each change against the rows the one before it left.
-    fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>>;
+    fn take_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>>;
 
     /// Whether changes are waiting.
     fn has_changes(&self) -> bool;
@@ -1228,34 +1213,6 @@ pub trait PartViews {
     fn move_view(&mut self, from: usize, to: usize);
 
     fn replace(&mut self, index: usize, view: Element);
-}
-
-impl<L: crate::widget::arrange::Layout + 'static> PartViews
-    for crate::widget::arrange::Arranged<L>
-{
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
-        self.child_mut(index)
-    }
-
-    fn insert(&mut self, index: usize, view: Element) {
-        Self::insert(self, index, crate::widget::arrange::Part::new(view));
-    }
-
-    fn remove(&mut self, index: usize) {
-        let _ = Self::remove(self, index);
-    }
-
-    fn move_view(&mut self, from: usize, to: usize) {
-        self.move_part(from, to);
-    }
-
-    fn replace(&mut self, index: usize, view: Element) {
-        let _ = Self::replace(self, index, view);
-    }
 }
 
 /// A widget made from props.

@@ -18,6 +18,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::arriving::Arrival;
+use crate::collection_transition::ListModelChange;
 
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::selection::KeySelection;
@@ -107,28 +108,6 @@ fn px(value: f64) -> f32 {
     )]
     let value = value as f32;
     value
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ListModelChange<K> {
-    RowsInserted {
-        index: usize,
-        count: usize,
-    },
-    RowsRemoved {
-        index: usize,
-        count: usize,
-    },
-    /// `to` is the first destination index in the post-move order.
-    RowsMoved {
-        from: usize,
-        to: usize,
-        count: usize,
-    },
-    RowsChanged {
-        keys: Vec<K>,
-    },
-    Reset,
 }
 
 /// A collection a [`VirtualList`] reads rows from. Keys are unique and stay stable

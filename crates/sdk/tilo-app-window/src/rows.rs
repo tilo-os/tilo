@@ -12,8 +12,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::RowChange;
+use ui::collection_transition::ListModelChange;
 use ui::component::{RowSource, Source};
-use ui::widget::virtual_list::ListModelChange;
 
 use crate::adapter::{NodeSource, description_of};
 use crate::reconcile::Reconciler;

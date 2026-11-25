@@ -5,7 +5,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{ListKey, VirtualRows};
-use super::{ListModelChange, MountedRow, MountedRowState, RowBuild, RowSelection, groups};
+use super::{MountedRow, MountedRowState, RowBuild, RowSelection, groups};
+use crate::collection_transition::ListModelChange;
 use crate::virtual_viewport::SparseAnchor;
 
 impl VirtualRows {

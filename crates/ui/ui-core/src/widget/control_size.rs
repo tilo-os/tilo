@@ -20,6 +20,12 @@ pub enum ControlSize {
     Large,
 }
 
+crate::component::choice!(ControlSize, "ControlSize", {
+    Small => "small",
+    Regular => "regular",
+    Large => "large",
+});
+
 impl ControlSize {
     #[must_use]
     pub const fn text_role(self) -> TextRole {

@@ -1214,7 +1214,7 @@ impl ListModel for TreeRows {
         crate::arriving::Arrival::Ready(())
     }
 
-    fn poll_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
+    fn poll_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>> {
         let Rows::Rendered(remote) = &self.rows else {
             return Vec::new();
         };
@@ -1224,10 +1224,10 @@ impl ListModel for TreeRows {
         let changes = rows.take_changes();
         for change in &changes {
             match change {
-                crate::widget::virtual_list::ListModelChange::RowsChanged { keys } => {
+                crate::collection_transition::ListModelChange::RowsChanged { keys } => {
                     remote.forget(keys);
                 }
-                crate::widget::virtual_list::ListModelChange::Reset => remote.clear(),
+                crate::collection_transition::ListModelChange::Reset => remote.clear(),
                 _ => {}
             }
         }
@@ -2543,11 +2543,11 @@ mod tests {
             self.at(id).map(|_| id.to_owned())
         }
 
-        fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
+        fn take_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>> {
             if self.changed.is_empty() {
                 return Vec::new();
             }
-            vec![crate::widget::virtual_list::ListModelChange::RowsChanged {
+            vec![crate::collection_transition::ListModelChange::RowsChanged {
                 keys: std::mem::take(&mut self.changed)
                     .into_iter()
                     .map(|row| row.key)

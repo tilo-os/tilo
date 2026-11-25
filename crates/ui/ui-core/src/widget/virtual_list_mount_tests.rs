@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use super::tests::{HugeList, ProbeRow, lay_out};
 use super::*;
+use crate::collection_transition::ListModelChange;
 
 tilo_test_env::scenario! {
     fn a_list_mounts_only_what_its_window_needs;

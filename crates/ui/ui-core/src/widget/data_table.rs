@@ -519,8 +519,8 @@ impl<Row: ?Sized> ColumnDef<Row> {
 pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 
 /// One model notification batch consumed after the backing data has changed: a list's change
-/// ([`crate::widget::ListModelChange`]) over the table's row keys.
-pub type TableModelChange = crate::widget::virtual_list::ListModelChange<u64>;
+/// ([`crate::collection_transition::ListModelChange`]) over the table's row keys.
+pub type TableModelChange = crate::collection_transition::ListModelChange<u64>;
 
 /// Unopinionated backing model for very large or asynchronously populated tables.
 pub trait TableModel {

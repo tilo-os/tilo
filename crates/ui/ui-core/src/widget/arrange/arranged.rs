@@ -1272,3 +1272,29 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         self.rect
     }
 }
+
+impl<L: Layout + 'static> crate::component::PartViews for Arranged<L> {
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        self.child_mut(index)
+    }
+
+    fn insert(&mut self, index: usize, view: Element) {
+        Self::insert(self, index, Part::new(view));
+    }
+
+    fn remove(&mut self, index: usize) {
+        let _ = Self::remove(self, index);
+    }
+
+    fn move_view(&mut self, from: usize, to: usize) {
+        self.move_part(from, to);
+    }
+
+    fn replace(&mut self, index: usize, view: Element) {
+        let _ = Self::replace(self, index, view);
+    }
+}

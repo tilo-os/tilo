@@ -863,6 +863,15 @@ impl ButtonRole {
     }
 }
 
+crate::component::choice!(ButtonRole, "ButtonRole", {
+    Primary => "primary",
+    Secondary => "secondary",
+    Destructive => "destructive",
+    Plain => "plain",
+    Key => "key",
+    Bar => "bar",
+});
+
 /// Glyphs authored as one closed outline, so a toggle that is on draws them
 /// filled (a starred item, a pinned one).
 fn fills_when_on(icon: crate::icons::Icon) -> bool {

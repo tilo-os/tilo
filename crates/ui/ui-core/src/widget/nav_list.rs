@@ -1239,7 +1239,7 @@ impl NavList {
                 .collect()
         };
         self.list.update_model_changes(
-            &[crate::widget::virtual_list::ListModelChange::RowsChanged { keys: changed }],
+            &[crate::collection_transition::ListModelChange::RowsChanged { keys: changed }],
             move |current| *current = model,
         );
         self.refresh_shared();

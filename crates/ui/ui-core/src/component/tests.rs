@@ -736,11 +736,11 @@ impl RowSource for Rendered {
         self.items.iter().any(|item| item.key == key)
     }
 
-    fn take_changes(&mut self) -> Vec<crate::widget::virtual_list::ListModelChange<String>> {
+    fn take_changes(&mut self) -> Vec<crate::collection_transition::ListModelChange<String>> {
         if self.changed.is_empty() {
             return Vec::new();
         }
-        vec![crate::widget::virtual_list::ListModelChange::RowsChanged {
+        vec![crate::collection_transition::ListModelChange::RowsChanged {
             keys: std::mem::take(&mut self.changed),
         }]
     }

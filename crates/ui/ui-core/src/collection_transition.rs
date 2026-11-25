@@ -2,10 +2,36 @@
 //! rows: survivors move from where they stood, arrivals fade in, and (for an owner that paints them)
 //! the rows the change took away fade out where they stood. A row's place is a top (`f64`, a list's
 //! rows) or a point (`Vec2`, the parts of a row or a grid).
+//!
+//! [`ListModelChange`] is that structural change, as a row model reports it to the widget showing
+//! it.
 
 use crate::motion::Animatable;
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
+
+/// A structural change to a row model, against the rows the change before it left.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListModelChange<K> {
+    RowsInserted {
+        index: usize,
+        count: usize,
+    },
+    RowsRemoved {
+        index: usize,
+        count: usize,
+    },
+    /// `to` is the first destination index in the post-move order.
+    RowsMoved {
+        from: usize,
+        to: usize,
+        count: usize,
+    },
+    RowsChanged {
+        keys: Vec<K>,
+    },
+    Reset,
+}
 
 fn zero<P: Animatable>() -> P {
     P::from_channels([0.0; 4])

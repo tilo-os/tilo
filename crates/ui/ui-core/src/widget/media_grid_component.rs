@@ -6,6 +6,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use crate::arriving::Arrival;
+use crate::collection_transition::ListModelChange;
 use crate::component::{
     Accepts, Component, Described, Event, PartType, ResourceId, SharedRows, Source,
 };
@@ -14,7 +15,7 @@ use crate::pictures::Pictures;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Fit, Part, Row, Sizing};
 use crate::widget::media_card::{CardSlot, MediaSize};
-use crate::widget::virtual_list::{ListModel, ListModelChange};
+use crate::widget::virtual_list::ListModel;
 use crate::widget::{Element, MediaAspect, MediaCard, MediaGrid, MediaSource, VirtualList};
 
 // The `MediaAspect` choice is declared beside the enum, in `media_card.rs`.

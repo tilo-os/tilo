@@ -11,8 +11,9 @@ use std::rc::Rc;
 
 use vello::kurbo::{Point, Rect};
 
-use super::{ListModel, ListModelChange, RowBuild, TreeMarks, TreeRow, VecListModel, VirtualRows};
+use super::{ListModel, RowBuild, TreeMarks, TreeRow, VecListModel, VirtualRows};
 use crate::arriving::Arrival;
+use crate::collection_transition::ListModelChange;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
 use crate::widget::{Element, MenuItem, RowGroup, Widget};

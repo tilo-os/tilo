@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use super::tests::{ProbeRow, inside, lay_out, named, within};
 use super::*;
+use crate::collection_transition::ListModelChange;
 
 use crate::testing::Dispatch;
 

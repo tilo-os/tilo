@@ -37,7 +37,8 @@ use std::rc::Rc;
 
 use tilo_resource::Resource;
 use ui_core::arriving::{Arrival, ArrivalClock, Source};
-use ui_core::widget::virtual_list::{ListModel, ListModelChange};
+use ui_core::collection_transition::ListModelChange;
+use ui_core::widget::virtual_list::ListModel;
 
 use super::chain::{Chain, Chained, PartArrival};
 

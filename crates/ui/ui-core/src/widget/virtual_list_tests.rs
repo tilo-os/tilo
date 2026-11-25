@@ -1,4 +1,5 @@
 use super::*;
+use crate::collection_transition::ListModelChange;
 use crate::time::Duration;
 use automerge::AutoCommit;
 use std::cell::{Cell, RefCell};
