@@ -2158,9 +2158,14 @@ impl AppBrokerState {
         // there, and neither runs on the broker's local set.
         runtime.spawn(async move {
             // A press waits for the workspace the shell is still joining, as an app's open does.
+            // A workspace's own `start` of one of its apps waits the same way: until its
+            // membership is published here, no app of it is admitted.
             let mut destination = state.admit_launchable(&caller, &request);
+            let launched_in = application_provider(&request.target.provider)
+                .map(|(workspace, _)| workspace)
+                .or_else(|| provider_workspace(&request.target.provider));
             if matches!(destination, Err(ActionCallError::UnknownAction))
-                && let Some((workspace, _)) = application_provider(&request.target.provider)
+                && let Some(workspace) = launched_in
                 && caller.workspace() == Some(workspace)
             {
                 destination = match state
