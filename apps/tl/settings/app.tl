@@ -317,7 +317,7 @@ view settings_window(s: Settings) {
                             shell_pane()
                         } else if s.pane == "users" {
                             read_pane(of: device.users, what: what) {
-                                users_pane()
+                                users_pane(s)
                             }
                         } else if s.pane == "permissions" {
                             permissions_pane()
