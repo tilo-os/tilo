@@ -4168,21 +4168,6 @@ view download_standing(p: Page, d: Download, now: DownloadJob) {
             ui.Button("Retry", icon: .refresh, role: .plain) {
                 on press: retry_download(p, d)
             }
-            if j.state == .done and saved.path != "" {
-                ui.Button("Open", icon: .external_link, role: .plain) {
-                    on press: open_download(saved.name, saved.path)
-                }
-                ui.Button("Show in Files", icon: .folder, role: .plain) {
-                    on press: reveal_download(saved.path)
-                }
-            }
-        }
-    } else {
-        stack(padding: .related) {
-            ui.ListRow(title: d.name, secondary: std.say("Not on this device"), mark: .download)
-            ui.Button("Retry", icon: .refresh, role: .plain) {
-                on press: retry_download(d)
-            }
         }
         if now.state == "done" and now.path != "" {
             ui.Button("Open", icon: .external_link, role: .plain) {

@@ -755,7 +755,7 @@ fn accessibility_text(acceptance: Option<&AtspiAcceptance>) -> String {
 /// the launcher reads of the app `meta`, signed by `publisher`.
 #[must_use]
 pub fn plain_manifest(meta: &PackageMeta, options: &BuildOptions, publisher: &str) -> String {
-    manifest_text(meta, None, None, &[], options, publisher)
+    manifest_text(meta, None, None, &[], options, Some(publisher))
 }
 
 /// The manifest of the app `meta` is, signed by `publisher` (hex Ed25519 key), with the name the

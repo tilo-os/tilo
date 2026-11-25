@@ -496,7 +496,7 @@ action made(c: Clips, j: host.Job) {
 
 /// Make a clip: the app's engine makes it in the app's own process.
 action clip(c: Clips) {
-    match engine.start("clip", "{}", done: j -> made(c, j)) {
+    match engine.start("clip", "\{\}", done: j -> made(c, j)) {
         .ok(job) => {
             c.job = job
         }
