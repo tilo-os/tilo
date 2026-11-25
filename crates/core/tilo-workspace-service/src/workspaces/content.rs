@@ -582,13 +582,42 @@ impl Workspaces {
     /// surface the host asked for, into the content store the host decides
     /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
-        let message = match NeighbourMsg::decode(frame) {
-            Ok(message) => message,
+        match NeighbourMsg::decode(frame) {
+            Ok(message) => self.content_message_for_host(workspace, from, message),
             Err(error) => {
                 tracing::warn!(workspace, from = %hex::encode(from), %error, "a content frame from a member did not decode");
-                return;
             }
-        };
+        }
+    }
+
+    /// One link's intake of what members answer this host's asks with in
+    /// `workspace` ([`Self::content_for_host`]): one thread takes the answers
+    /// in, in the order the link carried them, and the link's reader waits
+    /// while that thread is two answers behind. A fast link is held back by
+    /// the link's own flow control, and never by a crowd of threads each
+    /// waiting on the keeper with one piece.
+    pub(super) fn content_intake(
+        &self,
+        workspace: &str,
+    ) -> tokio::sync::mpsc::Sender<([u8; 32], NeighbourMsg)> {
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel(2 * neighbour_wire::content::PIECES_PER_ANSWER);
+        let workspaces = self.downgrade();
+        let workspace = workspace.to_owned();
+        tokio::task::spawn_blocking(move || {
+            while let Some((from, message)) = receiver.blocking_recv() {
+                // The host is gone: so is what it asked for.
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                workspaces.content_message_for_host(&workspace, from, message);
+            }
+        });
+        sender
+    }
+
+    /// [`Self::content_for_host`] for a message already decoded.
+    fn content_message_for_host(&self, workspace: &str, from: [u8; 32], message: NeighbourMsg) {
         let lacks = matches!(message, NeighbourMsg::DocumentContentLacks { .. });
         self.keep_content_for_host(workspace, from, message);
         // Told once what it brings is kept.

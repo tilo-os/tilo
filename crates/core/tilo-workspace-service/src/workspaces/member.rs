@@ -2210,6 +2210,7 @@ impl Workspaces {
     fn follow_member(&self, workspace: &str, link: &DirectSync) -> tokio::task::AbortHandle {
         let name = workspace.to_owned();
         let workspaces = self.downgrade();
+        let intake = self.content_intake(&name);
         let mut reader = link.reader();
         let link = link.clone();
         tokio::spawn(async move {
@@ -2264,12 +2265,10 @@ impl Workspaces {
                     workspaces.wrote(&name, app_id, document_id);
                 }
                 if answering {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    let body = body.clone();
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_for_host(&name, author, &body);
-                    });
+                    // The intake's thread is gone only with the host.
+                    if intake.send((frame.author, frame.message)).await.is_err() {
+                        return;
+                    }
                     continue;
                 }
                 if !asking {

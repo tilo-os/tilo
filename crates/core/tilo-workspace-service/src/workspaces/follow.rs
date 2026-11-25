@@ -699,6 +699,7 @@ impl Workspaces {
         let name = workspace.workspace().to_owned();
         let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = link.clone();
+        let intake = self.content_intake(&name);
         // Subscribed, where the replica stands, before the task runs:
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
@@ -741,12 +742,10 @@ impl Workspaces {
                 // its workspace's files reads the pieces here
                 // ([`Self::content_for_host`]).
                 if answering {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    let body = body.clone();
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_for_host(&name, author, &body);
-                    });
+                    // The intake's thread is gone only with the host.
+                    if intake.send((frame.author, frame.message)).await.is_err() {
+                        return;
+                    }
                     continue;
                 }
                 if !asking {
