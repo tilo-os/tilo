@@ -1603,6 +1603,11 @@ mod component_adapter {
                 .target
                 .is_none_or(|target| target.same_component(&binding))
             {
+                if request.save_progress.is_some() && request.target.is_some() {
+                    request.save_progress = Some(self.component.project_resource_save_status());
+                    request.found = true;
+                    return Ok(());
+                }
                 let target = request.target.unwrap_or(&binding);
                 if let Some((invocation, accepted)) = self
                     .component

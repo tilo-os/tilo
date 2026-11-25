@@ -3282,6 +3282,9 @@ pub(crate) struct ComponentRequest<'a> {
     pub(crate) target: Option<&'a CallbackBinding>,
     pub(crate) found: bool,
     pub(crate) visit: &'a mut ComponentVisitor<'a>,
+    /// The component shows its record's save status in place of the visit
+    /// ([`service_owner_save_progress`]); `shown` says whether that changed what it shows.
+    pub(crate) save_progress: Option<bool>,
 }
 impl<'a> ComponentRequest<'a> {
     /// A visit of the component `target` names, or of every component.
@@ -3293,6 +3296,7 @@ impl<'a> ComponentRequest<'a> {
             target,
             found: false,
             visit,
+            save_progress: None,
         }
     }
 }
@@ -3353,51 +3357,25 @@ pub(crate) fn service_retained_owner_model(
 
 /// A record's save moved on and nothing else woke the owner
 /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner is told the save status
-/// alone.
-/// Show the save status this wake sampled to the owner, when it differs from
-/// `told` — the status that owner was last told. Returns the status the owner
-/// was told, or `None` when it already shows the sampled one: a save landing
-/// after every keystroke repeats the status the key's own frame already showed,
-/// and telling it again would draw a second frame for it. Each owner has its
-/// own last-told status: one owner's save says nothing of another's.
+/// alone, by the component that tells it in every frame, against what it last told it. A save
+/// landing after every keystroke repeats the status the key's own frame already showed, and
+/// telling it again would draw a second frame for it. Returns whether what the owner shows changed.
 pub(crate) fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,
-    told: Option<&crate::resource::ResourceSaveStatus>,
-) -> Result<Option<crate::resource::ResourceSaveStatus>, BoundDispatchError> {
+) -> Result<bool, BoundDispatchError> {
     let captured = work.binding();
     let _entry = captured.enter()?;
-    let mut result = None;
-    let mut visit = |current: &CallbackBinding,
-                     owner: &mut dyn crate::widget::AppWidget,
-                     _: &tilo_actions::ActionRegistry| {
-        if current.same_component(captured) {
-            result = Some(current.enter().and_then(|_entry| {
-                let handle = current.lifetime.clone();
-                let wake: crate::resource::ReadyWake =
-                    std::sync::Arc::new(move || handle.wake_save_progress());
-                let parts = current.chain_parts();
-                let status = current
-                    .sampled_save_status(&parts, &wake)
-                    .map_err(BoundDispatchError::Record)?;
-                if told == Some(&status) {
-                    return Ok(None);
-                }
-                // The owner shows something new only if its bar's notice or unsaved mark
-                // changed: a save that lands within the surface's stall window shows nothing,
-                // and presents nothing.
-                if owner.resource_save_status(status.clone()) {
-                    Ok(Some(status))
-                } else {
-                    Ok(None)
-                }
-            }));
-        }
-        None
-    };
+    let mut visit = |_: &CallbackBinding,
+                     _: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| None;
     let mut request = ComponentRequest::new(Some(captured), &mut visit);
+    request.save_progress = Some(false);
     visit_components(root, &mut request)?;
-    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+    if !request.found {
+        return Err(BoundDispatchError::ClosedLifetime);
+    }
+    Ok(request.save_progress == Some(true))
 }
 
 #[derive(Debug)]

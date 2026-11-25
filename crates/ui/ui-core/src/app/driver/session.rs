@@ -281,12 +281,11 @@ impl Driver {
 
 // ---- the models a worker woke ----
 
-/// The queue of owner models a worker woke for the components this tree hosts, and the save status
-/// each owner was last told: what an idle host services between frames.
+/// The queue of owner models a worker woke for the components this tree hosts: what an idle host
+/// services between frames.
 #[derive(Default)]
 pub(super) struct OwnerWakes {
     queue: Option<crate::owner_wake::OwnerWakeQueue>,
-    told: HashMap<uuid::Uuid, crate::resource::ResourceSaveStatus>,
 }
 
 impl Driver {
@@ -325,14 +324,10 @@ impl Driver {
         }
         if batch.all_save_progress_only() {
             while let Some(work) = batch.front() {
-                let owner = work.registration();
-                let told = self.wakes.told.get(&owner);
-                if let Some(status) = crate::bound_dispatch::service_owner_save_progress(
+                if crate::bound_dispatch::service_owner_save_progress(
                     self.app.root_widget.as_mut(),
                     work,
-                    told,
                 )? {
-                    self.wakes.told.insert(owner, status);
                     self.surface.redraw.set(true);
                 }
                 batch.complete_front();
