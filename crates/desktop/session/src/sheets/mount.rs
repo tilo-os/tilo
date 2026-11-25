@@ -224,26 +224,6 @@ fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
     who: (&str, &str),
     options: &Options,
 ) -> Option<S> {
-    mount_sheet_by(
-        compositor,
-        surfaces,
-        definition,
-        state,
-        who,
-        options,
-        std::convert::identity,
-    )
-}
-
-fn mount_sheet_by<S: tilo_sheets::SheetState + 'static>(
-    compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
-    definition: &'static ui::application::ApplicationDefinition,
-    state: S,
-    who: (&str, &str),
-    options: &Options,
-    role: impl FnOnce(Sheet<S>) -> Sheet<S>,
-) -> Option<S> {
     match Sheet::mount(
         definition,
         state,
@@ -252,7 +232,6 @@ fn mount_sheet_by<S: tilo_sheets::SheetState + 'static>(
         options.scale,
     ) {
         Ok(sheet) => {
-            let sheet = role(sheet);
             let state = sheet.state().clone();
             let sheet = sheet.layer();
             compositor.add_surface(sheet.clone());

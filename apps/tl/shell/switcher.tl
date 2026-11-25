@@ -34,7 +34,8 @@ view switcher() {
     let app_scope = device.overlays.switcher_scope == "app"
     let windows = if app_scope { all.filter(w -> w.app_key == front_app) } else { all }
     let count = windows.len()
-    let per_page = page_size(space.compact, space.width, space.height)
+    let compact = space.compact
+    let per_page = page_size(compact, space.width, space.height)
     let at = if let p = pick { walk_place(windows, p) } else { 1 }
     let from = if at > per_page / 2 { at - per_page / 2 } else { 1 }
     let shown = windows.filter(
@@ -67,7 +68,7 @@ view switcher() {
                         // A wall of windows: each card keeps the gap cards stand by.
                         row(gap: .sibling, align: .center, distribute: .center, wrap: true) {
                             for w in shown {
-                                window_card(w, walk_place(windows, w) - 1, space.compact)
+                                window_card(w, walk_place(windows, w) - 1, compact)
                             }
                         }
                         row(gap: .related, align: .center, distribute: .center, wrap: true) {

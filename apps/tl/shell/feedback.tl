@@ -144,6 +144,8 @@ action cancel_report(s: Shell) (icon: .x, label: "Cancel", group: "Feedback") {
 view report_picker() {
     let windows = report_windows()
     let keys = windows.map(w -> w.key)
+    // The picker's room, read here: each pin of the loop stands in a box its own size.
+    let compact = space.compact
     layers(fill) {
         ui.Map(
             name: "What the report is about",
@@ -167,7 +169,7 @@ view report_picker() {
                 ) {
                     ui.Card(item: w, title: w.title, fill(1.0)) {
                         stack(gap: .tight, fill) {
-                            window_face(w, space.compact)
+                            window_face(w, compact)
                             window_names(w)
                         }
                         on activate: pick_report_window(shell, w.key)

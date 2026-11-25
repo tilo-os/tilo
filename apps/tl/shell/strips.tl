@@ -96,12 +96,7 @@ fn style_title(v: Viewing) -> Text {
 /// bar says what a person is looking at; its items list every style by its own doc line. On a
 /// compact bar (`compact`, the bar's room) it is its icon.
 view style_menu(v: Viewing, compact: Bool) {
-    ui.MenuButton(
-        "Showing {style_title(v)}",
-        icon: .layout_grid,
-        role: .bar,
-        icon_only: compact,
-    ) {
+    ui.MenuButton("Showing {style_title(v)}", icon: .layout_grid, role: .bar, icon_only: compact) {
         for style in styles.installed.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {
