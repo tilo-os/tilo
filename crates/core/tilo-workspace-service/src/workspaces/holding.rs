@@ -606,7 +606,19 @@ impl Workspaces {
             return;
         }
         governed.holders.named |= names_this;
-        named.extend(governed.handed_by.clone());
+        let keeping: Vec<[u8; 32]> = named
+            .iter()
+            .map(|holder| holder.device_certificate.device_public_key)
+            .collect();
+        // The device that handed the workspace over is dialled beside the
+        // holders, never in place of one: a device keeping no store of it (the
+        // owner's computer adding a server) would otherwise be the one this
+        // holder dials, and the holders it outranks would never be linked.
+        let handed = governed
+            .handed_by
+            .clone()
+            .filter(|handed| !keeping.contains(&handed.device_certificate.device_public_key));
+        named.extend(handed.clone());
         let links = governed.holders.links.clone();
         governed.holders.sessions.retain(|device, _| {
             let kept = named
@@ -624,25 +636,22 @@ impl Workspaces {
                 links.clone(),
             ))));
         }
-        let workspace_id = governed.workspace_id();
         // The one holder this device dials: the greatest device key among the
-        // others, or none when it is its own.
-        let Some(dialled) = named
+        // others, or none when it is its own; and the device that handed it
+        // over, when that keeps none.
+        let greatest = keeping
             .iter()
-            .map(|holder| holder.device_certificate.device_public_key)
+            .copied()
             .filter(|device| *device != own)
             .max()
-        else {
-            return;
-        };
-        if named
-            .iter()
-            .map(|holder| holder.device_certificate.device_public_key)
-            .chain(std::iter::once(own))
-            .max()
-            != Some(own)
-            && !governed.holders.sessions.contains_key(&dialled)
+            .filter(|greatest| *greatest > own);
+        for dialled in greatest
+            .into_iter()
+            .chain(handed.map(|handed| handed.device_certificate.device_public_key))
         {
+            if dialled == own || governed.holders.sessions.contains_key(&dialled) {
+                continue;
+            }
             // The address the hand-over itself carried is fresher than the one
             // the device's naming in the governance keeps, and it is the device
             // that just answered here: dial it at that one.
@@ -655,21 +664,18 @@ impl Workspaces {
                     .iter()
                     .find(|holder| holder.device_certificate.device_public_key == dialled)
             }) else {
+                continue;
+            };
+            let Some(link) = self.inner.direct.link(governed.workspace_id()) else {
                 return;
             };
-            let Some(link) = self.inner.direct.link(workspace_id) else {
-                return;
-            };
-            let endpoint = host.endpoint.clone();
-            let addr = holder.endpoint_addr.clone();
-            let name = governed.workspace().to_owned();
             let dialing = tokio::spawn(dial_holder(
                 link,
-                endpoint,
-                addr,
+                host.endpoint.clone(),
+                holder.endpoint_addr.clone(),
                 dialled,
-                links,
-                name,
+                links.clone(),
+                governed.workspace().to_owned(),
                 Arc::downgrade(&self.inner),
             ));
             governed
