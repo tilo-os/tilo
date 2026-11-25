@@ -177,14 +177,28 @@ pub struct ConnectorCall {
     speak: mpsc::UnboundedSender<(String, Vec<u8>)>,
     calls: Option<watch::Receiver<CallsReport>>,
     audio: Option<broadcast::Receiver<OutsideAudio>>,
+    /// How the device joins and leaves the workspace's call as the app, and the call it is in
+    /// as the bridge now.
+    join: JoinCall,
+    joined: Option<String>,
+    /// The joins and leaves asked, in the order they were, for the task that makes them.
+    entering: mpsc::UnboundedSender<Option<CallPresence>>,
+    entries: Option<mpsc::UnboundedReceiver<Option<CallPresence>>>,
 }
 
 impl ConnectorCall {
     /// The bridge of the workspace `speaker` says this device's word in, taking part in its
     /// calls through the live session the device's daemon holds, and reaching the outside
-    /// service `service` through `lane`.
+    /// service `service` through `lane`. It joins the workspace's call through `join` while
+    /// there is someone on either side to carry, and leaves it when both are empty.
     #[must_use]
-    pub fn new(speaker: Arc<Speaker>, service: impl Into<String>, lane: Lane) -> Self {
+    pub fn new(
+        speaker: Arc<Speaker>,
+        service: impl Into<String>,
+        lane: Lane,
+        join: JoinCall,
+    ) -> Self {
+        let (entering, entries) = mpsc::unbounded_channel();
         let (heard, ear) = mpsc::unbounded_channel();
         speaker.session().tap(
             Track::Audio,
@@ -206,7 +220,17 @@ impl ConnectorCall {
             speak: lane.speak,
             calls: Some(lane.calls),
             audio: Some(lane.audio),
+            join,
+            joined: None,
+            entering,
+            entries: Some(entries),
         }
+    }
+
+    /// The device is in the workspace's call `channel` as this bridge already: the carry that
+    /// started it joined it.
+    pub fn joined(&mut self, channel: String) {
+        self.joined = Some(channel);
     }
 
     /// Carry `pair` from now on, or none: the host sets this as the app says
@@ -218,11 +242,17 @@ impl ConnectorCall {
     /// Carry the outside call for as long as this bridge runs; leaves both
     /// sides on the way out.
     pub async fn run(mut self) {
-        let (Some(mut calls), Some(mut audio), Some(mut ear)) =
-            (self.calls.take(), self.audio.take(), self.ear.take())
-        else {
+        let (Some(mut calls), Some(mut audio), Some(mut ear), Some(entries)) = (
+            self.calls.take(),
+            self.audio.take(),
+            self.ear.take(),
+            self.entries.take(),
+        ) else {
             return;
         };
+        // A join waits for the device's daemon, the call's keys included: it is made off the
+        // carrying loop, each in turn.
+        tokio::spawn(enter_calls(Arc::clone(&self.join), entries));
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -345,8 +375,24 @@ impl ConnectorCall {
         self.ask(Some(pair.outside.clone()), Some(status));
         // Nothing crosses until the worker is in the outside call.
         let joined = matches!(&report.link, CallLink::Joined { call } if *call == pair.outside);
+        self.enter(Some(pair.tilo.clone()));
         self.in_tilo = joined;
         self.say_own();
+    }
+
+    /// Be in the workspace's call `channel` as the bridge, or in none: asked of the device only
+    /// when it changes.
+    fn enter(&mut self, channel: Option<String>) {
+        if self.joined == channel {
+            return;
+        }
+        self.joined.clone_from(&channel);
+        // The task that makes the joins ends only with this bridge.
+        let _ = self.entering.send(channel.map(|channel| CallPresence {
+            channel,
+            name: String::new(),
+            bridge: Some(self.service.clone()),
+        }));
     }
 
     /// Say the people the bridge carries into the Tilo call, as members of it of their own,
@@ -414,6 +460,18 @@ impl ConnectorCall {
         self.heard_from.clear();
         self.say_own();
         self.ask(None, None);
+        self.enter(None);
+    }
+}
+
+/// Join or leave each call `entries` asks for, in turn, through `join`: each waits for the
+/// device's daemon on a thread of its own.
+async fn enter_calls(join: JoinCall, mut entries: mpsc::UnboundedReceiver<Option<CallPresence>>) {
+    while let Some(entry) = entries.recv().await {
+        let join = Arc::clone(&join);
+        // A join the device refused leaves it out of the call, which is what everyone there
+        // reads of it: the app was admitted to this call when its carry started.
+        let _ = tokio::task::spawn_blocking(move || join(entry)).await;
     }
 }
 
@@ -571,9 +629,14 @@ impl AppLane {
             say,
             speak,
         };
-        let mut bridge =
-            ConnectorCall::new(Arc::clone(&setup.speaker), setup.service.clone(), lane);
+        let mut bridge = ConnectorCall::new(
+            Arc::clone(&setup.speaker),
+            setup.service.clone(),
+            lane,
+            Arc::clone(&setup.join),
+        );
         let tilo = pair.tilo.clone();
+        bridge.joined(tilo.clone());
         bridge.carry(Some(BridgedCall {
             outside: pair.outside,
             tilo: pair.tilo,

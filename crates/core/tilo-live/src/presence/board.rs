@@ -483,6 +483,9 @@ pub struct Board {
     said: Own,
     /// Whether this device said it is here.
     arrived: bool,
+    /// Whether this device has a word to say: someone is at it. One that has none says nothing
+    /// of itself, and is restated by no keepalive.
+    speaking: bool,
     schedule: Schedule,
     keepalive_at: Option<f64>,
     /// The sequence of the last shell view this device said: a receiver takes
@@ -508,6 +511,7 @@ impl Board {
             own: Own::default(),
             said: Own::default(),
             arrived: false,
+            speaking: false,
             schedule: Schedule::default(),
             keepalive_at: None,
             shell_seq: 0,
@@ -672,6 +676,7 @@ impl Board {
     /// Take `own` as already known here, without saying it: a device whose
     /// identity it keeps itself says it before its first word.
     pub fn seed(&mut self, own: Own) {
+        self.speaking = true;
         self.said = own.clone();
         self.own = own;
     }
@@ -679,6 +684,7 @@ impl Board {
     /// Say `own`: what changed since the last word is queued, to leave under
     /// the one schedule ([`Self::due`]).
     pub fn say(&mut self, own: &Own) {
+        self.speaking = true;
         self.own.clone_from(own);
         let said = std::mem::replace(&mut self.said, own.clone());
         let first = !std::mem::replace(&mut self.arrived, true);
@@ -780,6 +786,20 @@ impl Board {
         }
         self.say_bridged_changes(&said, own);
         self.say_app_changes(&said, own);
+    }
+
+    /// Say nothing of this device from now on: nobody is at it. One that said it was here says it
+    /// left, and nothing more until it says a word again.
+    pub fn quiet(&mut self) {
+        if !std::mem::replace(&mut self.speaking, false) {
+            return;
+        }
+        if std::mem::replace(&mut self.arrived, false) {
+            self.schedule
+                .push(Presence::desktop(self.workspace.clone(), Payload::Left));
+        }
+        self.own = Own::default();
+        self.said = Own::default();
     }
 
     /// Say what the apps here said of the person in this workspace as it changed: a new or
@@ -888,10 +908,12 @@ impl Board {
     /// came after the first word needs, and what loss repair and the slow
     /// restatement carry.
     fn restate(&mut self) {
-        self.said = Own::default();
-        self.arrived = false;
-        let own = self.own.clone();
-        self.say(&own);
+        if self.speaking {
+            self.said = Own::default();
+            self.arrived = false;
+            let own = self.own.clone();
+            self.say(&own);
+        }
         // The runs this device speaks for are said after it, so a reader
         // already hears this device here when their word arrives.
         let own = Some(self.publisher);

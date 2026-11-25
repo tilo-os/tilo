@@ -786,6 +786,28 @@ fn bridge_speaker(
     )
 }
 
+/// The bridge's join, as the device's daemon makes it: the device says it is in the call, or in
+/// none, and holds the keys of the call's media it already has. A device nobody is at says
+/// nothing outside a call.
+fn daemon_join(speaker: &Arc<Speaker>) -> tilo_live::app_call::JoinCall {
+    let speaker = Arc::clone(speaker);
+    Arc::new(move |call| {
+        let Some(call) = call else {
+            speaker.set_joined(None);
+            return Ok(None);
+        };
+        let channel = call.channel.clone();
+        speaker.set_joined(Some(Call {
+            call,
+            camera: false,
+            screen: false,
+            muted: false,
+            deafened: false,
+        }));
+        Ok(Some((channel, 0)))
+    })
+}
+
 /// Poll `check` until it answers, pumping `grace` and doing `each` every turn.
 async fn until<T>(
     grace: &mut Member,
@@ -829,10 +851,12 @@ async fn an_outside_call_is_carried_into_the_tilo_call_as_a_bridged_person() {
     let bridge_device = [7; 32];
     let roster = Roster::new([grace_device, bridge_device]);
 
+    let speaker = bridge_speaker(&relay, bridge_device, &keys, &roster, BTreeMap::new());
     let mut bridge = ConnectorCall::new(
-        bridge_speaker(&relay, bridge_device, &keys, &roster, BTreeMap::new()),
+        Arc::clone(&speaker),
         "discord",
         host.lane(),
+        daemon_join(&speaker),
     );
     bridge.carry(Some(BridgedCall {
         outside: CHANNEL_VOICE.to_owned(),
@@ -1058,10 +1082,12 @@ async fn a_bridged_person_the_call_denies_is_not_carried() {
         },
     );
     let rules = BTreeMap::from([(TILO_CALL.to_owned(), rule)]);
+    let speaker = bridge_speaker(&relay, bridge_device, &keys, &roster, rules.clone());
     let mut bridge = ConnectorCall::new(
-        bridge_speaker(&relay, bridge_device, &keys, &roster, rules.clone()),
+        Arc::clone(&speaker),
         "discord",
         host.lane(),
+        daemon_join(&speaker),
     );
     bridge.carry(Some(BridgedCall {
         outside: CHANNEL_VOICE.to_owned(),

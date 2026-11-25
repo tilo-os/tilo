@@ -6,8 +6,10 @@
 //! ([`Speaker::set_shell`]); the device's own apps say what they do in their records
 //! ([`Speaker::set_app_word`]); a call the device joined says the channel it is in
 //! ([`Speaker::set_joined`]); and a bridge says the people it carries in from another service
-//! ([`Speaker::set_bridged`]). A device with no session at all still says who it is, from its
-//! certificate. The board diffs the whole word against what it said last and publishes only what
+//! ([`Speaker::set_bridged`]). A device says a word only while a person is there: their shell
+//! runs, or one of its apps took them into a call, which the device then says from its
+//! certificate. A device nobody is at, a server that only keeps the workspace, says nothing and
+//! is never listed as here. The board diffs the whole word against what it said last and publishes only what
 //! moved, on its one schedule, with the keepalives that keep the device listed
 //! ([`crate::presence::Board::due`]).
 //!
@@ -48,7 +50,8 @@ pub struct Speaker {
 struct State {
     board: Board,
     workspace: String,
-    /// What the device says of itself with no person's shell running: its name and its person.
+    /// What the device says of itself in a call with no person's shell running: its name and its
+    /// person.
     base: Own,
     shell: Option<Own>,
     /// The runs this device executes, each said as a member of its own:
@@ -62,8 +65,14 @@ struct State {
 }
 
 impl State {
-    fn own(&self) -> Own {
-        let mut own = self.shell.clone().unwrap_or_else(|| self.base.clone());
+    /// The device's word: none while nobody is there, neither a person's shell nor a call one of
+    /// its apps joined.
+    fn own(&self) -> Option<Own> {
+        let mut own = match (&self.shell, &self.joined) {
+            (Some(shell), _) => shell.clone(),
+            (None, Some(_)) => self.base.clone(),
+            (None, None) => return None,
+        };
         own.apps.extend(self.apps.iter().cloned());
         if own.call.is_none() {
             own.call.clone_from(&self.joined);
@@ -71,7 +80,15 @@ impl State {
         if !self.bridged.is_empty() {
             own.bridged.clone_from(&self.bridged);
         }
-        own
+        Some(own)
+    }
+
+    /// Take what the device says now onto the board: its word, or that nobody is there.
+    fn say(&mut self) {
+        match self.own() {
+            Some(own) => self.board.say(&own),
+            None => self.board.quiet(),
+        }
     }
 
     /// What every other member said in their apps that moved since it was last handed on, and
@@ -116,8 +133,10 @@ impl State {
 }
 
 impl Speaker {
-    /// Say `base` in `workspace` on `session` as `device` from now on, and hear everyone else
-    /// there. Runs on the current tokio runtime until the speaker or the session goes.
+    /// Speak in `workspace` on `session` as `device` from now on, saying `base` whenever one of
+    /// its apps takes the device into a call with no person's shell running, and hear everyone
+    /// else there. Says nothing until a person is there. Runs on the current tokio runtime until
+    /// the speaker or the session goes.
     #[must_use]
     pub fn start(
         session: &Arc<LiveSession>,
@@ -126,8 +145,7 @@ impl Speaker {
         base: Own,
     ) -> Arc<Self> {
         let workspace = workspace.into();
-        let mut board = Board::new(workspace.clone(), device);
-        board.say(&base);
+        let board = Board::new(workspace.clone(), device);
         let speaker = Arc::new(Self {
             session: Arc::clone(session),
             state: Mutex::new(State {
@@ -160,8 +178,8 @@ impl Speaker {
         *self.heard.lock_recover() = Some(heard);
     }
 
-    /// The person's shell says `own` here now, or nothing (`None`): the device says what it is
-    /// with no shell running.
+    /// The person's shell says `own` here now, or nothing (`None`): with no shell running the
+    /// device says only a call one of its apps joined, and nothing at all outside one.
     pub fn set_shell(&self, own: Option<Own>) {
         self.change(|state| {
             let moved = state.shell != own;
@@ -232,12 +250,13 @@ impl Speaker {
     /// The call the device says it is in now, as everyone here reads it.
     #[must_use]
     pub fn call(&self) -> Option<Call> {
-        self.state.lock_recover().own().call
+        self.state.lock_recover().own().and_then(|own| own.call)
     }
 
-    /// The whole word this device says in the workspace now, as everyone there reads it.
+    /// The whole word this device says in the workspace now, as everyone there reads it: none
+    /// while nobody is there.
     #[must_use]
-    pub fn word(&self) -> Own {
+    pub fn word(&self) -> Option<Own> {
         self.state.lock_recover().own()
     }
 
@@ -254,7 +273,11 @@ impl Speaker {
     /// The people this device says it carries into its call from another service.
     #[must_use]
     pub fn bridged(&self) -> Vec<BridgedMember> {
-        self.state.lock_recover().own().bridged
+        self.state
+            .lock_recover()
+            .own()
+            .map(|own| own.bridged)
+            .unwrap_or_default()
     }
 
     /// The calls in progress here, as those in them say.
@@ -274,8 +297,7 @@ impl Speaker {
             let mut state = self.state.lock_recover();
             let moved = change(&mut state);
             if moved {
-                let own = state.own();
-                state.board.say(&own);
+                state.say();
             }
             moved
         };

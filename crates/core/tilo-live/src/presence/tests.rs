@@ -326,6 +326,48 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_device_nobody_is_at_says_nothing_and_one_left_by_its_person_says_it_left;
+    // A device with no word, a server that only keeps the workspace, says nothing, not even a
+    // keepalive, so nobody lists it as here. One whose person goes says it left, and then nothing.
+    {
+        let mut server = board();
+        let mut reader = Board::new(WORKSPACE, [1; 32]);
+        server.quiet();
+        assert!(server.flush(0.0).is_empty(), "a device nobody is at says nothing");
+        assert!(server.due(KEEPALIVE_MS * 3.0).is_none(), "nor restates anything");
+
+        let mut laptop = board();
+        laptop.say(&Own {
+            label: "Ada".into(),
+            ..Own::default()
+        });
+        for (_, frame) in laptop.flush(0.0) {
+            reader.hear([0xf0; 32], &frame, 0.0);
+        }
+        assert!(reader.here().any(|member| member.publisher == [0xf0; 32]));
+        laptop.quiet();
+        let later: Vec<Presence> = [300.0, 400.0, 800.0, KEEPALIVE_MS * 3.0, KEEPALIVE_MS * 6.0]
+            .into_iter()
+            .filter_map(|at| laptop.due(at))
+            .flatten()
+            .map(|(_, frame)| frame)
+            .collect();
+        assert!(!later.is_empty(), "the device says it left");
+        assert!(
+            later
+                .iter()
+                .all(|frame| matches!(frame.payload, Payload::Left)),
+            "a device left by its person says only that it left, and restates nothing: {later:?}"
+        );
+        for frame in &later {
+            reader.hear([0xf0; 32], frame, 1.0);
+        }
+        assert!(
+            reader.here().all(|member| member.publisher != [0xf0; 32]),
+            "a device whose person left is not here"
+        );
+    }
+
     phase a_wave_is_a_new_wave_each_time_and_an_apps_word_lives_under_its_key;
     {
         let mut board = board();
