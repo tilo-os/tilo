@@ -121,7 +121,14 @@ impl Widget for Rule {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        draw_rule(scene, transform, theme, self.rect, self.thickness, self.ticks);
+        draw_rule(
+            scene,
+            transform,
+            theme,
+            self.rect,
+            self.thickness,
+            self.ticks,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -141,7 +148,12 @@ fn draw_rule(
     let ink = Rule::ink(theme);
     let middle = rect.center().y;
     let stroke = f64::from(thickness);
-    let line = Rect::new(rect.x0, middle - stroke / 2.0, rect.x1, middle + stroke / 2.0);
+    let line = Rect::new(
+        rect.x0,
+        middle - stroke / 2.0,
+        rect.x1,
+        middle + stroke / 2.0,
+    );
     scene.fill(vello::peniko::Fill::NonZero, transform, ink, None, &line);
     if ticks {
         for x in [rect.x0, rect.x1 - stroke] {

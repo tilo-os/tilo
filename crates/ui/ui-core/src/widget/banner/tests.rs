@@ -1329,7 +1329,14 @@ fn a_banners_action_stands_on_the_display_pixels_at_one_and_a_half() {
     let on_grid = |edge: f64| ((edge * 1.5) - (edge * 1.5).round()).abs() < 1e-6;
     for control_h in [27.0, 28.0, 29.0, 31.0] {
         for (width, main) in [(900.0, 61.3), (360.0, 61.3), (900.0, 75.0)] {
-            let g = geometry_with(&content, [None, Some(main)], control_h, width, &mut text, &theme);
+            let g = geometry_with(
+                &content,
+                [None, Some(main)],
+                control_h,
+                width,
+                &mut text,
+                &theme,
+            );
             let action = g.action.expect("the banner has its action");
             for edge in [action.x0, action.y0, action.x1] {
                 assert!(

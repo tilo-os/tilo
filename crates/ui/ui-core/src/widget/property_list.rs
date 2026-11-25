@@ -202,7 +202,11 @@ fn natural_width(
         .iter()
         .map(|row| {
             let w = f64::from(text.measure_style(row.value, None, &m.value_style(row)).0);
-            if row.unbreakable() { w } else { w.min(readable) }
+            if row.unbreakable() {
+                w
+            } else {
+                w.min(readable)
+            }
         })
         .fold(f64::from(MIN_VALUE_LINES) * line, f64::max);
     let titles = groups

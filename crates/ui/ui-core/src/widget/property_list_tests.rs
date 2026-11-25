@@ -575,7 +575,10 @@ fn a_list_with_room_to_spare_is_as_wide_as_what_it_says() {
     let laid = layout(&mut text, &theme, &short, natural + 2.0 * m.pad_x);
     assert!(!laid.stacked, "each label stands beside its value");
     for (row, given) in laid.rows.iter().zip(&short) {
-        let one_line = f64::from(text.measure_style(given.value, None, &m.value_style(given)).1);
+        let one_line = f64::from(
+            text.measure_style(given.value, None, &m.value_style(given))
+                .1,
+        );
         assert!(
             row.rect.height() <= (one_line + 2.0 * m.pad_y).max(m.min_row).ceil() + 0.5,
             "{} stands on one line",
@@ -588,8 +591,12 @@ fn a_list_with_room_to_spare_is_as_wide_as_what_it_says() {
     let wide = natural_width(&mut text, &m, &[(None, &long)], None);
     let readable = f64::from(READABLE_LINES) * line;
     assert!(
-        wide <= natural_label_column(&mut text, &m, &long) + m.column_gap + readable
-            + m.action + m.column_gap / 2.0 + 1.0,
+        wide <= natural_label_column(&mut text, &m, &long)
+            + m.column_gap
+            + readable
+            + m.action
+            + m.column_gap / 2.0
+            + 1.0,
         "a long address wraps at a readable measure: {wide}"
     );
 }

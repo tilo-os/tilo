@@ -2430,8 +2430,7 @@ fn a_wheel_a_scroll_refuses_reaches_the_row_above_it() {
         .unwrap();
     row.apply_layout(&taffy, node, Point::ZERO);
     let inner_offset = |row: &Scrollable| {
-        row.children()[0].children()[0]
-            .children()[0]
+        row.children()[0].children()[0].children()[0]
             .as_any()
             .and_then(|any| any.downcast_ref::<Scrollable>())
             .map_or(0.0, Scrollable::offset_y)
@@ -2442,7 +2441,9 @@ fn a_wheel_a_scroll_refuses_reaches_the_row_above_it() {
         delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(-120.0, 0.0)),
         phase: TouchPhase::Moved,
     };
-    let taken = Dispatch::new().layout(&taffy, node).send(&mut row, &sideways);
+    let taken = Dispatch::new()
+        .layout(&taffy, node)
+        .send(&mut row, &sideways);
     assert!(taken.handled, "a wheel the column refuses is the row's");
     assert_eq!(row.offset_x(), 120.0, "the row went sideways");
     assert_eq!(inner_offset(&row), 0.0, "the column keeps its place");
@@ -2451,7 +2452,9 @@ fn a_wheel_a_scroll_refuses_reaches_the_row_above_it() {
     Dispatch::new()
         .layout(&taffy, node)
         .send(&mut row, &outside);
-    let taken = Dispatch::new().layout(&taffy, node).send(&mut row, &sideways);
+    let taken = Dispatch::new()
+        .layout(&taffy, node)
+        .send(&mut row, &sideways);
     assert!(
         taken.handled,
         "the row takes a wheel outside the column's viewport"
