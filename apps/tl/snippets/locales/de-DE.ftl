@@ -204,6 +204,23 @@ d-5w7vbjxg = Abbrechen
 d-hnseelrx = Füllung leeren
     .doc = Leert eine Füllung, sodass das Blatt schließt.
 
+d-eevndwdi = Verwendungswörter
+    .w-copied-once = Einmal kopiert
+    .w-never-copied = Nie kopiert
+    .w-copied-times = { $n }-mal kopiert
+
+d-vlhpukw5 = Ortsbezeichnung
+    .w-favorites = Favoriten
+    .w-most-used = Meistgenutzt
+    .w-all-snippets = Alle Textbausteine
+
+d-xi5d7nez = Leerwörter
+    .w-no-starred-snippets = Keine mit Stern markierten Textbausteine
+    .w-nothing-copied-yet = Noch nichts kopiert
+    .w-no-snippets-with-this-tag = Keine Textbausteine mit diesem Schlagwort
+    .w-this-folder-is-empty = Dieser Ordner ist leer
+    .w-no-snippets-yet = Noch keine Textbausteine
+
 d-uek4qev2 = Neuer Textbaustein
 
 d-6bdzaoah = Markieren

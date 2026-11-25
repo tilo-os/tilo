@@ -195,3 +195,13 @@ d-m7rzekuz-run = Lauf
 d-y5lrri6f = Fehlertext
     .w-failed = { $stage } fehlgeschlagen: { $status_text }
     .w-failed-the-server-refused-the-request = { $stage } fehlgeschlagen: der Server hat die Anfrage abgelehnt (HTTP { $status })
+
+d-d4zsligl = Einheit von
+    .w-ms = ms
+    .w-mbps = Mbps
+
+d-xnneile4 = Größe von
+    .w-b = { $n } B
+    .w-kb = { $value } KB
+    .w-mb = { $value } MB
+    .w-gb = { $value } GB

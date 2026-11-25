@@ -639,6 +639,25 @@ d-v4gotdqj = Zeile anpassen
 
 d-v4gotdqj-pair = Paar
 
+d-njuv76nz = Währungscode
+    .w-usd = USD
+    .w-eur = EUR
+    .w-gbp = GBP
+    .w-jpy = JPY
+    .w-chf = CHF
+    .w-cad = CAD
+    .w-aud = AUD
+    .w-cny = CNY
+    .w-inr = INR
+
+d-z6w7kict = Datumsname
+    .w-as-the-language-writes-them = Wie die Sprache sie schreibt
+    .w-november-23-2026 = 23. November 2026
+
+d-ykqqb5ia = Zeitname
+    .w-as-the-language-writes-them = Wie die Sprache sie schreibt
+    .w-2-30-pm = 14:30
+
 d-7qeu4kom = Neues Blatt~present
 
 d-kwdpptzn = Blatt danach~present
