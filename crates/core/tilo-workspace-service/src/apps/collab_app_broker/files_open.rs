@@ -60,7 +60,6 @@ fn files_open_descriptor() -> ActionDescriptor {
         input: tilo_actions::InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -206,7 +205,7 @@ impl AppBrokerState {
         }
         if !may_put_into_tree(workspace, policy, now) {
             tracing::warn!(
-                caller = %policy.member(),
+                caller = ?policy.member_id(),
                 owner = workspace.policy.owner().unwrap_or("none"),
                 "putting a file into a workspace was refused: the workspace does not let the caller write its files"
             );
