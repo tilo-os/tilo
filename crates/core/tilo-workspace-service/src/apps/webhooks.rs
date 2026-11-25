@@ -318,7 +318,7 @@ impl ActionProvider for Poster {
             let id = request.invocation;
             // What this device was asked for, recorded once: a retried step sends the same id.
             let attempt = {
-                let mut attempts = attempts.lock().unwrap_or_else(|poison| poison.into_inner());
+                let mut attempts = attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let made = attempts.entry(id).or_insert(0);
                 *made = made.saturating_add(1);
                 if *made == 1 {
@@ -366,7 +366,7 @@ impl ActionProvider for Poster {
             };
             states
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(id, InvocationState::new(id, update));
             completer.complete(code);
         });
@@ -376,7 +376,7 @@ impl ActionProvider for Poster {
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         self.states
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .cloned()
     }
@@ -413,7 +413,7 @@ impl ActionProvider for Recorder {
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         self.states
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .cloned()
     }

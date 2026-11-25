@@ -87,7 +87,7 @@ impl KeyService {
         let pump = GovernancePump::spawn(
             name,
             park,
-            Some(access.clone()),
+            Some(access),
             Arc::clone(&link) as Arc<dyn GovernanceTransport + Send + Sync>,
             || {},
         )?;

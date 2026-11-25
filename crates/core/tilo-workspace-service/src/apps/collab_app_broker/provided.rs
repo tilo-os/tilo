@@ -23,7 +23,7 @@ enum RegisteredAdmission {
     /// The same call was taken before: its receipt.
     Taken(InvocationReceipt),
     /// A call to take.
-    Call(RegisteredCall),
+    Call(Box<RegisteredCall>),
     /// The provider describes the action only once its listing answers, which it has not yet:
     /// nothing is reserved, and the call is admitted again with what the listing describes.
     Undescribed,
@@ -432,7 +432,7 @@ impl AppBrokerState {
             request,
             described,
         ) {
-            Ok(RegisteredAdmission::Call(admitted)) => admitted,
+            Ok(RegisteredAdmission::Call(admitted)) => *admitted,
             Ok(RegisteredAdmission::Taken(receipt)) => return Pending::ready(Ok(receipt)),
             Ok(RegisteredAdmission::Undescribed) => {
                 return self.invoke_once_described(caller, (origin, serving), registered, request);
@@ -452,20 +452,18 @@ impl AppBrokerState {
         });
         let Some(Some(asking)) = asking else {
             return Pending::ready(
-                self.take_registered(caller, origin, serving, registered, request, admitted),
+                self.take_registered(caller, serving, registered, request, admitted),
             );
         };
-        let (state, caller, origin, registered, request) = (
+        let (state, caller, registered, request) = (
             Arc::clone(self),
             caller.clone(),
-            origin.cloned(),
             registered.clone(),
             request.clone(),
         );
         asking.map(move |asked| match asked {
             Ok(()) => state.take_registered(
                 &caller,
-                origin.as_ref(),
                 serving,
                 &registered,
                 &request,
@@ -641,12 +639,12 @@ impl AppBrokerState {
             }
             _ => None,
         };
-        Ok(RegisteredAdmission::Call(RegisteredCall {
+        Ok(RegisteredAdmission::Call(Box::new(RegisteredCall {
             descriptor,
             approved,
             through,
             decided,
-        }))
+        })))
     }
 
     /// Take one call [`Self::admit_registered`] admitted, and hand it to its provider.
@@ -657,7 +655,6 @@ impl AppBrokerState {
     fn take_registered(
         self: &Arc<Self>,
         caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
         serving: Option<Arc<dyn Serving>>,
         registered: &Registered,
         request: &InvokeRequest,

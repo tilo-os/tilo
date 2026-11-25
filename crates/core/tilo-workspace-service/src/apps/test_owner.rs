@@ -9,7 +9,6 @@
     clippy::missing_panics_doc,
     reason = "test fixture: a failed step is the test failing"
 )]
-use collab_types::SignedOp;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use serde::{Deserialize, Serialize};
@@ -295,78 +294,51 @@ impl SessionOwner {
     fn apply(&mut self, change: &Change) -> Result<(), String> {
         let now = tilo_clock::wall();
         let mut candidate = self.peer.clone();
-        match change {
-            Change::Document {
-                app,
-                document: record,
-                envelope,
-            } => {
-                let outcome =
-                    candidate.admit_local_app_document(app, record, envelope.clone(), now)?;
-                if outcome.deferred || outcome.incomplete.is_some() {
-                    return Err("local publication admission incomplete".into());
-                }
-            }
-            Change::Effect { redacted } => {
-                let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
-                    serde_json::from_slice(redacted).map_err(|e| e.to_string())?;
-                let mut doc = candidate
-                    .admitted_workspace()
-                    .ok_or("owner governance missing")?
-                    .clone();
-                doc.set_actor(automerge::ActorId::from(
-                    self.key.verifying_key().to_bytes().to_vec(),
-                ));
-                match tilo_desktop_model::projection::workspace_effect_receipts_of(&doc)
-                    .into_iter()
-                    .find(|held| held.invocation == receipt.invocation)
-                {
-                    Some(held) if held == receipt => return Ok(()),
-                    Some(_) => return Err("effect receipt is immutable".into()),
-                    None => tilo_desktop_model::projection::project_effect_receipts(
-                        &mut doc,
-                        &hex::encode(self.key.verifying_key().to_bytes()),
-                        std::slice::from_ref(&receipt),
-                    )?,
-                }
-                doc.commit();
-                let changes = doc
-                    .get_changes(&[])
-                    .into_iter()
-                    .map(|change| change.raw_bytes().to_vec())
-                    .collect();
-                candidate
-                    .receive_from(
-                        TransportOrigin::ServerDelta(self.key.verifying_key().to_bytes()),
-                        NeighbourMsg::SyncResp {
-                            changes,
-                            workspace: candidate.workspace_id().into(),
-                        },
-                        now,
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
+        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+            serde_json::from_slice(&change.redacted).map_err(|e| e.to_string())?;
+        let mut doc = candidate
+            .admitted_workspace()
+            .ok_or("owner governance missing")?
+            .clone();
+        doc.set_actor(automerge::ActorId::from(
+            self.key.verifying_key().to_bytes().to_vec(),
+        ));
+        match tilo_desktop_model::projection::workspace_effect_receipts_of(&doc)
+            .into_iter()
+            .find(|held| held.invocation == receipt.invocation)
+        {
+            Some(held) if held == receipt => return Ok(()),
+            Some(_) => return Err("effect receipt is immutable".into()),
+            None => tilo_desktop_model::projection::project_effect_receipts(
+                &mut doc,
+                &hex::encode(self.key.verifying_key().to_bytes()),
+                std::slice::from_ref(&receipt),
+            )?,
         }
+        doc.commit();
+        let changes = doc
+            .get_changes(&[])
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        candidate
+            .receive_from(
+                TransportOrigin::ServerDelta(self.key.verifying_key().to_bytes()),
+                NeighbourMsg::SyncResp {
+                    changes,
+                    workspace: candidate.workspace_id().into(),
+                },
+                now,
+            )
+            .map_err(|error| error.to_string())?;
         self.commit(candidate)
     }
 }
 
-/// A write the broker hands the record: a document as it signed it, or an
-/// effect's terminal receipt.
+/// A write the broker hands the record: an effect's terminal receipt.
 #[derive(Clone, Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "the fixture's two shapes, matched where the change is applied"
-)]
-pub enum Change {
-    Document {
-        app: String,
-        document: String,
-        envelope: SignedOp,
-    },
-    Effect {
-        redacted: Vec<u8>,
-    },
+pub struct Change {
+    pub redacted: Vec<u8>,
 }
 
 pub mod writes {
@@ -442,7 +414,7 @@ pub mod writes {
 
         fn effect(&self, _workspace: String, redacted: Vec<u8>) -> EffectFuture {
             let this = self.clone();
-            Box::pin(async move { this.apply(Change::Effect { redacted }).await })
+            Box::pin(async move { this.apply(Change { redacted }).await })
         }
     }
 

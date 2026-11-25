@@ -1171,7 +1171,7 @@ impl tilo_broker_core::services::KeyboardShortcutServices for SeatKeyboardShortc
                     .answers
                     .iter()
                     .find(|answered| answered.address == *address)
-                    .map(|answered| answered.answer.clone())
+                    .map(|answered| answered.answer.clone().map_err(Box::new))
             })
             .ok_or_else(|| {
                 failure(
@@ -1179,7 +1179,6 @@ impl tilo_broker_core::services::KeyboardShortcutServices for SeatKeyboardShortc
                     "the desktop session did not say what this shortcut action answers".into(),
                 )
             })?
-            .map_err(Box::new)
     }
 }
 
@@ -1442,9 +1441,6 @@ pub fn handed_files(
         })
         .collect())
 }
-
-/// What this computer's networks wake and which networks it saved, answered by the desktop
-/// session signed in here, which reads its `NetworkManager`; the passphrases are the daemon's.
 
 /// One agent a workspace's record names active, as the session that reads the record lists it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -554,7 +554,7 @@ tilo_test_env::scenario! {
             // The first in line loses ownership while it waits; the second stops
             // reading on its channel.
             revoked.ownership.store(false, Ordering::Release);
-            leaving.slot = Default::default();
+            leaving.slot = Slot::default();
             holder.take(&held);
             settle().await;
             // The refusal is final, and the workspace granted to it goes on.

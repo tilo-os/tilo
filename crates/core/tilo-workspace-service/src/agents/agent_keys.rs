@@ -383,9 +383,9 @@ pub fn this_device() -> Result<Arc<dyn AgentKeys>, String> {
     if let Some(keys) = KEYS.get() {
         return Ok(Arc::clone(keys));
     }
-    let grants = grants().ok_or(
-        "this computer's daemon keeps no identity to certify an agent's key with".to_owned(),
-    )?;
+    let grants = grants().ok_or_else(|| {
+        "this computer's daemon keeps no identity to certify an agent's key with".to_owned()
+    })?;
     Ok(Arc::clone(
         KEYS.get_or_init(|| Arc::new(DeviceMadeKeys::of(grants))),
     ))

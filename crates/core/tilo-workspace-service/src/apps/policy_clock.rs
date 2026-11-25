@@ -397,7 +397,7 @@ mod tests {
             let time = origin.capture().unwrap();
             control.advance_monotonic(Duration::from_nanos(20));
             assert_eq!(time.now_ns(), Ok(420));
-            let held = clock.clone();
+            let held = clock;
             assert!(
                 tilo_rt::panic_boundary::isolate(move || {
                     let _guard = held.0.state.lock().unwrap();

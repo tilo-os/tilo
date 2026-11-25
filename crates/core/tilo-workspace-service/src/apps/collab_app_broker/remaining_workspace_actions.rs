@@ -285,7 +285,7 @@ impl AppBrokerState {
                 self.checked_policy_time(Some(time)).map_err(unavailable)?;
                 self.current_native_person(workspace, certificate)
                     .map_err(unavailable)?;
-                Some(self.certified_person(certificate))
+                Some(AppBrokerState::certified_person(certificate))
             }
             None => None,
         };

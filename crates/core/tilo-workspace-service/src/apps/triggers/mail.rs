@@ -81,7 +81,7 @@ impl Message {
             "a message's time is read as an instant, or as a wall time in UTC",
             text.parse::<jiff::Timestamp>().ok()
         );
-        instant.map(|at| at.as_millisecond()).or_else(|| {
+        instant.map(jiff::Timestamp::as_millisecond).or_else(|| {
             let performed = tilo_failure::ignored!(
                 "a message's time that names no offset is read as UTC's wall time",
                 text.parse::<jiff::civil::DateTime>().ok()

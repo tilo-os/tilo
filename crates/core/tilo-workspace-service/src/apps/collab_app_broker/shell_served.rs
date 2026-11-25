@@ -202,7 +202,7 @@ impl LinkProvider {
         };
         async move {
             let unavailable = |reason: String| ActionCallError::Unavailable {
-                reason: reason.into(),
+                reason: reason,
             };
             let answered = sent
                 .map_err(unavailable)?
@@ -370,7 +370,7 @@ impl ActionProvider for LinkProvider {
         );
         let Some(link) = self.me.upgrade() else {
             done.complete(Err(ActionCallError::Unavailable {
-                reason: self.gone().into(),
+                reason: self.gone(),
             }));
             return answer;
         };

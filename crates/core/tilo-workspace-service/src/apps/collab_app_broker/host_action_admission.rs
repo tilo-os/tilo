@@ -534,7 +534,7 @@ impl AppBrokerState {
                     .broker_actor()
             }
             InvocationCaller::NativePerson { certificate, .. } => {
-                self.certified_person(certificate)
+                AppBrokerState::certified_person(certificate)
             }
         })
     }

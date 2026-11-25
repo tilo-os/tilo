@@ -1089,7 +1089,7 @@ impl ContentKeeper for MemberContent {
         _workspace: &str,
         _from: [u8; 32],
         message: NeighbourMsg,
-    ) -> Result<(), NeighbourMsg> {
+    ) -> Result<(), Box<NeighbourMsg>> {
         let expected = match &message {
             NeighbourMsg::DocumentContentPiece {
                 app_id,
@@ -1114,7 +1114,7 @@ impl ContentKeeper for MemberContent {
             _ => false,
         };
         if !expected {
-            return Err(message);
+            return Err(Box::new(message));
         }
         match message {
             NeighbourMsg::DocumentContentPiece {

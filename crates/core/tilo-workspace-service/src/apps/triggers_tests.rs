@@ -680,7 +680,7 @@ impl StartRun for Counting {
     fn start(&self, firing: &Firing, _: AutomationInvocationId) -> Result<u64, ActionCallError> {
         let count = self.counted.load(Ordering::SeqCst).saturating_add(1);
         let mut started = self.started.lock().unwrap();
-        started.push((firing.clone(), count, count % self.every == 0));
+        started.push((firing.clone(), count, count.is_multiple_of(self.every)));
         Ok(u64::try_from(started.len()).unwrap())
     }
 
@@ -1410,82 +1410,11 @@ async fn a_shortcut_saved_by_an_agent_acts_as_that_agent_and_one_saved_by_a_pers
     host.shutdown().await;
 }
 
-/// The moment `text` names, ms since the epoch.
-#[cfg(feature = "agents")]
-fn moment(text: &str) -> i64 {
-    text.parse::<jiff::Timestamp>().unwrap().as_millisecond()
-}
-
-/// [`moment`], as a pinned wall clock takes it.
-#[cfg(feature = "agents")]
-fn pinned_at(text: &str) -> u64 {
-    u64::try_from(moment(text)).unwrap()
-}
-
-/// Let `workspace` keep an assistant of the person `cert` names, so what a calendar entry holds
-/// has somewhere to be handed.
-#[cfg(feature = "agents")]
-async fn keeps_an_assistant(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &tilo_user_identity::DeviceCert,
-) {
-    use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
-    let person = hex::encode(cert.user_public_key);
-    workspaces
-        .author_agents(workspace, |doc| {
-            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(&person)
-                .in_app(tilo_workspace_agent::OWNER, "Workspace");
-            made.apply(
-                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                    avatar: None,
-                    name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
-                    id: Some("assistant".into()),
-                    model: None,
-                    mcp_client: None,
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-            std::mem::swap(doc, made.doc_mut());
-            Ok(())
-        })
-        .await
-        .unwrap();
-}
-
-/// Set the pinned clock to `when` and let the runner look once.
-#[cfg(feature = "agents")]
-async fn pass_at(clock: &Pinned, runner: &mut Runner, when: &str) {
-    clock.set(pinned_at(when));
-    runner.pass(Vec::new()).await;
-}
-
 /// Set the pinned clock to `at_ms` and let the runner look once.
 #[cfg(feature = "agents")]
 async fn pass_at_ms(clock: &Pinned, runner: &mut Runner, at_ms: u64) {
     clock.set(at_ms);
     runner.pass(Vec::new()).await;
-}
-
-/// What the moments fired so far handed over: for each, the date its occurrence has in its
-/// series and the time the occurrence starts.
-#[cfg(feature = "agents")]
-fn handed_moments(started: &Started) -> Vec<(String, i64)> {
-    started
-        .0
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|firing| {
-            let event = &firing.inputs[tilo_automation::EVENT_INPUT];
-            let held_by = event["item"].as_str().unwrap();
-            (
-                held_by.rsplit('/').next().unwrap().to_owned(),
-                event["at_ms"].as_i64().unwrap(),
-            )
-        })
-        .collect()
 }
 
 /// What the firings so far bound to the `event` input.

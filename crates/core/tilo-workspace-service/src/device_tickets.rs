@@ -239,13 +239,13 @@ impl TicketServer {
             // one issued beside it.
             let tickets = actions.tickets();
             if replaces {
-                let replaced = self
+                let previous = self
                     .0
                     .printed
                     .lock_recover()
                     .replace((served.clone(), false));
-                if let Some((replaced, false)) = replaced {
-                    tickets.withdraw(&replaced);
+                if let Some((withdrawn, false)) = previous {
+                    tickets.withdraw(&withdrawn);
                 }
             }
             tickets.serve(served);

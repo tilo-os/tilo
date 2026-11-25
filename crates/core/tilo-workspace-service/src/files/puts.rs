@@ -120,15 +120,15 @@ impl Puts {
         let tree = self.held_tree(workspace).await?;
         let namespace = Arc::clone(&tree.namespace);
         // Subscribed before the heads are read, so a change made in between is announced.
-        let (mut changes, mut seen) = {
+        let (mut news, mut seen) = {
             let mut namespace = namespace.lock_recover();
             (namespace.subscribe_changes(), namespace.heads())
         };
         let task = tokio::spawn(async move {
-            while changes.changed().await.is_ok() {
+            while news.changed().await.is_ok() {
                 // A folder copied in is one change of many: the folders it moved are told once.
                 tokio::time::sleep(SETTLE).await;
-                changes.borrow_and_update();
+                news.borrow_and_update();
                 let folders = {
                     let mut namespace = namespace.lock_recover();
                     let moved = namespace.kernel_changes_since(&seen);

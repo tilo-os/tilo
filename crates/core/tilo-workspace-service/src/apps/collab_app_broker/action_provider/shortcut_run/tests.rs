@@ -1224,7 +1224,7 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
 
     let elsewhere = || Caller::local_person(person.clone()).in_workspace(&workspace_id);
     for (how, caller) in [
-        ("the person's own connection", here.clone()),
+        ("the person's own connection", here),
         ("a program of the person's", elsewhere()),
         (
             "a request another device forwarded for the person",

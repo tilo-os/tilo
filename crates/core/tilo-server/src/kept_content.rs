@@ -1483,7 +1483,7 @@ impl ContentKeeper for KeptContent {
         workspace: &str,
         from: [u8; 32],
         message: NeighbourMsg,
-    ) -> Result<(), NeighbourMsg> {
+    ) -> Result<(), Box<NeighbourMsg>> {
         let limits = self.limits_of(workspace);
         let now = now_ms();
         let mut state = self.state.lock_recover();
@@ -1492,7 +1492,7 @@ impl ContentKeeper for KeptContent {
         if !state.wants.expects_in(&self.device, &message)
             && !state.wants.awaits_in(&self.device, &message)
         {
-            return Err(message);
+            return Err(Box::new(message));
         }
         let mut refused = Vec::new();
         if let NeighbourMsg::DocumentContentPiece {

@@ -179,21 +179,6 @@ impl super::AppBrokerState {
     }
 }
 
-pub(super) fn package_root(root: &str) -> Result<Option<String>, BrokerError> {
-    if root.is_empty() {
-        return Ok(None);
-    }
-    if root.strip_prefix("tapp:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }) {
-        return Ok(Some(root.to_owned()));
-    }
-    Err(BrokerError::failed("invalid installed package root".into()))
-}
-
 pub(super) fn launch_parent(bytes: &[u8]) -> Result<Option<InvocationId>, BrokerError> {
     if bytes.is_empty() {
         return Ok(None);

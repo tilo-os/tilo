@@ -1734,7 +1734,7 @@ mod tests {
             let draft = draft();
             let operation = decode_library(
                 INSPECT_ACTION,
-                Some(&slot(serde_json::json!({"shortcut": draft.clone()}))),
+                Some(&slot(serde_json::json!({"shortcut": draft}))),
             )
             .expect("the draft inspects");
             let catalog = notes_catalog();

@@ -463,7 +463,7 @@ mod tests {
         index.pass();
         assert_eq!(
             store.count(),
-            [edited.clone()],
+            [edited],
             "one edit reads the one document it landed in"
         );
 

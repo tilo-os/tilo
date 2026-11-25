@@ -252,7 +252,7 @@ impl OriginalInvocationData {
         };
         tilo_user_identity::verify_device_cert_at(&certificate, now)
             .map_err(|_| "original invocation certificate expired")?;
-        let mut person = state.certified_person(&certificate);
+        let mut person = AppBrokerState::certified_person(&certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
             ..
@@ -643,15 +643,12 @@ impl OriginalInvocation {
 
     /// The original person caller, decided while `state` can still say who
     /// governs the workspace; `None` for an agent caller.
-    fn original_person(
-        &self,
-        state: &AppBrokerState,
-    ) -> Result<Option<super::BrokerActor>, String> {
+    fn original_person(&self) -> Result<Option<super::BrokerActor>, String> {
         if self.agent_id().is_some() {
             return Ok(None);
         }
         let certificate = self.certificate()?;
-        let mut person = state.certified_person(certificate);
+        let mut person = AppBrokerState::certified_person(certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
             ..
@@ -736,7 +733,7 @@ impl OriginalInvocation {
             .membership
             .clone()
             .ok_or("workspace authority unavailable")?;
-        let person = self.original_person(&state)?;
+        let person = self.original_person()?;
         drop(state);
         let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
         membership.decide_in_workspace(&self.data.route.cluster_id, |workspace| {

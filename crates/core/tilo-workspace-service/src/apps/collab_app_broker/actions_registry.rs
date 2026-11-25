@@ -170,7 +170,7 @@ impl AppBrokerState {
                     let result = result.unwrap_or(Err(ActionCallError::Unavailable {
                         reason: "the call was not answered".to_owned(),
                     }));
-                    completer.complete(Ok(answered(outer, started_ms, verb.clone(), who, result)));
+                    completer.complete(Ok(answered(outer, started_ms, &verb, who, result)));
                 });
         });
         Ok(answer)
@@ -241,7 +241,7 @@ fn completed(invocation: InvocationId, value: serde_json::Value) -> InvocationRe
 fn answered(
     invocation: InvocationId,
     started_ms: i64,
-    action: String,
+    action: &str,
     who: InvocationBy,
     result: Result<InvocationReceipt, ActionCallError>,
 ) -> InvocationReceipt {
@@ -252,7 +252,7 @@ fn answered(
             id: Some(invocation.0.to_string()),
             calls: vec![invocation.0.to_string()],
             status,
-            action: Some(action.clone()),
+            action: Some(action.to_owned()),
             output,
             started_ms,
             ended_ms: (!matches!(
@@ -278,7 +278,7 @@ fn answered(
             ),
             ReceiptStatus::Failed { error } => {
                 let mut held = record(InvocationStatus::Failed, None);
-                held.failure = Some(error.code.clone());
+                held.failure = Some(error.code);
                 completed(invocation, serde_json::to_value(held).unwrap_or_default())
             }
             ReceiptStatus::Cancelled { .. } => completed(
@@ -370,7 +370,7 @@ mod tests {
         let asked = answered(
             InvocationId::new(),
             1,
-            "notes.note:1#write".to_owned(),
+            "notes.note:1#write",
             who.clone(),
             Ok(InvocationReceipt {
                 invocation: InvocationId::new(),
@@ -387,7 +387,7 @@ mod tests {
         let denied = answered(
             InvocationId::new(),
             1,
-            "notes.note:1#write".to_owned(),
+            "notes.note:1#write",
             who,
             Ok(InvocationReceipt {
                 invocation: InvocationId::new(),

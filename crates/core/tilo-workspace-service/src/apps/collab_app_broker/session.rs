@@ -30,12 +30,16 @@ pub(super) struct AppConnection {
     pub(super) holds: route_holds::ConnectionHolds,
 }
 
+/// The certificate a connection acts under in a workspace, answered for the workspace it names.
+type CertificateForWorkspace =
+    Rc<dyn Fn(&str) -> Result<tilo_user_identity::DeviceCert, String>>;
+
 /// Who an app's connection acts as: the person whose device it runs on, in whichever workspace
 /// a record it names is in, and the workspace agent its launch named, if any.
 #[derive(Clone)]
 pub(super) struct ConnectionIdentity {
     /// The certificate the connection acts under in a workspace.
-    pub(super) certificate: Rc<dyn Fn(&str) -> Result<tilo_user_identity::DeviceCert, String>>,
+    pub(super) certificate: CertificateForWorkspace,
     /// The workspace agent the launch named; `None` for the person.
     pub(super) member: Option<String>,
 }

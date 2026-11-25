@@ -461,12 +461,13 @@ pub async fn run_on_device(
     telling::start(&workspaces);
     // The records of the tilolang apps built in (tl Chat, Tasks) answer here where no window of
     // their app is open: what an agent's reply and its tools write through.
-    match workspaces.tilolang() {
-        Some(tilolang) => tilolang.records.serve(&workspaces),
-        None => tracing::warn!(
+    if let Some(tilolang) = workspaces.tilolang() {
+        tilolang.records.serve(&workspaces);
+    } else {
+        tracing::warn!(
             "this daemon runs no tilolang runtime: no built-in app's record is served, and an \
              agent's reply reaches none"
-        ),
+        );
     }
     // The vault's own actions (the code of the moment, keeping a seed and forgetting it) are
     // what an app that shows one-time codes calls: served here, where the vault is.
@@ -630,7 +631,7 @@ type Roster = Arc<dyn agent_keys::AgentKeys>;
 ///
 /// # Errors
 /// The agent belongs to no person, or has no key of its own on this device.
-async fn agent_caller(
+fn agent_caller(
     roster: &Roster,
     workspace: WorkspaceId,
     agent: &Agent,
@@ -715,7 +716,6 @@ impl crate::work::AgentEngine for EngineKeys {
                 [0; 32],
                 workspaces.device_cert().user_public_key,
             )
-            .await
             .is_ok()
         })
     }
@@ -966,8 +966,7 @@ impl ServerAgents {
                 agent,
                 person,
                 self.workspaces.device_cert().user_public_key,
-            )
-            .await;
+            );
         }
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
@@ -983,8 +982,7 @@ impl ServerAgents {
             approved,
             person,
             self.workspaces.device_cert().user_public_key,
-        )
-        .await?
+        )?
         .working_under(agent.id.0.clone(), &agent.name))
     }
 
@@ -1461,7 +1459,7 @@ impl ServerAgents {
                     .await
                     .map(|known| learned::told(&known));
                 Box::pin(work(
-                    model, &scope, &mut turn, budget, &mut reply, going, keeping, told, web,
+                    model, &scope, &mut turn, budget, &mut reply, going, keeping, Beside { told, web },
                 ))
                 .await
             }
@@ -1978,14 +1976,16 @@ impl Written {
         let before = self.before.lock_recover();
         let mut now = self.now.lock_recover();
         now.0.push_str(piece);
-        if !now.1.is_none_or(|last| last.elapsed() >= STREAM_EVERY) {
+        if now.1.is_some_and(|last| last.elapsed() < STREAM_EVERY) {
             return None;
         }
         let body = joined(before.trim(), now.0.trim());
+        drop(before);
         if body.is_empty() {
             return None;
         }
         now.1 = Some(tilo_clock::now());
+        drop(now);
         Some(body)
     }
 
@@ -1994,7 +1994,7 @@ impl Written {
     fn think(&self, piece: &str) -> Option<String> {
         let mut thought = self.thought.lock_recover();
         thought.0.push_str(piece);
-        if !thought.1.is_none_or(|last| last.elapsed() >= STREAM_EVERY) {
+        if thought.1.is_some_and(|last| last.elapsed() < STREAM_EVERY) {
             return None;
         }
         let reasoned = thought.0.trim().to_owned();
@@ -2002,6 +2002,7 @@ impl Written {
             return None;
         }
         thought.1 = Some(tilo_clock::now());
+        drop(thought);
         Some(reasoned)
     }
 
@@ -2018,6 +2019,7 @@ impl Written {
         if !said.is_empty() {
             *before = joined(before.trim(), said);
         }
+        drop(before);
         now.0.clear();
         now.1 = None;
     }
@@ -2517,6 +2519,13 @@ async fn invoke_at(
     .map_err(|error| error.to_string())?
 }
 
+/// What a turn has beside its agent's own tools: what it was told of its person, and the public
+/// web it may look up.
+struct Beside {
+    told: Option<String>,
+    web: web_search::Web,
+}
+
 /// Work on `turn` with its model through the agent's tools until the model answers, the
 /// budget is spent or its person stops it: how it ended, and what it cost. It asks its model for
 /// as long as the model calls tools; nothing counts those asks to end the turn.
@@ -2530,9 +2539,9 @@ async fn work(
     reply: &mut Reply,
     going: &going::Going,
     keeping: Option<&learned::Keeping>,
-    told: Option<String>,
-    web: web_search::Web,
+    beside: Beside,
 ) -> (Outcome, u64, TurnUsage) {
+    let Beside { told, web } = beside;
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
         .ok()

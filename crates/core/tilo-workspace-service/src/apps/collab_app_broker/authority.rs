@@ -185,7 +185,7 @@ impl AppBrokerState {
             .map(|resolve| resolve(app))
     }
     /// The person `cert` certifies, acting from that certificate's device.
-    pub(super) fn certified_person(&self, cert: &tilo_user_identity::DeviceCert) -> BrokerActor {
+    pub(super) fn certified_person(cert: &tilo_user_identity::DeviceCert) -> BrokerActor {
         BrokerActor::person(person_id_for_root(cert.user_public_key))
             .capped(cert.capabilities.foreign)
     }

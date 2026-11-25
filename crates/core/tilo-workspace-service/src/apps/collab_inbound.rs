@@ -116,7 +116,7 @@ pub fn follow_reach(
             match moved.recv().await {
                 Ok(moved) => tell_records_moved(
                     &fanout,
-                    &CrdtRoute::record(&moved.app, &moved.workspace.to_string(), &moved.record),
+                    &CrdtRoute::record(&moved.app, moved.workspace.to_string(), &moved.record),
                 ),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     tracing::warn!(

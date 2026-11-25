@@ -396,7 +396,7 @@ impl Device {
                 .await
                 .unwrap(),
             seat::Attested::Unnamed(connection) => {
-                self.shell.vouch(connection, None).await.unwrap()
+                self.shell.vouch(connection, None).await.unwrap();
             }
             seat::Attested::Refused => {}
         }
@@ -413,7 +413,7 @@ fn processes_fake(
     Arc::new(move |connection| {
         reached.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::thread::spawn(move || {
-            if let Ok(Some(ToDevice::Running)) = ToDevice::receive(&connection) {
+            if matches!(ToDevice::receive(&connection), Ok(Some(ToDevice::Running))) {
                 FromDevice::Running(Vec::new()).send(&connection).unwrap();
             }
         });
@@ -693,7 +693,7 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
     );
     let connection = shell.processes().await.unwrap();
     assert_eq!(
-        ask(connection.into()).await.unwrap().unwrap(),
+        ask(connection).await.unwrap().unwrap(),
         Some(FromDevice::Running(Vec::new())),
         "the shell's connection reaches the processes"
     );

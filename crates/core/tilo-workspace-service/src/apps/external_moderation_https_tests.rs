@@ -769,7 +769,6 @@ mod https_completion {
 mod store_report_fixture {
     use std::collections::BTreeMap;
 
-    use tilo_resource::AppNamed;
     use tilo_resource::{self, Model, Refusal, resource};
 
     pub const DRAFT_STATUS: &str = "Not submitted";
@@ -803,7 +802,7 @@ mod store_report_fixture {
             #[param("App identity")] app_id: String,
         ) -> Result<(), Refusal> {
             let report = self.reports.entry(app_id).or_default();
-            report.status = DRAFT_STATUS.to_owned();
+            DRAFT_STATUS.clone_into(&mut report.status);
             Ok(())
         }
 

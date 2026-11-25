@@ -924,26 +924,6 @@ impl BrokerHandle {
             .connect_local_worker(route, certificate)
     }
 
-    /// Connects one local host worker with a lookup of the original
-    /// invocations delivered to it.
-    #[cfg(test)]
-    pub(crate) fn connect_local_worker_with_originals(
-        &self,
-        route: CrdtRoute,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<
-        (
-            tilo_socket::Stream,
-            crate::apps::collab_app_broker::OriginalLookup,
-        ),
-        String,
-    > {
-        self.fanout
-            .app_broker()
-            .ok_or("unavailable")?
-            .connect_local_worker_with_originals(route, certificate)
-    }
-
     /// Cloneable handle for the live resource/action search provider.
     pub fn app_action_broker(&self) -> Option<AppActionBroker> {
         self.fanout

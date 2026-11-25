@@ -79,7 +79,7 @@ mod external_moderation_rpc_tests {
                 });
             };
             let written = Arc::clone(&self.outcome);
-            let (caller, asking) = (caller.clone(), request.clone());
+            let (caller, asking) = (caller.clone(), request);
             let origin = self.origin.get().cloned();
             tokio::task::spawn_local(async move {
                 let Some(origin) = origin else {
@@ -568,7 +568,7 @@ mod external_moderation_rpc_tests {
                     let (actor, _) = workspace.caller();
                     assert!(actor.direct());
                     let exact = argument(&operation(action == "appeal"));
-                    let invocation = tilo_actions::InvocationId::new();
+                    let _invocation = tilo_actions::InvocationId::new();
                     assert!(matches!(
                         workspace.state.confirmation_token(
                             980,

@@ -300,7 +300,7 @@ fn change_of(bytes: &[u8], workspace: WorkspaceId) -> Option<([u8; 32], Vec<u8>)
             inner = inner.checked_add(32)?;
             bytes_at(&delta, &mut inner)?
         }
-        _ => delta.to_vec(),
+        _ => delta.clone(),
     };
     Some((author, body))
 }

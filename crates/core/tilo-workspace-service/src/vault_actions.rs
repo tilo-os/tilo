@@ -178,7 +178,7 @@ impl ActionProvider for VaultActions {
                         reason: "forget names the item to remove".to_owned(),
                     }),
                 },
-                _ => unreachable!("the action was checked above"),
+                _ => Err(ActionCallError::UnknownAction),
             };
             complete.complete(match outcome {
                 Ok(value) => Ok(InvocationState::new(
@@ -323,7 +323,7 @@ fn item_id(reference: &str) -> Result<accounts::vault_items::ItemId, ActionCallE
     reference
         .strip_prefix(&format!("{RESOURCE}:"))
         .and_then(accounts::vault_items::ItemId::parse)
-        .ok_or(ActionCallError::InvalidRequest {
+        .ok_or_else(|| ActionCallError::InvalidRequest {
             reason: "an item is named by its reference, `vault.item:<id>`".to_owned(),
         })
 }
@@ -409,7 +409,7 @@ impl PublishedResources for VaultPublished {
         let resource = resource.to_owned();
         let workspaces = self.workspaces.clone();
         let watch = self.mint();
-        let named = resource.clone();
+        let named = resource;
         let task = self.runtime.spawn(async move {
             // The code changes every period; a reading a second keeps its countdown right, and
             // the first one arrives at once.
@@ -446,6 +446,7 @@ impl PublishedResources for VaultPublished {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(at) = watches.iter().position(|(id, _)| *id == watch.id()) {
             let (_, task) = watches.remove(at);
+            drop(watches);
             task.abort();
         }
     }
@@ -470,17 +471,32 @@ impl PublishedResources for VaultPublished {
 fn iso_text(unix_secs: u64) -> String {
     let days = i64::try_from(unix_secs / 86_400).unwrap_or(0);
     let secs = unix_secs % 86_400;
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).
-    let z = days + 719_468;
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`). Every operand
+    // is bounded far below the integer's end, so the saturating forms take nothing away.
+    let z = days.saturating_add(719_468);
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
+    let yoe = doe
+        .saturating_sub(doe / 1_460)
+        .saturating_add(doe / 36_524)
+        .saturating_sub(doe / 146_096)
+        / 365;
+    let y = yoe.saturating_add(era.saturating_mul(400));
+    let doy = doe.saturating_sub(
+        yoe.saturating_mul(365)
+            .saturating_add(yoe / 4)
+            .saturating_sub(yoe / 100),
+    );
+    let mp = doy.saturating_mul(5).saturating_add(2) / 153;
+    let d = doy
+        .saturating_sub(mp.saturating_mul(153).saturating_add(2) / 5)
+        .saturating_add(1);
+    let m = if mp < 10 {
+        mp.saturating_add(3)
+    } else {
+        mp.saturating_sub(9)
+    };
+    let y = if m <= 2 { y.saturating_add(1) } else { y };
     format!(
         "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
         secs / 3_600,

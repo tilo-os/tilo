@@ -880,7 +880,7 @@ fn a_revoked_device_is_refused_as_revoked_and_only_a_retirement_carries_its_entr
         .expect("the entry verifies");
     assert_eq!(
         refused(&revocations),
-        tilo_server_protocol::refusal::Refusal::Revoked(Box::new(retired.clone())),
+        tilo_server_protocol::refusal::Refusal::Revoked(Box::new(retired)),
         "a retired device keeps the entry its root signed"
     );
 
