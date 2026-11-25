@@ -253,7 +253,7 @@ mod views;
 mod wait_list;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::store::{Appetite, Store as LinkStore};
@@ -463,6 +463,50 @@ fn member_roots(peer: &StatePeer, now: SystemTime) -> std::collections::BTreeSet
         .unwrap_or_default()
         .into_iter()
         .collect()
+}
+
+/// What the workspace record kept at `path` holds where its types' rules do not place it, and
+/// how many members it has: read from its stored documents without opening it for writes and
+/// without moving a record ([`crate::readers_report`]). `surfaces` are the app surfaces the
+/// kinds' readers are declared from.
+///
+/// # Errors
+/// The record cannot be read, is of an older layout that opening would rewrite, or one of its
+/// stored documents does not read.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn kept_report(
+    path: &Path,
+    surfaces: &[tilo_actions::surface::Surface],
+) -> Result<(String, crate::readers_report::WorkspaceReport), String> {
+    // A record of an older layout is brought up by opening it, which writes: a report never
+    // writes, so it says what it found instead.
+    let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let (version, _) = postcard::take_from_bytes::<u32>(&bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if version != DOCUMENT_VERSION {
+        return Err(format!(
+            "{}: a workspace record of version {version}, which this build opens by writing it",
+            path.display()
+        ));
+    }
+    let governed = GovernedWorkspace::open(path.to_path_buf(), None)?;
+    let (members, name) = {
+        let peer = governed.peer();
+        let governance = peer.governance();
+        let members = governance
+            .governed_members(tilo_clock::wall())
+            .map_or(0, |members| members.members.len());
+        let name = governance
+            .workspace_name()
+            .unwrap_or_else(|| governed.workspace().to_owned());
+        (members, name)
+    };
+    let mut store = governed.resources.store_mut();
+    crate::readers_report::declare_surfaces(&mut store, surfaces);
+    Ok((
+        name,
+        crate::readers_report::WorkspaceReport::of(&store, members),
+    ))
 }
 
 impl GovernedWorkspace {

@@ -30,6 +30,11 @@ pub const DEVICE_INFO_ARG: &str = "--device-info";
 /// Prints the tools a workspace's MCP server offers an agent, as JSON, and exits.
 pub const TOOLS_JSON_ARG: &str = "--tools-json";
 
+/// Prints what each workspace a state directory keeps holds where its types' readers are not,
+/// and how many members it has: counts only, read without opening anything for writes or
+/// repairing it. Takes the workspaces directory and the surface directory beside it.
+pub const READERS_REPORT_ARG: &str = "--readers-report";
+
 /// Runs this executable as the consent prompt shown before a confined app
 /// first captures from a camera or microphone (macOS).
 pub const CONSENT_HELPER_ARG: &str = "--device-consent";
@@ -52,6 +57,32 @@ fn run() -> io::Result<()> {
         .is_some_and(|argument| argument == TOOLS_JSON_ARG)
     {
         println!("{}", tilo_mcp::tools_json());
+        return Ok(());
+    }
+    // What each workspace a server's state directory keeps holds where its types' readers are
+    // not: counts an operator reads with the daemon stopped, and nothing written.
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == READERS_REPORT_ARG)
+    {
+        let [_, workspaces, surfaces] = arguments.as_slice() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{READERS_REPORT_ARG} takes a workspaces directory and a surfaces directory"
+                ),
+            ));
+        };
+        let reports = tilo_workspace_service::readers_report::read_state(
+            Path::new(workspaces),
+            Path::new(surfaces),
+        )
+        .map_err(io::Error::other)?;
+        for (name, report) in reports {
+            for line in report.lines(&name) {
+                println!("{line}");
+            }
+        }
         return Ok(());
     }
     // What this computer's device is, as its daemon answers it: a workspace VM's keeper reads it

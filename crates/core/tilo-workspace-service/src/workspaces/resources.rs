@@ -327,7 +327,7 @@ impl Resources {
     }
 
     /// The store, while its workspace is held alone.
-    fn store_mut(&self) -> std::sync::MutexGuard<'_, Store> {
+    pub(super) fn store_mut(&self) -> std::sync::MutexGuard<'_, Store> {
         use tilo_lock::MutexRecover as _;
         self.store.lock_recover()
     }

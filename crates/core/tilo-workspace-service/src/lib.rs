@@ -85,6 +85,10 @@ pub mod metrics;
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
+/// What a state directory's workspaces hold where their types' readers are not: counts an
+/// operator reads, without writing or repairing anything.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod readers_report;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
 /// The typed actions of the workspace resources the person's shell changes.
