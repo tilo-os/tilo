@@ -799,7 +799,20 @@ validate_partition_identity() {
     || die "$label size changed after selection; refresh disks and review again"
 }
 
+# An erase install lays out a 2 GiB EFI partition, a 1 GiB /boot and the encrypted root
+# (tilo-disk-encrypt prepare), and the root needs the 32 GiB an alongside root needs: the
+# 35 GiB the installer offers as the least Tilo size. A smaller disk is refused here, before
+# anything is written, not once the image no longer fits on a disk already erased.
+MIN_WHOLE_DISK_BYTES=37580963840
+validate_disk_capacity() {
+  local size
+  size="$(blockdev --getsize64 "$DISK")" || die "could not read the size of $DISK"
+  [ "$size" -ge "$MIN_WHOLE_DISK_BYTES" ] \
+    || die "$DISK holds $((size / 1073741824)) GiB; installing Tilo on a whole disk needs at least 35 GiB"
+}
+
 validate_disk_identity
+[ "$ALONGSIDE" -eq 1 ] || validate_disk_capacity
 
 # Never target the disk the live medium itself is running from. The root may
 # be overlayfs, so inspect every mounted block source and reduce partitions,
