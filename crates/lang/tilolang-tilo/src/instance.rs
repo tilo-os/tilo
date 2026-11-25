@@ -2529,11 +2529,14 @@ impl Instance {
         }
     }
 
-    /// Where an edit the window made in the view of `level` showing `target` applies.
-    fn edited(&self, level: Level, target: &ui::ResourceRef) -> Result<Place, Words> {
+    /// Where an edit the window made in the control `key` of the view of `level` showing
+    /// `target` applies.
+    fn edited(&self, level: Level, target: &ui::ResourceRef, key: &str) -> Result<Place, Words> {
         if let Some(shown) = self.level(level) {
-            // The level's own view, showing the item the edit was made in.
-            if wire::resource(&shown.target) == *target {
+            // The level's own view, showing the item the edit was made in, or drawing the
+            // control itself: a row of its list open into its item where it stands holds the
+            // item's page, whose controls are the view's own and bound to the item.
+            if wire::resource(&shown.target) == *target || shown.view.borrow().find(key).is_some() {
                 return Ok(Place::Here(Rc::clone(&shown.view)));
             }
             // The window draws its page beside its list for the item it shows: the edit is the
@@ -2571,7 +2574,7 @@ impl Instance {
         (at, delete): (u32, u32),
         insert: &str,
     ) -> Result<(), Words> {
-        let place = self.edited(level, target)?;
+        let place = self.edited(level, target, key)?;
         if place.shown()
             && let Some(level) = self.level_mut(level)
         {
@@ -2595,7 +2598,7 @@ impl Instance {
         value: Value,
         gesture: Option<&str>,
     ) -> Result<(), Words> {
-        let place = self.edited(level, target)?;
+        let place = self.edited(level, target, key)?;
         self.edit_at(level, target, place, key, value, gesture)
     }
 
