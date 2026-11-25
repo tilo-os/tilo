@@ -381,7 +381,10 @@ impl App {
             // History's own chrome took this input: what widgets queued runs in no frame that
             // follows it, so the entry (or return) it asks for seals the live queue instead.
             app.input.passive_input = true;
-            app.dispatch_framework_history_event(&event, window.scale_factor());
+            #[cfg(feature = "model")]
+            {
+                app.dispatch_framework_history_event(&event, window.scale_factor());
+            }
             window.request_redraw();
             return true;
         }
@@ -1413,11 +1416,14 @@ impl App {
         drop(laying_out);
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame built the tree, as a window of its own pays it.
-        #[cfg(test)]
-        let publish_probe = crate::profiling::frame_probe::span("frame.publish");
-        self.publish_owed_action_surface();
-        #[cfg(test)]
-        drop(publish_probe);
+        #[cfg(feature = "model")]
+        {
+            #[cfg(test)]
+            let publish_probe = crate::profiling::frame_probe::span("frame.publish");
+            self.publish_owed_action_surface();
+            #[cfg(test)]
+            drop(publish_probe);
+        }
         // Members' marks over the widgets, for a host that shows the
         // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
         let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));

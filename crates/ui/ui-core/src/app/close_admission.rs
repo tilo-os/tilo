@@ -10,6 +10,7 @@ use crate::widget::Widget;
 #[path = "../../../../../vendor/winit/src/platform_impl/quit_request.rs"]
 mod native_quit_request;
 
+#[cfg(feature = "model")]
 /// Why the workspace did not take what a window published, in words a person reads.
 fn barrier_failure(error: &crate::collaboration::DocumentPublicationError) -> String {
     use crate::collaboration::DocumentPublicationError;
@@ -53,6 +54,18 @@ impl App {
         if self.close_admission.admitted {
             return true;
         }
+        // A window keeps nothing a workspace lacks without the model: it goes at once.
+        #[cfg(feature = "model")]
+        let ready = self.admit_workspace_close();
+        #[cfg(not(feature = "model"))]
+        let ready = true;
+        ready
+    }
+
+    /// [`Self::request_close`] for a window whose records a workspace keeps: it goes once every
+    /// change it made is kept, and a refusal keeps it open with its edits.
+    #[cfg(feature = "model")]
+    fn admit_workspace_close(&mut self) -> bool {
         // Native hosts may deliver another window-close or application Quit
         // while a decision is already visible. Coalesce it here so it cannot
         // replace the session, semantic addresses, focus, or failure detail.
@@ -144,6 +157,7 @@ impl App {
         self.invalidate_close_presentation();
     }
 
+    #[cfg(feature = "model")]
     /// Whether the workspace keeps every change of the window's records, for a close: what the
     /// window published since it checkpointed is answered by a barrier first. A window with
     /// nothing the workspace lacks goes at once, connected or not.
@@ -215,6 +229,7 @@ impl App {
         ))
     }
 
+    #[cfg(feature = "model")]
     /// Send again, whole, each record the person asked to try again
     /// ([`crate::resource::ResourceStore::take_resend`]), and with `refused` every record the
     /// workspace refused: the next pump publishes it, and the barrier after it settles it.
@@ -241,6 +256,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Take the workspace's answer to the window's barrier, when it came, and ask for
     /// another once a record's route sent changes the workspace has not confirmed, so the save
     /// indicator says Saved only for what the workspace took ([`crate::close_admission::Barrier`]).
@@ -346,6 +362,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Whether the window has let go of the invocations the broker hands it, so it may close:
     /// it takes no more and it answered every one it was handed; the close then waits until the
     /// answers reached the broker ([`Self::kept_before_close`]). One left unanswered as the window
@@ -410,14 +427,18 @@ impl App {
         self.close_admission.admitted = true;
         // No document mutation/event may run between checkpoint and finalization.
         // Existing teardown may cancel jobs through its immutable-document poll.
-        self.component_close_reports
-            .extend(crate::component_lifecycle::finish_admitted_close(
-                self.root_widget.as_mut(),
-            ));
+        #[cfg(feature = "model")]
+        {
+            self.component_close_reports
+                .extend(crate::component_lifecycle::finish_admitted_close(
+                    self.root_widget.as_mut(),
+                ));
+        }
         self.close_wake_scope();
         true
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn checkpoint_before_close(&mut self) -> Vec<String> {
         let _entry = self.enter_wake_scope();
         // Sent, not waited for: a closing window asks each pass whether the workspace answered
@@ -479,6 +500,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "model")]
     /// The person keeps editing: the close this window had begun is called off. It takes
     /// invocations again, and a save of its own that later succeeds closes nothing.
     fn keep_editing(&mut self) {
@@ -493,6 +515,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "model")]
     fn start_close_save(&mut self) -> Result<(), String> {
         let current: Vec<_> = crate::component_lifecycle::unsaved_documents(
             self.root_widget.as_ref(),
@@ -553,6 +576,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn observe_close_save(&mut self, update: &tilo_actions::InvocationUpdate) {
         if !self.close_admission.save_waiting || !update.is_terminal() {
             return;
@@ -567,6 +591,7 @@ impl App {
         });
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn close_broker_result(
         &mut self,
         request_id: u64,
@@ -589,6 +614,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn service_close_admission(&mut self) {
         let _started_only = crate::storage::waiting::forbid_on_this_thread();
         // The workspace's answer to what the window published, which its records' save status

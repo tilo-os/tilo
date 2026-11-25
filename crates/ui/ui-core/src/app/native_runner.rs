@@ -3893,7 +3893,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             let _input = slow_event::phase("input_backlog");
             self.route_input_backlog(true);
         }
-        self.app.service_close_admission();
+        #[cfg(feature = "model")]
+        {
+            self.app.service_close_admission();
+        }
         if self.app.finish_close_if_ready() {
             self.closing.set(true);
             return;

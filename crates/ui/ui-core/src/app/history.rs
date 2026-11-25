@@ -368,8 +368,20 @@ impl App {
         self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
-    #[cfg(feature = "model")]
+    /// Whether History's own chrome (the window's, or one the app embeds) takes `event`.
     pub(super) fn history_controls_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
+        #[cfg(feature = "model")]
+        let controls = self.history_takes_event(event, scale);
+        #[cfg(not(feature = "model"))]
+        let controls = {
+            let _ = (event, scale);
+            false
+        };
+        controls
+    }
+
+    #[cfg(feature = "model")]
+    fn history_takes_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         let nested = crate::history_mode::embedded::observe_event(
             self.root_widget.as_mut(),
             event,
