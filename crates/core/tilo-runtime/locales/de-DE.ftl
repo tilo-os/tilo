@@ -21,6 +21,9 @@ other-devices-name-workspace = { $device } ist hier in mehr als einem deiner Arb
 so-tilo-layout-read = Lies das Layout: die Workspaces, Streifen und Fenster darauf, die App und den Record, die jedes Fenster zeigt, und die anderen Workspaces, die der Aufrufer hier erreicht.
 so-tilo-layout-place = Öffne ein Fenster einer App im Layout, als das des Aufrufers: neben dem vordersten Fenster, auf dem Record, das es nennt, oder dem der App eigenen. Ein Record, den ein Fenster bereits zeigt, bleibt, wo er ist.
 so-tilo-layout-close = Schließe ein Fenster im Layout, überall wo es gezeigt wird. Sein Record bleibt im Workspace.
+so-tilo-layout-position = Stelle ein Fenster an einen Punkt auf der Leinwand seines Workspaces, so wie es ein Ziehen zurücklässt, das es dort losgelassen hat: ein Anordnungsschritt für die ganze Geste.
+so-tilo-layout-size = Gib einem Fenster eine Größe auf der Leinwand seines Workspaces, wie das Ziehen seiner Kante es tut.
+so-tilo-layout-activate = Bringe ein Fenster vor seinen Streifen und seinen Workspace nach vorn, wie ein Druck auf seine Leiste es tut.
 
 # Was der Paket-Cache eines Geräts anbietet, wie sein Daemon es veröffentlicht.
 so-tilo-packages-collect = Zurückgewinnen, was nichts mehr braucht

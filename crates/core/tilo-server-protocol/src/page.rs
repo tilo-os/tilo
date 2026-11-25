@@ -4,8 +4,10 @@
 //!
 //! The serving device opens the app's view of the workspace's document and
 //! renders it as semantic HTML; the page shows that HTML and sends back what
-//! its person does on it, one [`PageAsk::Act`] per click or edit, each
-//! answered with the elements that changed. Beside those answers the page is
+//! its person does on it, one [`PageAsk::Act`] per click or edit and one
+//! [`PageAsk::Pointer`] per drag or resize, each answered with the elements
+//! that changed, and draws itself in the look [`PageAsk::Appearance`] names.
+//! Beside those answers the page is
 //! told what the person's devices show as notifications
 //! ([`PageAnswer::Notices`]), which it raises while it is not in front, and a
 //! notification they dismiss there is answered in the record their devices
@@ -78,8 +80,8 @@ pub struct WaitingAddress {
 }
 
 /// The app name a page's address carries for the workspace's desktop (`/w/<workspace>/desktop`):
-/// the shell's own view of the layout the workspace's people share, its windows each a link to
-/// its app's own page.
+/// the shell's own view of the layout the workspace's people share, its windows each the app's
+/// own page shown where the shell leaves the well.
 pub const DESKTOP: &str = "desktop";
 
 /// What a page's address names: the workspace (its id), the app (the last
@@ -191,6 +193,33 @@ pub enum PageAsk {
     /// The person is done with the notification `id` — they dismissed it, on the page or in the
     /// browser's own list: said in the record of their devices, which takes it off every one.
     AnswerNotice { id: String },
+    /// The pointer, at the point it names in the view's own logical pixels: the gesture a person
+    /// makes on the page, as a device's pointer reaches the window's widgets. A press that
+    /// travelled is sent whole — its press, its moves and its release — so a drag on a window or
+    /// a resize of its edge runs the view's own gesture there, as it does on a device.
+    Pointer(PointerEvent),
+    /// The appearance the browser asks for: the page is drawn in the light or dark look `dark`
+    /// names, as a window follows the system it runs on. Answered with the page whole.
+    Appearance { dark: bool },
+}
+
+/// One pointer event a page sends into the window it shows, at `(x, y)` in the window's own
+/// logical pixels. Only the primary button is carried: a page's drags and resizes are the
+/// person's left press, as the same gestures are on a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointerEvent {
+    pub kind: PointerKind,
+    pub x: i64,
+    pub y: i64,
+}
+
+/// What the pointer did: it pressed, it moved while pressed, or it let go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointerKind {
+    Down,
+    Move,
+    Up,
 }
 
 /// One notification the person's devices show, as the record of their devices holds it: what a
@@ -416,6 +445,30 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<PageAsk>(r#"{"answer_notice":{"id":"7f"}}"#).unwrap(),
             PageAsk::AnswerNotice { id: "7f".into() }
+        );
+        // A press that travelled reaches the view as its press, its move and its release.
+        assert_eq!(
+            serde_json::from_str::<PageAsk>(r#"{"pointer":{"kind":"down","x":120,"y":40}}"#)
+                .unwrap(),
+            PageAsk::Pointer(PointerEvent {
+                kind: PointerKind::Down,
+                x: 120,
+                y: 40,
+            })
+        );
+        assert_eq!(
+            serde_json::to_string(&PageAsk::Pointer(PointerEvent {
+                kind: PointerKind::Up,
+                x: 1,
+                y: 2,
+            }))
+            .unwrap(),
+            r#"{"pointer":{"kind":"up","x":1,"y":2}}"#
+        );
+        // The browser's look reaches the page as the script writes it.
+        assert_eq!(
+            serde_json::from_str::<PageAsk>(r#"{"appearance":{"dark":false}}"#).unwrap(),
+            PageAsk::Appearance { dark: false }
         );
         assert_eq!(
             serde_json::to_string(&PageAnswer::Notices(vec![PageNotice {

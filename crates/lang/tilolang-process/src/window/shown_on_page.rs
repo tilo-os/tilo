@@ -10,7 +10,7 @@
 //! is the app's own action, run by its instance under the identity its connection was opened as.
 
 use tilo_server_protocol::page::window::{self, WindowAnswer, WindowAsk};
-use tilo_server_protocol::page::{PageAction, PagePatch};
+use tilo_server_protocol::page::{PageAction, PagePatch, PointerEvent, PointerKind};
 use ui::a11y::Action;
 use ui::composition::Composition;
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
@@ -128,6 +128,62 @@ impl ShownOnPage {
                 .is_some_and(tilo_app_window::AppWindow::presses_unanswered)
         });
         self.changed(frame)
+    }
+
+    /// The pointer at `event`, carried into the view's widgets as a device's pointer is: a drag
+    /// on the page runs the same gesture the view runs natively, and the arranging action it
+    /// commits is the one a device commits. What it changed.
+    pub fn pointer(&mut self, frame: &mut Driver, event: PointerEvent) -> Vec<Patch> {
+        use ui::winit::dpi::PhysicalPosition;
+        use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        let device_id = DeviceId::dummy();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a pointer's logical pixel is well inside f64's exact range"
+        )]
+        let position = PhysicalPosition::new(event.x as f64, event.y as f64);
+        match event.kind {
+            PointerKind::Down => {
+                frame.dispatch_to_root(&WindowEvent::CursorMoved {
+                    device_id,
+                    position,
+                });
+                frame.dispatch_to_root(&WindowEvent::MouseInput {
+                    device_id,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                });
+            }
+            PointerKind::Move => {
+                frame.dispatch_to_root(&WindowEvent::CursorMoved {
+                    device_id,
+                    position,
+                });
+            }
+            PointerKind::Up => {
+                frame.dispatch_to_root(&WindowEvent::CursorMoved {
+                    device_id,
+                    position,
+                });
+                frame.dispatch_to_root(&WindowEvent::MouseInput {
+                    device_id,
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                });
+            }
+        }
+        self.changed(frame)
+    }
+
+    /// Draw the page in the light or dark look `dark` names, as a window follows the system it
+    /// runs on: the whole page again, in the theme's tokens.
+    pub fn appearance(&mut self, frame: &mut Driver, dark: bool) -> Shown {
+        frame.set_theme(if dark {
+            ui::Theme::dark()
+        } else {
+            ui::Theme::light()
+        });
+        self.open(frame, None)
     }
 
     /// What changed on the page once it shows `wells` in its wells, by place: what the device
@@ -254,6 +310,13 @@ pub fn serve(
             WindowAsk::Changed => WindowAnswer::Changed(patches(page.changed(frame))),
             WindowAsk::Wells(wells) => {
                 WindowAnswer::Changed(patches(page.fill_wells(frame, wells)))
+            }
+            WindowAsk::Pointer(event) => WindowAnswer::Changed(patches(page.pointer(frame, event))),
+            WindowAsk::Appearance { dark } => {
+                let Shown {
+                    title, css, body, ..
+                } = page.appearance(frame, dark);
+                WindowAnswer::Shown { title, css, body }
             }
         };
         window::send(link, &answer)?;

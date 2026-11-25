@@ -46,7 +46,8 @@ decides by role what each node shows:
 - **Paint**: the widget's picture, with every node in it that acts standing
   over it, where it is drawn, as a button.
 - **Well**: a window node naming a place is filled by the page's host with what
-  stands for that window.
+  stands for that window — on a workspace's desktop, that window's own page, shown
+  where the compositor shows its surface on a device.
 - **Call**: a call's tile carries the picture it shows. The browser decodes the
   call's own stream with WebCodecs (`web/voice-video.mjs`) and draws it into the
   tile's canvas at the rate the native call sends it; the tile's face, name and
@@ -81,6 +82,19 @@ scroll and focus. A surface over the window carries the point it appears from
 appear timing, as `motion::Appear` does natively. An
 open page also asks every few seconds what others changed, so their edits reach
 it.
+
+A press that travels is a gesture, not a click: on the shell's canvas or a
+window's frame the script sends `PageAsk::Pointer` for the press, its move and
+its release, in the view's own logical pixels, and the window hands each to its
+widgets as a device's pointer event is handed to them. So a window moved or
+resized on the page runs the same widget gesture, and the same typed arranging
+action, as on a device; a press that does not travel stays the element's own
+click.
+
+The page follows the browser's appearance: `PageAsk::Appearance` names the
+light or dark look, the window draws again in its theme's tokens and answers
+the page whole, and a person who switches their browser's scheme while reading
+gets the same page in the other look.
 
 ## Tests
 

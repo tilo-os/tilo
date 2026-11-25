@@ -21,6 +21,9 @@ other-devices-name-workspace = { $device } is in more than one of your workspace
 so-tilo-layout-read = Read the layout: the workspaces, strips and windows on it, the app and record each window shows, and the other workspaces the caller reaches here.
 so-tilo-layout-place = Open a window of an app on the layout, as the caller's: beside the window in front, on the record it names or the app's own. A record a window shows already stays where it is.
 so-tilo-layout-close = Close a window on the layout, everywhere it is shown. Its record stays in the workspace.
+so-tilo-layout-position = Stand a window at a point on its workspace's canvas, as a drag that let it go there leaves it: one arranging step for the whole gesture.
+so-tilo-layout-size = Give a window a size on its workspace's canvas, as dragging its edge does.
+so-tilo-layout-activate = Bring a window in front of its strip, and its workspace forward, as a press on its bar does.
 
 # What a device's package cache offers, as its daemon publishes it.
 so-tilo-packages-collect = Reclaim what nothing needs

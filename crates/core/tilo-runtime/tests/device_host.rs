@@ -454,6 +454,8 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
 struct ShownWindow {
     /// Told when a window's device let go of it.
     closed: std::sync::mpsc::Sender<()>,
+    /// The pointer events the page carried into the window.
+    pointers: Arc<std::sync::Mutex<Vec<tilo_server_protocol::page::PointerEvent>>>,
 }
 
 impl tilo_runtime::key_sessions::PageViews for ShownWindow {
@@ -476,6 +478,7 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
         }
         let (device, mut window) = std::os::unix::net::UnixStream::pair().unwrap();
         let closed = self.closed.clone();
+        let pointers = Arc::clone(&self.pointers);
         std::thread::spawn(move || {
             while let Some(ask) = receive::<WindowAsk>(&mut window).unwrap() {
                 let answer = match ask {
@@ -490,7 +493,23 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
                             html: format!("{action:?}"),
                         },
                     ]),
-                    WindowAsk::Changed | WindowAsk::Wells(_) => WindowAnswer::Changed(Vec::new()),
+                    WindowAsk::Changed | WindowAsk::Wells(_) => {
+                        WindowAnswer::Changed(Vec::new())
+                    }
+                    WindowAsk::Pointer(event) => {
+                        pointers.lock().unwrap().push(event);
+                        WindowAnswer::Changed(vec![
+                            tilo_server_protocol::page::PagePatch::Replace {
+                                id: 0,
+                                html: "pointer".into(),
+                            },
+                        ])
+                    }
+                    WindowAsk::Appearance { dark } => WindowAnswer::Shown {
+                        title: if dark { "Notes, dark" } else { "Notes, light" }.into(),
+                        css: String::new(),
+                        body: "<main></main>".into(),
+                    },
                 };
                 send(&mut window, &answer).unwrap();
             }
@@ -514,10 +533,14 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
     let root = SigningKey::from_bytes(&[0x13; 32]);
     let device = device_host(&root).await;
     let (closed, window_closed) = std::sync::mpsc::channel();
+    let pointers = Arc::new(std::sync::Mutex::new(Vec::new()));
     device
         .key_sessions
         .pages_served()
-        .show_through(Arc::new(ShownWindow { closed }));
+        .show_through(Arc::new(ShownWindow {
+            closed,
+            pointers: Arc::clone(&pointers),
+        }));
     let pages = device.key_sessions.pages().unwrap();
     let workspace_id = WorkspaceId::parse(&device.workspace).unwrap();
     let ada = Caller::local_person("ada").in_workspace(device.workspace.clone());
@@ -616,6 +639,37 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
             id: 7,
             html: "Toggle".into()
         })
+    );
+    // The pointer on the page reaches the window that shows it, and its answer reaches the page.
+    let carried = pages
+        .pointer(
+            workspace_id,
+            notes.page,
+            tilo_server_protocol::page::PointerEvent {
+                kind: tilo_server_protocol::page::PointerKind::Down,
+                x: 40,
+                y: 12,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        carried.first(),
+        Some(&tilo_server_protocol::page::PagePatch::Replace {
+            id: 0,
+            html: "pointer".into()
+        }),
+        "the window's answer reaches the page"
+    );
+    assert_eq!(
+        pointers.lock().unwrap().as_slice(),
+        [tilo_server_protocol::page::PointerEvent {
+            kind: tilo_server_protocol::page::PointerKind::Down,
+            x: 40,
+            y: 12,
+        }],
+        "the pointer reached the window's process"
     );
     assert_eq!(
         pages

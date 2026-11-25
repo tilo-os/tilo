@@ -224,6 +224,153 @@ pub fn close_window(
     Ok(Some(doc.save_after(&before)))
 }
 
+/// The change that stands the window `tab` at `(x, y)` on its workspace's canvas, as a drag
+/// that let it go there commits: one arranging step for the whole gesture, attributed to
+/// `person`. `None` when the layout holds no such window, or the window stood there already.
+///
+/// # Errors
+///
+/// The layout holds no desk, or the layout with the window moved did not write.
+pub fn move_window(
+    layout: &AutoCommit,
+    person: &str,
+    tab: u64,
+    x: i32,
+    y: i32,
+) -> Result<Option<Vec<u8>>, NotPlaced> {
+    let mut doc = layout.clone();
+    let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
+    let Some((workspace, group)) = group_of(&desktop.tree, tab) else {
+        return Ok(None);
+    };
+    let Some(held) = desktop.tree.workspaces.get_mut(workspace) else {
+        return Ok(None);
+    };
+    if !held.layout.set_position(group, x, y) {
+        return Ok(None);
+    }
+    write_as(&mut doc, &desktop, person).map(Some)
+}
+
+/// The change that gives the window `tab` the canvas size `width` × `height`, as dragging its
+/// edge does: one arranging step for the whole gesture, attributed to `person`. `None` when the
+/// layout holds no such window, or the window had that size already.
+///
+/// # Errors
+///
+/// The layout holds no desk, or the layout with the window resized did not write.
+pub fn size_window(
+    layout: &AutoCommit,
+    person: &str,
+    tab: u64,
+    width: u32,
+    height: u32,
+) -> Result<Option<Vec<u8>>, NotPlaced> {
+    let mut doc = layout.clone();
+    let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
+    let Some((workspace, group)) = group_of(&desktop.tree, tab) else {
+        return Ok(None);
+    };
+    let Some(held) = desktop.tree.workspaces.get_mut(workspace) else {
+        return Ok(None);
+    };
+    if !held.layout.set_size(group, width, height) {
+        return Ok(None);
+    }
+    write_as(&mut doc, &desktop, person).map(Some)
+}
+
+/// The change that brings the window `tab` in front of its strip and the workspace it stands in
+/// forward, as a press on its bar does. `None` when the layout holds no such window, or it was in
+/// front already.
+///
+/// # Errors
+///
+/// The layout holds no desk, or the layout with the window in front did not write.
+pub fn activate_window(
+    layout: &AutoCommit,
+    person: &str,
+    tab: u64,
+) -> Result<Option<Vec<u8>>, NotPlaced> {
+    let mut doc = layout.clone();
+    let mut desktop = shared_resource::read(&doc, None).ok_or(NotPlaced::NoLayout)?;
+    let Some((workspace, strip, group)) = locate_of(&desktop.tree, tab) else {
+        return Ok(None);
+    };
+    let Some((workspace_id, strip_id, group_id, active)) =
+        desktop.tree.workspaces.get(workspace).and_then(|held| {
+            let row = held.strips.get(strip)?;
+            let window = row.window_groups.get(group)?;
+            Some((held.id(), row.id, window.id, window.active_tab))
+        })
+    else {
+        return Ok(None);
+    };
+    let in_front = desktop.tree.active == workspace_id
+        && desktop.tree.active_strip.get(&workspace_id) == Some(&strip_id)
+        && active == tab;
+    if in_front {
+        return Ok(None);
+    }
+    desktop.tree.active = workspace_id;
+    desktop.tree.active_strip.insert(workspace_id, strip_id);
+    desktop.tree.set_active_group(strip_id, group_id);
+    if let Some(window) = desktop
+        .tree
+        .workspaces
+        .get_mut(workspace)
+        .and_then(|held| held.strips.get_mut(strip))
+        .and_then(|row| row.window_groups.get_mut(group))
+    {
+        window.activate_tab(tab);
+    }
+    write_as(&mut doc, &desktop, person).map(Some)
+}
+
+/// The group holding the window `tab`, with the workspace it stands in, on `tree`.
+fn group_of(tree: &crate::Layout, tab: u64) -> Option<(usize, u64)> {
+    tree.workspaces
+        .iter()
+        .enumerate()
+        .find_map(|(at, workspace)| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|shown| shown.id == tab))
+                .map(|group| (at, group.id))
+        })
+}
+
+/// The workspace, row and group the window `tab` stands in, on `tree`.
+fn locate_of(tree: &crate::Layout, tab: u64) -> Option<(usize, usize, usize)> {
+    tree.workspaces
+        .iter()
+        .enumerate()
+        .find_map(|(workspace, held)| {
+            held.strips.iter().enumerate().find_map(|(strip, row)| {
+                row.window_groups
+                    .iter()
+                    .position(|group| group.tabs.iter().any(|shown| shown.id == tab))
+                    .map(|group| (workspace, strip, group))
+            })
+        })
+}
+
+/// Write `desktop` into `doc` as `person`'s change, and answer it.
+fn write_as(
+    doc: &mut AutoCommit,
+    desktop: &SharedDesktop,
+    person: &str,
+) -> Result<Vec<u8>, NotPlaced> {
+    let before = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(person.as_bytes()));
+    shared_resource::write(doc, desktop)
+        .map_err(|error| NotPlaced::Unwritten(error.to_string()))?;
+    doc.commit();
+    Ok(doc.save_after(&before))
+}
+
 /// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never
 /// `0` or the reserved namespace.
 fn salt_of(author: &str) -> u16 {

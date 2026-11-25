@@ -873,6 +873,20 @@ function start() {
     sizing = setTimeout(resized, 150);
   });
 
+  // The appearance the browser asks for: a page follows it, as a window follows the system it
+  // runs on. The view draws its own colours, so the page says which look it is, and the view
+  // comes back whole in that look; a person who changes it while reading gets the same page.
+  const darkLook = () => globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
+  let toldLook = null;
+  const tellLook = () => {
+    const now = darkLook();
+    if (toldLook === now) return;
+    toldLook = now;
+    ask({appearance: {dark: now}});
+  };
+  globalThis.matchMedia?.('(prefers-color-scheme: dark)')
+    ?.addEventListener?.('change', () => { if (toldLook !== null) tellLook(); });
+
   const show = ({title, css, body}) => {
     const held = typingHeld();
     appTitle = title;
@@ -893,6 +907,9 @@ function start() {
     const kept = held && page.querySelector(held.key);
     if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
     follow();
+    // The view came whole: the page asks for the look this browser reads pages in, if it has
+    // not been drawn in it yet.
+    tellLook();
     // The page says it arrived, as the entry it came from did: what a tool
     // waits for is the same marker on either.
     document.documentElement.dataset.arrival = 'done';
@@ -927,6 +944,9 @@ function start() {
     }
     if (answer.shown) {
       redrawing = false;
+      // A page whole that is not the answer to the look is a window's first draw: the page asks
+      // for the look again, whatever the page before it was drawn in.
+      if (!asked?.value?.appearance) toldLook = null;
       show(answer.shown);
       // What a reopen lost is asked again, in the order it was asked, now
       // that the page is back where the person left it.
@@ -1010,6 +1030,57 @@ function start() {
       else if (history.state?.tilo) history.back();
     }
   });
+  // A drag on the canvas or on a window's frame is the shell's own gesture: the place it carries
+  // moves, its edge sizes the place, or the window comes forward, through the same arranging
+  // actions a device's pointer commits. The page sends a press that travelled whole — its press,
+  // its moves and its release, at the points it was made in the view's own logical pixels — into
+  // the view's widgets; a press that stayed is the element's own, as the page's clicks are.
+  let gesture = null;
+  const pointOf = event => {
+    const box = page.getBoundingClientRect();
+    return {x: event.clientX - box.left, y: event.clientY - box.top};
+  };
+  // The view's pixels are whole: the pointer reaches it rounded, as a device's does.
+  const pointerAsk = (kind, at) => ({pointer: {kind, x: Math.round(at.x), y: Math.round(at.y)}});
+  // Where a press reaches the shell as input rather than as an element's own action: the canvas
+  // and a window's frame, and nowhere on a control they hold.
+  const shellHolds = target =>
+    target instanceof Element
+    && target.closest('[data-w=Map],[data-w=WindowFrame]') !== null
+    && target.closest('[data-a],[data-t],input,textarea,select,a,button') === null;
+  page.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !shellHolds(event.target)) return;
+    gesture = {start: pointOf(event), id: event.pointerId, moved: false};
+    // The page hears every move the gesture makes, wherever the pointer goes; a browser that
+    // will not capture it still sends the moves over the page, which is where a window is.
+    try { page.setPointerCapture(event.pointerId); } catch { /* no capture */ }
+    event.preventDefault();
+  });
+  page.addEventListener('pointermove', event => {
+    if (!gesture || event.pointerId !== gesture.id) return;
+    const at = pointOf(event);
+    if (!gesture.moved) {
+      // A press that travels is a drag, and from here it is the view's: the press reaches it at
+      // the point it started, where the gesture began.
+      if (Math.hypot(at.x - gesture.start.x, at.y - gesture.start.y) < 4) return;
+      gesture.moved = true;
+      ask(pointerAsk('down', gesture.start));
+    }
+    event.preventDefault();
+  });
+  const pointerLetGo = event => {
+    if (!gesture || event.pointerId !== gesture.id) return;
+    const held = gesture;
+    gesture = null;
+    if (!held.moved) return;
+    const at = pointOf(event);
+    ask(pointerAsk('move', at));
+    ask(pointerAsk('up', at));
+    event.preventDefault();
+  };
+  page.addEventListener('pointerup', pointerLetGo);
+  page.addEventListener('pointercancel', () => { gesture = null; });
+
   // A form's Enter runs what its own button runs; the browser never sends it.
   // A slider steps with its arrow keys, and an element that acts without being a button
   // presses with Enter or Space, as a native control does.

@@ -8,7 +8,9 @@
 //! The workspace's desktop (`/w/<workspace>/desktop`) is a view of the shell (`so.tilo.shell`)
 //! opened the same way: the layout the workspace's people share, read and changed through the
 //! layout's actions as the page's person. Where the shell leaves a window to the device that
-//! shows it, the page shows a link to that window's own page ([`DesktopWells`]).
+//! shows it, the page shows that window's own page in the well ([`DesktopWells`]), and the
+//! pointer's gestures on the shell reach the view's widgets as a device's do, so a window is
+//! moved and resized here through the same arranging actions as on a device.
 //!
 //! The workspace's front page and its search are the device's own pages, and everything they
 //! show is asked of the device's dispatch as the page's person: the apps and actions they may
@@ -33,7 +35,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
 use tilo_server_protocol::page::{
     CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal,
-    encode_part,
+    PointerEvent, encode_part,
 };
 use tilo_workspace_service::app_serving::{AppPages, FOLLOW_EVERY, LIVE_FOLLOW_EVERY, PageAct};
 use ui::composition::page::escape;
@@ -334,6 +336,51 @@ impl Inner {
         }
     }
 
+    /// The pointer at `event` on `page`: carried into the view's widgets as a device's pointer
+    /// is, so a drag on the page is the same gesture the shell runs natively, and answered with
+    /// what it changed. A page showing no window (the front page, the search) takes no pointer.
+    fn pointer(&self, page: u64, event: PointerEvent) -> Result<Vec<PagePatch>, PageRefusal> {
+        let held = self
+            .open
+            .lock_recover()
+            .get(&page)
+            .cloned()
+            .ok_or_else(|| unavailable("the page was closed"))?;
+        let mut held = held.lock_recover();
+        let Held::App { window, wells, .. } = &mut *held else {
+            return Ok(Vec::new());
+        };
+        let mut patches = match wells {
+            Some(wells) => wells.follow(window)?,
+            None => Vec::new(),
+        };
+        patches.extend(window.pointer(event).map_err(unavailable)?);
+        Ok(patches)
+    }
+
+    /// Draw `page` in the light or dark look `dark` names, as a window follows the system it runs
+    /// on: the page whole again, from its window. A page showing no window (the front page, the
+    /// search) keeps the look it has.
+    fn appearance(&self, page: u64, dark: bool) -> Result<Option<OpenedPage>, PageRefusal> {
+        let held = self
+            .open
+            .lock_recover()
+            .get(&page)
+            .cloned()
+            .ok_or_else(|| unavailable("the page was closed"))?;
+        let mut held = held.lock_recover();
+        let Held::App { window, .. } = &mut *held else {
+            return Ok(None);
+        };
+        let (title, css, body) = window.appearance(dark).map_err(unavailable)?;
+        Ok(Some(OpenedPage {
+            page,
+            title,
+            css,
+            body,
+        }))
+    }
+
     /// The member who signed `call` for an act on the page of `app` in `workspace`, as a change's
     /// stamp names its invoker, once the call checks: a call that does not is refused, and the
     /// act runs nowhere.
@@ -493,10 +540,11 @@ impl Inner {
     }
 }
 
-/// The links a desktop page stands where its shell leaves a window to the device: each window's
-/// own page, on the record it shows, for the apps the page's person may open. Read again from
-/// the layout's actions as the page's person before each answer, so a window someone else
-/// opened anywhere leads to its page here too.
+/// What a desktop page stands where its shell leaves a window to the device: each window's own
+/// page, on the record it shows, for the apps the page's person may open. A well is where the
+/// compositor shows a window's surface on a device; a page shows the same window's own page in
+/// it, never a list of its own. Read again from the layout's actions as the page's person before
+/// each answer, so a window someone else opened anywhere shows here too.
 struct DesktopWells {
     workspace_id: WorkspaceId,
     dispatch: SessionHost,
@@ -517,7 +565,7 @@ impl DesktopWells {
         Ok(patches)
     }
 
-    /// Each window on the layout, by its key, as the link to its own page.
+    /// Each window on the layout, by its key, as its own page in the well it shows in.
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, PageRefusal> {
         let request = InvokeRequest {
             invocation: InvocationId::new(),
@@ -575,12 +623,16 @@ impl DesktopWells {
                 show: (!record.is_empty()).then(|| record.to_owned()),
             }
             .path();
+            // The window's own page fills the well, as its surface fills the same well on a
+            // device: the shell draws the frame around it, and a drag on that frame is the
+            // shell's gesture, here as there.
             wells.insert(
                 key.to_owned(),
                 format!(
-                    "<a class=\"tilo-canvas-open\" href=\"{}\">Open {}</a>",
-                    escape(&href),
-                    escape(title)
+                    "<iframe class=\"tilo-window-page\" title=\"{}\" src=\"{}\" loading=\"lazy\" \
+                     style=\"display:block;width:100%;height:100%;border:0\"></iframe>",
+                    escape(title),
+                    escape(&href)
                 ),
             );
         }
@@ -615,6 +667,26 @@ impl AppPages for Pages {
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
         let inner = Arc::clone(&self.0);
         off_thread(move || inner.act(page, act))
+    }
+
+    fn pointer(
+        &self,
+        _workspace_id: WorkspaceId,
+        page: u64,
+        event: PointerEvent,
+    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+        let inner = Arc::clone(&self.0);
+        off_thread(move || inner.pointer(page, event))
+    }
+
+    fn appearance(
+        &self,
+        _workspace_id: WorkspaceId,
+        page: u64,
+        dark: bool,
+    ) -> Pending<Result<Option<OpenedPage>, PageRefusal>> {
+        let inner = Arc::clone(&self.0);
+        off_thread(move || inner.appearance(page, dark))
     }
 
     fn close(&self, _workspace_id: WorkspaceId, page: u64) {

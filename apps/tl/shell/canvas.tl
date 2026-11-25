@@ -313,11 +313,26 @@ fn snap(at: Int, pitch: Int) -> Int {
     return (at + pitch / 2) / pitch * pitch
 }
 
-/// The place on the canvas that shows the resource `resource`, if one does: what a drag
-/// that ended on the canvas moves rather than placing a second time.
-fn place_showing(resource: Text) -> Option<LayoutPlace> {
+/// The place a drag names, if the layout holds one: what a drag that ended on the canvas moves
+/// rather than placing a second time. A handle carries its resource's address, and a window's bar
+/// carries what its place shows — or the place itself (`shell:place:<key>`) where it shows no
+/// resource the shell can draw, which is every window a page shows.
+fn place_showing(carried: Text) -> Option<LayoutPlace> {
     let a = layout
-    a.places.find(p -> p.resource == resource)
+    if let key = place_key_of(carried) {
+        if let held = a.places.find(p -> p.key == key) {
+            return held
+        }
+    }
+    a.places.find(p -> p.resource == carried)
+}
+
+/// The key a place's own address (`shell:place:<key>`) names; `.none` for a resource address.
+fn place_key_of(carried: Text) -> Option<Text> {
+    let parts = carried.split(":")
+    if parts.len() == 3 and (parts.at(0) ?? "") == "shell" and (parts.at(1) ?? "") == "place" {
+        parts.at(2)
+    } else { .none }
 }
 
 /// How far apart the canvas's grid lines stand, in canvas pixels: a frame's own width (720) and
@@ -387,13 +402,21 @@ fn composed(p: LayoutPlace) -> Bool {
     } else { false }
 }
 
+/// What a framed place's bar carries when a person lifts it: the resource the place shows, or the
+/// place itself where it shows no resource the shell can draw (a foreign window, and every
+/// window a page shows). Let go over the canvas, either moves the place there through the
+/// session's own `position`, as one arranging step.
+fn place_carries(p: LayoutPlace) -> Text {
+    if p.resource != "" { p.resource } else { the_place(p.key).id() }
+}
+
 /// A foreign window on the canvas: the shell's frame around the well its window shows in, its
-/// controls at the end of the bar. The bar is its handle: the frame carries the place's resource,
-/// so a press on the bar's empty area and a drag lifts the whole place.
+/// controls at the end of the bar. The bar is its handle: the frame carries the place's resource
+/// (or the place itself), so a press on the bar's empty area and a drag lifts the whole place.
 view framed_place(a: Layout, p: LayoutPlace, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
-        carries: p.resource,
+        carries: place_carries(p),
         lists_actions: lists_the_place(p),
         fill,
     ) {

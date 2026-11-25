@@ -87,7 +87,8 @@ fn browser(host: &host::Host) -> Caller {
     Caller::authenticated(cert.user_public_key, cert.device_public_key)
 }
 
-/// The workspace's desktop page, opened by `caller`.
+/// The workspace's desktop page, opened by `caller` in that workspace, as the server opens it
+/// for a browser that proved itself to them.
 async fn open(
     daemon: &Arc<Daemon>,
     workspace: &str,
@@ -96,9 +97,10 @@ async fn open(
     let pages = daemon
         .pages()
         .expect("the daemon serves its workspace's pages");
+    let caller = caller.clone().in_workspace(workspace.to_owned());
     answered(pages.open(
         collab_types::WorkspaceId::parse(workspace).unwrap(),
-        caller,
+        &caller,
         PageAddress {
             workspace: workspace.to_owned(),
             app: "desktop".into(),
@@ -348,6 +350,31 @@ impl Computer {
             .collect()
     }
 
+    /// The window the layout runs `app` in, by its key on the layout.
+    async fn window_of(&self, app: &str) -> Option<u64> {
+        let layout = self.layout().await?;
+        let desktop = tilo_desktop_model::shared_resource::read(&layout, None)?;
+        desktop.tree.tabs().find_map(|tab| {
+            matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id, .. } if app_id == app)
+                .then_some(tab.id)
+        })
+    }
+
+    /// Where the window `tab` stands on the canvas, as the computer reads the layout: what a
+    /// drag and a resize on the page committed.
+    async fn arranged(&self, tab: u64) -> Option<tilo_desktop_model::CanvasPlace> {
+        let layout = self.layout().await?;
+        let desktop = tilo_desktop_model::shared_resource::read(&layout, None)?;
+        desktop.tree.workspaces.iter().find_map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|shown| shown.id == tab))
+                .and_then(|group| workspace.layout.place_of(group.id))
+        })
+    }
+
     /// Write the layout with `app` open in one window, as the person's session first writes it.
     async fn open_first(&self, person: &str, (app, title): (&str, &str)) {
         use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
@@ -435,17 +462,20 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
         computer.open_first(host.person(), (TASKS, "Tasks")).await;
 
         // Her browser opens the workspace's desktop: the shell's window frame for Tasks is there,
-        // and its well leads to Tasks' page. The page is the shell's view written by its widgets,
-        // not markup of the device's own.
+        // and its well shows Tasks' own page. The page is the shell's view written by its
+        // widgets, not markup of the device's own.
         let caller = browser(&host);
         let page = Page::of(&daemon, &workspace, &caller).await;
-        let tasks_page = format!("href=\"/w/{workspace}/tasks");
+        let tasks_page = format!("src=\"/w/{workspace}/tasks");
         let shown = page
-            .until("the window is on the page, a link to its page", |html| {
-                windows(html)
-                    .iter()
-                    .any(|window| window.contains("data-well=") && window.contains(&tasks_page))
-            })
+            .until(
+                "the window is on the page, its own page in the well",
+                |html| {
+                    windows(html)
+                        .iter()
+                        .any(|window| window.contains("data-well=") && window.contains(&tasks_page))
+                },
+            )
             .await;
         assert!(
             !page.opened.body.contains("tilo-home"),
@@ -488,7 +518,8 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
 }
 
 /// The person's agent shows Tasks: the view stands on their layout through the layout's own
-/// `place`, and the desktop page their browser opens shows its window, a link to Tasks' page.
+/// `place`, and the desktop page their browser opens shows its window, Tasks' own page in the
+/// well.
 #[test]
 fn a_view_an_agent_shows_is_on_the_persons_desktop_page() {
     host::run_with(&["shell", "tasks"], |host| async move {
@@ -501,9 +532,9 @@ fn a_view_an_agent_shows_is_on_the_persons_desktop_page() {
         computer.shows(&[TASKS]).await;
 
         let page = Page::of(&daemon, &workspace, &browser(&host)).await;
-        let tasks_page = format!("href=\"/w/{workspace}/tasks");
+        let tasks_page = format!("src=\"/w/{workspace}/tasks");
         page.until(
-            "the window the agent showed is on the page, a link to Tasks' page",
+            "the window the agent showed is on the page, Tasks' own page in the well",
             |html| {
                 windows(html)
                     .iter()
@@ -563,9 +594,92 @@ fn the_layouts_actions_place_read_and_close_a_window() {
     });
 }
 
+/// The layout's own arranging actions: the shell of the person's desktop page carries a drag on
+/// a window there to `position`, and a drag of its edge to `size`, as it does on a device. Each
+/// is one change of the workspace's layout, and the person's computer reads the window where the
+/// page left it.
+#[test]
+fn the_layouts_actions_move_and_size_a_window() {
+    host::run_with(&["tasks"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let computer = Computer::of(&daemon, &workspace);
+        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+        let window = computer
+            .window_of(TASKS)
+            .await
+            .expect("the window is on the layout");
+        let key = host.key("Ada's script");
+        let call = |path: &'static str, args: serde_json::Value| {
+            let (key, workspace) = (&key, workspace.clone());
+            async move {
+                let result = key
+                    .tool(
+                        "tilo_do",
+                        &json!({"workspace": workspace, "path": path, "args": args}),
+                    )
+                    .await;
+                let text: String = result["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect();
+                assert!(
+                    !result["isError"].as_bool().unwrap_or(false),
+                    "{path}: {text}"
+                );
+                text
+            }
+        };
+
+        // A drag let it go at a point on the canvas.
+        call(
+            "workspace:layout#position",
+            json!({ "window": window.to_string(), "x": 120, "y": 84 }),
+        )
+        .await;
+        tilo_test_env::within("the computer reads the window where it was moved", async {
+            loop {
+                if computer
+                    .arranged(window)
+                    .await
+                    .is_some_and(|place| place.x == 120 && place.y == 84)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        // A drag of its edge gave it a size.
+        call(
+            "workspace:layout#size",
+            json!({ "window": window.to_string(), "width": 800, "height": 600 }),
+        )
+        .await;
+        let sized = tilo_test_env::within("the computer reads the window at its new size", async {
+            loop {
+                if let Some(place) = computer.arranged(window).await
+                    && (place.width, place.height) == (800, 600)
+                {
+                    return place;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            (sized.x, sized.y),
+            (120, 84),
+            "sizing it keeps the corner the drag put it at"
+        );
+    });
+}
+
 /// The person picks the shell's canvas (its `frames` style) as their own way of showing the
 /// layout, through the shell's own action: their desktop page draws the canvas, the window on
-/// it still a link to its app's page.
+/// it showing its app's own page in the well.
 #[test]
 fn the_desktop_page_draws_the_canvas_a_person_picked() {
     host::run_with(&["shell", "tasks"], |host| async move {
@@ -590,9 +704,9 @@ fn the_desktop_page_draws_the_canvas_a_person_picked() {
         );
 
         let page = Page::of(&daemon, &workspace, &browser(&host)).await;
-        let tasks_page = format!("href=\"/w/{workspace}/tasks");
+        let tasks_page = format!("src=\"/w/{workspace}/tasks");
         page.until(
-            "the canvas, Tasks' window on it a link to its page",
+            "the canvas, Tasks' window on it showing Tasks' own page",
             |html| {
                 labelled(html, "Canvas").is_some()
                     && windows(html)

@@ -332,22 +332,182 @@ try {
   }
   await look('12-home-to-notes');
 
-  // The workspace's desktop: the windows its people have open on any device. An app opened
-  // there is a window on the workspace's layout, which the page lists as a link to its page.
+  // The workspace's desktop: the shell's own view, the windows its people have open on any
+  // device, each showing its app's own page in its well. The person picks the canvas, opens two
+  // apps from the launcher, and moves one window by its frame and sizes it by its edge: the
+  // page carries those gestures into the shell, which commits the same arranging actions it
+  // commits on a device. A reload shows the windows where the layout keeps them, which is the
+  // stored placement.
   await openPage('desktop', 'desktop');
   const desktop = await look('12b-desktop');
   if (desktop.refused) problems.push(`the desktop page was refused (${desktop.refused})`);
-  await press(
-    `[...document.querySelectorAll('#tilo-page .tilo-desktop-app')].find(b => (b.innerText || '').trim() === 'Tasks') ?? null`,
-    'Tasks on the desktop page',
-  );
+  // Two apps from the launcher, each a window on the workspace's layout.
+  for (const app of ['Tasks', 'Settings']) {
+    await press(`document.querySelector('#tilo-page [aria-label=Launcher]') ?? null`, 'the launcher');
+    const listed = await until(
+      `[...document.querySelectorAll('#tilo-page [data-a=activate]')].some(e => ((e.getAttribute('aria-label') || e.innerText || '').trim() === '${app}'))`,
+      15_000,
+    );
+    if (listed === null) problems.push(`the launcher listed no ${app}`);
+    await press(
+      `[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => ((e.getAttribute('aria-label') || e.innerText || '').trim() === '${app}')) ?? null`,
+      `${app} in the launcher`,
+    );
+  }
   const opened = await until(
-    `[...document.querySelectorAll('#tilo-page .tilo-window-show')].some(a => a.getAttribute('href')?.endsWith('/tasks'))`,
+    `document.querySelectorAll('#tilo-page [data-well] iframe').length >= 2`,
     30_000,
   );
-  step('12b-desktop opened', {ms: opened});
-  if (opened === null) problems.push('an app opened on the desktop page did not show as a window');
+  step('12b-desktop opened', {ms: opened, iframes: await tab.evaluate(
+    `[...document.querySelectorAll('#tilo-page [data-well] iframe')].map(f => new URL(f.src).pathname)`,
+  ).catch(() => [])});
+  if (opened === null) problems.push('the two apps the person opened did not show as windows');
   await look('12c-desktop-window');
+  // The person's canvas, picked from the shell's own style menu: the same windows, each in its
+  // frame, moved and sized by its frame.
+  await press(
+    `[...document.querySelectorAll('#tilo-page [data-p]')].find(e => /style and workspaces$|^Showing /.test(e.getAttribute('aria-label') || '')) ?? null`,
+    'the desktop’s style switch',
+  );
+  const styleRow = await until(
+    `[...document.querySelectorAll('#tilo-page [data-a=activate]')].some(e => /in its own frame/i.test(e.innerText || ''))`,
+    15_000,
+  );
+  if (styleRow === null) problems.push('the style menu offered no canvas to pick');
+  await press(
+    `[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => /in its own frame/i.test(e.innerText || '')) ?? null`,
+    'the canvas style',
+  );
+  const twoWindows = await until(
+    `document.querySelectorAll('#tilo-page [data-w=Map]').length > 0
+      && document.querySelectorAll('#tilo-page [data-w=WindowFrame]').length >= 2`,
+    30_000,
+  );
+  step('12b-desktop canvas', {ms: twoWindows});
+  if (twoWindows === null) problems.push('the desktop page did not draw the two windows on its canvas');
+  // The canvas's own setting, in the style's settings panel: a window lands where it is let go,
+  // not on the grid, so what the drag commits is what the person did.
+  await press(
+    `[...document.querySelectorAll('#tilo-page [data-p]')].find(e => /style and workspaces$|^Showing /.test(e.getAttribute('aria-label') || '')) ?? null`,
+    'the canvas’s style switch',
+  );
+  const settingsRow = await until(
+    `[...document.querySelectorAll('#tilo-page [data-a=activate]')].some(e => /^Settings for /.test((e.getAttribute('aria-label') || e.innerText || '').trim()))`,
+    15_000,
+  );
+  if (settingsRow === null) problems.push('the style menu offered no settings for the canvas');
+  await press(
+    `[...document.querySelectorAll('#tilo-page [data-a=activate]')].find(e => /^Settings for /.test((e.getAttribute('aria-label') || e.innerText || '').trim())) ?? null`,
+    'the canvas’s settings',
+  );
+  const snap = await until(
+    `document.querySelectorAll('#tilo-page [data-w=FloatingPanel] [aria-label="Snap places to a grid"]').length > 0`,
+    15_000,
+  );
+  if (snap === null) problems.push('the canvas settings offered no grid setting');
+  await press(
+    `document.querySelector('#tilo-page [data-w=FloatingPanel] [aria-label="Snap places to a grid"]') ?? null`,
+    'the grid setting',
+  );
+  await until(
+    `document.querySelectorAll('#tilo-page [data-w=FloatingPanel] [aria-label="Snap places to a grid"][aria-checked=false], #tilo-page [data-w=FloatingPanel] [aria-label="Snap places to a grid"][aria-pressed=false]').length > 0`,
+    15_000,
+  );
+  await press(
+    `document.querySelector('#tilo-page [data-w=FloatingPanel] [aria-label=Close]') ?? null`,
+    'the settings panel’s close',
+  );
+
+  // The window's frame on the page, measured: where it is, how big, and which one shows Tasks.
+  const frames = async () => JSON.parse(await tab.evaluate(`JSON.stringify(
+    [...document.querySelectorAll('#tilo-page [data-w=WindowFrame]')].map(e => {
+      const r = e.getBoundingClientRect();
+      return {x: r.x, y: r.y, w: r.width, h: r.height, tasks: /tasks/.test(e.querySelector('iframe')?.src || '')};
+    }))`));
+  // A drag a person makes: the press, the motions, and the release, a few at a time.
+  const drag = async (from, to) => {
+    await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1});
+    for (let i = 1; i <= 6; i++) {
+      await tab.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: Math.round(from.x + (to.x - from.x) * i / 6),
+        y: Math.round(from.y + (to.y - from.y) * i / 6),
+        button: 'left',
+        buttons: 1,
+      });
+      await sleep(30);
+    }
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: to.x, y: to.y, button: 'left', clickCount: 1});
+  };
+  const before = await frames();
+  const movedWindow = before.find(f => f.tasks) ?? before[0];
+  if (before.length < 2) problems.push(`the desktop page showed ${before.length} windows`);
+  // By the bar, clear of its controls at the trailing end, and away from the well.
+  await drag({x: movedWindow.x + 26, y: movedWindow.y + 12}, {x: movedWindow.x + 146, y: movedWindow.y + 76});
+  const moved = await until(
+    `(() => { const r = [...document.querySelectorAll('#tilo-page [data-w=WindowFrame]')].map(e => e.getBoundingClientRect());
+      return r.some(q => Math.abs(q.x - ${movedWindow.x}) > 60 || Math.abs(q.y - ${movedWindow.y}) > 30); })()`,
+    30_000,
+  );
+  step('12d-desktop moved', {ms: moved, before: movedWindow, after: (await frames()).find(f => f.tasks)});
+  if (moved === null) problems.push('dragging a window by its frame changed nothing');
+  // Its bottom edge, just outside the frame where the canvas keeps the grip, and away from the
+  // other window beside it: dragging it down sizes this window.
+  const at = (await frames()).find(f => f.tasks) ?? (await frames())[0];
+  const edge = {x: Math.round(at.x + at.w / 2), y: Math.round(at.y + at.h) + 3};
+  await drag(edge, {x: edge.x, y: edge.y + 40});
+  const grown = await until(
+    `(() => { const q = [...document.querySelectorAll('#tilo-page [data-w=WindowFrame]')]
+        .map(e => e.getBoundingClientRect()).find(r => Math.abs(r.height - ${at.h}) > 20);
+      return !!q; })()`,
+    30_000,
+  );
+  step('12e-desktop sized', {ms: grown, before: at, after: (await frames()).find(f => f.tasks)});
+  if (grown === null) problems.push('dragging a window’s edge changed no size');
+  // A window's app page again: moving a frame redraws the shell around the well, and the app's
+  // page loads again in it.
+  const drawn = async () => until(
+    `[...document.querySelectorAll('#tilo-page [data-well] iframe')].every(f => { try { return !!f.contentDocument?.querySelector('[data-p]'); } catch { return false; } })`,
+    30_000,
+  );
+  const drawnAgain = await drawn();
+  step('12e2-desktop windows drawn', {ms: drawnAgain});
+  if (drawnAgain === null) problems.push('the windows did not show their apps’ pages again');
+
+  // The two shapes a page shows the person's desktop in, so a reviewer sees both themes.
+  const kept = await frames();
+  await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
+  await sleep(900);
+  // A look the page draws whole: the windows' pages load again in it.
+  await drawn();
+  await look('12f-desktop-light');
+  await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'dark'}]});
+  await sleep(900);
+  await drawn();
+  await look('12g-desktop-dark');
+  await tab.send('Emulation.setEmulatedMedia', {features: []});
+  // A reload draws the windows from the layout the device stored: where they stand and how big
+  // they are is what the gestures committed, not what the page remembered.
+  resetWire();
+  await tab.reload();
+  const redrawn = await until('document.querySelectorAll("#tilo-page [data-w=WindowFrame]").length >= 2', 60_000);
+  const after = await frames();
+  const redrawnPages = await drawn();
+  step('12h-desktop reloaded', {ms: redrawn, pages: redrawnPages, kept, after});
+  if (redrawnPages === null) problems.push('a reload did not show the windows’ apps again');
+  if (redrawn === null) problems.push('a reload did not show the two windows again');
+  else {
+    const one = (list) => list.find(f => f.tasks) ?? list[0];
+    const was = one(kept);
+    const now = one(after);
+    if (Math.abs(now.x - was.x) > 4 || Math.abs(now.y - was.y) > 4) {
+      problems.push(`a reload did not keep the window where it was moved (${JSON.stringify(was)} then ${JSON.stringify(now)})`);
+    }
+    if (Math.abs(now.w - was.w) > 4 || Math.abs(now.h - was.h) > 4) {
+      problems.push(`a reload did not keep the window’s size (${JSON.stringify(was)} then ${JSON.stringify(now)})`);
+    }
+  }
+  await look('12i-desktop-reloaded');
   // The apps a person opens in their first hour: each is the page the server
   // renders. An app that is not in this build's catalogue is said, not
   // failed: which apps the page serves is the catalogue's, and the walk is

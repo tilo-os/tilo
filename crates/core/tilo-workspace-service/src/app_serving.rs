@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage, ResourceReads};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::page::{
-    OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal,
+    OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal, PointerEvent,
 };
 
 /// Answers remote-action requests addressed to this host.
@@ -206,6 +206,31 @@ pub trait AppPages: Send + Sync {
         page: u64,
         act: Option<PageAct>,
     ) -> Pending<Result<Vec<PagePatch>, PageRefusal>>;
+
+    /// The pointer moved on `page` as `event` says, in the view's own logical pixels: the
+    /// gesture a person makes on the page, carried into its widgets as a device's pointer is.
+    /// Answered with what changed, as an act is.
+    fn pointer(
+        &self,
+        workspace_id: WorkspaceId,
+        page: u64,
+        event: PointerEvent,
+    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+        let _ = (workspace_id, page, event);
+        Pending::ready(Ok(Vec::new()))
+    }
+
+    /// Draw `page` in the light or dark look `dark` names, as a window follows the system it
+    /// runs on: the page whole when its view redraws, and nothing when it has no window to draw.
+    fn appearance(
+        &self,
+        workspace_id: WorkspaceId,
+        page: u64,
+        dark: bool,
+    ) -> Pending<Result<Option<OpenedPage>, PageRefusal>> {
+        let _ = (workspace_id, page, dark);
+        Pending::ready(Ok(None))
+    }
 
     /// Let go of `page`: its person closed it.
     fn close(&self, workspace_id: WorkspaceId, page: u64);

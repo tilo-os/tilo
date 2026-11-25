@@ -192,6 +192,33 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         }
                         None
                     }
+                    // The browser changed its appearance: the page is drawn in the look it asks
+                    // for, as a window follows the system it runs on.
+                    PageAsk::Appearance { dark } => Some(match open {
+                        Some((workspace_id, page)) => {
+                            match pages.appearance(workspace_id, page, dark).await {
+                                Some(Ok(Some(opened))) => PageAnswer::Shown {
+                                    title: opened.title,
+                                    css: opened.css,
+                                    body: opened.body,
+                                },
+                                Some(Ok(None)) | None => PageAnswer::Patched(Vec::new()),
+                                Some(Err(refusal)) => PageAnswer::Refused(refusal),
+                            }
+                        }
+                        // Nothing is shown yet: no page's look changes.
+                        None => PageAnswer::Patched(Vec::new()),
+                    }),
+                    // The pointer moved on the page: the gesture is the view's, carried into
+                    // its widgets as a device's pointer is, and the page hears what it changed.
+                    PageAsk::Pointer(event) => Some(match open {
+                        Some((workspace_id, page)) => {
+                            patched(pages.pointer(workspace_id, page, event).await)
+                        }
+                        None => PageAnswer::Refused(PageRefusal::Unavailable(
+                            "no page is open".to_owned(),
+                        )),
+                    }),
                     // The person dismissed a notification the record of their devices holds: it
                     // is answered there, so it leaves every device of theirs.
                     PageAsk::AnswerNotice { id } => {

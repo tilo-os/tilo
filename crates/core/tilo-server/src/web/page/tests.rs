@@ -5,6 +5,7 @@ use tilo_server_client::frame::{read_frame, write_frame};
 use tilo_server_protocol::auth::{Hello, HelloAck, client_challenge_digest};
 use tilo_server_protocol::page::{
     OpenedPage, PageAction, PageAddress, PageAnswer, PageAsk, PageNotice, PagePatch, PageRefusal,
+    PointerEvent, PointerKind,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
@@ -215,6 +216,18 @@ impl AppPages for Echo {
             .collect()))
     }
 
+    fn pointer(
+        &self,
+        _: WorkspaceId,
+        _: u64,
+        event: PointerEvent,
+    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+        Pending::ready(Ok(vec![PagePatch::Replace {
+            id: 0,
+            html: format!("pointer:{:?}", event.kind),
+        }]))
+    }
+
     fn close(&self, _: WorkspaceId, page: u64) {
         self.closed.lock().unwrap().push(page);
     }
@@ -323,6 +336,27 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
                 html: "Value(\"Milk\")".into()
             }])
         );
+        // A press that travelled is the window's gesture, carried to the page's window.
+        ask(
+            &mut browser,
+            &PageAsk::Pointer(PointerEvent {
+                kind: PointerKind::Down,
+                x: 12,
+                y: 8,
+            }),
+        )
+        .await;
+        assert_eq!(
+            answer(&mut browser).await,
+            PageAnswer::Patched(vec![PagePatch::Replace {
+                id: 0,
+                html: "pointer:Down".into()
+            }])
+        );
+        // The browser changed its look: a page whose view draws no theme of its own stands as
+        // it is.
+        ask(&mut browser, &PageAsk::Appearance { dark: true }).await;
+        assert_eq!(answer(&mut browser).await, PageAnswer::Patched(Vec::new()));
         drop(browser);
     };
     tokio::join!(serving, browsing);

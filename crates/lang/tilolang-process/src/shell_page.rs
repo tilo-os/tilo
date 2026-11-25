@@ -404,7 +404,28 @@ impl ShellPage {
                 };
                 self.untold = true;
             }
-            None => {}
+            Some(Taken::Position(window, x, y)) => {
+                let request = invoke("position", json!({ "window": window, "x": x, "y": y }));
+                self.changing.insert(request.invocation, "position");
+                self.queued.push(RemoteActionMessage::Invoke(request));
+            }
+            Some(Taken::Size(window, width, height)) => {
+                let request = invoke(
+                    "size",
+                    json!({ "window": window, "width": width, "height": height }),
+                );
+                self.changing.insert(request.invocation, "size");
+                self.queued.push(RemoteActionMessage::Invoke(request));
+            }
+            Some(Taken::Activate(window)) => {
+                let request = invoke("activate", json!({ "window": window }));
+                self.changing.insert(request.invocation, "activate");
+                self.queued.push(RemoteActionMessage::Invoke(request));
+            }
+            // What the canvas sees of a hugging place is this device's view of it, which the
+            // shared layout does not keep for a page: the window a page shows is its app's, and
+            // the page lays its own view out.
+            Some(Taken::Drawn) | None => {}
         }
     }
 
@@ -672,6 +693,14 @@ enum Taken {
     Open(String),
     /// Show this surface over the windows, or put it away when it shows.
     Surface(String),
+    /// Stand the window with this key at this canvas point.
+    Position(String, i64, i64),
+    /// Give the window with this key this canvas size.
+    Size(String, i64, i64),
+    /// Bring the window with this key in front of its strip.
+    Activate(String),
+    /// What a place's canvas sees of its drawn height: this device's own, kept nowhere.
+    Drawn,
 }
 
 /// What `invocation` asks the page to carry out; `None` for a call that goes through the dispatch.
@@ -700,19 +729,49 @@ fn taken(invocation: &Invocation) -> Option<Taken> {
             .strip_prefix(PLACE)
             .map(ToOwned::to_owned)
     };
-    if app.as_str() == SESSION_APP && name == "close" {
-        let named = args.iter().find_map(|(parameter, value)| match value {
-            tilolang_tilo::runtime::Value::Ref(reference) if parameter == "place" => {
-                place(&reference.target)
-            }
-            _ => None,
-        });
-        return named
+    // The window a call acts on: the place it names, or the place it is bound to.
+    let window = || {
+        args.iter()
+            .find_map(|(parameter, value)| match value {
+                tilolang_tilo::runtime::Value::Ref(reference) if parameter == "place" => {
+                    place(&reference.target)
+                }
+                _ => None,
+            })
             .or_else(|| target.as_ref().and_then(place))
-            .map(Taken::Close);
-    }
-    if app.as_str() == SESSION_APP && name == "open-app" {
-        return text("app").map(Taken::Open);
+    };
+    let number = |parameter: &str| {
+        args.iter()
+            .find(|(named, _)| named == parameter)
+            .and_then(|(_, value)| match value {
+                tilolang_tilo::runtime::Value::Int(number) => Some(*number),
+                _ => None,
+            })
+    };
+    if app.as_str() == SESSION_APP {
+        match name.as_str() {
+            "close" => return window().map(Taken::Close),
+            // A drag let a place go here, and a drag of its edge sized it: the layout's own
+            // actions carry them to the shared layout as the person's arranging step.
+            "position" => {
+                if let (Some(window), Some(x), Some(y)) = (window(), number("x"), number("y")) {
+                    return Some(Taken::Position(window, x, y));
+                }
+            }
+            "size" => {
+                if let (Some(window), Some(width), Some(height)) =
+                    (window(), number("width"), number("height"))
+                {
+                    return Some(Taken::Size(window, width, height));
+                }
+            }
+            "activate" => return window().map(Taken::Activate),
+            // What a canvas sees of a hugging place is this device's view, not a change of the
+            // layout a page keeps: it is answered and dropped.
+            "drawn" => return Some(Taken::Drawn),
+            "open-app" => return text("app").map(Taken::Open),
+            _ => {}
+        }
     }
     if app.as_str() == DEVICE_APP
         && name == "show-surface"

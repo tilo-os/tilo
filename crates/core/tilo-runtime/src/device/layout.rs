@@ -70,6 +70,37 @@ pub enum LayoutAction {
         #[param("The window, by its key on the layout")]
         window: String,
     },
+    /// Stand a window at a point on its workspace's canvas, as a drag that let it go there
+    /// leaves it: one arranging step for the whole gesture.
+    #[effect(kind = "outside")]
+    #[effect(icon = "app-window", keywords = "move window, drag")]
+    Position {
+        #[param("The window, by its key on the layout")]
+        window: String,
+        #[param("Its canvas x")]
+        x: i64,
+        #[param("Its canvas y")]
+        y: i64,
+    },
+    /// Give a window a size on its workspace's canvas, as dragging its edge does.
+    #[effect(kind = "outside")]
+    #[effect(icon = "app-window", keywords = "resize window")]
+    Size {
+        #[param("The window, by its key on the layout")]
+        window: String,
+        #[param("Its width in canvas pixels")]
+        width: i64,
+        #[param("Its height in canvas pixels")]
+        height: i64,
+    },
+    /// Bring a window in front of its strip, and its workspace forward, as a press on its bar
+    /// does.
+    #[effect(kind = "outside")]
+    #[effect(icon = "app-window", keywords = "focus window")]
+    Activate {
+        #[param("The window, by its key on the layout")]
+        window: String,
+    },
 }
 
 /// The workspace's layout as this device has it.
@@ -233,6 +264,83 @@ impl DeviceLayouts {
             return Ok(());
         };
         match tilo_desktop_model::place::close_window(&layout, person, tab)
+            .map_err(|why| why.to_string())?
+        {
+            Some(change) => self.write(workspace, &change, false),
+            None => Ok(()),
+        }
+    }
+
+    /// Stand the window `tab` at `(x, y)` on `workspace`'s canvas as `person` drags it there,
+    /// everywhere the layout is shown. A window already there, or a layout this device does not
+    /// have, is left as it is.
+    ///
+    /// # Errors
+    /// The layout with the window moved did not write.
+    pub(crate) fn position(
+        &self,
+        workspace: &str,
+        person: &str,
+        tab: u64,
+        x: i64,
+        y: i64,
+    ) -> Result<(), String> {
+        let LayoutHere::Here(layout) = self.layout(workspace) else {
+            return Ok(());
+        };
+        let x = i32::try_from(x).unwrap_or(if x < 0 { i32::MIN } else { i32::MAX });
+        let y = i32::try_from(y).unwrap_or(if y < 0 { i32::MIN } else { i32::MAX });
+        match tilo_desktop_model::place::move_window(&layout, person, tab, x, y)
+            .map_err(|why| why.to_string())?
+        {
+            Some(change) => self.write(workspace, &change, false),
+            None => Ok(()),
+        }
+    }
+
+    /// Give the window `tab` the canvas size `width` × `height` as `person` drags its edge,
+    /// everywhere the layout is shown. A window already that size, or a layout this device does
+    /// not have, is left as it is.
+    ///
+    /// # Errors
+    /// The layout with the window resized did not write.
+    pub(crate) fn size(
+        &self,
+        workspace: &str,
+        person: &str,
+        tab: u64,
+        width: i64,
+        height: i64,
+    ) -> Result<(), String> {
+        let LayoutHere::Here(layout) = self.layout(workspace) else {
+            return Ok(());
+        };
+        let side = |value: i64| u32::try_from(value.max(1)).unwrap_or(u32::MAX);
+        match tilo_desktop_model::place::size_window(
+            &layout,
+            person,
+            tab,
+            side(width),
+            side(height),
+        )
+        .map_err(|why| why.to_string())?
+        {
+            Some(change) => self.write(workspace, &change, false),
+            None => Ok(()),
+        }
+    }
+
+    /// Bring the window `tab` in front of its strip and its workspace forward, as `person`
+    /// presses its bar. A window in front already, or a layout this device does not have, is
+    /// left as it is.
+    ///
+    /// # Errors
+    /// The layout with the window in front did not write.
+    pub(crate) fn activate(&self, workspace: &str, person: &str, tab: u64) -> Result<(), String> {
+        let LayoutHere::Here(layout) = self.layout(workspace) else {
+            return Ok(());
+        };
+        match tilo_desktop_model::place::activate_window(&layout, person, tab)
             .map_err(|why| why.to_string())?
         {
             Some(change) => self.write(workspace, &change, false),
@@ -433,6 +541,32 @@ fn run(
                 .parse()
                 .map_err(|_| format!("{window} is no window on the layout"))?;
             layouts.close(workspace, &person, tab).map(|()| None)
+        }
+        LayoutAction::Position { window, x, y } => {
+            let tab = window
+                .parse()
+                .map_err(|_| format!("{window} is no window on the layout"))?;
+            layouts
+                .position(workspace, &person, tab, x, y)
+                .map(|()| None)
+        }
+        LayoutAction::Size {
+            window,
+            width,
+            height,
+        } => {
+            let tab = window
+                .parse()
+                .map_err(|_| format!("{window} is no window on the layout"))?;
+            layouts
+                .size(workspace, &person, tab, width, height)
+                .map(|()| None)
+        }
+        LayoutAction::Activate { window } => {
+            let tab = window
+                .parse()
+                .map_err(|_| format!("{window} is no window on the layout"))?;
+            layouts.activate(workspace, &person, tab).map(|()| None)
         }
     }
 }

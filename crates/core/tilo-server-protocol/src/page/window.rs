@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(unix, windows))]
 use tilo_socket::Stream;
 
-use super::{PageAction, PagePatch};
+use super::{PageAction, PagePatch, PointerEvent};
 
 fn framing() -> wire_frame::Framing {
     wire_frame::Framing::little_endian(super::MAX_PAGE_FRAME_BYTES)
@@ -42,8 +42,15 @@ pub enum WindowAsk {
     Changed,
     /// What the page shows in each of its wells from now on, by the place each shows: where the
     /// view leaves a window to the device that shows it (a desktop's windows), the markup the
-    /// device stands there instead, a link to that window's own page. Answered with what changed.
+    /// device stands there instead — that window's own page, shown in the well as the
+    /// compositor shows its surface on a device. Answered with what changed.
     Wells(std::collections::BTreeMap<String, String>),
+    /// The pointer, in the window's own logical pixels: a press, a move or a release, carried
+    /// into the view's widgets as a device's pointer is. Answered with what changed.
+    Pointer(PointerEvent),
+    /// Draw the window in the light or dark look `dark` names, as a window follows the system it
+    /// runs on. Answered with the page whole.
+    Appearance { dark: bool },
 }
 
 /// What the window answers.
@@ -149,6 +156,28 @@ impl WindowLink {
         wells: std::collections::BTreeMap<String, String>,
     ) -> std::io::Result<Vec<PagePatch>> {
         self.changes(&WindowAsk::Wells(wells))
+    }
+
+    /// What changed once the window's widgets took `event`, as [`WindowAsk::Pointer`] asks it.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn pointer(&mut self, event: PointerEvent) -> std::io::Result<Vec<PagePatch>> {
+        self.changes(&WindowAsk::Pointer(event))
+    }
+
+    /// The page whole in the light or dark look `dark` names, as [`WindowAsk::Appearance`] asks
+    /// it: `(title, css, body)`.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn appearance(&mut self, dark: bool) -> std::io::Result<(String, String, String)> {
+        match self.ask(&WindowAsk::Appearance { dark })? {
+            WindowAnswer::Shown { title, css, body } => Ok((title, css, body)),
+            WindowAnswer::Changed(_) => Err(std::io::Error::other(
+                "the page's window answered an appearance with changes",
+            )),
+        }
     }
 
     fn changes(&mut self, ask: &WindowAsk) -> std::io::Result<Vec<PagePatch>> {
