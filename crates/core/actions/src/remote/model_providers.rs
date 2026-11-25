@@ -117,6 +117,8 @@ pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
     use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
     let steps: &[&str] = match action {
+        // Signing in on the provider's own page keeps the key or grant it left.
+        BEGIN_SIGN_IN => &[KEEP_SEALED],
         ADD_PROVIDER | ADD_PRESET | SET_KEY => &[KEEP_SEALED, REMOVE_SEALED, KEEP_USES],
         SET_KEY_FROM_ITEM => &[KEEP_USES, REMOVE_SEALED],
         REMOVE_KEY | REMOVE_PROVIDER => &[REMOVE_SEALED],

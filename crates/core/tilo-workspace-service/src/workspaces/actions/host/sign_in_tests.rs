@@ -325,7 +325,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
     workspaces.icloud_sign_in_through(std::sync::Arc::new(StandInApple));
 
@@ -437,7 +437,7 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
 
     let provider = tilo_oauth::fake::FakeAuthorizationServer::start();
@@ -497,7 +497,7 @@ async fn a_webdav_server_is_kept_from_what_its_person_typed() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
 
     let step: SignInStep = answered(
@@ -564,7 +564,7 @@ async fn a_mail_account_is_kept_once_google_s_page_approves_it() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
 
     let provider = tilo_oauth::fake::FakeAuthorizationServer::start();
@@ -646,7 +646,7 @@ async fn a_microsoft_mail_account_keeps_the_address_its_person_typed() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
 
     // The address is proved at the servers the grant is for: a stand-in takes the token.

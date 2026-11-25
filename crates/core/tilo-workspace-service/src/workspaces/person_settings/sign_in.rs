@@ -224,7 +224,7 @@ impl Workspaces {
                     .await
             }
             Provider::Google | Provider::Microsoft => {
-                self.begin_oauth_mail((person, workspace), provider, asking)
+                self.begin_oauth_mail((person, workspace, call), provider, asking)
             }
             Provider::Icloud | Provider::Other => Err(format!(
                 "{} signs in with a password, not on its own page",
@@ -331,7 +331,7 @@ impl Workspaces {
     /// for the browser, and the grant it leaves is kept as a mail account whose sign-in it is.
     fn begin_oauth_mail(
         &self,
-        (person, workspace): ([u8; 32], &str),
+        (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),
         provider: Provider,
         asking: &BeginSignIn,
     ) -> Result<SignInStep, String> {
@@ -407,17 +407,19 @@ impl Workspaces {
         let replace = asking.account.trim().to_owned();
         let kept_id = id.clone();
         let cancelled_at = until_ms;
+        // The sign-in is kept as the call that began it asked, once the provider approves it.
+        let call = call.cloned();
         tokio::spawn(async move {
             let finished =
                 tokio::task::spawn_blocking(move || CredentialStore::finish_sign_in(authorization))
                     .await;
             let kept = match finished {
                 Ok(Ok(tokens)) => {
+                    let asker = tilo_action_policy::Acting::person(hex::encode(person));
+                    let vault = workspaces.vault_for(&workspace, &asker);
+                    let vault = call.as_ref().map_or(vault, |call| vault.serving(call));
                     Box::pin(keep_oauth_mail(
-                        workspaces.vault_for(
-                            &workspace,
-                            &tilo_action_policy::Acting::person(hex::encode(person)),
-                        ),
+                        vault,
                         Grant {
                             store: &store,
                             tokens: &tokens,
@@ -491,6 +493,7 @@ impl Workspaces {
     pub(super) async fn begin_cloud_sign_in(
         &self,
         (person, workspace): ([u8; 32], &str),
+        call: Option<&tilo_actions::remote::InvokeRequest>,
         asking: &BeginCloudSignIn,
     ) -> Result<SignInStep, String> {
         prune();
@@ -499,13 +502,13 @@ impl Workspaces {
         }
         let step = match asking.kind {
             CloudKind::GoogleDrive | CloudKind::OneDrive | CloudKind::Dropbox => {
-                self.begin_oauth_cloud((person, workspace), asking)
+                self.begin_oauth_cloud((person, workspace), call, asking)
             }
             CloudKind::IcloudDrive => {
-                Box::pin(self.begin_icloud_cloud((person, workspace), asking)).await
+                Box::pin(self.begin_icloud_cloud((person, workspace), call, asking)).await
             }
             CloudKind::Webdav => {
-                Box::pin(self.begin_webdav_cloud((person, workspace), asking)).await
+                Box::pin(self.begin_webdav_cloud((person, workspace), call, asking)).await
             }
         }?;
         self.person_settings_changed();
@@ -518,6 +521,7 @@ impl Workspaces {
     fn begin_oauth_cloud(
         &self,
         (person, workspace): ([u8; 32], &str),
+        call: Option<&tilo_actions::remote::InvokeRequest>,
         asking: &BeginCloudSignIn,
     ) -> Result<SignInStep, String> {
         let cloud = match asking.kind {
@@ -586,6 +590,8 @@ impl Workspaces {
             let workspace = workspace.to_owned();
             let kept_id = id.clone();
             let cancelled_at = until_ms;
+            // The drive is kept as the call that began the sign-in asked, once the page approves.
+            let call = call.cloned();
             tokio::spawn(async move {
                 let finished = tokio::task::spawn_blocking(move || {
                     CredentialStore::finish_sign_in(authorization)
@@ -593,17 +599,10 @@ impl Workspaces {
                 .await;
                 let kept = match finished {
                     Ok(Ok(tokens)) => {
-                        Box::pin(keep_oauth_account(
-                            workspaces.vault_for(
-                                &workspace,
-                                &tilo_action_policy::Acting::person(hex::encode(person)),
-                            ),
-                            cloud,
-                            &name,
-                            &tokens,
-                            &root,
-                        ))
-                        .await
+                        let asker = tilo_action_policy::Acting::person(hex::encode(person));
+                        let vault = workspaces.vault_for(&workspace, &asker);
+                        let vault = call.as_ref().map_or(vault, |call| vault.serving(call));
+                        Box::pin(keep_oauth_account(vault, cloud, &name, &tokens, &root)).await
                     }
                     Ok(Err(error)) => Err(error.to_string()),
                     Err(_) => Err("the sign-in was not read to the end".to_owned()),
@@ -626,6 +625,7 @@ impl Workspaces {
     async fn begin_icloud_cloud(
         &self,
         (person, workspace): ([u8; 32], &str),
+        call: Option<&tilo_actions::remote::InvokeRequest>,
         asking: &BeginCloudSignIn,
     ) -> Result<SignInStep, String> {
         let apple_id = asking.username.trim().to_owned();
@@ -672,16 +672,10 @@ impl Workspaces {
                 })
             }
             ICloudSignIn::Complete(session) => {
-                keep_icloud_account(
-                    self.vault_for(
-                        workspace,
-                        &tilo_action_policy::Acting::person(hex::encode(person)),
-                    ),
-                    &name,
-                    &apple_id,
-                    &session,
-                )
-                .await?;
+                let asker = tilo_action_policy::Acting::person(hex::encode(person));
+                let vault = self.vault_for(workspace, &asker);
+                let vault = call.map_or(vault, |call| vault.serving(call));
+                keep_icloud_account(vault, &name, &apple_id, &session).await?;
                 Ok(SignInStep {
                     id: String::new(),
                     open: APPLE_SIGN_IN.to_owned(),
@@ -696,6 +690,7 @@ impl Workspaces {
     async fn begin_webdav_cloud(
         &self,
         (person, workspace): ([u8; 32], &str),
+        call: Option<&tilo_actions::remote::InvokeRequest>,
         asking: &BeginCloudSignIn,
     ) -> Result<SignInStep, String> {
         let server = asking.server.trim().to_owned();
@@ -709,17 +704,10 @@ impl Workspaces {
             return Err("A WebDAV server's address begins with https://".into());
         }
         let name = cloud_name(asking, CloudKind::Webdav.label());
-        keep_webdav_account(
-            self.vault_for(
-                workspace,
-                &tilo_action_policy::Acting::person(hex::encode(person)),
-            ),
-            &name,
-            &server,
-            &username,
-            &password,
-        )
-        .await?;
+        let asker = tilo_action_policy::Acting::person(hex::encode(person));
+        let vault = self.vault_for(workspace, &asker);
+        let vault = call.map_or(vault, |call| vault.serving(call));
+        keep_webdav_account(vault, &name, &server, &username, &password).await?;
         Ok(SignInStep {
             id: String::new(),
             open: String::new(),
@@ -737,6 +725,7 @@ impl Workspaces {
         &self,
         person: [u8; 32],
         (workspace, root): (&str, &Path),
+        call: Option<&tilo_actions::remote::InvokeRequest>,
         submitting: &SubmitSignInCode,
     ) -> Result<super::MailAccounts, String> {
         let theirs = begun()
@@ -750,7 +739,10 @@ impl Workspaces {
             return Err("Enter the code the provider sent or showed".into());
         }
         let acting = tilo_action_policy::Acting::person(hex::encode(person));
-        let vault = self.vault_for(workspace, &acting);
+        // What this finishes is kept as the call that completes it asked.
+        let vault = call.map_or(self.vault_for(workspace, &acting), |call| {
+            self.vault_for(workspace, &acting).serving(call)
+        });
         enum Finish {
             Icloud(ICloudChallenge, String, String),
             Pasted(Authorization, OAuthCloud, String),
@@ -960,7 +952,7 @@ pub(super) async fn accounts_sign_in(
             let asking: BeginCloudSignIn = super::argument(request, "storage to connect")?;
             super::answer(
                 &workspaces
-                    .begin_cloud_sign_in((person, workspace), &asking)
+                    .begin_cloud_sign_in((person, workspace), Some(request), &asking)
                     .await,
             )
         }
@@ -971,6 +963,7 @@ pub(super) async fn accounts_sign_in(
                     .submit_sign_in_code(
                         person,
                         (workspace, &workspaces.workspace_root(workspace)),
+                        Some(request),
                         &submitting,
                     )
                     .await,

@@ -122,7 +122,12 @@ impl Workspaces {
                     };
                 Some(answer(
                     &self
-                        .begin_openai_sign_in((person, here), beginning, reach.clone())
+                        .begin_openai_sign_in(
+                            (person, here),
+                            beginning,
+                            reach.clone(),
+                            Some(request.clone()),
+                        )
                         .await,
                 ))
             }

@@ -880,7 +880,13 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
         super::models::models_action(&add_provider),
         Some((workspace.as_str(), model_providers::ADD_PROVIDER))
     );
-    let add = published(WORKSPACE_MAIL_ACCOUNTS, person_accounts::ADD_MAIL, 5);
+    // The tree publishes adding an account under the verb `add`, which is its `tilo.accounts`
+    // action `add-mail`.
+    let add = published(
+        WORKSPACE_MAIL_ACCOUNTS,
+        "add",
+        super::mail::add_account_params().len(),
+    );
     assert_eq!(
         super::mail::account_action(&add),
         Some((workspace.as_str(), person_accounts::ADD_MAIL))

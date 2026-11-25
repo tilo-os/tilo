@@ -996,7 +996,8 @@ async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
     let setup = Setup::new().await;
     let workspace = setup.workspace.to_string();
     let person = hex::encode(setup.owner.user_public_key);
-    let kept_by = caller(&setup.device);
+    // The sign-in is the workspace host's own write for the person whose mount reads it.
+    let kept_by = caller(&setup.owner);
     let place = accounts::vault_items::Place::parse("https://dav.example.test").unwrap();
     let reference = setup
         .workspaces

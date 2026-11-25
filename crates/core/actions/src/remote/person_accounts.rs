@@ -148,6 +148,9 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
             (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
         }
         (RESOURCE, REPLACE_PASSWORD) => (&[KEEP_SEALED], &[]),
+        // A sign-in begun on a provider's own page keeps its account and the entry its page
+        // leaves in the vault once it finishes, and one finished with a code the same.
+        (RESOURCE, BEGIN_CLOUD_SIGN_IN | SUBMIT_SIGN_IN_CODE) => (&[KEEP_SEALED], &[SAVE_ACCOUNT]),
         (RESOURCE, REMOVE) => (&[REMOVE_SEALED], &[REMOVE_ACCOUNT]),
         (RESOURCE, ADD_MAIL_WITH_ITEM | DISCOVER_CALENDARS) => {
             (&[KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
@@ -162,8 +165,9 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
         (RESOURCE, SET_CALENDARS) => (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT]),
         (RESOURCE, SET_FILES_MODE) => (&[], &[SAVE_ACCOUNT]),
         // A mount asking for its account's sign-in writes down the use, as every sign-in to a
-        // server with what the workspace's vault keeps does; what it reports is the record's.
-        (RESOURCE, CLOUD_CREDENTIAL) => (&[KEEP_USES], &[]),
+        // server with what the workspace's vault keeps does, and keeps a grant it renewed; what
+        // it reports is the record's.
+        (RESOURCE, CLOUD_CREDENTIAL) => (&[KEEP_USES, KEEP_SEALED], &[]),
         (RESOURCE, REPORT_SYNC_VERB) => (&[], &[REPORT_SYNC]),
         _ => (&[], &[]),
     };

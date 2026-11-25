@@ -414,10 +414,17 @@ impl Workspaces {
         let signed_as_acting = request.signed.as_deref().is_some_and(|signed| {
             acting.is_none_or(|acting| tilo_server_protocol::invocation::signs_for(acting, signed))
         });
+        // A call nobody signed that this host carries out for its own person — a cloud mount's
+        // ask on the person's own connection, a sign-in the host finishes after the provider's
+        // page approved it — is signed here, as the device that carried it out, so every device
+        // reading the write sees who asked.
+        let own_person = hex::encode(self.inner.host.cert.user_public_key);
+        let ours = request.signed.is_none()
+            && acting.is_none_or(|acting| acting.people().contains(&own_person.as_str()));
         let served = served_call(request).filter(|_| signed_as_acting || agent.is_none());
         let mut kept = match served {
             Some(kept) => kept,
-            None if agent.is_some() => {
+            None if agent.is_some() || ours => {
                 let signed = tilo_server_protocol::invocation::sign_invocation_now(
                     workspace,
                     request,

@@ -240,6 +240,7 @@ impl Workspaces {
         (person, workspace): ([u8; 32], &str),
         beginning: BeginSignIn,
         reach: Reach,
+        call: Option<tilo_actions::remote::InvokeRequest>,
     ) -> Result<SignInStarted, String> {
         let openai = self.openai();
         let code: UserCode = post_json(
@@ -268,6 +269,7 @@ impl Workspaces {
                     &device,
                     beginning.using,
                     &reach,
+                    call.as_ref(),
                 )
                 .await;
             let state = match outcome {
@@ -364,11 +366,15 @@ impl Workspaces {
         code: &UserCode,
         using: AccountUse,
         reach: &Reach,
+        call: Option<&tilo_actions::remote::InvokeRequest>,
     ) -> Result<ProviderView, String> {
         let root = &self.workspace_root(workspace);
-        // The person signs in themselves: the use of what is kept is theirs.
+        // The person signs in themselves: the use of what is kept is theirs, and the write keeps
+        // the call that began the sign-in as they signed it.
         let asker = tilo_action_policy::Acting::person(hex::encode(person));
-        let keys = ProviderKeys::of(self.vault_for(workspace, &asker), "");
+        let vault = self.vault_for(workspace, &asker);
+        let vault = call.map_or(vault, |call| vault.serving(call));
+        let keys = ProviderKeys::of(vault, "");
         let granted = tokio::time::timeout(SIGN_IN_LIFETIME, entered(openai, code, reach))
             .await
             .map_err(|_| "The code expired before it was entered. Begin again.".to_owned())??;
