@@ -1415,10 +1415,10 @@ mod cases {
             let mut pasted_ids: Vec<String> = clips
                 .iter()
                 .filter(|c| s.number(c, "start") >= 40.0 - f64::EPSILON)
-                .map(|c| c.id_string())
+                .map(ResourceRef::id_string)
                 .collect();
             pasted_ids.sort();
-            let mut answered = made.clone();
+            let mut answered = made;
             answered.sort();
             assert_eq!(answered, pasted_ids, "the paste names the clips it made, to choose");
             assert_eq!(clips.len(), 4, "the paste made two clips: {}", s.text(&p, "trouble"));
