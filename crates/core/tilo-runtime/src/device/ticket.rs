@@ -695,9 +695,10 @@ pub(crate) fn descriptor(
             .tags
             .push(tilo_actions::SECRET_ANSWER_TAG.to_owned());
     }
-    // Only the person's root certifies a key, as it revokes one
-    // ([`tilo_actions::ROOT_ONLY_TAG`]).
-    if matches!(action, CERTIFY_KEY | RELEASE_HALF | ANSWER_SIGN_IN) {
+    // Only the person's root issues a ticket for a computer, certifies a key and answers a
+    // sign-in ([`tilo_actions::ROOT_ONLY_TAG`]): a device that does not keep it asks them, and an
+    // agent of theirs is handed the ask on, never answered a ticket itself.
+    if matches!(action, ISSUE | CERTIFY_KEY | RELEASE_HALF | ANSWER_SIGN_IN) {
         descriptor
             .contract
             .tags
