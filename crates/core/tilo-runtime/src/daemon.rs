@@ -1511,10 +1511,6 @@ impl Native {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one connection, read top to bottom, from who it comes from to who is answered"
-    )]
     fn take(
         self: &Arc<Self>,
         stream: Stream,
@@ -2117,7 +2113,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         }
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
-            let answering = self.connections.as_ref().map(|connections| connections.call());
+            let answering = self
+                .connections
+                .as_ref()
+                .map(|connections| connections.call());
             return self.frames.serve(stream, line, input, answering);
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
