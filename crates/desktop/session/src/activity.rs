@@ -45,7 +45,9 @@ impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues
         let (_, op) = SignedMembershipOp::verified_stored(op).ok()?;
         Some(match &op.command {
             MembershipOpCommand::Project { changes } => MembershipWrite::Changes(changes.clone()),
-            MembershipOpCommand::Admit { person, .. } => MembershipWrite::Admitted {
+            // A person admitted by an invitation they redeemed, or by the workspace's open entry.
+            MembershipOpCommand::Admit { person, .. }
+            | MembershipOpCommand::Enter { person, .. } => MembershipWrite::Admitted {
                 person: hex::encode(person),
             },
             MembershipOpCommand::Governance { .. } => MembershipWrite::Recorded,
