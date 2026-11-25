@@ -40,6 +40,63 @@ impl AppSurface for winit::window::Window {
 }
 
 impl App {
+    /// Hand `event` to content the app shows on a card of its own (a call's card the shell stands
+    /// over the windows) through `deliver`, at the node the app's widget stands at, and take up
+    /// what it did as a press in the window would be. A card is the app's own content on another
+    /// surface: its input runs in the app as the window's does. Answers whether it took the event.
+    pub(crate) fn dispatch_to_card(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        deliver: impl FnOnce(&mut dyn Widget, &WindowEvent, &mut crate::widget::EventCtx<'_>) -> bool,
+    ) -> bool {
+        let _entry = self.enter_wake_scope();
+        let Some(root_node) = self.live_app_node() else {
+            return false;
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        self.mark_semantic_tree_stale();
+        self.input.pointer.track_buttons(event);
+        self.refresh_controls_before_input(event);
+        let resources_before = self.resource_input_mark(event);
+        let capture = self.begin_local_input_event(event);
+        let took = deliver(
+            self.root_widget.as_mut(),
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &self.input.modifiers,
+                state: crate::widget::Edits::lend(&mut self.state.doc),
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &self.layout.taffy,
+            },
+        );
+        drop(capture);
+        self.drain_local_input_capture();
+        // `deliver` may change presentation-only resource declarations without touching the
+        // CRDT (selected tab, open media, local mode); only bare hover that changed nothing keeps
+        // the published tree.
+        self.invalidate_resources_after_input(
+            event,
+            handled || focus_target.is_some(),
+            &resources_before,
+            false,
+        );
+        if let Some(id) = focus_target {
+            self.set_focused_node(Some(id));
+        }
+        if handled {
+            self.commit_action();
+            self.needs_sync = true;
+            self.layout.layout_dirty |= self.root_widget.is_layout_dirty();
+        }
+        took || handled
+    }
+
     /// Restore the real focused native configuration after modal/page
     /// replacement, without replaying any key press or typed input.
     pub(super) fn restore_physical_configuration(&mut self) {

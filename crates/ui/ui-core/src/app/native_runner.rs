@@ -2176,7 +2176,6 @@ impl AppHandler {
         shell_rect: KurboRect,
         event: WindowEvent,
     ) {
-        let _entry = self.app.enter_wake_scope();
         let scale = window.scale_factor();
         let event = match event {
             WindowEvent::CursorMoved {
@@ -2198,51 +2197,17 @@ impl AppHandler {
             }
             other => other,
         };
-        let app = &mut self.app;
         // A card is the app's own content on another surface: its pointer
         // lands where the app's widget stands in the presented tree, the
-        // same node the primary window dispatches at.
-        let Some(root_node) = app.live_app_node() else {
-            return;
-        };
-        let mut handled = false;
-        let mut focus_target = None;
-        app.mark_semantic_tree_stale();
-        app.input.pointer.track_buttons(&event);
-        app.refresh_controls_before_input(&event);
-        let resources_before = app.resource_input_mark(&event);
-        let capture = app.begin_local_input_event(&event);
-        app.root_widget.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &app.input.modifiers,
-                state: crate::widget::Edits::lend(&mut app.state.doc),
-                path: &app.state.root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: root_node,
-                taffy: &app.layout.taffy,
-            },
-        );
-        drop(capture);
-        app.drain_local_input_capture();
-        // `handle_event` may change presentation-only resource declarations
-        // without touching the CRDT (selected tab, open media, local mode);
-        // only bare hover that changed nothing keeps the published tree.
-        app.invalidate_resources_after_input(
-            &event,
-            handled || focus_target.is_some(),
-            &resources_before,
-            false,
-        );
-        if let Some(id) = focus_target {
-            app.set_focused_node(Some(id));
-        }
+        // same node the primary window dispatches at. The source the root
+        // was told routes the event to that card's content.
+        let handled = self
+            .app
+            .dispatch_to_card(&event, scale, |root, event, ctx| {
+                root.handle_event(event, ctx);
+                false
+            });
         if handled {
-            app.commit_action();
-            app.needs_sync = true;
-            app.layout.layout_dirty |= app.root_widget.is_layout_dirty();
             if let Some(primary) = self.window.as_ref() {
                 primary.request_redraw();
             }

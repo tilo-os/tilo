@@ -94,6 +94,8 @@ pub mod driver;
 #[cfg(test)]
 mod driver_apps_a_tests;
 #[cfg(test)]
+mod driver_cards_tests;
+#[cfg(test)]
 mod driver_chrome_tests;
 #[cfg(test)]
 mod driver_frames_tests;

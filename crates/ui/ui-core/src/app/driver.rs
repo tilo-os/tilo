@@ -18,6 +18,7 @@ use super::{App, AppSurface, SurfaceDamage};
 
 mod apps_a;
 mod capture;
+mod cards;
 pub(crate) mod chrome;
 pub(crate) mod controls;
 pub(crate) mod drive;
@@ -232,6 +233,8 @@ pub struct Driver {
     overlay: uicore::Overlay,
     /// The pictures last handed to a page's composition ([`pictures`]).
     pictures: pictures::Pictures,
+    /// The cards the app stands over its window ([`cards`]).
+    cards: cards::Cards,
 }
 
 /// The name the window's bar goes by in a scenario's `perform` step: its parts are performed on it
@@ -274,6 +277,7 @@ impl Driver {
             wakes: session::OwnerWakes::default(),
             overlay: uicore::Overlay::default(),
             pictures: pictures::Pictures::default(),
+            cards: cards::Cards::default(),
         }
     }
 
@@ -517,6 +521,12 @@ impl Driver {
                 &mut self.scene,
                 &mut self.damage,
             );
+            // The cards the app asked for in this frame's update stand, and draw over it, before
+            // the next frame takes input: a card that came, went or moved runs that frame now.
+            if self.follow_cards() {
+                again = true;
+            }
+            self.draw_cards();
             self.records.finish(recording, &self.scene);
             // What the app declared for its bar in this frame's sync (a part's new name after a
             // press) shows in the next frame, which runs at once, as a window's bar shows it in
@@ -1016,7 +1026,11 @@ impl Driver {
                 return;
             }
         }
-        self.app.surface_input(&self.surface, event.clone(), false);
+        // A card standing over the window takes what is on it, and the window under it does not
+        // see it, as on a desktop.
+        if !self.route_to_card(event) {
+            self.app.surface_input(&self.surface, event.clone(), false);
+        }
         drop(running);
         if !self.coalesces_input() {
             self.run_frame();
@@ -1834,6 +1848,7 @@ impl Driver {
         }
         // The people and agents a frame paints over the widgets are no widgets either.
         root.children.extend(self.presence_inspection());
+        root.children.extend(self.cards_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,
