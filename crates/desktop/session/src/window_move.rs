@@ -913,14 +913,12 @@ verbs = [
                 ),
             )
             .expect("a launcher");
-            device
-                .workspaces()
-                .declare_package_surface(
-                    PROBE,
-                    tilo_surface_compile::compile(DECLARED)
-                        .expect("the surface compiles")
-                        .as_bytes(),
-                );
+            device.workspaces().declare_package_surface(
+                PROBE,
+                tilo_surface_compile::compile(DECLARED)
+                    .expect("the surface compiles")
+                    .as_bytes(),
+            );
             let link = device.shell_link();
             let state = home.state().to_path_buf();
             let mut environment = tilo_app_launch::SessionEnvironment::from_process();
