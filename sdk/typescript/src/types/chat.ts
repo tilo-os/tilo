@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@19beb90736d93ea4";
+export const SURFACE = "so.tilo.chat@aa2b913ea39c5ae6";
 
 /** One emoji of the workspace. */
 export interface Emoji {

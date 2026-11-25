@@ -353,7 +353,7 @@ ClearFoundArgs = TypedDict("ClearFoundArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -414,7 +414,7 @@ class Notice(Resource):
 
 class Book(Resource):
     """Book — `tl.so.tilo.ebook.Book`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     zzi6jbdk: str  # title
     hzsemqyf: str  # author
     ywdncocc: str  # subject
@@ -669,7 +669,7 @@ class Book(Resource):
 
 class Chapter(Resource):
     """Chapter — `tl.so.tilo.ebook.Chapter`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     njsapppc: str  # title
     hc6oa77y: str  # body
     awonaulm: Book | None  # book
@@ -713,7 +713,7 @@ class Chapter(Resource):
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.ebook.Mark`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     nsx4szpu: str  # kind
     eu36rgok: int  # chapter
     kkwkq4sx: int  # block
@@ -766,7 +766,7 @@ class Mark(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.ebook.Progress`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     fw6cx373: str  # who
     hrlsiabz: int  # chapter
     dozgglst: int  # block
@@ -778,7 +778,7 @@ class Progress(Resource):
 
 class Scheme(Resource):
     """Scheme — `tl.so.tilo.ebook.Scheme`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     yjaxgs5w: str  # name
     zfe44ecr: str  # page
     giw4wwwc: str  # ink
@@ -795,7 +795,7 @@ class Scheme(Resource):
 
 class Font(Resource):
     """Font — `tl.so.tilo.ebook.Font`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     jlawoyck: str  # family
     w2n5kzdl: str  # name
     @property
@@ -819,7 +819,7 @@ class Font(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.ebook.Found`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     cuehsj4a: str  # title
     @property
     def _5z23zsgs(self) -> str:
@@ -843,7 +843,7 @@ class Found(Resource):
 
 class Watched(Resource):
     """Watched — `tl.so.tilo.ebook.Watched`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     zfzcnyj7: str  # path
     l4rfzd5q: str  # token
     vs5vpxpc: list[str]  # given
@@ -852,7 +852,7 @@ class Watched(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.ebook.Library`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     rjqqjeka: list[Entry[Book]]  # books
     gark455v: list[Entry[Found]]  # found
     b2rhddat: list[Entry[Scheme]]  # schemes
@@ -1098,7 +1098,7 @@ class Library(Resource):
 
 class Highlight(Resource):
     """Highlight — `tl.so.tilo.ebook.Highlight`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     @property
     def _2mud3bws(self) -> str:
         """name (`2mud3bws` on the wire)."""
@@ -1112,7 +1112,7 @@ class Highlight(Resource):
 
 class Ebook(Resource):
     """Books — `tl.so.tilo.ebook`."""
-    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    __surface__ = "so.tilo.ebook@0cedf6b7fcebc8f1"
     def copy_passage(self, *, text: str) -> None:
         """Copies a passage, so it can be pasted anywhere: what a selection's Copy does."""
         return self.action("copy_passage", text=text)

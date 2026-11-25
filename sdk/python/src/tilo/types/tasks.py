@@ -389,7 +389,7 @@ LabelManyArgs = TypedDict("LabelManyArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -450,14 +450,14 @@ class Notice(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.tasks.Person`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     ktw2jimm: str  # name
     hgptkohm: str  # role
 
 
 class Project(Resource):
     """Project — `tl.so.tilo.tasks.Project`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     sgnau7vd: str  # name
     rsoasw3n: Kind  # kind
     c5pgzhqt: str  # notes
@@ -562,7 +562,7 @@ class Project(Resource):
 
 class Wait(Resource):
     """Wait — `tl.so.tilo.tasks.Wait`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     @property
     def _4fz6j3rg(self) -> WaitKind:
         """kind (`4fz6j3rg` on the wire)."""
@@ -585,7 +585,7 @@ class Wait(Resource):
 
 class Stopped(Resource):
     """Stopped — `tl.so.tilo.tasks.Stopped`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     ps5lbw2w: StoppedWhy  # why
     @property
     def _5yqkyqzr(self) -> str:
@@ -600,7 +600,7 @@ class Stopped(Resource):
 
 class Resumed(Resource):
     """Resumed — `tl.so.tilo.tasks.Resumed`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     @property
     def _66a5tqcs(self) -> str:
         """cause (`66a5tqcs` on the wire)."""
@@ -614,7 +614,7 @@ class Resumed(Resource):
 
 class Work(Resource):
     """Work — `tl.so.tilo.tasks.Work`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     finhtl5k: str  # folder
     ckijp22f: str  # note
     @property
@@ -656,7 +656,7 @@ class Work(Resource):
 
 class Origin(Resource):
     """Origin — `tl.so.tilo.tasks.Origin`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     @property
     def _3saq3nij(self) -> str:
         """author (`3saq3nij` on the wire)."""
@@ -693,7 +693,7 @@ class Origin(Resource):
 
 class Task(Resource):
     """Task — `tl.so.tilo.tasks.Task`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     @property
     def _2y3yxgz4(self) -> int:
         """number (`2y3yxgz4` on the wire)."""
@@ -1271,7 +1271,7 @@ class Task(Resource):
 
 class Related(Resource):
     """Related — `tl.so.tilo.tasks.Related`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     h62xalud: Task  # task
     @property
     def _27gmtaed(self) -> str:
@@ -1285,7 +1285,7 @@ class Related(Resource):
 
 class Tasks(Resource):
     """Tasks — `tl.so.tilo.tasks.Tasks`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     lg5gedbh: list[Entry[Task]]  # items
     mdhllpbo: list[Entry[Project]]  # projects
     c7peh6l3: list[Entry[Origin]]  # origins
@@ -1369,7 +1369,7 @@ class Tasks(Resource):
 
 class TiloTasks(Resource):
     """Tasks — `tl.so.tilo.tasks`."""
-    __surface__ = "so.tilo.tasks@5b5326ecaac4546f"
+    __surface__ = "so.tilo.tasks@77cf0ecdb301253c"
     def new_tasks(self,
         *,
         titles: list[str],

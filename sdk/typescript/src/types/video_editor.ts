@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@017be4f90908e872";
+export const SURFACE = "so.tilo.video-editor@dff1abb504d313e0";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -367,16 +367,6 @@ export interface TrimStartArgs {
 export interface TrimEndArgs {
   cs: Clip[];
   at: number;
-}
-
-/** The arguments of `paste_clips`. */
-export interface PasteClipsArgs {
-  at: number;
-}
-
-/** The arguments of `duplicate_clips`. */
-export interface DuplicateClipsArgs {
-  cs: Clip[];
 }
 
 /** The arguments of `trim_tracks`. */
@@ -1105,7 +1095,7 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `commit_drag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   commit_dragMany(items: CommitDragArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`, the clips chosen, by as much. A clip moved alone goes onto the track `track` names when that is another track of its kind, unlocked, with room for it there. */
+  /** Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`, the clips chosen, by as much. The track `track` names is where the grabbed clip lands: a clip moved alone goes there, and a chosen group moves down or up the rows by the same step, each clip onto the track of its kind that is open and has room for it after the move. */
   move_to(args: {
     c: Clip;
     start: number;
@@ -1196,15 +1186,11 @@ export interface Project extends tilo.Resource {
   /** Places copied clips from `at`, the earliest there and the rest keeping their distance from it; clips linked to each other stay linked, to each other alone. */
   paste_clips(args: {
     at: number;
-  }): Promise<void>;
-  /** Runs `paste_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  paste_clipsMany(items: PasteClipsArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<string[]>;
   /** Puts a copy of the clips right after them, on the same tracks. */
   duplicate_clips(args: {
     cs: Clip[];
-  }): Promise<void>;
-  /** Runs `duplicate_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  duplicate_clipsMany(items: DuplicateClipsArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<string[]>;
   /** Brings every track down by the same number of decibels, keeping the balance between them. A mix is a sum, so scaling every layer of it scales the sum: the balance the person set stays where they put it. Moving only the tracks caught over would change that balance and would not even guarantee the sum fits — two tracks at two-thirds each are over without either being over alone. A number that brings nothing down refuses rather than quietly doing nothing. */
   trim_tracks(args: {
     db: number;
@@ -1396,7 +1382,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "trim_tracks", "trim_tracksMany", "check_mix", "check_mixMany", "hear_mix", "hear_mixMany", "forgot_mix", "forgot_mixMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "play_cut", "play_cutMany", "stop_cut", "stop_cutMany", "pause_cut", "pause_cutMany", "shuttle", "shuttleMany", "jump_to", "jump_toMany", "live_at", "scrub_to", "scrub_toMany", "play_moving", "refresh_live", "refresh_liveMany", "hear_scrub", "export_cut", "export_cutMany", "render_moved", "render_movedMany", "render_done", "render_doneMany", "cancel_render", "cancel_renderMany"] as const;
+export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "move_to", "move_toMany", "trim_to", "trim_toMany", "move_marker", "move_markerMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "duplicate_clips", "trim_tracks", "trim_tracksMany", "check_mix", "check_mixMany", "hear_mix", "hear_mixMany", "forgot_mix", "forgot_mixMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "play_cut", "play_cutMany", "stop_cut", "stop_cutMany", "pause_cut", "pause_cutMany", "shuttle", "shuttleMany", "jump_to", "jump_toMany", "live_at", "scrub_to", "scrub_toMany", "play_moving", "refresh_live", "refresh_liveMany", "hear_scrub", "export_cut", "export_cutMany", "render_moved", "render_movedMany", "render_done", "render_doneMany", "cancel_render", "cancel_renderMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

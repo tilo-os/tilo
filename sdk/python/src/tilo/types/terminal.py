@@ -298,7 +298,7 @@ RenameArgs = TypedDict("RenameArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@0a801497ea53019c"
+    __surface__ = "so.tilo.terminal@761fb3cd771e704f"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -490,7 +490,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@0a801497ea53019c"
+    __surface__ = "so.tilo.terminal@761fb3cd771e704f"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -561,7 +561,7 @@ class History(Resource):
 
 class MachineSecrets(Resource):
     """Machine secrets — `terminal.machine-secrets`."""
-    __surface__ = "so.tilo.terminal@0a801497ea53019c"
+    __surface__ = "so.tilo.terminal@761fb3cd771e704f"
     secrets: list[MachineSecret]
 
     def add_secret(self,
@@ -591,7 +591,7 @@ class MachineSecrets(Resource):
 
 class Environment(Resource):
     """Environment — `environment`."""
-    __surface__ = "so.tilo.terminal@0a801497ea53019c"
+    __surface__ = "so.tilo.terminal@761fb3cd771e704f"
     name: str
     runtime: RuntimeRef
     tools: list[ToolRef]

@@ -455,7 +455,7 @@ OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -516,7 +516,7 @@ class Notice(Resource):
 
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -709,7 +709,7 @@ class Conversations(Resource):
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
     @property
@@ -769,7 +769,7 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     olqjezxu: str  # name
     enzjdbyp: str  # service
     nvzanb5n: str  # outside_id
@@ -813,7 +813,7 @@ class VoiceChannel(Resource):
 
 class Hearing(Resource):
     """Hearing — `tl.so.tilo.chat.Hearing`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     ua6lm2xh: list[Entry[Heard]]  # people
 
     def set_hearing(self,
@@ -851,7 +851,7 @@ class Hearing(Resource):
 
 class Heard(Resource):
     """Heard — `tl.so.tilo.chat.Heard`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     a2np4gvd: str  # who
     u4nfj5zx: int  # percent
     xtnm4w32: bool  # silenced
@@ -859,7 +859,7 @@ class Heard(Resource):
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     fld77g72: str  # summary
@@ -1055,7 +1055,7 @@ class TextChannel(Resource):
 
 class OutsideAuthor(Resource):
     """OutsideAuthor — `tl.so.tilo.chat.OutsideAuthor`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     @property
     def _5fxndhc2(self) -> str:
         """name (`5fxndhc2` on the wire)."""
@@ -1071,7 +1071,7 @@ class OutsideAuthor(Resource):
 
 class LiveShare(Resource):
     """LiveShare — `tl.so.tilo.chat.LiveShare`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     noscllor: str  # window
     n4s3rmdn: str  # workspace
     k535m2ok: str  # title
@@ -1083,14 +1083,14 @@ class LiveShare(Resource):
 
 class OutsideEmoji(Resource):
     """OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     ldtylgfu: str  # name
     jjutyqgx: str  # picture
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -1247,7 +1247,7 @@ class Message(Resource):
 
 class ChatReport(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -1293,7 +1293,7 @@ class ChatReport(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     xuvfifa5: str  # name
     cv664irm: str  # summary
     ijy454g6: list[Entry[Message]]  # messages
@@ -1440,7 +1440,7 @@ class Thread(Resource):
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -1624,7 +1624,7 @@ class Direct(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.chat.Draft`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     @property
     def _5shwuvrs(self) -> Direct | TextChannel | Thread:
         """conversation (`5shwuvrs` on the wire)."""
@@ -1691,7 +1691,7 @@ class Draft(Resource):
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
@@ -1708,7 +1708,7 @@ class Attached(Resource):
 
 class RelayedReaction(Resource):
     """RelayedReaction — `tl.so.tilo.chat.RelayedReaction`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     r2zcptjt: str  # emoji
     awgtnj33: str  # persona
     hammizbi: str  # by
@@ -1716,7 +1716,7 @@ class RelayedReaction(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -1730,7 +1730,7 @@ class Part(Resource):
 
 class Skill(Resource):
     """Skill — `tl.so.tilo.chat.Skill`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     gfk6pm4a: str  # name
     gnfldsvz: str  # work
     bn3w5doj: str  # how
@@ -1812,7 +1812,7 @@ class Skill(Resource):
 
 class Example(Resource):
     """Example — `tl.so.tilo.chat.Example`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     fspydtu6: str  # text
     @property
     def _2u2ngevv(self) -> bool:
@@ -1835,11 +1835,11 @@ class Example(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     emoji: dict[str, Emoji]  # Emoji
 
     def add_emoji(self,
@@ -1901,7 +1901,7 @@ class WorkspaceEmoji(Resource):
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@19beb90736d93ea4"
+    __surface__ = "so.tilo.chat@aa2b913ea39c5ae6"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Reports"""
