@@ -506,6 +506,15 @@ fn decide_as_document_edit(
                         ),
                     ) => None,
                     (None, ClaimedAction::Framework(_)) => signer.cloned(),
+                    // A device's own commit of the record (`FrameworkChange::Native`) claims it
+                    // whole and names no one: it is its signer's, as the same change in the
+                    // clear is ([`crate::claim::maker_of`]).
+                    (None, action)
+                        if claim.call.is_none()
+                            && *action == ClaimedAction::whole_resource_edit(String::new()) =>
+                    {
+                        signer.cloned()
+                    }
                     (None, _) => match imported {
                         Some(person) => Some(person.clone()),
                         None => return Err(ReceiptRefusal::NoInvoker),

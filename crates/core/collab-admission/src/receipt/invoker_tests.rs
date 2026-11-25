@@ -382,6 +382,21 @@ fn a_framework_change_signed_by_an_agent_is_decided_as_the_agent() {
         (None, Some(&agent)),
     );
     assert_eq!(decided, Ok(Receipt::Admit));
+    assert_eq!(asked.borrow().clone(), vec![Some(agent.clone())]);
+
+    // Sealed, a receiver that has not opened it reads the same from its claim: the signer's.
+    asked.borrow_mut().clear();
+    let (sealed, _) = sealed(&op);
+    let decided = decide_opened(
+        (&sealed, None),
+        &tree(),
+        (None, None, None),
+        None,
+        &Surfaces::default(),
+        &allows,
+        (None, Some(&agent)),
+    );
+    assert_eq!(decided, Ok(Receipt::Admit));
     assert_eq!(asked.into_inner(), vec![Some(agent)]);
 }
 
@@ -419,9 +434,11 @@ fn a_sealed_write_by_an_app_is_decided_by_the_apps_grant_not_its_signer() {
         "the owner's device lends an app nothing by signing its write"
     );
     let mut installed = policy(None);
-    installed.grants.push(tilo_action_policy::roles::app_records_grant(
-        WORKSPACE, FILES, "owner",
-    ));
+    installed
+        .grants
+        .push(tilo_action_policy::roles::app_records_grant(
+            WORKSPACE, FILES, "owner",
+        ));
     assert_eq!(decided(&installed, &op), Ok(Receipt::Admit));
     // The same write in the clear is decided the same way.
     assert!(decided(&policy(None), &written).is_err());
