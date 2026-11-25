@@ -3906,3 +3906,290 @@ mod port {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+mod outside_effects {
+    //! Admitting a queued outside effect: the app whose package wrote it declares the capability it
+    //! carries out, and a type whose reader rule keeps its parent's readers is still nested only
+    //! where its parent's type nests it.
+    use std::collections::BTreeMap;
+
+    use collab_types::store::{Cell, Resource};
+    use tilo_actions::surface::ReaderRule;
+    use tilo_resource_store::{
+        Expected, Field, FieldKind, Proposal, Received, Refusal, Schema, Stamp, Store, Type, Verb,
+        Writes, Written,
+    };
+
+    const ITEM: &str = "tl.so.example.Item";
+    const OUTBOX: &str = "tilolang.outbox";
+
+    fn text(name: &str) -> Field {
+        Field {
+            name: name.to_owned(),
+            kind: FieldKind::Scalar,
+            value: Expected::Text,
+            optional: true,
+        }
+    }
+
+    fn flag(name: &str) -> Field {
+        Field {
+            name: name.to_owned(),
+            kind: FieldKind::Scalar,
+            value: Expected::Bool,
+            optional: true,
+        }
+    }
+
+    /// The schema of an app that queues outside effects on its items: its surface declares the entry
+    /// a send waits in, as every app's does, read by its author alone.
+    fn schema(outside: &[(&str, &[&str])]) -> Schema {
+        Schema {
+            types: vec![
+                Type {
+                    name: ITEM.to_owned(),
+                    fields: vec![text("title")],
+                    nested: Vec::new(),
+                    live: None,
+                    founding: Vec::new(),
+                },
+                Type {
+                    name: OUTBOX.to_owned(),
+                    fields: vec![
+                        text("doc"),
+                        text("entry"),
+                        text("app"),
+                        text("capability"),
+                        text("payload"),
+                        text("owner"),
+                        text("state"),
+                        text("detail"),
+                        text("outcome"),
+                        text("reason"),
+                        text("held_until"),
+                        flag("settled"),
+                    ],
+                    nested: Vec::new(),
+                    live: None,
+                    founding: Vec::new(),
+                },
+            ],
+            verbs: vec![Verb {
+                name: "send".to_owned(),
+                writes: BTreeMap::from([(ITEM.to_owned(), Writes::default())]),
+                outside: outside
+                    .iter()
+                    .map(|(surface, capabilities)| {
+                        (
+                            (*surface).to_owned(),
+                            capabilities.iter().map(|c| (*c).to_owned()).collect(),
+                        )
+                    })
+                    .collect(),
+                ..Verb::default()
+            }],
+            readers: BTreeMap::from([(OUTBOX.to_owned(), ReaderRule::Author { until: None })]),
+        }
+    }
+
+    fn store(schema: Schema) -> Store {
+        let mut store = Store::new();
+        store.declare(schema);
+        store
+    }
+
+    fn stamp(verb: &str, invocation: &str) -> Stamp {
+        Stamp {
+            verb: verb.to_owned(),
+            invoker: "ada".to_owned(),
+            invocation: invocation.to_owned(),
+            membership: vec!["m1".to_owned()],
+            ..Stamp::default()
+        }
+    }
+
+    fn item(store: &mut Store) -> Vec<Written> {
+        store
+            .put(
+                ITEM,
+                "i",
+                Resource {
+                    readers: String::new(),
+                    parent: None,
+                    order: None,
+                    fields: BTreeMap::from([("title".to_owned(), Cell::One("Hi".into()))]),
+                },
+                &stamp("send", "i1"),
+            )
+            .unwrap()
+    }
+
+    fn entry(store: &mut Store, app: &str, capability: &str) -> Vec<Written> {
+        store
+            .put(
+                OUTBOX,
+                "e",
+                Resource {
+                    readers: "ada".to_owned(),
+                    parent: Some("i".to_owned()),
+                    order: None,
+                    fields: BTreeMap::from([
+                        ("doc".to_owned(), Cell::One("d".into())),
+                        ("entry".to_owned(), Cell::One("e".into())),
+                        ("app".to_owned(), Cell::One(app.into())),
+                        ("capability".to_owned(), Cell::One(capability.into())),
+                        ("payload".to_owned(), Cell::One("{}".into())),
+                        ("owner".to_owned(), Cell::One("dev".into())),
+                        ("settled".to_owned(), Cell::One(false.into())),
+                    ]),
+                },
+                &stamp("send", "i2"),
+            )
+            .unwrap()
+    }
+
+    /// Carries `written` to `to`, as sync does, answered by why each refused one was refused.
+    fn deliver(written: &[Written], to: &mut Store) -> Vec<Refusal> {
+        let mut refused = Vec::new();
+        for write in written {
+            refused.extend(
+                to.receive(
+                    &write.doc,
+                    &write.readers,
+                    vec![Received {
+                        change: write.change.clone(),
+                        author: [7; 32],
+                        claimed: None,
+                    }],
+                    &|_: &Proposal<'_>| true,
+                )
+                .unwrap()
+                .into_iter()
+                .map(|(_, why)| why),
+            );
+        }
+        refused
+    }
+
+    fn refused(written: &[Written], to: &mut Store) -> String {
+        let refused = deliver(written, to);
+        let [Refusal::Undeclared(why)] = &refused[..] else {
+            panic!("the write is refused as undeclared: {refused:?}");
+        };
+        why.clone()
+    }
+
+    /// An app queues a send its surface does not declare: admission refuses it, so no app queues a
+    /// capability it was never granted.
+    #[test]
+    fn an_undeclared_capability_is_refused_when_it_is_queued() {
+        let declared = schema(&[("tl.so.example", &["imap.check"])]);
+        let mut writer = store(declared.clone());
+        let mut there = store(declared);
+        deliver(&item(&mut writer), &mut there);
+        let why = refused(&entry(&mut writer, "so.example", "smtp.send"), &mut there);
+        assert!(
+            why.contains("declares no outside capability `smtp.send`"),
+            "{why}"
+        );
+    }
+
+    /// An app declares the capability it queues: the entry is admitted, naming the app whose package
+    /// wrote it.
+    #[test]
+    fn a_declared_capability_is_admitted_for_the_app_that_declared_it() {
+        let declared = schema(&[("tl.so.example", &["smtp.send"])]);
+        let mut writer = store(declared.clone());
+        let mut there = store(declared);
+        deliver(&item(&mut writer), &mut there);
+        let admitted = deliver(&entry(&mut writer, "so.example", "smtp.send"), &mut there);
+        assert!(
+            admitted.is_empty(),
+            "the app declares the capability it queues: {admitted:?}"
+        );
+    }
+
+    /// An entry claiming another app queued it is refused: the app an entry is for is the one whose
+    /// package wrote it, never what the entry says of itself.
+    #[test]
+    fn an_entry_claiming_another_app_queued_it_is_refused() {
+        let declared = schema(&[("tl.so.example", &["smtp.send"])]);
+        let mut writer = store(declared.clone());
+        let mut there = store(declared);
+        deliver(&item(&mut writer), &mut there);
+        let why = refused(&entry(&mut writer, "so.tilo.mail", "smtp.send"), &mut there);
+        assert!(why.contains("whose package wrote it not"), "{why}");
+    }
+
+    /// A type whose reader rule keeps its parent's readers (`author until ready`, once it is ready)
+    /// is nested only where its parent's type nests it: the rule's own document does not place it
+    /// elsewhere any more.
+    #[test]
+    fn a_ruled_kind_that_keeps_its_parents_readers_is_nested_where_its_parent_nests_it() {
+        let schema = || Schema {
+            types: vec![
+                Type {
+                    name: "Holder".to_owned(),
+                    fields: Vec::new(),
+                    nested: Vec::new(),
+                    live: None,
+                    founding: Vec::new(),
+                },
+                Type {
+                    name: "Ruled".to_owned(),
+                    fields: vec![flag("ready")],
+                    nested: Vec::new(),
+                    live: None,
+                    founding: Vec::new(),
+                },
+            ],
+            verbs: Vec::new(),
+            readers: BTreeMap::from([(
+                "Ruled".to_owned(),
+                ReaderRule::Author {
+                    until: Some("ready".to_owned()),
+                },
+            )]),
+        };
+        let held = |ready: bool| {
+            let mut writer = store(schema());
+            let mut there = store(schema());
+            let holder = writer
+                .put("Holder", "h", Resource::default(), &stamp("create", "i1"))
+                .unwrap();
+            deliver(&holder, &mut there);
+            let ruled = writer
+                .put(
+                    "Ruled",
+                    "r",
+                    Resource {
+                        // Its author alone reads it until `ready`, then every member, as its parent
+                        // is read: what its rule gives, which the writer names as a store placing it
+                        // by the rule does.
+                        readers: if ready {
+                            "*".to_owned()
+                        } else {
+                            "ada".to_owned()
+                        },
+                        parent: Some("h".to_owned()),
+                        fields: BTreeMap::from([("ready".to_owned(), Cell::One(ready.into()))]),
+                        ..Resource::default()
+                    },
+                    &stamp("create", "i2"),
+                )
+                .unwrap();
+            deliver(&ruled, &mut there)
+        };
+        let refused = held(true);
+        let [Refusal::Undeclared(why)] = &refused[..] else {
+            panic!("the write is refused as undeclared: {refused:?}");
+        };
+        assert!(why.contains("nests no `Ruled`"), "{why}");
+        // Its author alone reads it until then: a document of its own, not its parent's.
+        let alone = held(false);
+        assert!(
+            alone.is_empty(),
+            "its author alone reads it, in a document of its own: {alone:?}"
+        );
+    }
+}

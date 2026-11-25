@@ -464,6 +464,36 @@ fn another_members_search_finds_nothing_of_a_queued_effect() {
     );
 }
 
+/// A queued effect records the app whose package queued it, and the capability it carries out:
+/// what carry-out checks the workspace's grant for, and what a reader audits it by.
+#[test]
+fn a_queued_effect_names_the_app_that_queued_it() {
+    use collab_types::store::wire::{Command, Reply};
+    use collab_types::store::{Cell, Value};
+    use tilolang_tilo::resources::OUTBOX;
+
+    let (bus, id) = sent_reply();
+    let read = bus
+        .workspace()
+        .command(
+            Command::Get {
+                kind: OUTBOX.to_owned(),
+                id,
+            },
+            ADA,
+        )
+        .expect("the entry is read");
+    let Reply::Resource(Some(resource)) = read else {
+        panic!("the entry is held: {read:?}");
+    };
+    let field = |name: &str| match resource.fields.get(name) {
+        Some(Cell::One(Value::Text(text))) => text.as_str(),
+        other => panic!("`{name}` reads as text: {other:?}"),
+    };
+    assert_eq!(field("app"), MAIL);
+    assert_eq!(field("capability"), "smtp.send");
+}
+
 /// Nobody outside the workspace reads its mail: a person who is no member of it asks another
 /// member's instance for its account's mail and is allowed nothing of it. A member the workspace
 /// removes loses its mail the same way, as the test above shows.

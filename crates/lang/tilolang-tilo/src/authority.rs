@@ -51,6 +51,9 @@ struct State {
     agents: HashMap<Actor, Option<String>>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
+    /// The outside capabilities each app's package declares its code can queue (`smtp.send`), by
+    /// app, as installed: the grant on which the app's queued effects are carried out.
+    outside: HashMap<String, HashSet<String>>,
     /// The `(app, host)` the workspace took away: a request to one answers as a value.
     revoked_web: HashSet<(String, String)>,
 }
@@ -88,6 +91,13 @@ impl TiloAuthority {
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
             state.names.insert(action.id.clone(), action.name.clone());
+            if !action.outside.is_empty() {
+                state
+                    .outside
+                    .entry(meta.app.clone())
+                    .or_default()
+                    .extend(action.outside.iter().cloned());
+            }
         }
     }
 
@@ -150,6 +160,8 @@ impl TiloAuthority {
             state.trusted.remove(module);
             state.apps.remove(module);
         }
+        // What its package declared it may queue is no grant once none of its code is here.
+        state.outside.remove(app);
     }
 
     /// Trust the code of this exact module version.
@@ -234,6 +246,42 @@ impl Authority for TiloAuthority {
             .borrow()
             .revoked_web
             .contains(&(app.to_owned(), host.to_ascii_lowercase()))
+    }
+
+    /// Whether `app` may carry out `capability`: its package here declares it, and no grant of
+    /// the workspace naming the app denies it reaching outside. An app this host does not know,
+    /// or a capability its package does not declare, is carried out nowhere; a member who revokes
+    /// the app's outside reach stops what it queued from going.
+    fn may_reach(&self, app: &str, capability: &str) -> bool {
+        let state = self.state.borrow();
+        if !state
+            .outside
+            .get(app)
+            .is_some_and(|declared| declared.contains(capability))
+        {
+            return false;
+        }
+        drop(state);
+        let Some(access) = (self.access)() else {
+            return true;
+        };
+        let earlier = crate::schema::earlier_ids();
+        let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
+        let node = TreePath::workspace(access.workspace()).app(app.to_owned());
+        !access
+            .policy
+            .grants
+            .iter()
+            .chain(&access.granted)
+            .any(|grant| {
+                grant.grantee == Grantee::app(app)
+                    && grant.answer == Answer::Deny
+                    && grant
+                        .kinds
+                        .contains(tilo_action_policy::ActionKind::Outside)
+                    && grant.is_live(&cx)
+                    && cx.covers(&grant.node, &node)
+            })
     }
 
     /// The decision on the invoker's own call, with no code between them and the action: what

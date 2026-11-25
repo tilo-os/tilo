@@ -1295,6 +1295,57 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     assert!(session.flag(&draft, "sent"));
 }
 
+/// A workspace that denies Mail its outside reach carries none of what the app queued out: the
+/// entry settles refused with what a person reads, and nothing reaches the server.
+#[test]
+fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
+    use collaboration::RouteSpec;
+    use tilolang_process::hosted::Spec;
+    use ui::permissions::policy::{
+        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
+    };
+
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let workspace = route.cluster_id.to_string();
+    let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
+    // The member took the app's outside reach back: what it queued is not carried out.
+    policy.grants.push(Grant::new(
+        "mail-denied",
+        Grantee::app(APP),
+        TreePath::workspace(&workspace).app(APP),
+        KindSet::OUTSIDE,
+        Answer::Deny,
+        Grantee::person("ada"),
+    ));
+    let spec = Spec::new(APP, workspace, 1, "ada")
+        .in_language("en-US")
+        .access(MemberAccess::person(policy, "ada"));
+    let session = Session::brokered_as(&route, spec, Window::in_harness);
+    let mut session = connector.attach(session);
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    let draft = session.made("reply", &plan, &json!({}));
+    session.call("send", &draft, &json!({}));
+    session.until("the outbox to settle", |session| {
+        session.instance_host().store().outbox_pending().is_empty()
+    });
+    assert!(
+        servers.smtp.sent().is_empty(),
+        "nothing the workspace denied reached the server"
+    );
+    let (state, reason) = session
+        .delivery_of(&draft)
+        .expect("the draft says how it stands");
+    assert_eq!(state, "rejected", "{reason}");
+    assert!(
+        reason.contains("does not let so.tilo.mail use smtp.send"),
+        "{reason}"
+    );
+}
+
 /// The conversation's reply bar answers and sends in one press: the person is asked once, and
 /// allowing it sends the answer the bar made, as the Send of a draft does.
 #[test]

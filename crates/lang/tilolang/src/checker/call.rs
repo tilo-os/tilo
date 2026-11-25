@@ -2084,6 +2084,9 @@ impl Checker<'_> {
             );
         }
         self.reads(crate::effects::Effect::Notify, span, "`notify`");
+        // What it writes is a record of the host's `Notice`: the verb declares it, as it declares
+        // the outside capabilities it queues.
+        self.st.facts.notice = true;
         let device = device.unwrap_or_else(|| Ex::str(""));
         let actions = actions
             .unwrap_or_else(|| Ex::host(Imp::MissingV, Vec::new(), Ty::List(Box::new(Ty::Text))));

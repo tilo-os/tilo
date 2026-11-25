@@ -384,6 +384,11 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet, targeted: bool) -
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
         tags: Vec::new(),
+        // What its code can queue outside the workspace and whether it tells a person something,
+        // as the compiler read its `outside(...)` and `notify(...)` calls (and the effects it
+        // declares): what a change writing either is admitted by.
+        outside: action.outside.clone(),
+        notice: action.notice || action.uses.iter().any(|effect| effect == "notify"),
     }
 }
 
@@ -463,6 +468,8 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     };
     let mut verbs = vec![create];
     verbs.extend(DIRECT_EDITS.iter().map(|direct| {
@@ -504,6 +511,8 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
             writes: vec![RESOURCE_UNIT.to_owned()],
             field: None,
             tags: Vec::new(),
+            outside: Vec::new(),
+            notice: false,
         }
     }));
     // A type with rich text offers an agent the edits of one paragraph of it, by the address
@@ -562,6 +571,8 @@ fn block_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
                 writes: vec![RESOURCE_UNIT.to_owned()],
                 field: None,
                 tags: Vec::new(),
+                outside: Vec::new(),
+                notice: false,
             }
         })
         .collect()
@@ -584,6 +595,8 @@ fn origin_verb() -> VerbSurface {
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     }
 }
 
@@ -601,6 +614,8 @@ fn scenario_verb() -> VerbSurface {
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     }
 }
 
@@ -810,6 +825,8 @@ pub fn personal_surface() -> Surface {
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     })
     .collect();
     Surface {
@@ -835,8 +852,8 @@ pub fn personal_surface() -> Surface {
 #[must_use]
 pub fn queued_effect_surface() -> Surface {
     use crate::resources::{
-        OUT_CAPABILITY, OUT_DETAIL, OUT_DOC, OUT_ENTRY, OUT_HELD_UNTIL, OUT_OUTCOME, OUT_OWNER,
-        OUT_PAYLOAD, OUT_REASON, OUT_SETTLED, OUT_STATE, OUTBOX,
+        OUT_APP, OUT_CAPABILITY, OUT_DETAIL, OUT_DOC, OUT_ENTRY, OUT_HELD_UNTIL, OUT_OUTCOME,
+        OUT_OWNER, OUT_PAYLOAD, OUT_REASON, OUT_SETTLED, OUT_STATE, OUTBOX,
     };
     let text = |name: &str, optional: bool| FieldSurface {
         path: name.to_owned(),
@@ -857,6 +874,7 @@ pub fn queued_effect_surface() -> Surface {
     let mut fields: Vec<FieldSurface> = [
         OUT_DOC,
         OUT_ENTRY,
+        OUT_APP,
         OUT_CAPABILITY,
         OUT_PAYLOAD,
         OUT_OWNER,
@@ -886,6 +904,8 @@ pub fn queued_effect_surface() -> Surface {
         writes: vec![RESOURCE_UNIT.to_owned()],
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     };
     Surface {
         kind: OUTBOX.to_owned(),

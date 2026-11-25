@@ -2196,6 +2196,11 @@ impl Runtime {
     /// # Errors
     ///
     /// `Package` when no sink is set; a store failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one settle read in order: what the workspace refuses, then each state an entry \
+                  waits in and what the sink answered"
+    )]
     pub fn settle(&self) -> Result<SettleReport, RuntimeError> {
         use crate::core::Delivery;
         use crate::store::{OutboxState, Settled};
@@ -2219,6 +2224,21 @@ impl Runtime {
             return Err(RuntimeError::Package("no outside sink is set".into()));
         }
         for entry in pending {
+            // What the workspace does not let the app carry out is settled as refused here, and
+            // never reaches the sink: a queued effect is no grant of the capability it names.
+            if !self.core.authority.may_reach(&entry.app, &entry.capability) {
+                let reason = format!(
+                    "this workspace does not let {} use {}, so nothing went out",
+                    entry.app, entry.capability
+                );
+                self.core.store.borrow_mut().outbox_settle(
+                    &entry,
+                    &Settled::Rejected(reason.clone()),
+                    &note(&entry, "$settle"),
+                )?;
+                report.failed.push((entry.id.clone(), reason));
+                continue;
+            }
             match &entry.state {
                 OutboxState::Sending { by } if by != token => {
                     let settle = note(&entry, "$settle");

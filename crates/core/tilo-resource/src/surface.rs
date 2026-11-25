@@ -99,6 +99,8 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
         writes: decl.writes.clone(),
         field: decl.field.map(str::to_owned),
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     }
 }
 
@@ -118,6 +120,8 @@ fn framework_verb(id: &str, writes: Vec<String>) -> VerbSurface {
         writes,
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     }
 }
 
@@ -348,6 +352,8 @@ pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface
         writes: vec!["record".to_owned()],
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     }
 }
 

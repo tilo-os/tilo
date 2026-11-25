@@ -109,17 +109,19 @@ pub(crate) fn declared(
     touched: &Touched,
     writes: &[(String, String, Option<ScalarValue>)],
     kind_of: &dyn Fn(&str) -> Option<String>,
-    ruled: &dyn Fn(&str) -> bool,
+    ruled: &dyn Fn(&str, &str) -> bool,
 ) -> Result<(), String> {
     if schema.types.is_empty() {
         return Ok(());
     }
     // A resource is nested only where its parent's type nests its kind, unless its own type says
-    // who reads it: such a one is placed in a document of those readers, never in its parent's,
-    // so what nests it is not its kind's to hold.
-    for touch in touched.resources.values() {
+    // it is read by a document other than its parent's: such a one is placed in a document of
+    // those readers, never in its parent's, so what nests it is not its kind's to hold. A rule
+    // that stays its parent's readers (an `until` that has come true reads as every member)
+    // does not lift this.
+    for (id, touch) in &touched.resources {
         if let (Some(kind), Some(parent)) = (&touch.kind, &touch.parent) {
-            if ruled(kind) {
+            if ruled(kind, id) {
                 continue;
             }
             let parent_kind = touched
@@ -181,6 +183,7 @@ pub(crate) fn declared(
 pub(crate) fn within_verb(
     schema: &Schema,
     touched: &Touched,
+    writes: &[(String, String, Option<ScalarValue>)],
     stamp: Option<&Stamp>,
     operations: usize,
 ) -> Result<(), String> {
@@ -214,13 +217,12 @@ pub(crate) fn within_verb(
         };
         // One verb of the name that admits the resource's write is enough: a family declared
         // by prefix writes its own kinds beside a verb of the same name another app declares.
-        if !verbs
-            .iter()
-            .any(|verb| verb_admits(schema, verb, stamp, id, kind, touch).is_ok())
-        {
-            return verbs
-                .iter()
-                .try_for_each(|verb| verb_admits(schema, verb, stamp, id, kind, touch));
+        if !verbs.iter().any(|verb| {
+            verb_admits(schema, verb, stamp, id, kind, touch, writes).is_ok()
+        }) {
+            return verbs.iter().try_for_each(|verb| {
+                verb_admits(schema, verb, stamp, id, kind, touch, writes)
+            });
         }
     }
     Ok(())
@@ -255,6 +257,7 @@ fn verb_admits(
     id: &str,
     kind: &str,
     touch: &Touch,
+    writes: &[(String, String, Option<ScalarValue>)],
 ) -> Result<(), String> {
     // A move founds, fills and removes a resource of whatever kind the store declares: whether its
     // caller may is the workspace's to decide, on each side of it.
@@ -330,15 +333,22 @@ fn verb_admits(
         {
             return Ok(());
         }
-        // A notice is how any action's code tells a person something: a tilolang verb writes
-        // one wherever it writes its own package's records.
-        if kind == HOST_NOTICE_KIND && verb.writes.keys().any(|own| own.starts_with("tl.")) {
-            return Ok(());
+        // A notice is how an action's code tells a person something: a verb that writes one
+        // declares it (`notify(...)`), as it declares the outside capabilities it queues.
+        if kind == HOST_NOTICE_KIND {
+            return if verb.notice {
+                Ok(())
+            } else {
+                Err(format!(
+                    "`{}` tells a person nothing, so it writes no `{kind}`",
+                    verb.name
+                ))
+            };
         }
-        // A queued effect is how any action's code reaches beyond the workspace: a tilolang verb
-        // writes one wherever it writes its own package's records.
-        if kind == QUEUED_EFFECT_KIND && verb.writes.keys().any(|own| own.starts_with("tl.")) {
-            return Ok(());
+        // A queued effect is how an action's code reaches beyond the workspace: it writes one
+        // only for a capability its own app's surface declares, and the entry names that app.
+        if kind == QUEUED_EFFECT_KIND {
+            return queued_effect_admits(verb, id, touch, writes);
         }
         return Err(format!("`{}` writes no `{kind}`", verb.name));
     };
@@ -371,20 +381,117 @@ fn verb_admits(
     Ok(())
 }
 
-/// Whether `kind` stands among `nested` or among the kinds the types between them nest.
-/// The tilolang package a kind of one (`tl.<app>.<Type>`) is of: none for another kind.
-/// The kind of the tilolang host's `Notice`, which any package's action writes to tell a person.
+/// Whether a change of `verb` queues the outside effect `id` writes: it makes the entry, its
+/// code declares the capability it names, and the app the entry says it is for is the app whose
+/// package wrote it. What it writes is an entry, never a change of one: the device that carries
+/// it out says how it went under the platform's own verbs.
+fn queued_effect_admits(
+    verb: &crate::schema::Verb,
+    id: &str,
+    touch: &Touch,
+    writes: &[(String, String, Option<ScalarValue>)],
+) -> Result<(), String> {
+    // Taking an effect back is how a person undoes a send before it goes: it queues nothing.
+    if touch.removed && !touch.made {
+        return Ok(());
+    }
+    if !touch.made {
+        return Err(format!(
+            "`{}` may not change a queued effect; only the device carrying it out says how it went",
+            verb.name
+        ));
+    }
+    let written = |field: &str| -> Option<&str> {
+        writes
+            .iter()
+            .find(|(written, name, _)| written == id && name == field)
+            .and_then(|(_, _, value)| match value {
+                Some(ScalarValue::Str(text)) => Some(text.as_str()),
+                _ => None,
+            })
+    };
+    let Some(app) = written(QUEUED_EFFECT_APP) else {
+        return Err(format!("`{}` queues an effect naming no app", verb.name));
+    };
+    let Some(capability) = written(QUEUED_EFFECT_CAPABILITY) else {
+        return Err(format!(
+            "`{}` queues an effect naming no capability",
+            verb.name
+        ));
+    };
+    // The app an entry is for is the one whose package wrote it: a change claiming another
+    // app's entry is refused here, whatever it says of itself. A verb of the package's own
+    // surface writes only that surface, so a verb that names no type is the package's own.
+    let apps = declaring_apps(verb);
+    let ours = if apps.is_empty() {
+        verb.outside
+            .keys()
+            .any(|surface| surface_belongs_to(surface, app))
+    } else {
+        apps.contains(app)
+    };
+    if !ours {
+        return Err(format!(
+            "`{}` queues an effect for `{app}`, whose package wrote it not",
+            verb.name
+        ));
+    }
+    if !outside_declared(verb, app, capability) {
+        return Err(format!(
+            "`{app}` declares no outside capability `{capability}`, so `{}` queues none",
+            verb.name
+        ));
+    }
+    Ok(())
+}
+
+/// The apps whose packages the verb's writes are of: each `tl.<app>.<Type>` it writes, by the
+/// package the type is declared in.
+fn declaring_apps(verb: &crate::schema::Verb) -> BTreeSet<String> {
+    verb.writes
+        .keys()
+        .filter(|kind| kind.as_str() != HOST_NOTICE_KIND)
+        .filter_map(|kind| tilolang_package(kind))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether the surface of `app` declares that `verb`'s code can queue `capability`: its
+/// `outside(...)` calls name it, and the compilers put them in the surface the app publishes.
+fn outside_declared(verb: &crate::schema::Verb, app: &str, capability: &str) -> bool {
+    verb.outside.iter().any(|(surface, capabilities)| {
+        capabilities.contains(capability) && surface_belongs_to(surface, app)
+    })
+}
+
+/// The kind of the tilolang host's `Notice`, which a package's action writes to tell a person.
 const HOST_NOTICE_KIND: &str = "tl.tilo.host.Notice";
 
-/// The kind an outside effect waits as, which any package's action queues one of
-/// (`tilolang.outbox`).
+/// The kind an outside effect waits as, which a package's action queues one of
+/// (`tilolang.outbox`). Its entry names the app that queued it and the capability it carries
+/// out.
 const QUEUED_EFFECT_KIND: &str = "tilolang.outbox";
 
+/// The field of a queued effect naming the app whose package queued it.
+const QUEUED_EFFECT_APP: &str = "app";
+
+/// The field of a queued effect naming the outside capability it carries out.
+const QUEUED_EFFECT_CAPABILITY: &str = "capability";
+
+/// The tilolang package a kind of one (`tl.<app>.<Type>`) is of: none for another kind.
 fn tilolang_package(kind: &str) -> Option<&str> {
     let (package, _) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
     Some(package)
 }
 
+/// Whether the surface kind `surface` (`tl.<app>` or `tl.<app>.<Type>`) is declared by `app`.
+fn surface_belongs_to(surface: &str, app: &str) -> bool {
+    surface
+        .strip_prefix("tl.")
+        .is_some_and(|rest| rest == app || rest.starts_with(&format!("{app}.")))
+}
+
+/// Whether `kind` stands among `nested` or among the kinds the types between them nest.
 fn nested_kind(schema: &Schema, nested: &BTreeSet<String>, kind: &str) -> bool {
     let mut reached: Vec<&str> = nested.iter().map(String::as_str).collect();
     let mut seen: BTreeSet<&str> = BTreeSet::new();

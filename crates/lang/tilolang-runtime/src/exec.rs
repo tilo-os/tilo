@@ -3120,11 +3120,15 @@ impl Core {
             };
             (txn, action, primary, key)
         };
-        let class = self
-            .registry
-            .borrow()
-            .action_package(&action)
-            .and_then(|p| p.action(&action).map(|a| a.class));
+        let (class, app) = self.registry.borrow().action_package(&action).map_or(
+            (None, String::new()),
+            |package| {
+                (
+                    package.action(&action).map(|a| a.class),
+                    package.meta.app.clone(),
+                )
+            },
+        );
         if class != Some(EffectClass::Outside) {
             return trap(format!("action `{action}` is not classed outside"));
         }
@@ -3135,6 +3139,7 @@ impl Core {
             txn,
             &primary,
             &Mutation::OutboxPush {
+                app,
                 capability,
                 payload,
                 held_until,

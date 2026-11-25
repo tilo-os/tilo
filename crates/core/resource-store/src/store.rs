@@ -2375,7 +2375,11 @@ impl Store {
                 .iter_mut()
                 .find(|held| held.name == verb.name)
             {
-                Some(held) => held.writes.extend(verb.writes),
+                Some(held) => {
+                    held.writes.extend(verb.writes);
+                    held.outside.extend(verb.outside);
+                    held.notice |= verb.notice;
+                }
                 None => self.schema.verbs.push(verb),
             }
         }
@@ -2458,11 +2462,17 @@ impl Store {
                 &touched,
                 &writes,
                 &|id| index.kind_anywhere(id),
-                &|kind| self.rules.contains_key(kind),
+                &|kind, id| self.rule_places_apart(kind, id, &writes),
             )
             .map_err(Refusal::Undeclared)?;
-            crate::admit::within_verb(schema, &touched, stamp.as_ref(), received.change.len())
-                .map_err(Refusal::Undeclared)?;
+            crate::admit::within_verb(
+                schema,
+                &touched,
+                &writes,
+                stamp.as_ref(),
+                received.change.len(),
+            )
+            .map_err(Refusal::Undeclared)?;
         }
         self.judge_readers(doc_id, readers, &touched, &received.change)?;
         let admitted = admit.admit(&Proposal {

@@ -173,6 +173,20 @@ tilo_test_env::scenario! {
                 .next()
                 .is_none()
         );
+        // And the surface publishes it on the verb itself, so a holder admits a queued effect
+        // only from the verb whose code declares the capability it names.
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.name == "search")
+            .unwrap();
+        let verb = package_surfaces(meta, &SourceWords)
+            .into_iter()
+            .flat_map(|surface| surface.verbs)
+            .find(|verb| verb.id == action.id)
+            .expect("the surface publishes the action");
+        assert_eq!(verb.outside, ["youtube.search"]);
+        assert!(!verb.notice, "the action tells no person of anything");
     }
 
     phase an_action_is_published_by_its_name;

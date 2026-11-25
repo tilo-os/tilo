@@ -76,6 +76,9 @@ const STANDS_IN: &str = "$in";
 pub const OUTBOX: &str = "tilolang.outbox";
 pub(crate) const OUT_DOC: &str = "doc";
 pub(crate) const OUT_ENTRY: &str = "entry";
+/// The app whose package queued the effect, stamped by the writer: what carry-out checks holds
+/// the capability's grant.
+pub(crate) const OUT_APP: &str = "app";
 pub(crate) const OUT_CAPABILITY: &str = "capability";
 /// What is handed over, as JSON text.
 pub(crate) const OUT_PAYLOAD: &str = "payload";
@@ -125,6 +128,7 @@ fn outbox_entry(fields: &BTreeMap<String, Cell>) -> (OutboxEntry, Option<Outcome
         OutboxEntry {
             doc: text_field(fields, OUT_DOC),
             id: text_field(fields, OUT_ENTRY),
+            app: text_field(fields, OUT_APP),
             capability: text_field(fields, OUT_CAPABILITY),
             payload: tilo_failure::ignored!(
                 "an outbox entry written with no payload carries none",
@@ -3152,6 +3156,7 @@ impl ResourceStore {
         &self,
         txn: Txn,
         at: &ResourceRef,
+        app: &str,
         capability: &str,
         payload: &Json,
         held_until: Option<&str>,
@@ -3166,6 +3171,7 @@ impl ResourceStore {
         let mut fields = BTreeMap::new();
         fields.insert(OUT_DOC.to_owned(), text(&at.doc));
         fields.insert(OUT_ENTRY.to_owned(), text(&entry));
+        fields.insert(OUT_APP.to_owned(), text(app));
         fields.insert(OUT_CAPABILITY.to_owned(), text(capability));
         fields.insert(OUT_PAYLOAD.to_owned(), text(&payload.to_string()));
         if let Some(held_until) = held_until {
@@ -3401,6 +3407,7 @@ impl ResourceStore {
                 Ok(Some(Applied::Done))
             }
             Mutation::OutboxPush {
+                app,
                 capability,
                 payload,
                 held_until,
@@ -3409,6 +3416,7 @@ impl ResourceStore {
                 self.push_effect(
                     txn,
                     at,
+                    app,
                     capability,
                     payload,
                     held_until.as_deref(),

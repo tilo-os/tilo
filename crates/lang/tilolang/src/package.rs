@@ -840,6 +840,7 @@ fn build_meta(
                     guard: false,
                     applies: false,
                     outside: Vec::new(),
+                    notice: false,
                     search: None,
                     opens: Vec::new(),
                     shows: Vec::new(),
@@ -949,6 +950,8 @@ fn build_meta(
                         .get(idx)
                         .map(|f| f.facts.outside_caps.iter().cloned().collect())
                         .unwrap_or_default(),
+
+                    notice: ir.funcs.get(idx).is_some_and(|f| f.facts.notice),
                     search: c.present.search.clone(),
                     opens: c.present.opens.clone(),
                     shows: c.present.shows.clone(),
@@ -1233,6 +1236,7 @@ pub fn compile_program_reading(
             invokes: false,
             carries: false,
             outside: Vec::new(),
+            notice: false,
             opens: Vec::new(),
             shows: Vec::new(),
             takes: Vec::new(),

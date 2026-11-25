@@ -326,6 +326,9 @@ pub enum Mutation {
     },
     /// Queue an outside effect in the change, on the document of this resource.
     OutboxPush {
+        /// The app whose package queued it: the writer's stamp, which carry-out checks the
+        /// capability's grant for.
+        app: String,
         capability: String,
         payload: Json,
         /// Held back until this moment, ISO-8601 UTC text: the device carries it out only once
@@ -1356,6 +1359,9 @@ pub struct SubId(pub u64);
 pub struct OutboxEntry {
     pub doc: DocId,
     pub id: String,
+    /// The app whose package queued the effect, as the writer stamped it: what carry-out checks
+    /// holds the capability's grant.
+    pub app: String,
     pub capability: String,
     pub payload: Json,
     /// Held back until this moment, ISO-8601 UTC text, when the action said

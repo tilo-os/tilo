@@ -193,6 +193,36 @@ impl Store {
         self.index.readers(&held.doc).map(str::to_owned)
     }
 
+    /// Whether the reader rule of `kind` places a record of it in a document other than its
+    /// parent's, so what nests it is not its kind's to hold: a rule that can keep its parent's
+    /// readers, an `author until <flag>` whose flag holds and reads as every member, does not
+    /// lift the check that its parent's type nests it.
+    pub(super) fn rule_places_apart(
+        &self,
+        kind: &str,
+        id: &str,
+        writes: &[(String, String, Option<automerge::ScalarValue>)],
+    ) -> bool {
+        match self.rules.get(kind) {
+            Some(ReaderRule::Author { until: Some(until) }) => {
+                let written = writes
+                    .iter()
+                    .find(|(written, field, _)| written == id && field == until)
+                    .and_then(|(_, _, value)| value.as_ref());
+                let holds = match written {
+                    Some(automerge::ScalarValue::Boolean(held)) => *held,
+                    _ => self
+                        .index
+                        .get(kind, id)
+                        .is_some_and(|held| holds(&held.fields, until)),
+                };
+                !holds
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
     /// Who made the resource `id` of `kind`, as its reader set names them: the person whose
     /// record it is, when a person made it. What a repair of a record whose type names its
     /// readers acts for, so the moved record reads as its rule says.

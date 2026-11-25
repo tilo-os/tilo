@@ -736,6 +736,7 @@ impl Inner {
                     .map_err(backend)?;
             }
             Mutation::OutboxPush {
+                app,
                 capability,
                 payload,
                 held_until,
@@ -750,6 +751,7 @@ impl Inner {
                 let entry = doc
                     .put_object(&outbox, id.as_str(), ObjType::Map)
                     .map_err(backend)?;
+                doc.put(&entry, "app", app.as_str()).map_err(backend)?;
                 doc.put(&entry, "capability", capability.as_str())
                     .map_err(backend)?;
                 let bytes = serde_json::to_vec(payload).map_err(backend)?;
@@ -1361,6 +1363,7 @@ impl Store for AmStore {
             let entry = OutboxEntry {
                 doc: doc_id.clone(),
                 id: id.clone(),
+                app: String::new(),
                 capability: String::new(),
                 payload: Json::Null,
                 held_until: None,
@@ -1494,6 +1497,7 @@ fn read_outbox_entry(
         OutboxEntry {
             doc: doc_id.to_owned(),
             id: id.to_owned(),
+            app: str_at(doc, &obj, "app").unwrap_or_default(),
             capability,
             payload,
             held_until: str_at(doc, &obj, "held_until").filter(|at| !at.is_empty()),

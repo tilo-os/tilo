@@ -155,6 +155,16 @@ pub struct VerbSurface {
     /// surface knows of the action without running the app.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The outside capabilities its code can queue (`smtp.send`), as its `outside(...)` calls
+    /// name them: a change that writes an entry for one is admitted only from a verb that
+    /// declares it (a tilolang app's surface), so what an app may reach beyond the workspace is
+    /// known before any of its code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<String>,
+    /// Whether its code can tell a person something (`notify(...)`): a change that writes a
+    /// notice is admitted only from a verb that says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub notice: bool,
 }
 
 fn stored_value() -> String {
@@ -273,6 +283,8 @@ pub fn verb_of(action: &crate::ActionSpec, params: Vec<ParamSurface>) -> VerbSur
         writes: record_unit(),
         field: None,
         tags: Vec::new(),
+        outside: Vec::new(),
+        notice: false,
     }
 }
 
@@ -454,6 +466,8 @@ impl Surface {
                     writes: vec![RESOURCE_UNIT.to_owned()],
                     field: None,
                     tags: Vec::new(),
+                    outside: Vec::new(),
+                    notice: false,
                 }
             })
             .collect();

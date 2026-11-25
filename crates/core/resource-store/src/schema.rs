@@ -80,7 +80,8 @@ pub struct Schema {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "each says what kind of verb it is, and a verb is one kind or none"
+    reason = "each says what kind of verb it is, and a verb is one kind or none, or tells a person \
+              a notice"
 )]
 pub struct Verb {
     pub name: String,
@@ -98,6 +99,14 @@ pub struct Verb {
     /// The branch ([`BRANCH_VERB`]): it founds a record in a branch of its workspace, on the
     /// history the branch copies, or writes that record's content.
     pub branches: bool,
+    /// The outside capabilities its code can queue (`smtp.send`), by the kind of the surface it
+    /// was declared on (`tl.<app>` or `tl.<app>.<Type>`): a change writing an entry of the
+    /// queued-effect kind (`tilolang.outbox`) is admitted only for a capability declared by the
+    /// surface of the app the entry names.
+    pub outside: BTreeMap<String, BTreeSet<String>>,
+    /// It tells a person something (`notify(...)`): a change writing a notice of the host's
+    /// `Notice` kind is admitted only from such a verb.
+    pub notice: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -297,10 +306,19 @@ impl Schema {
                 if writes.is_empty() && surface.kind.starts_with("tl.") {
                     writes.insert(surface.kind.clone(), Writes::default());
                 }
+                // The outside capabilities its code can queue, by the surface they belong to:
+                // what a change writing a queued effect is admitted by (see [`Verb::outside`]).
+                let outside = if verb.outside.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([(surface.kind.clone(), verb.outside.iter().cloned().collect())])
+                };
                 Verb {
                     name: verb.id.clone(),
                     writes,
                     nested,
+                    outside,
+                    notice: verb.notice,
                     ..Verb::default()
                 }
             })

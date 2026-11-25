@@ -804,6 +804,10 @@ pub struct ActionMeta {
     /// what the platform tags the action with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outside: Vec<String>,
+    /// Whether the body calls `notify(...)`, which writes a record of the host's `Notice` for a
+    /// person: what a change writing one is admitted by.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub notice: bool,
     /// `search: Found`: the type this action's answers are of, where it is the app's search over
     /// a remote service: a query naming the app or its kind asks this action, and the records of
     /// this type it writes are what the search places.

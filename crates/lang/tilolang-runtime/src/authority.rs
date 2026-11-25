@@ -65,6 +65,14 @@ pub trait Authority {
     fn may_fetch(&self, _app: &str, _host: &str) -> bool {
         true
     }
+
+    /// Whether `app` may carry out the outside effect `capability` (`smtp.send`) that the
+    /// workspace queued: what the workspace granted it, judged when the effect is carried out
+    /// rather than when it is queued. An entry the workspace does not let the app carry out
+    /// settles as refused, and never reaches the sink.
+    fn may_reach(&self, _app: &str, _capability: &str) -> bool {
+        true
+    }
 }
 
 #[derive(Default)]

@@ -114,12 +114,21 @@ pub struct ActionRef {
 }
 
 #[derive(Clone, Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one thing the compiler read of a body on its own: whether it changes \
+              anything, reaches outside, tells a person, reads an earlier build, or invokes an \
+              action"
+)]
 pub struct Facts {
     pub mutates: bool,
     pub outside: bool,
     /// The capabilities the body's `outside(...)` calls name (`youtube.search`), as written: what
     /// the action is tagged with ([`crate::meta::ActionMeta::outside`]).
     pub outside_caps: BTreeSet<String>,
+    /// The body calls `notify(...)`: it tells a person something, writing the host's `Notice`
+    /// ([`crate::meta::ActionMeta::notice`]).
+    pub notice: bool,
     pub invokes: BTreeSet<ActionRef>,
     pub action_values: BTreeSet<ActionRef>,
     pub views: BTreeSet<usize>,
