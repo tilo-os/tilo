@@ -259,7 +259,15 @@ fn choosing_a_reactors_face_opens_their_card() {
         .into_iter()
         .find(|p| p.props.get("label") == Some(&Value::text("About ben")))
         .expect("Ben's card opens beside the reactions");
-    assert_eq!(card.props.get("open"), Some(&Value::Bool(true)));
+    // A literal `true` reaches the widget as the runtime's 1, which it reads as open.
+    assert!(
+        matches!(
+            card.props.get("open"),
+            Some(Value::Bool(true) | Value::Int(1))
+        ),
+        "{:?}",
+        card.props.get("open")
+    );
     let said = texts(card);
     for part in [
         "ben",
