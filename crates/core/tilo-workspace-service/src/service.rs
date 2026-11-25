@@ -288,15 +288,18 @@ impl ServiceSessions {
         // will at all.
         cfg.reaching.awaited(&endpoint).await;
         let host_revocations = revocations.clone();
-        let workspaces = Box::pin(crate::workspaces::Workspaces::open(
-            sessions.workspace_services(
+        let services = sessions
+            .workspace_services(
                 &cfg,
                 &identity,
                 endpoint,
                 revocations,
                 channels,
                 sessions.handler.app_serving.clone(),
-            ),
+            )
+            .map_err(ServiceError::Workspaces)?;
+        let workspaces = Box::pin(crate::workspaces::Workspaces::open(
+            services,
             cfg.state_root.join("workspaces"),
             cfg.state_root.join("store"),
         ))
@@ -395,8 +398,8 @@ impl ServiceSessions {
         revocations: Arc<std::sync::RwLock<RevocationList>>,
         channels: Option<crate::workspaces::DeviceKeyGroups>,
         apps: Option<Arc<dyn AppActionServer>>,
-    ) -> crate::workspaces::WorkspaceServices {
-        crate::workspaces::WorkspaceServices {
+    ) -> Result<crate::workspaces::WorkspaceServices, String> {
+        Ok(crate::workspaces::WorkspaceServices {
             channels,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
@@ -430,7 +433,7 @@ impl ServiceSessions {
                 // The workspace's own record of its agents: its kinds and verbs, kept as an
                 // installed package's surface is, so this device decides the changes that name
                 // them.
-                crate::workspaces::person_workspace::declare_kinds(&cfg.surfaces);
+                crate::workspaces::person_workspace::declare_kinds(&cfg.surfaces)?;
                 // The calls that wait for their person's yes, kept in each workspace's store.
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::workspaces::keep_surface(
@@ -450,7 +453,7 @@ impl ServiceSessions {
             fetch_grants: self.handler.fetch_grants.clone(),
             #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
             app_files: crate::workspaces::profile_import::AppFiles::below(cfg.app_files.clone()),
-        }
+        })
     }
 
     /// What settles each workspace's member list onto the service's links.

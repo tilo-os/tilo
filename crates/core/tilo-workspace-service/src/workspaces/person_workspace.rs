@@ -158,23 +158,23 @@ pub async fn apply_on<R: Resource>(
 /// The kinds of the person's own records and of what a workspace's owner alone keeps of it,
 /// declared under the apps that keep them: every holder's store keeps them as the resources of
 /// those apps, founded and judged by their types.
-pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) {
+pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> Result<(), String> {
     use tilo_resource::surface::surface_of;
     declare(
         surfaces,
         devices::DEVICES.0,
         vec![surface_of::<devices::Devices>()],
-    );
+    )?;
     declare(
         surfaces,
         super::blocked::BLOCKED.0,
         vec![surface_of::<super::blocked::Blocked>()],
-    );
+    )?;
     declare(
         surfaces,
         super::region::REGION.0,
         vec![surface_of::<super::region::Region>()],
-    );
+    )?;
     declare(
         surfaces,
         super::servers::SERVERS.0,
@@ -182,19 +182,19 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) {
             surface_of::<super::servers::Servers>(),
             surface_of::<super::servers::floor::Floor>(),
         ],
-    );
+    )?;
     declare(
         surfaces,
         super::membership::OWNERSHIP.0,
         vec![surface_of::<super::membership::Ownership>()],
-    );
+    )?;
     declare(
         surfaces,
         tilo_user_identity::workspace_list::APP,
         vec![surface_of::<
             tilo_user_identity::workspace_list::WorkspaceList,
         >()],
-    );
+    )?;
     // The workspace records the system keeps for apps, whether or not the app is installed here.
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -203,33 +203,33 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) {
         system::<tilo_contact_directory::ContactDirectory>(surfaces, tilo_app_id::apps::CONTACTS);
         system::<crate::environment::VmEnvironment>(surfaces, crate::environment::VM_APP);
     }
+    Ok(())
 }
 
 /// Declare `R`, a workspace record the system keeps for `app`, from its type.
 #[cfg(not(target_arch = "wasm32"))]
 fn system<R: Resource>(surfaces: &collab_types::app_surface::Surfaces, app: &str) {
-    let file = serde_json::json!({ "resources": [tilo_resource::surface::surface_of::<R>()] });
-    let file =
-        collab_types::surface::SurfaceFile::from_json(&collab_types::surface::canonical(&file))
-            .expect("a type's surface reads as a surface");
-    for resource in file.resources {
-        surfaces.declare_system(app, resource);
-    }
+    surfaces.declare_system(app, tilo_resource::surface::surface_of::<R>());
 }
 
 /// Declare `resources` as every kind `app` keeps, where this device's stores judge its records.
+///
+/// # Errors
+/// A surface does not write as JSON, or as the surface file `app`'s records are named by.
 fn declare(
     surfaces: &collab_types::app_surface::Surfaces,
     app: &str,
     resources: Vec<tilo_resource::surface::Surface>,
-) {
+) -> Result<(), String> {
     let resources: Vec<serde_json::Value> = resources
         .into_iter()
-        .map(|surface| serde_json::to_value(surface).expect("a surface writes as JSON"))
-        .collect();
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()
+        .map_err(|error| format!("a surface of {app} does not write as JSON: {error}"))?;
     let file = tilo_resource::surface::file::render("", &resources, &[])
-        .expect("a surface writes as TOML");
+        .map_err(|error| format!("a surface of {app} does not write as a surface file: {error}"))?;
     super::keep_surface(surfaces, app, file.as_bytes());
+    Ok(())
 }
 
 /// [`edit_on`] where this device holds `workspace` as a member copy another of the person's

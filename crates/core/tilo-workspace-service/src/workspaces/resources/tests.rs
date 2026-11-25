@@ -113,10 +113,9 @@ fn a_document_with_a_long_id_is_kept_across_a_start() {
 
     let reopened = super::Resources::open(&file, id);
     let store = reopened.store();
-    assert!(
-        store
-            .get(&kind, "p1", &|_| true)
-            .is_some_and(|held| held.scalar("title") == Value::Text("Long named".into())),
-        "the resource reads again after the start"
-    );
+    let read = store
+        .get(&kind, "p1", &|_| true)
+        .is_some_and(|held| held.scalar("title") == Value::Text("Long named".into()));
+    drop(store);
+    assert!(read, "the resource reads again after the start");
 }

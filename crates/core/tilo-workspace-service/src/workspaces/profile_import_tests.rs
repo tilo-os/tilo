@@ -106,6 +106,11 @@ async fn held(workspaces: &Workspaces, workspace: &str, id: &str, key: &str) -> 
     let state = workspaces.workspace(workspace).await.unwrap();
     let mut governed = state.lock().await;
     let mut store = workspaces.store_of(&mut governed);
+    held_field(&mut store, id, key)
+}
+
+/// What the page `id` holds at `key` in `store`, as [`held`] reads it.
+fn held_field(store: &mut tilo_resource_store::Store, id: &str, key: &str) -> Option<String> {
     store.index().get(KIND, id)?;
     let doc = store.content_document(KIND, id).unwrap()?;
     doc.get(ROOT, key)
@@ -119,9 +124,15 @@ async fn held_view(workspaces: &Workspaces, workspace: &str) -> Option<(Vec<u8>,
     let state = workspaces.workspace(workspace).await.unwrap();
     let mut governed = state.lock().await;
     let mut store = workspaces.store_of(&mut governed);
-    let doc = store.index().get(KIND, view.route())?.doc.clone();
+    view_of(&mut store, view.route())
+}
+
+/// The saved view of the window at `route` in `store`, and who reads it, as [`held_view`] reads
+/// it.
+fn view_of(store: &mut tilo_resource_store::Store, route: &str) -> Option<(Vec<u8>, String)> {
+    let doc = store.index().get(KIND, route)?.doc.clone();
     let readers = store.index().readers(&doc).unwrap().to_owned();
-    let held = store.content_document(KIND, view.route()).unwrap()?;
+    let held = store.content_document(KIND, route).unwrap()?;
     let bytes = match held.get(ROOT, "view").unwrap()? {
         (automerge::Value::Scalar(scalar), _) => match scalar.as_ref() {
             automerge::ScalarValue::Bytes(bytes) => bytes.clone(),

@@ -55,7 +55,7 @@ fn file_name(doc: &str) -> PathBuf {
     let hex = hex::encode(doc.as_bytes());
     let mut parts: Vec<&str> = (0..hex.len())
         .step_by(NAME)
-        .map(|at| &hex[at..hex.len().min(at.saturating_add(NAME))])
+        .filter_map(|at| hex.get(at..hex.len().min(at.saturating_add(NAME))))
         .collect();
     let file = parts.pop().unwrap_or_default();
     let mut path: PathBuf = parts.iter().map(|part| format!("{part}-")).collect();

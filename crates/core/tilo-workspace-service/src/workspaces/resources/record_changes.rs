@@ -387,6 +387,21 @@ impl Workspaces {
             drop(store);
             (writes, action)
         };
+        self.keep_record_writes(governed, device, app, writes, action)
+            .await
+    }
+
+    /// Keep `writes`, a record's content and the placement that founds it, as `device`'s writes
+    /// for `app` under `governed`'s lock: as the parts of `action` when the changes came as one,
+    /// or else with the placement kept first.
+    async fn keep_record_writes(
+        &self,
+        governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        device: std::sync::Arc<super::super::MemberDevice>,
+        app: &str,
+        writes: Vec<tilo_resource_store::Written>,
+        action: Option<collab_types::WorkspaceCommit>,
+    ) -> Result<(), String> {
         match action {
             Some(action) => self
                 .keep_writes(governed, device, app, writes, Some(action))
@@ -492,25 +507,47 @@ impl Workspaces {
             .workspace(to)
             .await
             .map_err(|error| error.to_string())?;
+        // Both sides admit their change: keep the arrival, then the departure.
+        self.found_moved(
+            (destination, std::sync::Arc::clone(&device)),
+            (app, to),
+            (&kind, target),
+            (stamp, content),
+            (caller, author),
+        )
+        .await?;
+        let governed = std::sync::Arc::clone(&source).lock_owned().await;
+        self.keep_writes(governed, device, app, removal, None)
+            .await
+            .map(drop)
+    }
+
+    /// Found `app`'s record `target` in `to`'s store as `destination` holds it, a moved record's
+    /// arrival under the move verb: `stamp` and `content` as the move wrote them, kept as
+    /// `device`'s write for `caller`, under `destination`'s lock.
+    async fn found_moved(
+        &self,
+        (destination, device): (
+            std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+            std::sync::Arc<super::super::MemberDevice>,
+        ),
+        (app, to): (&str, &str),
+        (kind, target): (&str, &str),
+        (stamp, content): (Stamp, Vec<AmChange>),
+        (caller, author): (&tilo_actions::remote::Caller, [u8; 32]),
+    ) -> Result<(), String> {
         let mut governed = std::sync::Arc::clone(&destination).lock_owned().await;
         let founding = tilo_resource_store::wire::found(
             &mut self.store_of(&mut governed),
-            (&kind, target),
+            (kind, target),
             collab_types::EVERY_MEMBER,
             stamp,
             content,
         )
         .map_err(|refused| refused.error.to_string())?;
-        self.would_keep(&mut governed, (caller, author), (app, &kind), &founding)
+        self.would_keep(&mut governed, (caller, author), (app, kind), &founding)
             .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
-
-        // Both sides admit their change: keep the arrival, then the departure.
-        self.keep_founded(governed, (std::sync::Arc::clone(&device), app), founding)
-            .await?;
-        let governed = std::sync::Arc::clone(&source).lock_owned().await;
-        self.keep_writes(governed, device, app, removal, None)
-            .await
-            .map(drop)
+        self.keep_founded(governed, (device, app), founding).await
     }
 
     /// Found `app`'s record `id` of `kind` in `workspace`'s store as this device's person moving
@@ -614,22 +651,21 @@ impl Workspaces {
                     .map(automerge::Automerge::save),
                 None => None,
             };
-            match held {
-                Some(bytes) => {
-                    let mut doc =
-                        automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                    let heads = doc.get_heads();
-                    (doc, heads)
+            let begun = if let Some(bytes) = held {
+                let mut doc =
+                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                let heads = doc.get_heads();
+                (doc, heads)
+            } else {
+                let mut doc = automerge::AutoCommit::new();
+                if let Some(founding) = store.founding(kind, record) {
+                    tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, [founding])
+                        .map_err(|error| error.to_string())?;
                 }
-                None => {
-                    let mut doc = automerge::AutoCommit::new();
-                    if let Some(founding) = store.founding(kind, record) {
-                        doc.apply_changes([founding])
-                            .map_err(|error| error.to_string())?;
-                    }
-                    (doc, Vec::new())
-                }
-            }
+                (doc, Vec::new())
+            };
+            drop(store);
+            begun
         };
         let result = change(&mut doc)?;
         // This device's own edit of the record, naming the person it acts for.
@@ -1210,9 +1246,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
-        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
         let someone_else = Actor::Member(MemberId::person("someone-else"));
-        let mut plan = note(&workspaces, &workspace, "plan", "Plan", &me).await;
+        let mut plan = note(workspaces, &workspace, "plan", "Plan", &me).await;
         let founded = |title: &str| {
             let mut fresh = automerge::AutoCommit::new();
             fresh.put(automerge::ROOT, "title", title).unwrap();
@@ -1225,18 +1261,18 @@ mod tests {
         let (fresh, fresh_at) = founded("Fresh");
         let (plan_b, plan_at) = retitled(&mut plan.clone(), "Plan B", &someone_else);
         let refused = action(&workspace, [("fresh", fresh_at), ("plan", plan_at)]);
-        write_part(&workspaces, &workspace, "fresh", fresh, Some(&refused))
+        write_part(workspaces, &workspace, "fresh", fresh, Some(&refused))
             .await
             .expect("the store keeps the founding part");
         assert!(
-            write_part(&workspaces, &workspace, "plan", plan_b, Some(&refused))
+            write_part(workspaces, &workspace, "plan", plan_b, Some(&refused))
                 .await
                 .is_err()
         );
-        assert_eq!(title_in(&workspaces, &workspace, "fresh").await, None);
-        assert!(heads(&workspaces, &workspace, "fresh").await.is_empty());
+        assert_eq!(title_in(workspaces, &workspace, "fresh").await, None);
+        assert!(heads(workspaces, &workspace, "fresh").await.is_empty());
         assert_eq!(
-            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
             Some("Plan")
         );
 
@@ -1244,34 +1280,34 @@ mod tests {
         let (later, later_at) = founded("Later");
         let (plan_b, plan_at) = retitled(&mut plan, "Plan B", &me);
         let whole = action(&workspace, [("later", later_at), ("plan", plan_at)]);
-        write_part(&workspaces, &workspace, "later", later, Some(&whole))
+        write_part(workspaces, &workspace, "later", later, Some(&whole))
             .await
             .expect("the store keeps the founding part");
         assert_eq!(
-            title_in(&workspaces, &workspace, "later").await,
+            title_in(workspaces, &workspace, "later").await,
             None,
             "the founded record waits for the action's other record"
         );
-        write_part(&workspaces, &workspace, "plan", plan_b, Some(&whole))
+        write_part(workspaces, &workspace, "plan", plan_b, Some(&whole))
             .await
             .expect("the store keeps the other part");
         assert_eq!(
-            title_in(&workspaces, &workspace, "later").await.as_deref(),
+            title_in(workspaces, &workspace, "later").await.as_deref(),
             Some("Later")
         );
         assert_eq!(
-            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
             Some("Plan B")
         );
 
         // A plain write after it, to the record the action did not found: the action is whole
         // where the founded record's first write is all it wrote there.
         let (plan_c, _) = retitled(&mut plan, "Plan C", &me);
-        write_part(&workspaces, &workspace, "plan", plan_c, None)
+        write_part(workspaces, &workspace, "plan", plan_c, None)
             .await
             .expect("a write after a whole action is kept");
         assert_eq!(
-            title_in(&workspaces, &workspace, "plan").await.as_deref(),
+            title_in(workspaces, &workspace, "plan").await.as_deref(),
             Some("Plan C")
         );
     }

@@ -334,8 +334,10 @@ impl Workspaces {
         );
         asking.config = serde_json::json!({ "server_url": server.as_str(), "username": username });
         if let Some(before) = before {
-            asking.config["calendars"] =
-                before.config.get("calendars").cloned().unwrap_or_default();
+            let calendars = before.config.get("calendars").cloned().unwrap_or_default();
+            if let Some(config) = asking.config.as_object_mut() {
+                config.insert("calendars".into(), calendars);
+            }
         }
         let tester = self.account_tester();
         let secret = accounts::Secret::password(adding.password.clone());
@@ -678,28 +680,18 @@ impl Workspaces {
             }
             person_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
-                let kept = self.add_mail(signing, adding).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(&self.add_mail(signing, adding).await)
             }
             person_accounts::ADD_CALENDAR => {
                 let adding: AddCalendarAccount =
                     argument(request, "a calendar server and its sign-in")?;
-                let kept = Box::pin(self.add_calendar(signing, adding)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(&Box::pin(self.add_calendar(signing, adding)).await)
             }
             person_accounts::RECONNECT => {
                 let account = one_account(request)?;
-                let kept = Box::pin(self.reconnect(signing, workspace, acting, &account)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(
+                    &Box::pin(self.reconnect(signing, workspace, acting, &account)).await,
+                )
             }
             person_accounts::CHECK => {
                 let account = one_account(request)?;
@@ -709,69 +701,61 @@ impl Workspaces {
             person_accounts::REPLACE_PASSWORD => {
                 let replacing: tilo_actions::remote::person_accounts::ReplacePassword =
                     argument(request, "an account and its new password")?;
-                let kept = Box::pin(self.replace_password(signing, replacing)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(
+                    &Box::pin(self.replace_password(signing, replacing)).await,
+                )
             }
             person_accounts::DISCOVER_CALENDARS => {
                 let account = one_account(request)?;
-                let found = Box::pin(self.discover_calendars(signing, &account)).await;
-                if found.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&found)
+                self.answered_account_change(
+                    &Box::pin(self.discover_calendars(signing, &account)).await,
+                )
             }
             person_accounts::SET_CALENDARS => {
                 let choosing: SetCalendars =
                     argument(request, "a calendar account and its calendars")?;
-                let kept = Box::pin(self.set_calendars(signing, choosing)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(&Box::pin(self.set_calendars(signing, choosing)).await)
             }
             person_accounts::SET_SERVICES => {
                 let saying: SetServices = argument(request, "an account and its services")?;
-                let kept = Box::pin(self.set_services(signing, saying)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(&Box::pin(self.set_services(signing, saying)).await)
             }
             person_accounts::SIGN_INS => answer(&self.vault_sign_ins(workspace).await),
             person_accounts::SET_FILES_MODE => {
                 let saying: SetFilesMode =
                     argument(request, "an account and the files mode it takes")?;
-                let kept = Box::pin(self.set_files_mode(signing, saying)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(&Box::pin(self.set_files_mode(signing, saying)).await)
             }
             person_accounts::SYNC_NOW
             | person_accounts::PAUSE_SYNC
             | person_accounts::RESUME_SYNC => {
                 let control: SyncControl = argument(request, "an account whose sync to control")?;
                 let action = request.target.address.action.clone();
-                let kept = Box::pin(self.control_sync(signing, &action, control)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(
+                    &Box::pin(self.control_sync(signing, &action, control)).await,
+                )
             }
             person_accounts::REMOVE => {
                 let account = one_account(request)?;
-                let kept = remove_mail((signing.vault, signing.root), &account).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.answered_account_change(
+                    &remove_mail((signing.vault, signing.root), &account).await,
+                )
             }
             _ => return Ok(None),
         };
         Ok(Some(answered?))
+    }
+
+    /// Answer `outcome`, a change to the person's accounts, and tell what reads them that they
+    /// moved when it was kept.
+    fn answered_account_change<T: serde::Serialize>(
+        &self,
+        outcome: &Result<T, String>,
+    ) -> Result<Value, ActionCallError> {
+        if outcome.is_ok() {
+            self.person_settings_changed();
+        }
+        answer(outcome)
     }
 }
 

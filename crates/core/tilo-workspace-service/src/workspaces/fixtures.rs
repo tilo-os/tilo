@@ -420,7 +420,7 @@ pub async fn write_record(
     edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
 ) -> Result<(), String> {
     let kind = record_kind(app);
-    let fields: String = [
+    let field_lines: Vec<String> = [
         "attachment",
         "attachments",
         "body",
@@ -437,6 +437,7 @@ pub async fn write_record(
     .iter()
     .map(|field| format!("  {{ path = \"{field}\", type = \"any\" }},\n"))
     .collect();
+    let fields = field_lines.join("");
     let surface = format!(
         "format = 2\n\n[[resources]]\nkind = \"{kind}\"\nlabel = \"Record\"\nversion = 1\n\
          fields = [\n{fields}]\n\n[[resources.verbs]]\nid = \"type\"\nkind = \"undoable\"\n"

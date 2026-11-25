@@ -2853,7 +2853,8 @@ async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
     let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
     // Which servers keep a workspace is chosen on a device of the owner's that keeps their root.
     // The person's own records are of the kinds a device's service declares as it starts.
-    crate::workspaces::person_workspace::declare_kinds(&server.workspaces().inner.host.surfaces);
+    crate::workspaces::person_workspace::declare_kinds(&server.workspaces().inner.host.surfaces)
+        .expect("the person's record kinds are declared");
     crate::workspaces::person_workspace::found(server.workspaces())
         .await
         .expect("the owner's own workspace is founded on their device");

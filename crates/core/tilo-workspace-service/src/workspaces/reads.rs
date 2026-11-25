@@ -87,64 +87,14 @@ impl Workspaces {
         let reader = hex::encode(self.device_cert().user_public_key);
         let may_read = tilo_resource_store::wire::reads_as(&reader);
         let mut store = held.store.lock_recover();
-        let Some(kind) = self
-            .inner
-            .host
-            .surfaces
-            .kinds_of(app)
-            .into_iter()
-            .find(|kind| store.index().get(kind, resource).is_some())
-        else {
-            return Ok(None);
-        };
-        if store.get(&kind, resource, &may_read).is_none() {
-            return Err(format!(
-                "this device's person may not read {resource} of {app}"
-            ));
-        }
-        let Some(document) = store
-            .content_document(&kind, resource)
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(Some(DocumentRead::Absent));
-        };
-        let at = document.get_heads();
-        let revision = record_revision(&at);
-        let heads: Vec<[u8; 32]> = at.iter().map(|head| head.0).collect();
-        let fits = |bytes: Vec<u8>| {
-            if bytes.len() > maximum {
-                Err(format!("{resource} of {app} is larger than one read takes"))
-            } else {
-                Ok(bytes)
-            }
-        };
-        if !since.is_empty() {
-            let (mut now, mut held) = (heads.clone(), since.to_vec());
-            now.sort_unstable();
-            held.sort_unstable();
-            if now == held {
-                return Ok(Some(DocumentRead::Unchanged(revision)));
-            }
-            let held: Vec<automerge::ChangeHash> = since
-                .iter()
-                .map(|head| automerge::ChangeHash(*head))
-                .collect();
-            if held.iter().all(|head| document.has_change(head)) {
-                let bytes = fits(document.save_after(&held))?;
-                return Ok(Some(DocumentRead::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                }));
-            }
-        }
-        let bytes = fits(document.save())?;
-        Ok(Some(DocumentRead::Whole {
-            revision,
-            heads,
-            bytes,
-            hint: None,
-        }))
+        stored_read_in(
+            &mut store,
+            &self.inner.host.surfaces,
+            (app, resource),
+            &may_read,
+            since,
+            maximum,
+        )
     }
 
     /// The records `workspace`'s store holds, by their app and id, for its listings.
@@ -153,14 +103,7 @@ impl Workspaces {
             return Vec::new();
         };
         let store = held.store.lock_recover();
-        let index = store.index();
-        let mut routes = Vec::new();
-        for (app, kind) in self.inner.host.surfaces.kinds() {
-            for id in index.ids_of(&kind) {
-                routes.push((app.clone(), id.to_owned()));
-            }
-        }
-        routes
+        stored_routes_in(&store, &self.inner.host.surfaces)
     }
 
     /// Whether `app`'s `resource` of `workspace` reads for this service's own device now, decided
@@ -407,38 +350,13 @@ impl Workspaces {
             .ok_or(PeerDocumentReadError::Missing)?;
         let may_read = tilo_resource_store::wire::reads_as(reader);
         let mut store = held.store.lock_recover();
-        let Some(kind) = self
-            .inner
-            .host
-            .surfaces
-            .kinds_of(app)
-            .into_iter()
-            .find(|kind| store.get(kind, resource, &may_read).is_some())
-        else {
-            return Ok(None);
-        };
-        let Some(document) = store
-            .content_document(&kind, resource)
-            .map_err(|error| PeerDocumentReadError::Opening(error.to_string()))?
-        else {
-            return Ok(None);
-        };
-        let heads = document.get_heads();
-        let bytes = match maximum {
-            Some(maximum) => {
-                let bytes = document.save();
-                if bytes.len() > maximum {
-                    return Err(PeerDocumentReadError::Capacity);
-                }
-                bytes
-            }
-            None => Vec::new(),
-        };
-        Ok(Some(StoredCapture {
-            revision: record_revision(&heads),
-            heads,
-            bytes,
-        }))
+        stored_capture_in(
+            &mut store,
+            &self.inner.host.surfaces,
+            (app, resource),
+            &may_read,
+            maximum,
+        )
     }
 
     /// The replica of `workspace` and the content keys its device holds, taken in a moment: the
@@ -447,6 +365,129 @@ impl Workspaces {
         let held = self.inner.readings.held(workspace)?;
         Some((held.replica.read(StatePeer::clone), held.device))
     }
+}
+
+/// [`Workspaces::stored_read`] of `app`'s record `resource` as `store` holds it, the heads `since`
+/// having been read already: what the store is taken for, and no longer.
+fn stored_read_in(
+    store: &mut tilo_resource_store::Store,
+    surfaces: &collab_types::app_surface::Surfaces,
+    (app, resource): (&str, &str),
+    may_read: &dyn Fn(&str) -> bool,
+    since: &[[u8; 32]],
+    maximum: usize,
+) -> Result<Option<DocumentRead>, String> {
+    let Some(kind) = surfaces
+        .kinds_of(app)
+        .into_iter()
+        .find(|kind| store.index().get(kind, resource).is_some())
+    else {
+        return Ok(None);
+    };
+    if store.get(&kind, resource, may_read).is_none() {
+        return Err(format!(
+            "this device's person may not read {resource} of {app}"
+        ));
+    }
+    let Some(document) = store
+        .content_document(&kind, resource)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Some(DocumentRead::Absent));
+    };
+    let at = document.get_heads();
+    let revision = record_revision(&at);
+    let heads: Vec<[u8; 32]> = at.iter().map(|head| head.0).collect();
+    let fits = |bytes: Vec<u8>| {
+        if bytes.len() > maximum {
+            Err(format!("{resource} of {app} is larger than one read takes"))
+        } else {
+            Ok(bytes)
+        }
+    };
+    if !since.is_empty() {
+        let (mut now, mut held) = (heads.clone(), since.to_vec());
+        now.sort_unstable();
+        held.sort_unstable();
+        if now == held {
+            return Ok(Some(DocumentRead::Unchanged(revision)));
+        }
+        let held: Vec<automerge::ChangeHash> = since
+            .iter()
+            .map(|head| automerge::ChangeHash(*head))
+            .collect();
+        if held.iter().all(|head| document.has_change(head)) {
+            let bytes = fits(document.save_after(&held))?;
+            return Ok(Some(DocumentRead::Changes {
+                revision,
+                heads,
+                bytes,
+            }));
+        }
+    }
+    let bytes = fits(document.save())?;
+    Ok(Some(DocumentRead::Whole {
+        revision,
+        heads,
+        bytes,
+        hint: None,
+    }))
+}
+
+/// [`Workspaces::stored_routes`] of the records `store` holds of the kinds `surfaces` declare.
+fn stored_routes_in(
+    store: &tilo_resource_store::Store,
+    surfaces: &collab_types::app_surface::Surfaces,
+) -> Vec<(String, String)> {
+    let index = store.index();
+    let mut routes = Vec::new();
+    for (app, kind) in surfaces.kinds() {
+        for id in index.ids_of(&kind) {
+            routes.push((app.clone(), id.to_owned()));
+        }
+    }
+    routes
+}
+
+/// [`Workspaces::stored_capture`] of `app`'s record `resource` as `store` holds it, the reader's
+/// admission `may_read` having been read already: what the store is taken for, and no longer.
+#[cfg(feature = "apps")]
+fn stored_capture_in(
+    store: &mut tilo_resource_store::Store,
+    surfaces: &collab_types::app_surface::Surfaces,
+    (app, resource): (&str, &str),
+    may_read: &dyn Fn(&str) -> bool,
+    maximum: Option<usize>,
+) -> Result<Option<StoredCapture>, PeerDocumentReadError> {
+    let Some(kind) = surfaces
+        .kinds_of(app)
+        .into_iter()
+        .find(|kind| store.get(kind, resource, may_read).is_some())
+    else {
+        return Ok(None);
+    };
+    let Some(document) = store
+        .content_document(&kind, resource)
+        .map_err(|error| PeerDocumentReadError::Opening(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let heads = document.get_heads();
+    let bytes = match maximum {
+        Some(maximum) => {
+            let bytes = document.save();
+            if bytes.len() > maximum {
+                return Err(PeerDocumentReadError::Capacity);
+            }
+            bytes
+        }
+        None => Vec::new(),
+    };
+    Ok(Some(StoredCapture {
+        revision: record_revision(&heads),
+        heads,
+        bytes,
+    }))
 }
 
 /// A record of a workspace's store as one read of it captured it.

@@ -486,6 +486,7 @@ impl Workspaces {
             };
             documents.push((route, kind, document));
         }
+        drop(store);
         documents
     }
 

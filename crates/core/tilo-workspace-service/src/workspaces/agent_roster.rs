@@ -30,14 +30,10 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
             let governed = state.lock().await;
-            governed
-                .peer()
-                .workspace()
-                .check_workspace_administration(
-                    self.device_cert().device_public_key,
-                    tilo_clock::wall(),
-                )
-                .map_err(|error| error.to_string())?;
+            governed.peer().workspace().check_workspace_administration(
+                self.device_cert().device_public_key,
+                tilo_clock::wall(),
+            )?;
         }
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         self.author_record(
