@@ -572,7 +572,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     // How available a person is is said of them, and only of them: the one who is at their machine
     // is not told apart from the one who is away by their name alone.
     assert_eq!(
-        said.iter().filter(|word| *word == "Away").count(),
+        nodes_saying(&session, "Away"),
         1,
         "one of the two is away: {said:?}"
     );
@@ -592,8 +592,9 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
         session.step(Duration::from_millis(1)).expect("step");
     }
     let said = said_by_the_shell(&session);
-    assert!(
-        !said.iter().any(|word| word == "Away"),
+    assert_eq!(
+        nodes_saying(&session, "Away"),
+        0,
         "nobody is away now: {said:?}"
     );
 
@@ -1589,6 +1590,24 @@ fn said_by_the_shell(session: &Session) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// How many things the shell publishes say `word` to assistive technology in its own window: a
+/// node counts once however many of its name, description and value say it, since one row may say
+/// what it is twice for different readers.
+fn nodes_saying(session: &Session, word: &str) -> usize {
+    session
+        .a11y_windows()
+        .into_iter()
+        .filter(|(_, name, _)| name == SHELL_WINDOW)
+        .flat_map(|(_, _, tree)| tree.nodes.into_iter())
+        .filter(|(_, node)| {
+            [node.label(), node.description(), node.value()]
+                .into_iter()
+                .flatten()
+                .any(|said| said == word)
+        })
+        .count()
 }
 
 /// How a screen reader is told of the news `words` name when the shell shows it: the live
