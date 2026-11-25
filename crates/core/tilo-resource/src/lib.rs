@@ -131,7 +131,6 @@ pub mod diff;
 pub mod effect;
 pub mod evolution;
 pub mod footprint;
-mod frecency;
 pub mod genesis;
 pub mod group;
 pub mod history;
@@ -198,7 +197,6 @@ pub use effect::{
     offer,
 };
 pub use evolution::Unreadable;
-pub use frecency::{Frecency, frecency};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
@@ -241,6 +239,7 @@ pub use tilo_action_policy::{DIRECT_CONVERSATION_PREFIX, MemberId, PersonId};
 pub use tilo_actions::surface::{FieldType, TypeSet};
 pub use tilo_actions::{Acting, Availability};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, Row, committed_surface, resource};
+pub use tilo_sort::{Frecency, frecency};
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 

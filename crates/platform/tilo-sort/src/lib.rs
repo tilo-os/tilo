@@ -11,6 +11,9 @@
 //! vectors, which suits the short lists of interface and model code; keep std's
 //! sorts for large, hot data.
 //!
+//! A list ranked by how often and how lately a person chose its entries orders them by
+//! [`Frecency`].
+//!
 //! ```
 //! use tilo_sort::CompactSort as _;
 //!
@@ -20,6 +23,10 @@
 //! ```
 
 use std::cmp::Ordering;
+
+mod frecency;
+
+pub use frecency::{Frecency, frecency};
 
 pub trait CompactSort<T> {
     /// Sort with a comparator, like `[T]::sort_by`. Stable.

@@ -157,10 +157,9 @@ mod tests {
 
     const DAY: u64 = 86_400;
 
-    tilo_test_env::scenario! {
-        fn usage_boosts_what_is_chosen_often_and_lately_and_keeps_the_most_used;
-
-        phase frequent_and_recent_choices_earn_a_bigger_boost;
+    #[test]
+    fn usage_boosts_what_is_chosen_often_and_lately_and_keeps_the_most_used() {
+        // frequent and recent choices earn a bigger boost
         {
             let mut usage = Frecency::default();
             let now = 100 * DAY;
@@ -177,7 +176,7 @@ mod tests {
             assert!(daily <= 8);
         }
 
-        phase a_boost_fades_as_a_choice_ages;
+        // a boost fades as a choice ages
         {
             let mut usage = Frecency::default();
             for _ in 0..30 {
@@ -187,7 +186,7 @@ mod tests {
             assert!(usage.boost("app", 60 * DAY, 8) < 8);
         }
 
-        phase usage_round_trips_through_text_and_ignores_garbage;
+        // usage round trips through text and ignores garbage
         {
             let mut usage = Frecency::default();
             usage.record("so.tilo.tube", 5);
@@ -197,7 +196,7 @@ mod tests {
             assert_eq!(Frecency::parse(&text), usage);
         }
 
-        phase shares_grow_with_use_and_recents_come_newest_first;
+        // shares grow with use and recents come newest first
         {
             let mut usage = Frecency::default();
             usage.record("a", 10);
@@ -212,7 +211,7 @@ mod tests {
             assert_eq!(usage.most_recent(9), ["b", "c", "a"]);
         }
 
-        phase only_the_most_used_entries_are_kept;
+        // only the most used entries are kept
         {
             let mut usage = Frecency::default();
             for _ in 0..5 {
