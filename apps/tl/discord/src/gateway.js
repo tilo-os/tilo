@@ -148,6 +148,7 @@ export function discordLayout(guild) {
   return {
     source: "LAYOUT_CHANGED",
     payload: {
+      fresh: guild?.fresh !== false,
       bot_user: guild?.botUser ?? guild?.bot_user ?? "",
       channels: list(guild?.channels).map((channel) => ({
         id: channel.id,
@@ -221,6 +222,9 @@ export class Gateway {
   #joining = new Map();
   /// What decides the bot's permissions in each server, by guild ([`standingOf`]).
   #standing = new Map();
+  /// Each server's layout as the last events left it: GUILD_CREATE's whole, then each channel,
+  /// role and emoji event's change to it, so a layout handed on is always the whole server.
+  #layouts = new Map();
 
   constructor({ log = () => {} } = {}) {
     this.#log = log;
@@ -513,28 +517,57 @@ export class Gateway {
       case "CHANNEL_UPDATE": {
         const standing = this.#standing.get(String(data?.guild_id ?? ""));
         standing?.overwrites.set(String(data?.id ?? ""), data?.permission_overwrites ?? []);
+        this.#relayout(data?.guild_id, (layout) => layout.channels.set(String(data?.id ?? ""), data));
         return;
       }
+      case "CHANNEL_DELETE":
+        this.#relayout(data?.guild_id, (layout) => layout.channels.delete(String(data?.id ?? "")));
+        return;
       case "GUILD_ROLE_CREATE":
       case "GUILD_ROLE_UPDATE": {
         const standing = this.#standing.get(String(data?.guild_id ?? ""));
         const role = data?.role;
         if (standing && role) standing.roles.set(String(role.id), String(role.permissions ?? "0"));
+        if (role) this.#relayout(data?.guild_id, (layout) => layout.roles.set(String(role.id), role));
         return;
       }
-      case "GUILD_CREATE":
-      case "GUILD_UPDATE":
-        this.#keepStanding(type, data);
-        this.#emit("layout", {
-          ...data,
-          botUser: this.user?.id ?? "",
+      case "GUILD_ROLE_DELETE":
+        this.#relayout(data?.guild_id, (layout) => layout.roles.delete(String(data?.role_id ?? "")));
+        return;
+      case "GUILD_EMOJIS_UPDATE":
+        this.#relayout(data?.guild_id, (layout) => {
+          layout.emojis = data?.emojis ?? [];
         });
+        return;
+      case "GUILD_CREATE":
+      case "GUILD_UPDATE": {
+        this.#keepStanding(type, data);
+        const id = String(data?.id ?? "");
+        const known = this.#layouts.get(id);
+        const byId = (list) => new Map((list ?? []).map((item) => [String(item.id), item]));
+        if (type === "GUILD_CREATE" || !known) {
+          this.#layouts.set(id, {
+            ...data,
+            channels: byId(data?.channels),
+            roles: byId(data?.roles),
+            emojis: data?.emojis ?? [],
+          });
+        } else {
+          // An update says the server's own fields, and its roles and emoji when they changed;
+          // never its channels, which stay as their own events left them.
+          const { channels: _channels, roles, emojis, ...fields } = data ?? {};
+          Object.assign(known, fields);
+          if (roles) known.roles = byId(roles);
+          if (emojis) known.emojis = emojis;
+        }
+        this.#emit("layout", this.#layoutOf(id, type === "GUILD_CREATE"));
         // A resumed session's call is where Discord still has it: the guild's voice states say
         // so before any new event does.
         for (const state of data?.voice_states ?? []) {
           this.#voiceState(data?.id ?? "", state);
         }
         return;
+      }
       case "VOICE_STATE_UPDATE":
         this.#voiceState(data?.guild_id ?? "", data);
         return;
@@ -544,6 +577,27 @@ export class Gateway {
       default:
         return;
     }
+  }
+
+  /// The layout of `guild` handed on, whole. `fresh` when the server was just (re)joined, which
+  /// is when what it said meanwhile is read back.
+  #layoutOf(guild, fresh = false) {
+    const layout = this.#layouts.get(String(guild));
+    return {
+      ...layout,
+      channels: [...layout.channels.values()],
+      roles: [...layout.roles.values()],
+      botUser: this.user?.id ?? "",
+      fresh,
+    };
+  }
+
+  /// A channel, role or emoji event's change to a known server's layout, handed on.
+  #relayout(guild, change) {
+    const layout = this.#layouts.get(String(guild ?? ""));
+    if (!layout) return;
+    change(layout);
+    this.#emit("layout", this.#layoutOf(guild));
   }
 
   /// What GUILD_CREATE says of the server, and what GUILD_UPDATE changes of it.

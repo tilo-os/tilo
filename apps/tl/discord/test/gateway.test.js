@@ -369,3 +369,46 @@ test("a slash command run in the server reaches the bridge with what answers it"
   client.destroy();
   discord.stop();
 });
+
+test("a server's update and its channel events hand on the whole layout", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  const layouts = () => events.filter((event) => event.source === "LAYOUT_CHANGED");
+  const channels = (layout) => layout.payload.channels.map((channel) => channel.name);
+  await until(() => layouts().length === 1, "the layout");
+  expect(layouts()[0].payload.fresh).toBe(true);
+
+  // A rename says the server's fields alone; its channels stay as they were.
+  discord.send({ op: 0, s: 3, t: "GUILD_UPDATE", d: { id: "123", name: "Renamed", owner_id: "1" } });
+  await until(() => layouts().length === 2, "the update");
+  expect(channels(layouts()[1])).toEqual(["design", "Text", "Call"]);
+  expect(layouts()[1].payload.fresh).toBe(false);
+
+  discord.send({
+    op: 0,
+    s: 4,
+    t: "CHANNEL_CREATE",
+    d: { id: "459", guild_id: "123", type: 0, name: "later", position: 3 },
+  });
+  await until(() => layouts().length === 3, "the new channel");
+  expect(channels(layouts()[2])).toEqual(["design", "Text", "Call", "later"]);
+
+  discord.send({
+    op: 0,
+    s: 5,
+    t: "CHANNEL_UPDATE",
+    d: { id: "456", guild_id: "123", type: 0, name: "design-team", position: 0 },
+  });
+  discord.send({ op: 0, s: 6, t: "CHANNEL_DELETE", d: { id: "457", guild_id: "123", type: 4 } });
+  await until(() => layouts().length === 5, "the rename and the deletion");
+  expect(channels(layouts()[4])).toEqual(["design-team", "Call", "later"]);
+  expect(layouts()[4].payload.fresh).toBe(false);
+
+  client.destroy();
+  discord.stop();
+});
