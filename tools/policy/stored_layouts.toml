@@ -192,6 +192,44 @@ types = [
 
 [[layout]]
 format = "owner workspace document"
+version = 8
+digest = "5576bcd4fc69d6b7"
+what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left"""
+types = [
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Entry",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Stretch",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:DocumentOps",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Op",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
+  "crates/core/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
+  "crates/core/tilo-peer-state/src/state.rs:Route",
+  "crates/core/tilo-peer-state/src/owner_commit.rs:CommitBinding",
+  "crates/core/tilo-peer-state/src/owner_commit.rs:CommitTarget",
+]
+
+
+[[layout]]
+format = "owner workspace document"
+version = 9
+digest = "3f518ecef9f496af"
+what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left (version 9 is version 8's layout, whose write binding and target moved to the publication module under new names, with no stored byte changed)"""
+types = [
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Entry",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Stretch",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:DocumentOps",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:Op",
+  "crates/core/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
+  "crates/core/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
+  "crates/core/tilo-peer-state/src/state.rs:Route",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:RecordBinding",
+  "crates/core/tilo-peer-state/src/owner/publication.rs:RecordTarget",
+]
+
+
+[[layout]]
+format = "owner workspace document"
 version = 10
 digest = "1e049eb9af2ef0b2"
 what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left (version 10 carries the frames a device keeps until a link takes them apart from the workspace's fields, as stretches of the frames kept before)"""

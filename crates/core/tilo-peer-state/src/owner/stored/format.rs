@@ -10,15 +10,66 @@ use super::WORKSPACE_VERSION;
 pub(crate) const FORMAT: Format = Format {
     name: "owner workspace document",
     version: WORKSPACE_VERSION,
-    oldest: 10,
-    steps: &[without_ownership],
+    oldest: 7,
+    steps: &[
+        journal_apart,
+        record_types_moved,
+        frames_apart,
+        without_ownership,
+    ],
 };
+
+/// Version 7 to 8: the journal beside the entry carries ownership's lists of writes apart from the
+/// workspace's fields. The entry itself reads as it was; a journal a version 7 build wrote beside
+/// it is refused ([`crate::owner::journal::replay`]).
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a step takes the bytes it brings up, as every step of a format does"
+)]
+fn journal_apart(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    entry.insert("version".into(), 8.into());
+    serde_json::to_vec(&entry).map_err(|error| error.to_string())
+}
+
+/// Version 8 to 9: the entry's layout did not change. The write binding and target a journal entry
+/// stores moved from `owner_commit` to `owner::publication` under new names, and the layout recorded
+/// for this format names the file and the types, so it is pinned under a new version rather than
+/// rewriting what version 8 recorded. No stored byte differs, so an entry and the journal beside it
+/// read as they were, and this step rewrites only the version they name.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a step takes the bytes it brings up, as every step of a format does"
+)]
+fn record_types_moved(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    entry.insert("version".into(), 9.into());
+    serde_json::to_vec(&entry).map_err(|error| error.to_string())
+}
+
+/// Version 9 to 10: the journal beside the entry carries the frames a device keeps until a link
+/// takes them apart from the workspace's fields, each entry appending the frames it added
+/// rather than the whole list again. The entry itself reads as it was, and a journal an earlier
+/// build wrote beside it is read as that build's layout: a device's writes made offline live only
+/// there until a link takes them.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a step takes the bytes it brings up, as every step of a format does"
+)]
+fn frames_apart(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    entry.insert("version".into(), 10.into());
+    serde_json::to_vec(&entry).map_err(|error| error.to_string())
+}
 
 /// Version 10 to 11: the entry no longer keeps the outgoing ownership a build before the one path
 /// kept. No build since version 10 changed it (a write of this device's is made durable and sent
 /// on a link), so it held only writes the workspace already has or will never take, and it goes.
-/// The journal beside a version 10 entry is a delta of the fields that build split, ownership
-/// with them ([`crate::owner::journal::replay`]).
+/// The journal beside an entry of version 8 to 10 is a delta of the fields that build split,
+/// ownership with them ([`crate::owner::journal::replay`]).
 #[expect(
     clippy::needless_pass_by_value,
     reason = "a step takes the bytes it brings up, as every step of a format does"

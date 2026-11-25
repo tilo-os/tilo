@@ -1076,34 +1076,163 @@ mod tests {
         Ok(())
     }
 
-    /// One run of an entry's bytes, as a version 10 build framed it.
+    /// One run of an entry's bytes, as builds of version 8 to 10 framed it.
     #[derive(Serialize)]
     enum Run {
         Copy { from: u64, len: u64 },
         Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     }
+
     /// A stretch of ownership's writes the snapshot held.
     #[derive(Serialize)]
-    enum KeptWrites {
+    enum HeldStretch {
         Kept { from: u32, len: u32 },
     }
-    /// An entry in that build's layout. Its answers and the writes its server had not taken are
-    /// units here: an entry that carries one is what [`earlier_record`] can make.
+
+    /// The server's answer to a document's writes: what it took, what it refused and the last
+    /// order it gave, as those builds kept it.
+    type Answer = ((String, String), Option<(u64, u64, Option<u64>)>);
+
+    /// An entry of version 10, whose frames went apart from the fields.
     #[derive(Serialize)]
     struct Appended {
         revision: u64,
         fields: Vec<Run>,
-        answered: Vec<()>,
-        unanswered: Vec<()>,
-        writes: [Vec<KeptWrites>; 3],
+        answered: Vec<Answer>,
+        unanswered: Vec<(Vec<u8>, bool)>,
+        writes: [Vec<HeldStretch>; 3],
         frames: Vec<()>,
         head: Vec<Run>,
         documents: Vec<()>,
         tail: Vec<Run>,
     }
 
-    /// A record a version 10 build kept: its snapshot, holding the ownership a build before it kept,
-    /// and an entry that build appended beside it.
+    /// An entry of version 8 or 9, whose frames were among the fields.
+    #[derive(Serialize)]
+    struct AppendedBeforeFrames {
+        revision: u64,
+        fields: Vec<Run>,
+        answered: Vec<Answer>,
+        unanswered: Vec<(Vec<u8>, bool)>,
+        writes: [Vec<HeldStretch>; 3],
+        head: Vec<Run>,
+        documents: Vec<()>,
+        tail: Vec<Run>,
+    }
+
+    /// `entry` framed with its length and digest, as a journal holds it.
+    fn framed(entry: &impl Serialize) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let payload = postcard::to_allocvec(entry)?;
+        let mut framed = u32::try_from(payload.len())?.to_le_bytes().to_vec();
+        framed.extend_from_slice(blake3::hash(&payload).as_bytes());
+        framed.extend_from_slice(&payload);
+        Ok(framed)
+    }
+
+    /// A frame a version 8 or 9 entry adds to what the device keeps, among the fields.
+    const ADDED_FRAME: &[u8] = b",\"frames\":[{\"bytes\":\"AQEB\"}]}";
+
+    /// The golden entries of the builds whose journal this one replays, by the version they name.
+    const EARLIER: [(u32, &str); 3] = [
+        (
+            8,
+            include_str!("../../golden/owner-workspace-document/v8.hex"),
+        ),
+        (
+            9,
+            include_str!("../../golden/owner-workspace-document/v9.hex"),
+        ),
+        (
+            10,
+            include_str!("../../golden/owner-workspace-document/v10.hex"),
+        ),
+    ];
+
+    /// The entry a version `version` build appended beside `golden`, whose replica `held` is:
+    /// a delta of the fields that build split from the snapshot (the snapshot's own, without its
+    /// replica, the ownership last) that moves the generation to 7 and, before version 10, adds
+    /// [`ADDED_FRAME`], which its fields carried then. With `answered` it carries the server's
+    /// answer to a document's writes and a write it had not answered.
+    fn earlier_entry(
+        version: u32,
+        golden: &[u8],
+        held: &StoredWorkspace,
+        answered: bool,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut split: serde_json::Value = serde_json::from_slice(golden)?;
+        split["peer"] = serde_json::to_value(crate::owner::stored::DurablePeer::default())?;
+        let split = serde_json::to_vec(&split)?;
+        let generation = b"\"generation\":1,";
+        let at = split
+            .windows(generation.len())
+            .position(|window| window == generation)
+            .ok_or("the split names its generation")?
+            .saturating_add(b"\"generation\":".len());
+        let wide = |len: usize| u64::try_from(len).unwrap_or(u64::MAX);
+        let fields = vec![
+            Run::Copy {
+                from: 0,
+                len: wide(at),
+            },
+            Run::Bytes(b"7".to_vec()),
+            Run::Copy {
+                from: wide(at.saturating_add(1)),
+                len: wide(split.len().saturating_sub(at).saturating_sub(2)),
+            },
+            Run::Bytes(if version < 10 { ADDED_FRAME } else { b"}" }.to_vec()),
+        ];
+        let replica = |parts: &[std::sync::Arc<[u8]>]| {
+            let len: usize = parts.iter().map(|part| part.len()).sum();
+            if len == 0 {
+                Vec::new()
+            } else {
+                vec![Run::Copy {
+                    from: 0,
+                    len: wide(len),
+                }]
+            }
+        };
+        let layout = held.peer.layout();
+        let (answered, unanswered) = if answered {
+            (
+                vec![(("so.tilo.notes".into(), "plan".into()), Some((3, 1, Some(2))))],
+                vec![(vec![7; 64], true)],
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let writes = [
+            vec![HeldStretch::Kept { from: 0, len: 0 }],
+            Vec::new(),
+            Vec::new(),
+        ];
+        if version < 10 {
+            return framed(&AppendedBeforeFrames {
+                revision: 2,
+                fields,
+                answered,
+                unanswered,
+                writes,
+                head: replica(&layout.head),
+                documents: Vec::new(),
+                tail: replica(&layout.tail),
+            });
+        }
+        framed(&Appended {
+            revision: 2,
+            fields,
+            answered,
+            unanswered,
+            writes,
+            frames: Vec::new(),
+            head: replica(&layout.head),
+            documents: Vec::new(),
+            tail: replica(&layout.tail),
+        })
+    }
+
+    /// A record an earlier build kept: its snapshot, holding the ownership a build before the one
+    /// path kept, and an entry that build appended beside it.
     struct EarlierRecord {
         parts: Memory,
         workspace: WorkspaceId,
@@ -1111,16 +1240,14 @@ mod tests {
         peer: Vec<u8>,
     }
 
-    /// [`EarlierRecord`], its entry carrying an answer when `answered` says so.
-    fn earlier_record(answered: bool) -> Result<EarlierRecord, Box<dyn std::error::Error>> {
-        let framed = |entry: &Appended| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-            let payload = postcard::to_allocvec(entry)?;
-            let mut framed = u32::try_from(payload.len())?.to_le_bytes().to_vec();
-            framed.extend_from_slice(blake3::hash(&payload).as_bytes());
-            framed.extend_from_slice(&payload);
-            Ok(framed)
-        };
-        let golden: Vec<u8> = include_str!("../../golden/owner-workspace-document/v10.hex")
+    /// [`EarlierRecord`] as a version `version` build kept it from `golden`, its entry carrying
+    /// the server's answer to a document's writes when `answered` says so.
+    fn earlier_record(
+        version: u32,
+        golden: &str,
+        answered: bool,
+    ) -> Result<EarlierRecord, Box<dyn std::error::Error>> {
+        let golden: Vec<u8> = golden
             .split_whitespace()
             .map(|byte| u8::from_str_radix(byte, 16))
             .collect::<Result<_, _>>()?;
@@ -1137,57 +1264,12 @@ mod tests {
         parts.write_part(INDEX_NAME, &index)?;
         parts.write_part(&snapshot_name(workspace, 1), &golden)?;
         let held: StoredWorkspace = serde_json::from_slice(&golden)?;
-        let layout = held.peer.layout();
-        let length =
-            |parts: &[std::sync::Arc<[u8]>]| -> usize { parts.iter().map(|part| part.len()).sum() };
-        let wide = |len: usize| u64::try_from(len).unwrap_or(u64::MAX);
-        let kept = |len: usize| {
-            if len == 0 {
-                Vec::new()
-            } else {
-                vec![Run::Copy {
-                    from: 0,
-                    len: wide(len),
-                }]
-            }
-        };
-
-        // That build's entry is a delta of the fields it split from the snapshot: the snapshot's
-        // own, without its replica, the ownership last.
-        let mut split: serde_json::Value = serde_json::from_slice(&golden)?;
-        split["peer"] = serde_json::to_value(crate::owner::stored::DurablePeer::default())?;
-        let split = serde_json::to_vec(&split)?;
-        let at = split
-            .windows(b"\"generation\":1,".len())
-            .position(|window| window == b"\"generation\":1,")
-            .ok_or("the split names its generation")?
-            .saturating_add(b"\"generation\":".len());
-        let entry = Appended {
-            revision: 2,
-            fields: vec![
-                Run::Copy {
-                    from: 0,
-                    len: wide(at),
-                },
-                Run::Bytes(b"7".to_vec()),
-                Run::Copy {
-                    from: wide(at.saturating_add(1)),
-                    len: wide(split.len().saturating_sub(at).saturating_sub(1)),
-                },
-            ],
-            answered: if answered { vec![()] } else { Vec::new() },
-            unanswered: Vec::new(),
-            writes: [
-                vec![KeptWrites::Kept { from: 0, len: 0 }],
-                Vec::new(),
-                Vec::new(),
-            ],
-            frames: Vec::new(),
-            head: kept(length(&layout.head)),
-            documents: Vec::new(),
-            tail: kept(length(&layout.tail)),
-        };
-        parts.write_part(&journal_name(workspace, 1), &framed(&entry)?)?;
+        check(held.generation == 1, "the golden entry is of generation 1")?;
+        check(held.frames.is_empty(), "the golden entry keeps no frame")?;
+        parts.write_part(
+            &journal_name(workspace, 1),
+            &earlier_entry(version, &golden, &held, answered)?,
+        )?;
         let peer = held.peer.to_vec();
         Ok(EarlierRecord {
             parts,
@@ -1196,20 +1278,55 @@ mod tests {
         })
     }
 
-    /// A record a version 10 build kept opens with the entry that build appended beside it: this
-    /// build reads the change, the ownership gone, and its next publication writes a snapshot of
-    /// its own layout.
+    /// The frames `stored` keeps, as their bytes.
+    fn frames_of(stored: &StoredWorkspace) -> Vec<Vec<u8>> {
+        stored
+            .frames
+            .iter()
+            .map(|frame| frame.bytes.to_vec())
+            .collect()
+    }
+
+    /// Records builds of version 8 to 10 kept open with the entry each appended beside its
+    /// snapshot. A device that updates with writes still in its journal keeps them: this build
+    /// reads the change, the frames a build before 10 kept among the fields included, the
+    /// ownership gone with any answer an entry carried, and its next publication writes a
+    /// snapshot of its own layout.
     #[test]
-    fn a_record_the_build_before_kept_opens_with_its_journal()
+    fn a_record_an_earlier_build_kept_opens_with_its_journal()
     -> Result<(), Box<dyn std::error::Error>> {
+        for (version, golden) in EARLIER {
+            for answered in [false, true] {
+                opens_with_its_journal(version, golden, answered)
+                    .map_err(|error| format!("version {version}, answered {answered}: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The record [`earlier_record`] makes of `version` and `golden` opens with its entry's change.
+    fn opens_with_its_journal(
+        version: u32,
+        golden: &str,
+        answered: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let EarlierRecord {
             parts,
             workspace,
             peer,
-        } = earlier_record(false)?;
+        } = earlier_record(version, golden, answered)?;
         let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
         let stored = read.stored(workspace).ok_or("the journal's workspace")?;
         check(stored.generation == 7, "the entry's change is read")?;
+        let expected = if version < 10 {
+            vec![vec![1, 1, 1]]
+        } else {
+            Vec::new()
+        };
+        check(
+            frames_of(stored) == expected,
+            "the frames the entry kept are the device's",
+        )?;
         check(
             stored.version == crate::owner::stored::WORKSPACE_VERSION,
             "the record reads as this build's",
@@ -1228,8 +1345,9 @@ mod tests {
             },
         )?;
         let again = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
+        let reopened = again.stored(workspace).ok_or("the workspace is kept")?;
         check(
-            again.stored(workspace).map(|stored| stored.generation) == Some(7),
+            reopened.generation == 7 && frames_of(reopened) == expected,
             "the next publication keeps what the entry changed",
         )?;
         let (_, kept_now) = parts
@@ -1247,13 +1365,6 @@ mod tests {
                 && !String::from_utf8_lossy(&kept_now).contains("\"publication\""),
             "the next publication writes a snapshot of this build's layout, without ownership",
         )?;
-
-        // An entry of that build that carries an answer is refused, never read past.
-        let parts_with_answer = earlier_record(true)?.parts;
-        check(
-            Journaled::open(&parts_with_answer).is_err(),
-            "an entry carrying ownership's answer is refused",
-        )?;
         Ok(())
     }
 
@@ -1263,9 +1374,10 @@ mod tests {
     #[test]
     fn an_open_that_stops_before_naming_the_brought_up_pair_reads_the_journal()
     -> Result<(), Box<dyn std::error::Error>> {
+        let (version, golden) = EARLIER[2];
         let EarlierRecord {
             parts, workspace, ..
-        } = earlier_record(false)?;
+        } = earlier_record(version, golden, false)?;
         parts
             .fail
             .lock()

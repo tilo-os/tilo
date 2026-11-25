@@ -49,28 +49,18 @@ struct Entry {
 }
 
 /// An entry a version 10 build appended: [`Entry`], with ownership's answers and lists of writes
-/// between its fields and its frames. Ownership had stopped changing before that build, so its
-/// entries carry no answer and name only writes their snapshot held, which go with the ownership
-/// the step to version 11 drops. An entry that carries an answer or a write of its own is refused.
+/// between its fields and its frames. Those go with the ownership the step to version 11 drops
+/// ([`earlier`]), and are read only to reach what follows them.
 #[derive(Deserialize)]
 struct PreviousEntry {
     revision: u64,
     fields: Vec<Op>,
-    #[expect(
-        dead_code,
-        reason = "read to reach the fields after it; ownership goes"
-    )]
-    answered: Vec<Unread>,
-    #[expect(
-        dead_code,
-        reason = "read to reach the fields after it; ownership goes"
-    )]
-    unanswered: Vec<Unread>,
-    #[expect(
-        dead_code,
-        reason = "read to reach the fields after it; ownership goes"
-    )]
-    writes: [Vec<KeptWrites>; 3],
+    #[serde(rename = "answered")]
+    _answered: Vec<earlier::Answered>,
+    #[serde(rename = "unanswered")]
+    _unanswered: Vec<earlier::Unanswered>,
+    #[serde(rename = "writes")]
+    _writes: [Vec<earlier::Stretch>; 3],
     frames: Vec<FrameStretch>,
     head: Vec<Op>,
     documents: Vec<(Route, Option<DocumentOps>)>,
@@ -90,27 +80,33 @@ impl From<PreviousEntry> for Entry {
     }
 }
 
-/// One stretch of a list of ownership's writes in a version 10 entry: writes its snapshot held,
-/// or writes of its own, which no version 10 build appended.
+/// An entry a version 8 or 9 build appended: [`PreviousEntry`] before the frames a device keeps
+/// went apart from the workspace's fields, so it carries none of its own; its fields hold them.
 #[derive(Deserialize)]
-#[expect(
-    dead_code,
-    reason = "read to reach the fields after it; ownership goes"
-)]
-enum KeptWrites {
-    Kept { from: u32, len: u32 },
-    Writes(Vec<Unread>),
+struct EntryBeforeFrames {
+    revision: u64,
+    fields: Vec<Op>,
+    #[serde(rename = "answered")]
+    _answered: Vec<earlier::Answered>,
+    #[serde(rename = "unanswered")]
+    _unanswered: Vec<earlier::Unanswered>,
+    #[serde(rename = "writes")]
+    _writes: [Vec<earlier::Stretch>; 3],
+    head: Vec<Op>,
+    documents: Vec<(Route, Option<DocumentOps>)>,
+    tail: Vec<Op>,
 }
 
-/// An answer or a write of ownership's that a version 10 entry carried: none did, and one that
-/// does is refused rather than read past.
-struct Unread;
-
-impl<'de> Deserialize<'de> for Unread {
-    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
-        Err(serde::de::Error::custom(
-            "a version 10 journal entry carries ownership's answers or writes",
-        ))
+impl From<EntryBeforeFrames> for Entry {
+    fn from(entry: EntryBeforeFrames) -> Self {
+        Self {
+            revision: entry.revision,
+            fields: entry.fields,
+            frames: Vec::new(),
+            head: entry.head,
+            documents: entry.documents,
+            tail: entry.tail,
+        }
     }
 }
 
@@ -159,6 +155,11 @@ pub(crate) const LAYOUT_VERSION: u32 = 11;
 /// The layout of the build before this one, whose journal this build replays once: the next
 /// publication writes a snapshot of this build's layout first.
 pub(crate) const PREVIOUS_LAYOUT: u32 = 10;
+
+/// The oldest layout of a journal this build replays: one a version 8 build appended, whose
+/// frames were among the workspace's fields ([`EntryBeforeFrames`]). Version 9 changed no stored
+/// byte of version 8's. A version 7 journal is refused.
+pub(crate) const OLDEST_LAYOUT: u32 = 8;
 
 /// What an entry carries of a record: its fields and the frames it keeps.
 struct Split {
@@ -293,7 +294,7 @@ fn frame(entry: &Entry) -> Result<Vec<u8>, String> {
 /// Reading stops at the first entry that is cut short or does not match its
 /// digest: no publication after it was acknowledged. `layout` is the version of the snapshot the
 /// journal was appended beside, which a build of that version appended; `ownership` is what a
-/// version 10 snapshot held of it ([`ownership_before`]).
+/// snapshot of version [`OLDEST_LAYOUT`] to [`PREVIOUS_LAYOUT`] held of it ([`ownership_before`]).
 pub(super) fn replay(
     stored: StoredWorkspace,
     log: &[u8],
@@ -308,10 +309,11 @@ pub(super) fn replay(
                 stored,
                 &fields,
                 std::iter::from_fn(|| take::<Entry>(&mut rest).transpose()),
+                false,
             )
         }
         PREVIOUS_LAYOUT => {
-            let fields = previous_fields(&stored, ownership)?;
+            let fields = previous_fields(&stored, layout, ownership)?;
             replay_entries(
                 stored,
                 &fields,
@@ -320,18 +322,32 @@ pub(super) fn replay(
                         .map(|entry| entry.map(Entry::from))
                         .transpose()
                 }),
+                false,
+            )
+        }
+        OLDEST_LAYOUT..PREVIOUS_LAYOUT => {
+            let fields = previous_fields(&stored, layout, ownership)?;
+            replay_entries(
+                stored,
+                &fields,
+                std::iter::from_fn(|| {
+                    take::<EntryBeforeFrames>(&mut rest)
+                        .map(|entry| entry.map(Entry::from))
+                        .transpose()
+                }),
+                true,
             )
         }
         _ => Err(format!(
             "the workspace's journal is a version {layout} one, and this build reads one of \
-             version {PREVIOUS_LAYOUT} or {LAYOUT_VERSION}"
+             version {OLDEST_LAYOUT} to {LAYOUT_VERSION}"
         )),
     }
 }
 
-/// What a version 10 snapshot `bytes` held of the outgoing ownership a build before the one path
-/// kept, which the journal beside it is a delta of; `None` for a snapshot of another version, or
-/// one that held none.
+/// What a snapshot `bytes` of version [`OLDEST_LAYOUT`] to [`PREVIOUS_LAYOUT`] held of the
+/// outgoing ownership a build before the one path kept, which the journal beside it is a delta
+/// of; `None` for a snapshot of another version, or one that held none.
 ///
 /// # Errors
 /// The snapshot does not read.
@@ -343,46 +359,56 @@ pub(super) fn ownership_before(bytes: &[u8]) -> Result<Option<serde_json::Value>
         publication: Option<serde_json::Value>,
     }
     let held: Held = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    Ok(held.publication.filter(|_| held.version == PREVIOUS_LAYOUT))
+    Ok(held
+        .publication
+        .filter(|_| (OLDEST_LAYOUT..=PREVIOUS_LAYOUT).contains(&held.version)))
 }
 
-/// The fields a version 10 build's first entry is a delta of: this build's, naming version 10,
-/// and last the ownership its snapshot held, as that build split it: its lists of writes
-/// emptied, and its answers and the writes its server had not taken left out, as an empty one
-/// of each is. The key order is the snapshot's, which that build's types wrote.
+/// The fields the first entry of a version `layout` build is a delta of: this build's, naming
+/// `layout`, then the ownership its snapshot held, as that build split it: its lists of writes
+/// emptied, and its answers and the writes its server had not taken left out, as an empty one of
+/// each is. Before version 10 the frames a device keeps came last among them. The key order is
+/// the snapshot's, which that build's types wrote.
 fn previous_fields(
     stored: &StoredWorkspace,
+    layout: u32,
     ownership: Option<&serde_json::Value>,
 ) -> Result<Arc<[u8]>, String> {
-    let Split { fields, .. } = split_as(stored, PREVIOUS_LAYOUT)?;
-    let Some(ownership) = ownership else {
-        return Ok(fields);
-    };
-    let mut ownership = ownership.clone();
-    let serde_json::Value::Object(held) = &mut ownership else {
-        return Err("the snapshot's ownership is not a record".into());
-    };
-    for list in ["entries", "governance"] {
-        held.insert(list.into(), serde_json::Value::Array(Vec::new()));
-    }
-    for gone in ["answered", "tail", "unanswered"] {
-        held.shift_remove(gone);
-    }
+    let Split { fields, .. } = split_as(stored, layout)?;
     let mut bytes = fields.to_vec();
     if bytes.pop() != Some(b'}') {
         return Err("the record's fields are not a record".into());
     }
-    bytes.extend_from_slice(b",\"publication\":");
-    serde_json::to_writer(&mut bytes, &ownership).map_err(|error| error.to_string())?;
+    if let Some(ownership) = ownership {
+        let mut ownership = ownership.clone();
+        let serde_json::Value::Object(held) = &mut ownership else {
+            return Err("the snapshot's ownership is not a record".into());
+        };
+        for list in ["entries", "governance"] {
+            held.insert(list.into(), serde_json::Value::Array(Vec::new()));
+        }
+        for gone in ["answered", "tail", "unanswered"] {
+            held.shift_remove(gone);
+        }
+        bytes.extend_from_slice(b",\"publication\":");
+        serde_json::to_writer(&mut bytes, &ownership).map_err(|error| error.to_string())?;
+    }
+    if layout < PREVIOUS_LAYOUT && !stored.frames.is_empty() {
+        bytes.extend_from_slice(b",\"frames\":");
+        serde_json::to_writer(&mut bytes, &stored.frames).map_err(|error| error.to_string())?;
+    }
     bytes.push(b'}');
     Ok(bytes.into())
 }
 
-/// `stored`, a snapshot as read, as `entries` leave it, and the revision of the last one.
+/// `stored`, a snapshot as read, as `entries` leave it, and the revision of the last one. With
+/// `frames_in_fields` the entries carry the frames a device keeps among the fields, as a build
+/// before version 10 appended them.
 fn replay_entries(
     stored: StoredWorkspace,
     fields: &Arc<[u8]>,
     entries: impl Iterator<Item = Result<Entry, String>>,
+    frames_in_fields: bool,
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
     let rope = |parts: &[Arc<[u8]>]| Rope::of(&parts.concat().into());
     let mut frames = stored.frames.clone();
@@ -433,10 +459,12 @@ fn replay_entries(
     }
     let mut replayed: StoredWorkspace = serde_json::from_slice(&fields.to_vec())
         .map_err(|error| format!("the record's journal does not parse: {error}"))?;
-    // The fields name the version of the build that appended the journal, and a version 10 one
+    // The fields name the version of the build that appended the journal, and an earlier one
     // its ownership, which this build's fields leave out: they read as this build's.
     replayed.version = WORKSPACE_VERSION;
-    replayed.frames = frames;
+    if !frames_in_fields {
+        replayed.frames = frames;
+    }
     let whole = |rope: &Rope| -> Arc<[Arc<[u8]>]> { Arc::from([Arc::from(rope.to_vec())]) };
     replayed.peer = DurableParts {
         head: whole(&head),
@@ -1009,6 +1037,94 @@ fn common_suffix(a: &[u8], b: &[u8]) -> usize {
     at.saturating_add(bytes)
 }
 
+/// Ownership's answers and lists of writes as builds of version 8 to 10 appended them to an entry:
+/// postcard names no field, so an entry is read past them only by their exact layout. They go with
+/// the ownership the step to version 11 drops, so nothing reads what they hold.
+#[allow(
+    dead_code,
+    reason = "the layout earlier builds wrote, read only to reach what follows it"
+)]
+mod earlier {
+    use serde::Deserialize;
+
+    /// A document whose answers changed, with what it held then.
+    pub(super) type Answered = ((String, String), Option<Answer>);
+
+    /// The signature of a write its server had not answered, and whether it was held.
+    pub(super) type Unanswered = (Vec<u8>, bool);
+
+    /// The server's answer to a document's writes.
+    #[derive(Deserialize)]
+    pub(super) struct Answer {
+        durable: u64,
+        refused: u64,
+        last_order: Option<u64>,
+    }
+
+    /// One stretch of a list of ownership's writes: writes it held before, or writes of its own.
+    #[derive(Deserialize)]
+    pub(super) enum Stretch {
+        Kept { from: u32, len: u32 },
+        Writes(Vec<Outgoing>),
+    }
+
+    /// A write ownership kept to send.
+    #[derive(Deserialize)]
+    pub(super) struct Outgoing {
+        ordinal: u64,
+        id: [u8; 32],
+        bytes: Vec<u8>,
+        binding: Binding,
+        timestamp_ns: u64,
+        channel: [u8; 32],
+        incremental: bool,
+    }
+
+    /// What a write was bound to.
+    #[derive(Deserialize)]
+    struct Binding {
+        workspace: String,
+        target: Target,
+        request_digest: [u8; 32],
+        basis: [u8; 32],
+    }
+
+    /// The record a write was for. Postcard names a variant by its place, never its name.
+    #[derive(Deserialize)]
+    enum Target {
+        Document {
+            app: String,
+            record: String,
+        },
+        Effect {
+            invocation: uuid::Uuid,
+        },
+        DesktopCommand {
+            invocation: uuid::Uuid,
+        },
+        RefusedAgentRuntime,
+        DocumentImport {
+            invocation: uuid::Uuid,
+        },
+        RefusedWorkspaceTask,
+        WorkspaceMembershipCommand {
+            device: [u8; 32],
+            invocation: uuid::Uuid,
+        },
+        NativeCheckpointRoot {
+            root: [u8; 32],
+        },
+        RefusedShortcutChange {
+            device: [u8; 32],
+            invocation: uuid::Uuid,
+        },
+        JoinAdmission {
+            device: [u8; 32],
+        },
+        RefusedDirectPair,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1183,6 +1299,21 @@ mod tests {
             framed.extend_from_slice(blake3::hash(&payload).as_bytes());
             framed.extend_from_slice(&payload);
             assert!(take::<Entry>(&mut &framed[..]).is_err());
+        }
+
+        phase a_journal_of_a_layout_this_build_does_not_replay_is_refused_by_its_version;
+        // A journal older than the oldest layout this build replays, or one a later build
+        // appended, is refused by the version it names, before any of it is read.
+        {
+            let golden: Vec<u8> = include_str!("../../golden/owner-workspace-document/v11.hex")
+                .split_whitespace()
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect();
+            let stored: StoredWorkspace = serde_json::from_slice(&golden).unwrap();
+            for layout in [OLDEST_LAYOUT - 1, LAYOUT_VERSION + 1] {
+                let error = replay(stored.clone(), b"", layout, None).unwrap_err();
+                assert!(error.contains(&format!("version {layout}")), "{error}");
+            }
         }
     }
 }
