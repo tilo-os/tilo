@@ -289,11 +289,9 @@ fn app_label<R: Resource>(app: &str) -> String {
     }
     let last = app.rsplit('.').next().unwrap_or(app);
     let mut chars = last.chars();
-    chars
-        .next()
-        .map_or_else(String::new, |first| {
-            first.to_uppercase().collect::<String>() + chars.as_str()
-        })
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().collect::<String>() + chars.as_str()
+    })
 }
 
 /// The resource `(app, name)` of this device's person's workspace as this

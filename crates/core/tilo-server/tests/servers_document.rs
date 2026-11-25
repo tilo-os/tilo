@@ -126,10 +126,7 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
                 .map(|app| app.id.clone())
         })
         .collect();
-    assert!(
-        !apps.is_empty(),
-        "the changes reach the record's history"
-    );
+    assert!(!apps.is_empty(), "the changes reach the record's history");
     assert!(apps.iter().all(|app| app == SERVERS.0), "{apps:?}");
     let attached = applied::reconcile(workspaces).await.unwrap();
     assert!(

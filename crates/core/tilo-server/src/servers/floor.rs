@@ -326,8 +326,8 @@ pub async fn apply(workspaces: &Workspaces, action: Invoke<Floor>) -> Result<(),
     let cert = workspaces.device_cert().clone();
     workspaces
         .author_workspace_document(&admin, &cert, FLOOR, |doc| {
-            let mut replica = Replica::<Floor>::from_doc(std::mem::take(doc))
-                .in_app(FLOOR.0, "Servers");
+            let mut replica =
+                Replica::<Floor>::from_doc(std::mem::take(doc)).in_app(FLOOR.0, "Servers");
             let applied = replica
                 .apply(action)
                 .map(drop)

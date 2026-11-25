@@ -587,10 +587,10 @@ fn check_key(key: &str) -> Result<(), RecordError> {
 )]
 pub mod testing {
     use std::collections::BTreeMap;
-    use tilo_files::native::socket;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
+    use tilo_files::native::socket;
 
     use automerge::AutoCommit;
     use runtime_portal::workspace_documents;
