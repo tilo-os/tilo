@@ -320,7 +320,9 @@ impl NativeMediaService {
                 .values()
                 .find(|entry| Self::is_own(entry))
                 .ok_or("no call is this device's")?;
-            (entry.caller.clone(), entry.intent)
+            let answer = (entry.caller.clone(), entry.intent);
+            drop(calls);
+            answer
         };
         let result = self.apply(caller, command, intent);
         self.0.changed.notify_waiters();
