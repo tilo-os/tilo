@@ -1289,6 +1289,15 @@ impl Launch {
 
     /// Whether the program already ended, and how: a start that ends as it starts has run no
     /// app.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            clippy::needless_pass_by_ref_mut,
+            reason = "only a Linux launch is a child this daemon can ask whether it ended"
+        )
+    )]
     fn ended(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         #[cfg(target_os = "linux")]
         {

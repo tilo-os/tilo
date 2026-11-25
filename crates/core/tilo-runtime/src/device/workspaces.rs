@@ -1439,8 +1439,8 @@ where
             from = %std::backtrace::Backtrace::force_capture(),
             "a synchronous call into the workspaces waits on the app runtime's own thread"
         );
-        assert!(
-            !cfg!(debug_assertions),
+        debug_assert!(
+            false,
             "a synchronous call into the workspaces waits on the app runtime's own thread, at {at}"
         );
     }
