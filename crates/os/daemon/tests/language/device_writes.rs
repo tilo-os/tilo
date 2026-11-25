@@ -152,7 +152,7 @@ fn a_members_device_takes_what_its_role_lets_it() {
 
 /// A problem report filed through Chat is answered as the message it posted, which reads back
 /// in the workspace's one #feedback channel; a second report joins that channel; and a
-/// commenter who files a report is refused triage, which is the workspace's moderators'.
+/// member who files a report is refused triage, which is the workspace's moderators'.
 #[test]
 fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_triage() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
@@ -187,9 +187,9 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
             );
         }
 
-        // A commenter files a report of their own, and is refused triage: settling a report is
-        // the workspace's moderators'.
-        let filed_by = guest(&host, &owner_device, "commenter", "Cyd").await;
+        // A member who may write files a report of their own, and is refused triage: settling
+        // a report is the workspace's moderators'.
+        let filed_by = guest(&host, &owner_device, "editor", "Cyd").await;
         let page = host::listed(host.as_ref(), CHAT)
             .await
             .expect("Chat lists what it publishes");
@@ -212,9 +212,9 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
                 &json!({"who": {"person": host.person()}, "reason": "Said something unkind"}),
             )
             .await
-            .expect("a commenter files a report");
+            .expect("a member files a report");
         let InvocationUpdate::Succeeded { output, .. } = &filed else {
-            panic!("the commenter's report is filed: {filed:?}");
+            panic!("the member's report is filed: {filed:?}");
         };
         let report = output
             .resources
@@ -230,7 +230,7 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
         assert!(
             matches!(triage, Ok(InvocationUpdate::Failed { .. }))
                 || matches!(triage, Err(ActionCallError::NotPermitted)),
-            "a commenter does not triage: {triage:?}"
+            "a member does not triage: {triage:?}"
         );
     });
 }

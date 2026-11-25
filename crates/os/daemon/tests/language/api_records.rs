@@ -115,30 +115,25 @@ async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
         .to_owned()
 }
 
-/// Every message the conversation at `path` lists, read at the path the read gave for it: the
-/// listings, and the text of every one read.
+/// Every message Chat lists in the conversation at `path`, read at the path the listing gave
+/// for it: the rows, and the text of every one read.
 async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Value>, String) {
-    let mut listed: Vec<Value> = Vec::new();
+    let mut messages: Vec<Value> = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
         let mut arguments = json!({"workspace": workspace, "path": path});
         if let Some(cursor) = &cursor {
             arguments["cursor"] = json!(cursor);
         }
-        let reply = key.tool_structured("tilo_read", &arguments).await;
+        let reply = key.tool_structured("tilo_ls", &arguments).await;
         assert_ne!(reply["isError"], true, "{reply}");
-        let read = &reply["structuredContent"];
-        listed.extend(read["children"].as_array().cloned().unwrap_or_default());
-        cursor = read["cursor"].as_str().map(str::to_owned);
+        let listed = &reply["structuredContent"];
+        messages.extend(listed["rows"].as_array().cloned().unwrap_or_default());
+        cursor = listed["next_cursor"].as_str().map(str::to_owned);
         if cursor.is_none() {
             break;
         }
     }
-    let messages: Vec<Value> = listed
-        .iter()
-        .filter(|child| child["list"] == "messages")
-        .cloned()
-        .collect();
     let mut read = String::new();
     for (index, message) in messages.iter().enumerate() {
         let at = message["path"]
@@ -301,8 +296,8 @@ fn a_members_key_posts_a_long_history_into_the_chat() {
     });
 }
 
-/// A conversation longer than one bounded read of Chat's directory: every message the
-/// conversation's read lists is read at the path the read gave for it.
+/// A conversation longer than one page of Chat's directory: every message the conversation's
+/// listing holds is read at the path the listing gave for it.
 #[test]
 fn every_message_a_long_conversation_lists_is_read_at_its_path() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
