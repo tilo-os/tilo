@@ -752,10 +752,36 @@ fn ada_arrives(session: &mut Session, sync: &Rc<Client>) {
         if session.shell_control("Ada").is_some() {
             return true;
         }
-        if heard % 20 == 0 {
-            ada_here_on_two_devices(sync);
-        }
         heard = heard.saturating_add(1);
+        if heard % 20 != 1 {
+            return false;
+        }
+        ada_here_on_two_devices(sync);
+        // What her devices say of her, as the roster reads who is here: the certificate heard
+        // above names the person, and these are her two devices with what they said.
+        sync.here().borrow_mut().set_members(
+            None,
+            Some(vec![
+                tilo_session_core::desktop::here::LiveMember {
+                    publisher: device(0xaa).to_string(),
+                    kind: "person".to_owned(),
+                    label: "Ada".to_owned(),
+                    device: "Framework 16".to_owned(),
+                    user: Some(person(0xaa)),
+                    availability: Some("available".to_owned()),
+                    ..tilo_session_core::desktop::here::LiveMember::default()
+                },
+                tilo_session_core::desktop::here::LiveMember {
+                    publisher: device(0xac).to_string(),
+                    kind: "person".to_owned(),
+                    label: "Ada".to_owned(),
+                    device: "ThinkPad".to_owned(),
+                    user: Some(person(0xaa)),
+                    availability: Some("focusing".to_owned()),
+                    ..tilo_session_core::desktop::here::LiveMember::default()
+                },
+            ]),
+        );
         false
     });
 }
