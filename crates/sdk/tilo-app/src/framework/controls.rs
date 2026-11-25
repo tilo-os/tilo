@@ -71,6 +71,10 @@ action_control! {
     EditableLabel => String, |control| control;
 }
 
+/// A surface another record of the person's views opens, with the app that keeps it when another
+/// app does.
+type OpenedSurface = (Option<&'static str>, tilo_resource::Surface);
+
 thread_local! {
     /// Whether a control bound to something the resource does not publish
     /// is a failure rather than a disabled control: in tests and checks.
@@ -81,9 +85,8 @@ thread_local! {
     /// The surfaces of the other records the views open (the person's own),
     /// each with the app that keeps it when another app does, while a surface
     /// report collects them.
-    pub(super) static OPENED: std::cell::RefCell<
-        Option<Vec<(Option<&'static str>, tilo_resource::Surface)>>,
-    > = const { std::cell::RefCell::new(None) };
+    pub(super) static OPENED: std::cell::RefCell<Option<Vec<OpenedSurface>>> =
+        const { std::cell::RefCell::new(None) };
     /// The settings sections another provider keeps for the app
     /// ([`Resources::kept_by`](super::Resources::kept_by)): theirs to publish
     /// and describe, so no report of the app's lists them.
