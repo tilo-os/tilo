@@ -9,7 +9,7 @@
 /// The layout picker: a card per preset, the one in use marked, and the sentence saying where
 /// the settings stand.
 view layouts(s: Shell) {
-    section("ChromePreset") {
+    section("Layouts") {
         row(gap: .related, align: .center) {
             ui.Text(access(s), role: .subheading)
             if s.tuned {

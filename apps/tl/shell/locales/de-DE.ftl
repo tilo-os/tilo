@@ -640,7 +640,7 @@ d-dpqvjh2f = Launcher
     .w-open = Öffnen
 
 d-outvdzmi = Layouts
-    .w-chromepreset = Rahmenvorgabe
+    .w-layouts = Layouts
 
 d-5q3okayl = Layoutkarte
     .w-in-use = In Gebrauch

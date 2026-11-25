@@ -149,7 +149,7 @@ mod cases {
         fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
             self.asked.borrow_mut().push(op.to_owned());
             match op {
-                "maps.locate" => {
+                "locate" => {
                     if *self.found.borrow() {
                         Ok(r#"{"lat":48.1374,"lon":11.5755}"#.to_owned())
                     } else {

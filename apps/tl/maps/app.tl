@@ -1329,7 +1329,7 @@ action locate(a: Atlas) (
     did: "found where the device is",
 ) {
     a.status = "Locating you…"
-    match engine.call("maps.locate", "") {
+    match engine.call("locate", "") {
         .ok(answer) => match json.parse(answer) {
             .ok(value) => {
                 let lat = number_of(field_of(value, "lat"))
