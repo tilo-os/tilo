@@ -527,7 +527,9 @@ view person_card(board: device.People) {
         stack(gap: .related) {
             card_head(someone)
             row(gap: .related, align: .center, wrap: true) {
-                if someone.following {
+                // Whose view this is, as the bar says it: this person's row may say they are
+                // followed by someone here before the roster's own reading of it arrives.
+                if someone.following or board.following == someone.key {
                     ui.Button("Stop following", icon: .x, size: .small) {
                         on press: device.unfollow(device.people)
                     }
