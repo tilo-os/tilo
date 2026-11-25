@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
+use collaboration::{CollabEvent, CollabRequest, CollabSendError, CollaborationManager, RouteSpec};
 use tilo_resource_store::Port;
 use tilo_resource_store::wire::{Command, Reply};
 
@@ -23,6 +23,9 @@ pub use collaboration::RouteSpec as Route;
 
 /// How long a resource command waits for the store's answer before the read or write fails.
 const ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// How long a command that the connection cannot take yet waits before it is offered again, when
+/// nothing arrives on the connection sooner.
+const SEND_RETRY: Duration = Duration::from_millis(20);
 
 /// The instance's broker connection, shared by its frames and its store.
 pub struct Connection {
@@ -134,16 +137,36 @@ impl Port for CallPort {
     fn command(&self, command: Command) -> Result<Reply, String> {
         let request_id = self.next.get();
         self.next.set(request_id.wrapping_add(1));
-        self.manager
-            .borrow_mut()
-            .try_send(CollabRequest::ResourceCommand {
-                request_id,
-                command: serde_json::to_vec(&command).map_err(|error| error.to_string())?,
-            })
-            .map_err(|error| format!("the workspace's store cannot be reached: {error:?}"))?;
+        let request = CollabRequest::ResourceCommand {
+            request_id,
+            command: serde_json::to_vec(&command).map_err(|error| error.to_string())?,
+        };
         let until = Instant::now()
             .checked_add(ANSWER_WAIT)
             .unwrap_or_else(Instant::now);
+        // A connection still joining its route to the store, or with earlier changes still
+        // going out, takes the command once it can: the command waits for that as it waits for
+        // its answer, the connection read meanwhile so the join goes on.
+        loop {
+            let sent = self.manager.borrow_mut().try_send(request.clone());
+            match sent {
+                Ok(()) => break,
+                Err(CollabSendError::Unavailable | CollabSendError::Busy)
+                    if Instant::now() < until =>
+                {
+                    let events = self.manager.borrow_mut().poll();
+                    self.held.borrow_mut().extend(events);
+                    self.wait(
+                        Instant::now()
+                            .checked_add(SEND_RETRY)
+                            .map_or(until, |next| next.min(until)),
+                    );
+                }
+                Err(error) => {
+                    return Err(format!("the workspace's store cannot be reached: {error}"));
+                }
+            }
+        }
         loop {
             let mut answer = None;
             for event in self.manager.borrow_mut().poll() {
