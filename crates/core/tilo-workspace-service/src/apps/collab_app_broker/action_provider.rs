@@ -1958,14 +1958,11 @@ impl AppBrokerState {
         if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
             return Pending::ready(Err(refused));
         }
-        if let Err(error) = check_execution(caller) {
-            return Pending::ready(Err(error));
-        }
-        if let Err(error) = self.signed_by_agent(caller, request) {
-            return Pending::ready(Err(error));
-        }
         // A call made from a resource is its caller's only where they may read that resource.
-        if let Err(error) = self.may_make_from(caller, request) {
+        if let Err(error) = check_execution(caller)
+            .and_then(|()| self.signed_by_agent(caller, request))
+            .and_then(|()| self.may_make_from(caller, request))
+        {
             return Pending::ready(Err(error));
         }
         // The language's own view of the registry: the catalogue it reads and an action it calls
