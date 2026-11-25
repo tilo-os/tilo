@@ -97,9 +97,9 @@ impl super::AppBrokerState {
     /// The local app window whose connection is `peer_id`, while it is connected: the one the
     /// shell recorded for a connection it made, or a window that named itself on its own route.
     pub(super) fn window_of_peer(&self, peer_id: u64) -> Option<u64> {
-        let windows = self.window_instances.lock().ok()?;
-        if let Some(instance) = windows.get(&peer_id) {
-            return Some(*instance);
+        let instance = self.window_instances.lock().ok()?.get(&peer_id).copied();
+        if instance.is_some() {
+            return instance;
         }
         drop(windows);
         self.channels
