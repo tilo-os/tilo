@@ -720,6 +720,9 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
             .get("on_behalf_of")
             .and_then(Json::as_str)
             .map(str::to_owned),
+        // Only a device that says it handed the agent its session answers for it; otherwise the
+        // agent acts under a key of its own, and its writes must keep its signed call.
+        handed: author.get("handed").and_then(Json::as_bool).unwrap_or(false),
         app: None,
     };
     Ok((source.to_owned(), go_ahead, author))
