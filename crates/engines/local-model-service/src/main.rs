@@ -997,7 +997,7 @@ fn serve_action(action: RpcAction, file: Option<File>) -> Result<Option<String>,
         RpcAction::HubModel { reference, token } => {
             let (root, catalog_path, key_path) = manager_paths(None, None, None)?;
             let catalog = load_catalog(&catalog_path, &key_path)?;
-            return hub_model(&catalog, &root, &reference, token.as_deref()).map(Some);
+            hub_model(&catalog, &root, &reference, token.as_deref()).map(Some)
         }
         RpcAction::HubInstall {
             repo,
@@ -1026,20 +1026,18 @@ fn serve_action(action: RpcAction, file: Option<File>) -> Result<Option<String>,
                 (&repo, &revision, &variant, accept_license),
                 token.as_deref(),
             )?;
-            return Ok(None);
+            Ok(None)
         }
-        RpcAction::HubAccount => {
-            return Err(
-                "The workspace's model providers hold the Hugging Face sign-in now: \
-                        read it in Settings' AI page"
-                    .to_owned(),
-            );
-        }
+        RpcAction::HubAccount => Err(
+            "The workspace's model providers hold the Hugging Face sign-in now: \
+                    read it in Settings' AI page"
+                .to_owned(),
+        ),
         action => {
             let Some(cli) = cli_for_rpc(action) else {
                 return Err("not a local model action".into());
             };
-            return run_local(cli, file, FileCopy::Beside);
+            run_local(cli, file, FileCopy::Beside)
         }
     }
 }

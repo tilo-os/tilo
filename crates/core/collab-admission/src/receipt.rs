@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use collab_types::claim::{ChangeClaim, ClaimedAction, FrameworkChange};
 use collab_types::receipt::{
-    Allows, Receipt, ReceiptRefusal, Surfaces, WrittenDocument, WrittenUnits, by_kind,
+    Allows, Receipt, ReceiptRefusal, SurfaceFor, Surfaces, WrittenDocument, WrittenUnits, by_kind,
     check_claimed_changes, check_claims, check_claims_by_kind, check_continuations,
     check_store_kinds, label, unread_claims, written_node,
 };
@@ -220,12 +220,6 @@ fn decide_op_settled(
     (replay, imported, signer): (bool, Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
-    let changes_of = |op: &SignedOp| -> Result<Option<Vec<automerge::Change>>, ReceiptRefusal> {
-        match opened {
-            Some(opened) => Ok(Some(opened.to_vec())),
-            None => cleartext_changes(op),
-        }
-    };
     let governed = |action: &str| {
         let node = roles::governance_action(document.workspace, action);
         if allows(None, &node, roles::GOVERNANCE_KIND) {
@@ -240,101 +234,158 @@ fn decide_op_settled(
     match op.kind {
         OpKind::Compaction => admittable_compaction(op, document, allows, &governed),
         OpKind::Redaction => governed(roles::governance::REDACT),
-        OpKind::Change => {
-            // An op of an app that publishes no surface (and of a record that
-            // names none) is decided as an edit of the record; one naming a
-            // surface is decided against it, and held until it is here.
-            let Some(source) = surfaces
-                .source()
-                .filter(|_| op.surface.is_some() || pinned.is_some())
-            else {
-                return decide_as_document_edit(
-                    (changes_of(op)?.as_deref(), &op.claims),
-                    (document, holding),
-                    allows,
-                    (imported, signer),
-                );
-            };
-            let surface_for =
-                |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
-            let Some(changes) = changes_of(op)? else {
-                // A sealed op: the server decides the claims its envelope
-                // carries; devices check the changes once they open them.
-                return check_claims_by_kind(
-                    &op.claims,
-                    document,
-                    kind,
-                    replay,
-                    &surface_for,
-                    allows,
-                );
-            };
-            // A cleartext change names its action in itself, under the op's
-            // signature: the envelope carries no second copy.
-            if !op.claims.is_empty() {
-                return Err(ReceiptRefusal::Unclaimed);
-            }
-            // The units each change writes, read from the record as this
-            // receiver holds it.
-            let reads = held.is_some();
-            // A continuation is decided as the invoker its claim names; a
-            // receiver holding the document checks that its gesture's first
-            // entry names the same.
-            check_continuations(&changes, holding, holding.is_some())?;
-            // A resource store's change names the kinds of the records it writes as this receiver
-            // reads them, before the change and after it: never as its writer says.
-            let mut held = held;
-            let kinds = collab_types::claim::store_record_kinds(
-                document.document,
-                held.as_mut().map(automerge::AutoCommit::document),
-                &changes,
-            );
-            let written =
-                held.and_then(|held| collab_types::units::units_by_change(held, &changes));
-            let mut claims = cleartext_claims(&changes, written.as_ref(), (imported, signer))?;
-            collab_types::claim::name_record_kinds(&mut claims, &kinds);
-            check_store_kinds(&claims, document, replay)?;
-            let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
-            if let Some(pinned) = pinned
-                && op.surface != Some(pinned)
-                && !claims
-                    .iter()
-                    .any(|claim| claim.action == ClaimedAction::Framework(FrameworkChange::Upgrade))
-            {
-                return Err(ReceiptRefusal::OtherSurface);
-            }
-            check_claimed_changes(&claims, Some(&hashes))?;
-            for (group_kind, claims) in by_kind(kind, claims) {
-                let Some(surface) = surface_for(group_kind.as_deref()) else {
-                    return Ok(Receipt::Hold);
-                };
-                let claims = unread_claims((!reads).then_some(&*surface), claims);
-                // What this receiver read from the changes itself: what says a
-                // change queued nothing in an outbox. A record whose index does
-                // not name its outboxes (indexed before they were units), or a
-                // change this receiver could not apply, is taken as queueing.
-                let outboxes = surface.outboxes();
-                let told_apart = written
-                    .as_ref()
-                    .is_some_and(|written| outboxes.iter().all(|outbox| written.indexes(outbox)));
-                let read = |hash: &[u8; 32]| match written
-                    .as_ref()
-                    .and_then(|written| written.written.get(hash))
-                {
-                    Some(read) if told_apart => read.clone(),
-                    read => collab_types::units::Written {
-                        units: read.map(|read| read.units.clone()).unwrap_or_default(),
-                        added: outboxes.clone(),
-                    },
-                };
-                let read: Option<WrittenUnits<'_>> =
-                    written.is_some().then_some(&read as WrittenUnits<'_>);
-                check_claims(&claims, document, None, read, Some(&*surface), allows)?;
-            }
-            // Decided last, so a change refused its grant says so first.
-            check_genesis_first(&changes, holding)?;
-            Ok(Receipt::Admit)
-        }
+        OpKind::Change => decide_change_op(
+            (op, opened),
+            document,
+            (kind, held, pinned),
+            holding,
+            surfaces,
+            allows,
+            (replay, imported, signer),
+        ),
+    }
+}
+
+/// A change op on `document`: decided as an edit of the record when its app publishes no surface
+/// (or the record names none), by the claims its envelope carries when this receiver cannot read
+/// it, and otherwise change by change against the surfaces they name
+/// ([`decide_cleartext_changes`]).
+fn decide_change_op(
+    (op, opened): (&SignedOp, Option<&[automerge::Change]>),
+    document: &WrittenDocument<'_>,
+    (kind, held, pinned): (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
+    surfaces: &Surfaces,
+    allows: &Allows<'_>,
+    (replay, imported, signer): (bool, Option<&Acting>, Option<&Acting>),
+) -> Result<Receipt, ReceiptRefusal> {
+    // An op of an app that publishes no surface (and of a record that
+    // names none) is decided as an edit of the record; one naming a
+    // surface is decided against it, and held until it is here.
+    let Some(source) = surfaces
+        .source()
+        .filter(|_| op.surface.is_some() || pinned.is_some())
+    else {
+        return decide_as_document_edit(
+            (opened_changes(op, opened)?.as_deref(), &op.claims),
+            (document, holding),
+            allows,
+            (imported, signer),
+        );
+    };
+    let surface_for = |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
+    let Some(changes) = opened_changes(op, opened)? else {
+        // A sealed op: the server decides the claims its envelope
+        // carries; devices check the changes once they open them.
+        return check_claims_by_kind(&op.claims, document, kind, replay, &surface_for, allows);
+    };
+    // A cleartext change names its action in itself, under the op's
+    // signature: the envelope carries no second copy.
+    if !op.claims.is_empty() {
+        return Err(ReceiptRefusal::Unclaimed);
+    }
+    decide_cleartext_changes(
+        op,
+        &changes,
+        document,
+        (kind, held, pinned),
+        holding,
+        &surface_for,
+        allows,
+        (replay, imported, signer),
+    )
+}
+
+/// The cleartext `changes` of `op`, each decided against the surface of the kind it names
+/// (`surface_for`), as this receiver reads the record: `held` is the record it keeps, which says
+/// what each change writes, and a receiver that keeps none decides them by what they carry.
+fn decide_cleartext_changes(
+    op: &SignedOp,
+    changes: &[automerge::Change],
+    document: &WrittenDocument<'_>,
+    (kind, held, pinned): (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
+    surface_for: &SurfaceFor<'_>,
+    allows: &Allows<'_>,
+    (replay, imported, signer): (bool, Option<&Acting>, Option<&Acting>),
+) -> Result<Receipt, ReceiptRefusal> {
+    // The units each change writes, read from the record as this
+    // receiver holds it.
+    let reads = held.is_some();
+    // A continuation is decided as the invoker its claim names; a
+    // receiver holding the document checks that its gesture's first
+    // entry names the same.
+    check_continuations(changes, holding, holding.is_some())?;
+    // A resource store's change names the kinds of the records it writes as this receiver
+    // reads them, before the change and after it: never as its writer says.
+    let mut held = held;
+    let kinds = collab_types::claim::store_record_kinds(
+        document.document,
+        held.as_mut().map(automerge::AutoCommit::document),
+        changes,
+    );
+    let written = held.and_then(|held| collab_types::units::units_by_change(held, changes));
+    let mut claims = cleartext_claims(changes, written.as_ref(), (imported, signer))?;
+    collab_types::claim::name_record_kinds(&mut claims, &kinds);
+    check_store_kinds(&claims, document, replay)?;
+    let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
+    if let Some(pinned) = pinned
+        && op.surface != Some(pinned)
+        && !claims
+            .iter()
+            .any(|claim| claim.action == ClaimedAction::Framework(FrameworkChange::Upgrade))
+    {
+        return Err(ReceiptRefusal::OtherSurface);
+    }
+    check_claimed_changes(&claims, Some(&hashes))?;
+    for (group_kind, claims) in by_kind(kind, claims) {
+        let Some(surface) = surface_for(group_kind.as_deref()) else {
+            return Ok(Receipt::Hold);
+        };
+        let claims = unread_claims((!reads).then_some(&*surface), claims);
+        // What this receiver read from the changes itself: what says a
+        // change queued nothing in an outbox. A record whose index does
+        // not name its outboxes (indexed before they were units), or a
+        // change this receiver could not apply, is taken as queueing.
+        let outboxes = surface.outboxes();
+        let told_apart = written
+            .as_ref()
+            .is_some_and(|written| outboxes.iter().all(|outbox| written.indexes(outbox)));
+        let read = |hash: &[u8; 32]| match written
+            .as_ref()
+            .and_then(|written| written.written.get(hash))
+        {
+            Some(read) if told_apart => read.clone(),
+            read => collab_types::units::Written {
+                units: read.map(|read| read.units.clone()).unwrap_or_default(),
+                added: outboxes.clone(),
+            },
+        };
+        let read: Option<WrittenUnits<'_>> = written.is_some().then_some(&read as WrittenUnits<'_>);
+        check_claims(&claims, document, None, read, Some(&*surface), allows)?;
+    }
+    // Decided last, so a change refused its grant says so first.
+    check_genesis_first(changes, holding)?;
+    Ok(Receipt::Admit)
+}
+
+/// The changes `op` carries in the clear: those a device handed it on whole (`opened`), or the
+/// ones its payload holds.
+fn opened_changes(
+    op: &SignedOp,
+    opened: Option<&[automerge::Change]>,
+) -> Result<Option<Vec<automerge::Change>>, ReceiptRefusal> {
+    match opened {
+        Some(opened) => Ok(Some(opened.to_vec())),
+        None => cleartext_changes(op),
     }
 }
 
@@ -445,7 +496,9 @@ fn decide_as_document_edit(
                     // A record's founding, which every device derives alike, names no one.
                     (
                         None,
-                        ClaimedAction::Framework(FrameworkChange::Genesis | FrameworkChange::Structure),
+                        ClaimedAction::Framework(
+                            FrameworkChange::Genesis | FrameworkChange::Structure,
+                        ),
                     ) => None,
                     (None, ClaimedAction::Framework(_)) => signer.cloned(),
                     (None, _) => match imported {
