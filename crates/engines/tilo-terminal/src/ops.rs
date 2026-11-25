@@ -468,10 +468,13 @@ fn begin_run_told(job: &str, live: Arc<Live>, command: String, moved: JobSink) {
         jobs.insert(job.clone(), Arc::clone(&live));
     }
     let handle_job = job.clone();
+    // The reader thread tells the run's end; a reader that never starts is told here.
+    let told = moved.clone();
     let spawned = std::thread::Builder::new()
         .name(format!("terminal-run-{job}"))
         .spawn(move || {
             let job = handle_job;
+            let moved = told;
             moved.moved(State::Running, json!({}));
             let (_, cursor) = live.events(0);
             if let Err(error) = live.run(&command) {
