@@ -168,6 +168,7 @@ impl ServiceWorkspaces {
             own_device::vault_key(key),
             endpoint.clone(),
             seal_checks,
+            None,
             |config| {
                 let config = ServiceConfig {
                     apps,

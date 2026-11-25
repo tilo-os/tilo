@@ -98,6 +98,12 @@ impl Desktop {
             own_device::vault_key(&key),
             endpoint.clone(),
             Arc::new(tilo_workspace_service::apps::workspace_keys::NoSealChecks),
+            // Every device of the workspace holds the keys its members seal under, as the
+            // devices of a real workspace do: the fixture writes with those same keys, so the
+            // service opens what it takes in and hands over.
+            Some(Box::new(|workspace: &str| {
+                (workspace == WORKSPACE).then(|| (*KEYS).clone())
+            })),
             |config| ServiceConfig {
                 // The group's endpoints reach each other on this machine alone: no other
                 // machine names where they are reached.

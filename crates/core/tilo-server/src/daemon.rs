@@ -522,6 +522,7 @@ impl Server {
             tilo_workspace_service::own_device::vault_key(&identity.device_signing_key),
             endpoint.clone(),
             Arc::new(tilo_workspace_keys::NoSealChecks),
+            None,
             |config| {
                 let config = Self::keeping(&cfg, config, app_serving.clone());
                 crate::service::ServiceConfig {
