@@ -1554,6 +1554,7 @@ fn a_daemon_with_no_session_starts_an_apps_origin_connector_and_refuses_one_it_m
 
 /// A launch starts the package this computer has installed, through the launcher and with the
 /// sandbox, grants and program its manifest declares — never a program the caller names.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     let (_temp, root) = canonical_temp();
