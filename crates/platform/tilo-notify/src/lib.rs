@@ -470,15 +470,16 @@ pub fn system(app_id: Option<&str>) -> Arc<dyn Notifier> {
 }
 
 #[cfg(target_os = "linux")]
-fn backend(_app_id: &str) -> Arc<dyn Notifier> {
+fn backend(app_id: &str) -> Arc<dyn Notifier> {
     #[cfg(feature = "host-portals")]
     {
-        Arc::new(linux::SessionNotifier::new(_app_id))
+        Arc::new(linux::SessionNotifier::new(app_id))
     }
     #[cfg(not(feature = "host-portals"))]
     {
         // An app process inside Tilo, handed no connection, and a build of the SDK that speaks
-        // no D-Bus: this host has no notification service to reach.
+        // no D-Bus: this host has no notification service to reach, so the app's id names none.
+        let _ = app_id;
         unavailable()
     }
 }
@@ -571,16 +572,17 @@ pub fn publish_priority_contacts(
 }
 
 #[cfg(unix)]
-fn priority_contacts(_app_id: &str, contacts: &[PriorityContact]) -> Result<(), NotifyError> {
+fn priority_contacts(app_id: &str, contacts: &[PriorityContact]) -> Result<(), NotifyError> {
     if service::inherited_service() {
         return service::publish_priority_contacts(contacts);
     }
     #[cfg(all(target_os = "linux", feature = "host-portals"))]
     {
-        linux::publish_priority_contacts(_app_id, contacts)
+        linux::publish_priority_contacts(app_id, contacts)
     }
     #[cfg(not(all(target_os = "linux", feature = "host-portals")))]
     {
+        let _ = app_id;
         Err(NotifyError::Unsupported(Unsupported::of(
             Feature::PriorityContacts,
         )))
