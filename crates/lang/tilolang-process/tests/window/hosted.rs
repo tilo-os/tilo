@@ -735,8 +735,9 @@ impl Session {
     }
 
     /// A person at the window `window` makes of the app `app`, its resources in the store kept
-    /// under `dir` and no broker: what a window without a session runs over, with what an
-    /// earlier window of it left there.
+    /// under `dir`, on a connection of a workspace's broker of its own: a window over what an
+    /// earlier window of it left there, whose actions a tool or an agent calls at its API as at
+    /// any other window's.
     fn in_store(
         app: &str,
         person: &str,
@@ -745,14 +746,13 @@ impl Session {
     ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language("en-US");
-        let mut session = Self::assemble(
-            tilolang_process::connection::Connection::local(route),
-            Vec::new(),
-            spec,
-            (Box::new(()), Sent::default()),
-            Some(stored_store(dir)),
-            window,
-        );
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        let broker = Broker::on(&bus, route.clone(), &spec.person);
+        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let manager = CollaborationManager::with_peer_transport(broker);
+        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let mut session =
+            Self::launch_over(manager, &route, spec, wire, Some(stored_store(dir)), window);
         session.settle();
         session
     }
@@ -763,10 +763,23 @@ impl Session {
     /// host's own process speaks the source language throughout: the language the window reads in
     /// is the one the session handed over with `spec`, never this one.
     fn launch(
+        manager: CollaborationManager,
+        route: &RouteSpec,
+        spec: Spec,
+        wire: (Box<dyn std::any::Any>, Sent),
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
+        Self::launch_over(manager, route, spec, wire, None, window)
+    }
+
+    /// [`Self::launch`], the instance's resources in `store` when given, else in the workspace
+    /// the connection reaches.
+    fn launch_over(
         mut manager: CollaborationManager,
         route: &RouteSpec,
         spec: Spec,
         wire: (Box<dyn std::any::Any>, Sent),
+        store: Option<tilolang_tilo::resources::ResourceStore>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
@@ -781,7 +794,9 @@ impl Session {
         let early = manager.poll();
         let connection = tilolang_process::connection::Connection::new(manager)
             .expect("the connection joins its route");
-        let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)));
+        let store = store.unwrap_or_else(|| {
+            tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)))
+        });
         Self::assemble(connection, early, spec, wire, Some(store), window)
     }
 
