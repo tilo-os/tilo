@@ -140,12 +140,13 @@ pub(crate) fn reload_from_library(
     Err("in-place reload loads a shared library on unix".to_owned())
 }
 
-#[cfg(any(feature = "native", test))]
+// A failed reload puts back the resource schemas the old code published.
+#[cfg(all(any(feature = "native", test), feature = "model"))]
 struct ReloadSchemas {
     accepted: bool,
 }
 
-#[cfg(any(feature = "native", test))]
+#[cfg(all(any(feature = "native", test), feature = "model"))]
 impl Drop for ReloadSchemas {
     fn drop(&mut self) {
         if !self.accepted {
@@ -157,6 +158,7 @@ impl Drop for ReloadSchemas {
 #[cfg(any(feature = "native", test))]
 fn reload_with(fns: &DevFns, windows: &[DevWindowEntry]) -> Result<DevReload, String> {
     let mut root = None;
+    #[cfg(feature = "model")]
     let mut schemas = None;
     if let (Some(linked_ui), Some(publish)) = (fns.linked_ui, fns.publish) {
         // SAFETY: the symbol is the library's `tilo_dev_linked_ui`, which
@@ -168,8 +170,11 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowEntry]) -> Result<DevReload, St
             );
         }
         // Nominal resource types keep their IDs across app-code reloads.
-        tilo_resource::reset_type_schemas();
-        schemas = Some(ReloadSchemas { accepted: false });
+        #[cfg(feature = "model")]
+        {
+            tilo_resource::reset_type_schemas();
+            schemas = Some(ReloadSchemas { accepted: false });
+        }
         let _ = take_dev_root();
         // SAFETY: the symbol is the library's `tilo_dev_publish_root`. It
         // builds a root into this process's `ui` slot and returns 1, or
@@ -220,6 +225,7 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowEntry]) -> Result<DevReload, St
             state: out,
         });
     }
+    #[cfg(feature = "model")]
     if let Some(schemas) = schemas.as_mut() {
         schemas.accepted = true;
     }
@@ -499,16 +505,19 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         }
     }
 
+    #[cfg(feature = "model")]
     thread_local! {
         static SCHEMA_REVISION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static PUBLISHED_SCHEMA: std::cell::RefCell<Option<crate::tilo_actions::ResourceSpec>> = const { std::cell::RefCell::new(None) };
     }
 
+    #[cfg(feature = "model")]
     #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
     struct SchemaEdit {
         value: u8,
     }
 
+    #[cfg(feature = "model")]
     impl crate::tilo_actions::Action for SchemaEdit {
         fn apply(
             &self,
@@ -518,8 +527,10 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         }
     }
 
+    #[cfg(feature = "model")]
     struct SchemaReload;
 
+    #[cfg(feature = "model")]
     impl tilo_resource::Resource for SchemaReload {
         const KIND: &'static str = "test.schema-reload";
         const LABEL: &'static str = "Schema reload";
@@ -538,6 +549,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         }
     }
 
+    #[cfg(feature = "model")]
     fn published_schema(
         resource: &crate::tilo_actions::ResourceSpec,
         action: &str,
@@ -556,6 +568,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
             .expect("typed schema")
     }
 
+    #[cfg(feature = "model")]
     unsafe extern "C" fn publish_schema_revision() -> i32 {
         let resource = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
         PUBLISHED_SCHEMA.with(|slot| *slot.borrow_mut() = Some(resource));
@@ -568,6 +581,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         1
     }
 
+    #[cfg(feature = "model")]
     unsafe extern "C" fn reject_schema_revision() -> i32 {
         let resource = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
         PUBLISHED_SCHEMA.with(|slot| *slot.borrow_mut() = Some(resource));
@@ -575,6 +589,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
     }
 
     #[test]
+    #[cfg(feature = "model")]
     fn code_reload_refreshes_resource_schemas_before_publishing_the_view() {
         SCHEMA_REVISION.with(|revision| revision.set(false));
         let before = tilo_resource::publish::<SchemaReload>("schema", "Schema", &());
