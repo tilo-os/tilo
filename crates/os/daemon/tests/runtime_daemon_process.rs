@@ -775,7 +775,7 @@ fn dev_app_build(
         .arg(&program)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status_locked();
     std::fs::write(dir.join("tilo-app-lifetime-ms"), format!("{lifetime_ms}\n"))?;
     if second_instance {
         std::fs::write(dir.join("tilo-app-second-instance"), b"")?;

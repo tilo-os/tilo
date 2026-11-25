@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tilo_actions::remote::{CatalogueQuery, RemoteActionMessage};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The account the daemon runs as in these tests: the person's own.
 pub(crate) const OWN: u32 = 4242;
@@ -854,7 +855,7 @@ fn a_process() -> std::process::Child {
     std::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap()
 }
 

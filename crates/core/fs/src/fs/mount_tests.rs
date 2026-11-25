@@ -12,6 +12,7 @@
 use super::*;
 use crate::store::ContentStore;
 use std::path::Path;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// These tests mount a real FUSE filesystem. A machine that cannot (a test sandbox without
 /// `/dev/fuse` or the helper that mounts it) leaves them out; the real-fuse check requires
@@ -121,7 +122,7 @@ fn a_folder_in_use_is_unmounted_and_its_session_ends() {
     let mut standing = std::process::Command::new("sleep")
         .arg("600")
         .current_dir(&at)
-        .spawn()
+        .spawn_locked()
         .unwrap();
 
     let (ended, unmounted) = std::sync::mpsc::channel();
@@ -170,7 +171,7 @@ fn a_folder_mounted_in_another_namespace_too_is_unmounted_and_its_session_ends()
     let mut elsewhere = std::process::Command::new("unshare")
         .args(["--user", "--map-root-user", "--mount", "--", "sleep", "600"])
         .stdin(std::process::Stdio::null())
-        .spawn()
+        .spawn_locked()
         .expect("unshare makes a namespace of its own");
     let copied = elsewhere.id();
     let started = std::time::Instant::now();

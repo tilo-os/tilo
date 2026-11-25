@@ -27,6 +27,7 @@ use std::sync::Arc;
 use tilo_app_launch::Connects as _;
 use tilo_app_launch::{Launch, SessionEnvironment};
 use tilo_desktop_model::Workspace;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_desktop_policy::Window;
 use tilo_session::app_tabs::ServiceLinks;
 use tilo_session::apps::Apps;
@@ -1047,7 +1048,7 @@ fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
     // The app's process ends under its window, as a crash ends it.
     let killed = std::process::Command::new("kill")
         .args(["-KILL", &pid.to_string()])
-        .status()
+        .status_locked()
         .expect("kill runs");
     assert!(killed.success(), "the app's process is ended");
     crate::common::wait_for(&mut session, "the card in the window's place", |session| {

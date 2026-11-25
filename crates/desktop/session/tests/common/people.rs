@@ -2339,7 +2339,7 @@ fn stacks(pid: u32) -> String {
             "thread apply all bt",
         ])
         .stdin(Stdio::null())
-        .output();
+        .output_locked();
     match read {
         Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
         Err(error) => format!("(gdb did not read them: {error})"),

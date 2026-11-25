@@ -5,6 +5,7 @@ use crate::device::services::tests::isolated_root;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{ActionProvider, ReceiptStatus};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const THROUGH_THE_DISPATCH: &str = "device::vm_environment::tests::the_host_opens_a_window_in_the_machine_and_reads_it_through_the_dispatch";
 
@@ -69,7 +70,7 @@ fn the_host_opens_a_window_in_the_machine_and_reads_it_through_the_dispatch() {
         let started = Arc::clone(&started);
         Arc::new(move |holds, workspace| {
             started.lock_recover().push((holds, workspace.to_owned()));
-            std::process::Command::new("sleep").arg("600").spawn()
+            std::process::Command::new("sleep").arg("600").spawn_locked()
         })
     };
     let ended = Arc::new(AtomicBool::new(false));
