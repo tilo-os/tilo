@@ -121,6 +121,10 @@ impl OutsideSink for OriginSink {
             ))
         }
     }
+
+    fn outcome(&mut self, capability: &str, payload: &Json) -> Option<Delivery> {
+        self.origin.borrow_mut().outcome(capability, payload)
+    }
 }
 
 /// One test's workspace: the package's records, the origin over Mail's engine, and the person

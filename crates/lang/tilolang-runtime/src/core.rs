@@ -107,12 +107,18 @@ pub enum Delivery {
     DeliveredWith(String),
     /// The service refused it, for this reason. It is never tried again.
     Rejected(String),
-    /// Handed over; the service has not answered yet. Asked again on the next settle.
+    /// Handed over; the service has not answered yet. The effect is recorded as handed over
+    /// and is not handed over again: the settles after ask [`OutsideSink::outcome`] what became
+    /// of it.
     ///
-    /// Resolved by the sink that says it: it is obliged to have its owner settle again once
-    /// the service answered (an origin reports `Polled::settle` from the poll that took the
-    /// answer in), and to answer every effect it took, its service going away included.
+    /// Resolved by the sink that says it: it is obliged to answer the outcome once the service
+    /// answered (an origin reports `Polled::settle` from the poll that took the answer in), and
+    /// to answer every effect it took, its service going away included.
     Pending,
+    /// Nothing went: the sink could not take it now (an origin busy answering a poll, whose
+    /// settle ran from within that poll). The effect stays handed over to no one and is handed
+    /// over again on the next settle.
+    Deferred,
     /// The service could not be reached, for this reason, so it never got it: the effect waits
     /// to go online and is tried again when the network comes back.
     Offline(String),
@@ -120,8 +126,18 @@ pub enum Delivery {
 
 /// Where outside effects are delivered once settled.
 pub trait OutsideSink {
-    /// Hand the effect to the service, or say what became of it since it was handed over.
+    /// Hand the effect to the service, or say what became of it since it was handed over. It is
+    /// called for an effect one time: a sink that answers [`Delivery::Pending`] answers the
+    /// effect's outcome from then on ([`Self::outcome`]) and never hands it over twice.
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery;
+
+    /// What became of an effect this sink took and settled nothing of yet, or `None` while the
+    /// service has not answered. Asked on every settle after [`Self::deliver`] answered
+    /// [`Delivery::Pending`], and it never hands the effect over again.
+    fn outcome(&mut self, capability: &str, payload: &Json) -> Option<Delivery> {
+        let _ = (capability, payload);
+        None
+    }
 }
 
 /// How an actor is called where a view shows it (`actor.name()`).

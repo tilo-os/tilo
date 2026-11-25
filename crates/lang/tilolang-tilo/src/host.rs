@@ -161,8 +161,9 @@ impl Package {
 pub struct EffectsSettled {
     /// How many changes it wrote, each queued for the API.
     pub written: usize,
-    /// It marked an effect as being handed over, which the next settle hands over: whoever
-    /// settles owes another settle, without waiting for anything else to happen.
+    /// It marked an effect as being handed over, or the sink could not take one, which a
+    /// settle yet to come hands over: whoever settles owes another settle, without waiting for
+    /// anything else to happen.
     pub owes_settle: bool,
 }
 
@@ -1358,9 +1359,10 @@ impl Host {
     }
 
     /// Carry out the outside effects of this device that wait in the document
-    /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
-    /// what became of it is queued for the API like any other change. What `delivery(r)`
-    /// reads follows the document either way.
+    /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink once,
+    /// and what became of it is queued for the API like any other change. One the sink takes
+    /// without answering is waited on, never handed over again. What `delivery(r)` reads follows
+    /// the document either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
@@ -1376,12 +1378,14 @@ impl Host {
                 written: [
                     report.failed.len(),
                     report.marked,
+                    report.awaited,
+                    report.deferred,
                     report.waiting,
                     report.unknown,
                 ]
                 .into_iter()
                 .fold(report.delivered, usize::saturating_add),
-                owes_settle: report.marked > 0,
+                owes_settle: report.marked > 0 || report.deferred > 0,
             })
             .map_err(|error| error.to_string())
     }

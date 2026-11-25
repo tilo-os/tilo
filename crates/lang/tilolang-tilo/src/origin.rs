@@ -62,6 +62,15 @@ pub trait Origin {
     /// An outside effect for one of the origin's capabilities: hand it to the service, or say
     /// what became of it since it was handed over.
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery;
+
+    /// What became of an effect this origin took and settled nothing of yet, or `None` while
+    /// the service has not answered: asked on every settle after [`Self::deliver`] answered
+    /// [`Delivery::Pending`], which hands it over once. An origin that answers `Pending` answers
+    /// here once the service answered, its service going away included.
+    fn outcome(&mut self, capability: &str, payload: &Json) -> Option<Delivery> {
+        let _ = (capability, payload);
+        None
+    }
 }
 
 /// An origin as the instance holds it.
@@ -80,18 +89,31 @@ pub struct RoutingSink {
 impl OutsideSink for RoutingSink {
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
         for origin in self.origins.borrow().iter() {
-            // Busy answering a poll: asked again on the next settle. The instance polls its
-            // origins and settles one after the other, so only a settle from within a poll
-            // gets here, and nothing then obliges another settle: it is said.
+            // Busy answering a poll: nothing went, and the effect is handed over on the next
+            // settle. The instance polls its origins and settles one after the other, so only
+            // a settle from within a poll gets here.
             let Ok(mut origin) = origin.try_borrow_mut() else {
                 tracing::warn!(capability, "an effect was handed to an origin busy polling");
-                return Delivery::Pending;
+                return Delivery::Deferred;
             };
             if origin.serves(capability) {
                 return origin.deliver(capability, payload);
             }
         }
         self.rest.deliver(capability, payload)
+    }
+
+    fn outcome(&mut self, capability: &str, payload: &Json) -> Option<Delivery> {
+        for origin in self.origins.borrow().iter() {
+            let Ok(mut origin) = origin.try_borrow_mut() else {
+                tracing::warn!(capability, "an effect's outcome was asked of an origin busy polling");
+                return None;
+            };
+            if origin.serves(capability) {
+                return origin.outcome(capability, payload);
+            }
+        }
+        self.rest.outcome(capability, payload)
     }
 }
 

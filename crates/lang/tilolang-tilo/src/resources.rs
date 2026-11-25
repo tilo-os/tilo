@@ -113,6 +113,7 @@ fn effect_entry(fields: &BTreeMap<String, Cell>) -> (EffectEntry, Option<Outcome
     let detail = text_field(fields, OUT_DETAIL);
     let state = match text_field(fields, OUT_STATE).as_str() {
         "sending" => EffectState::Sending { by: detail },
+        "awaiting" => EffectState::Awaiting { by: detail },
         "waiting" => EffectState::Waiting { reason: detail },
         _ => EffectState::Queued,
     };
@@ -6085,6 +6086,7 @@ impl Store for ResourceStore {
         let (word, detail) = match state {
             EffectState::Queued => ("", ""),
             EffectState::Sending { by } => ("sending", by.as_str()),
+            EffectState::Awaiting { by } => ("awaiting", by.as_str()),
             EffectState::Waiting { reason } => ("waiting", reason.as_str()),
         };
         self.effect_write(entry, note, |fields| {

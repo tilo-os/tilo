@@ -98,14 +98,11 @@ mod cases {
                 );
             }
             assert_eq!(sink.0.borrow().len(), 2, "handed over once");
-            // The network came back: marked again, handed over, no answer yet, then refused.
+            // The network came back: marked again, handed over once, and waited on from then
+            // on; the service's answer settles it.
             w.rt.retry_waiting();
             assert_eq!(w.rt.settle().unwrap().marked, 1);
-            assert_eq!(
-                w.rt.settle().unwrap(),
-                tilolang_runtime::SettleReport::default(),
-                "no answer yet"
-            );
+            assert_eq!(w.rt.settle().unwrap().awaited, 1, "handed over once, waited on");
             let report = w.rt.settle().unwrap();
             assert_eq!(
                 report.failed,
@@ -355,6 +352,14 @@ action answer(d: Draft, to: Text, body: Text) {
     impl tilolang_runtime::OutsideSink for Scripted {
         fn deliver(&mut self, _: &str, _: &serde_json::Value) -> tilolang_runtime::Delivery {
             self.0.borrow_mut().remove(0)
+        }
+
+        fn outcome(
+            &mut self,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> Option<tilolang_runtime::Delivery> {
+            Some(self.0.borrow_mut().remove(0))
         }
     }
 

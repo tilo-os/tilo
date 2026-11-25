@@ -106,6 +106,8 @@ struct Waiting {
     /// thread of its own, and two questions handed over one after the other finish in whichever
     /// order the service gets to them, so an answer is never taken for the oldest question.
     id: u64,
+    /// The payload of the effect that asked: what its outcome is filed under.
+    key: String,
     pending: Pending,
     answered: Option<Result<Answered, ServiceError>>,
 }
@@ -127,6 +129,9 @@ pub struct MusicOrigin {
     types: Option<Types>,
     /// Each request the service has not answered yet, oldest first.
     waiting: VecDeque<Waiting>,
+    /// What became of each effect the service answered, by the payload that asked it, oldest
+    /// first: what an effect handed over and not settled yet reads its outcome from.
+    outcomes: BTreeMap<String, VecDeque<Delivery>>,
     /// The id the next question is asked under.
     next_id: u64,
     /// Why the catalogue could not be reached the last time it was asked, until it answers.
@@ -145,6 +150,7 @@ impl MusicOrigin {
             answered: Arc::default(),
             types: None,
             waiting: VecDeque::new(),
+            outcomes: BTreeMap::new(),
             next_id: 0,
             unreached: None,
             on_answer: None,
@@ -253,8 +259,9 @@ impl MusicOrigin {
         }
     }
 
-    /// Hand `pending` to the service, and wake the instance once it has answered.
-    fn ask(&mut self, pending: Pending) {
+    /// Hand `pending` to the service, and wake the instance once it has answered. What
+    /// becomes of it is filed under `key`, the payload the effect asked with.
+    fn ask(&mut self, pending: Pending, key: String) {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         if let Some(on_answer) = self.on_answer.clone() {
@@ -276,6 +283,7 @@ impl MusicOrigin {
             if asked.is_ok() {
                 self.waiting.push_back(Waiting {
                     id,
+                    key,
                     pending,
                     answered: None,
                 });
@@ -285,6 +293,7 @@ impl MusicOrigin {
         let answer = answer(&*self.service, &pending);
         self.waiting.push_back(Waiting {
             id,
+            key,
             pending,
             answered: Some(answer),
         });
@@ -599,11 +608,23 @@ impl Origin for MusicOrigin {
             }
             _ => return Delivery::Rejected(format!("the music origin serves no `{capability}`")),
         };
-        self.ask(pending);
+        self.ask(pending, payload.to_string());
         if let Some(wake) = &self.on_answer {
             wake();
         }
         Delivery::Pending
+    }
+
+    fn outcome(&mut self, capability: &str, payload: &serde_json::Value) -> Option<Delivery> {
+        if !self.serves(capability) {
+            return None;
+        }
+        let key = payload.to_string();
+        let outcome = self.outcomes.get_mut(&key)?.pop_front()?;
+        if self.outcomes.get(&key).is_some_and(VecDeque::is_empty) {
+            self.outcomes.remove(&key);
+        }
+        Some(outcome)
     }
 }
 
@@ -629,27 +650,39 @@ impl MusicOrigin {
                 self.waiting.push_front(waiting);
                 break;
             };
-            wrote |= Self::write_step(host, t, &waiting.pending, &answered);
+            let outcome = match Self::write_step(host, t, &waiting.pending, &answered) {
+                Ok(written) => {
+                    wrote |= written;
+                    match &answered {
+                        Ok(_) => Delivery::Delivered,
+                        Err(error) => Delivery::Rejected(error.0.clone()),
+                    }
+                }
+                Err(error) => Delivery::Rejected(format!(
+                    "what the catalogue said could not be written: {error}"
+                )),
+            };
+            self.outcomes
+                .entry(waiting.key)
+                .or_default()
+                .push_back(outcome);
             self.reached(&answered);
         }
         wrote
     }
 
-    /// One answer, written as one change of the origin: whether anything was written. What
-    /// cannot be written is said once in the log and not kept.
+    /// One answer, written as one change of the origin: whether anything was written, or why
+    /// it could not be written. What cannot be written is said once in the log and not kept.
     fn write_step(
         host: &Host,
         t: &Types,
         pending: &Pending,
         answered: &Result<Answered, ServiceError>,
-    ) -> bool {
-        match Self::write_answer(host, t, pending, answered) {
-            Ok(wrote) => wrote,
-            Err(error) => {
-                tracing::warn!(%error, "what the catalogue said could not be written");
-                false
-            }
-        }
+    ) -> Result<bool, String> {
+        Self::write_answer(host, t, pending, answered).map_err(|error| {
+            tracing::warn!(%error, "what the catalogue said could not be written");
+            error.to_string()
+        })
     }
 
     /// Whether the catalogue answered: an answer that failed says why, until one comes back.

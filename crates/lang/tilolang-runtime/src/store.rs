@@ -1380,6 +1380,11 @@ pub enum EffectState {
     /// it is handed over, so one whose process stopped meanwhile reads as outcome unknown and
     /// is never handed over twice.
     Sending { by: String },
+    /// Handed over by the process whose token `by` is, and waiting on the service's answer: it
+    /// is not handed over again, only asked what became of it, until it settles or the process
+    /// that asked stops. One whose process stopped is outcome unknown, as it is for an entry
+    /// that was being handed over.
+    Awaiting { by: String },
     /// The service could not be reached, for `reason`: it waits to go online.
     Waiting { reason: String },
 }
@@ -1496,7 +1501,7 @@ impl DeliveryState {
             None => match (state, held_until) {
                 (EffectState::Queued, Some(at)) => ("held", at),
                 (EffectState::Queued, None) => ("waiting", ""),
-                (EffectState::Sending { .. }, _) => ("sending", ""),
+                (EffectState::Sending { .. } | EffectState::Awaiting { .. }, _) => ("sending", ""),
                 (EffectState::Waiting { reason }, _) => ("waiting", reason.as_str()),
             },
         };

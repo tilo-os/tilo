@@ -7,7 +7,7 @@ use serde_json::Value as Json;
 
 use crate::authority::Authority;
 use crate::catalogue::{Signature, catalogue};
-use crate::core::{Core, ModelHost, OutsideSink};
+use crate::core::{Core, Delivery, ModelHost, OutsideSink};
 use crate::engine::{DEFAULT_LIMITS, EngineLimits};
 use crate::error::RuntimeError;
 use crate::exec::{Admission, InvokeOutcome};
@@ -108,6 +108,12 @@ pub struct SettleReport {
     /// Entries marked as being handed over: handed over on the next settle, once the mark is
     /// in the record.
     pub marked: usize,
+    /// Entries handed over that the service has not answered yet: they are not handed over
+    /// again, only asked what became of them.
+    pub awaited: usize,
+    /// Entries the sink could not take now: they stay marked as going and are handed over on a
+    /// settle yet to come.
+    pub deferred: usize,
     /// Entries whose service could not be reached: they wait to go online.
     pub waiting: usize,
     /// Entries another process was handing over when it stopped: outcome unknown.
@@ -2189,20 +2195,16 @@ impl Runtime {
     /// Carry the queued outside effects out (convergence.md, "What people see"). An entry is
     /// first marked as being handed over, as a change of its own; the next settle, once that
     /// mark is in the record, hands it to the sink, so a process that stops in between leaves
-    /// it as outcome unknown rather than sending it twice. What the sink says settles it (sent,
-    /// rejected), keeps it handed over (no answer yet), or has it wait to go online until
-    /// [`Self::retry_waiting`]. An entry another process was handing over is outcome unknown.
+    /// it as outcome unknown rather than sending it twice. An effect the sink takes without
+    /// answering is marked as handed over and waited on: the settles after ask what became of
+    /// it and never hand it over again. What the sink says settles it (sent, rejected) or has
+    /// it wait to go online until [`Self::retry_waiting`]. An entry another process was handing
+    /// over, or waiting on, is outcome unknown.
     ///
     /// # Errors
     ///
     /// `Package` when no sink is set; a store failure.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one settle read in order: what the workspace refuses, then each state an entry \
-                  waits in and what the sink answered"
-    )]
     pub fn settle(&self) -> Result<SettleReport, RuntimeError> {
-        use crate::core::Delivery;
         use crate::store::{EffectState, Settled};
         let note = |entry: &EffectEntry, action: &str| ChangeNote {
             action: action.into(),
@@ -2240,7 +2242,9 @@ impl Runtime {
                 continue;
             }
             match &entry.state {
-                EffectState::Sending { by } if by != token => {
+                // Another process was handing this entry over, or waiting on it, and stopped:
+                // whether it went is not known, and it is never handed over twice.
+                EffectState::Sending { by } | EffectState::Awaiting { by } if by != token => {
                     let settle = note(&entry, "$settle");
                     self.core.store.borrow_mut().settle_effect(
                         &entry,
@@ -2249,44 +2253,43 @@ impl Runtime {
                     )?;
                     report.unknown = report.unknown.saturating_add(1);
                 }
-                // This process's: handed over, or asked again what became of it. The sink
-                // answers for one it already has rather than carrying it out twice.
+                // This process's, marked as going and not handed over yet: hand it over.
                 EffectState::Sending { .. } => {
                     let delivered = match self.core.sink.borrow_mut().as_mut() {
                         Some(sink) => sink.deliver(&entry.capability, &entry.payload),
                         None => return Err(RuntimeError::Package("no outside sink is set".into())),
                     };
-                    let mut store = self.core.store.borrow_mut();
-                    match delivered {
-                        // Stays handed over: the sink settles it again once answered
-                        // (`Delivery::Pending`).
-                        Delivery::Pending => {}
-                        Delivery::Delivered => {
-                            store.settle_effect(
-                                &entry,
-                                &Settled::Done,
-                                &note(&entry, "$settle"),
-                            )?;
-                            report.delivered = report.delivered.saturating_add(1);
-                        }
-                        Delivery::DeliveredWith(reason) => {
-                            store.settle_effect(
-                                &entry,
-                                &Settled::DoneWith(reason),
-                                &note(&entry, "$settle"),
-                            )?;
-                            report.delivered = report.delivered.saturating_add(1);
-                        }
-                        Delivery::Rejected(reason) => {
-                            let outcome = Settled::Rejected(reason.clone());
-                            store.settle_effect(&entry, &outcome, &note(&entry, "$settle"))?;
-                            report.failed.push((entry.id.clone(), reason));
-                        }
-                        Delivery::Offline(reason) => {
-                            let waiting = EffectState::Waiting { reason };
-                            store.mark_effect(&entry, &waiting, &note(&entry, "$wait"))?;
-                            report.waiting = report.waiting.saturating_add(1);
-                        }
+                    if delivered == Delivery::Pending {
+                        // The service has it: the record says so, so it is waited on here and in
+                        // every process after, and never handed over again.
+                        let awaiting = EffectState::Awaiting {
+                            by: token.to_owned(),
+                        };
+                        self.core.store.borrow_mut().mark_effect(
+                            &entry,
+                            &awaiting,
+                            &note(&entry, "$send"),
+                        )?;
+                        report.awaited = report.awaited.saturating_add(1);
+                        continue;
+                    }
+                    if delivered == Delivery::Deferred {
+                        // Nothing went: it stays marked as going, and another settle hands it
+                        // over once the sink can take it.
+                        report.deferred = report.deferred.saturating_add(1);
+                        continue;
+                    }
+                    self.answer(&entry, delivered, &mut report)?;
+                }
+                // This process's, handed over: ask what became of it. Nothing is handed over
+                // twice.
+                EffectState::Awaiting { .. } => {
+                    let answered = match self.core.sink.borrow_mut().as_mut() {
+                        Some(sink) => sink.outcome(&entry.capability, &entry.payload),
+                        None => return Err(RuntimeError::Package("no outside sink is set".into())),
+                    };
+                    if let Some(delivered) = answered {
+                        self.answer(&entry, delivered, &mut report)?;
                     }
                 }
                 // Resolved by `retry_waiting`, which the origin calls when its service is
@@ -2318,6 +2321,48 @@ impl Runtime {
         }
         self.refresh_deliveries();
         Ok(report)
+    }
+
+    /// Write what the sink `delivered` of `entry`: its outcome, or why it waits to go online.
+    fn answer(
+        &self,
+        entry: &EffectEntry,
+        delivered: Delivery,
+        report: &mut SettleReport,
+    ) -> Result<(), RuntimeError> {
+        use crate::store::Settled;
+        let note = |action: &str| ChangeNote {
+            action: action.into(),
+            args: Json::String(entry.id.clone()),
+            invoker: None,
+            chain: Vec::new(),
+            module: String::new(),
+            approved_by: None,
+            ..ChangeNote::default()
+        };
+        let mut store = self.core.store.borrow_mut();
+        match delivered {
+            Delivery::Pending | Delivery::Deferred => {}
+            Delivery::Delivered => {
+                store.settle_effect(entry, &Settled::Done, &note("$settle"))?;
+                report.delivered = report.delivered.saturating_add(1);
+            }
+            Delivery::DeliveredWith(reason) => {
+                store.settle_effect(entry, &Settled::DoneWith(reason), &note("$settle"))?;
+                report.delivered = report.delivered.saturating_add(1);
+            }
+            Delivery::Rejected(reason) => {
+                let outcome = Settled::Rejected(reason.clone());
+                store.settle_effect(entry, &outcome, &note("$settle"))?;
+                report.failed.push((entry.id.clone(), reason));
+            }
+            Delivery::Offline(reason) => {
+                let waiting = crate::store::EffectState::Waiting { reason };
+                store.mark_effect(entry, &waiting, &note("$wait"))?;
+                report.waiting = report.waiting.saturating_add(1);
+            }
+        }
+        Ok(())
     }
 
     /// Bring what `delivery(r)` reads up to date with the declared effects: views showing a resource

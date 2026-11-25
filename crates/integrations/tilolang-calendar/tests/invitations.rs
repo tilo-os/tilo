@@ -67,25 +67,27 @@ fn ada(server: &Server) -> Rig {
 
 /// What the connector answers when the Calendar takes in the invitation `text` to her work
 /// calendar: `Ok` once the server took it, the server's or the connector's words where it was
-/// refused. The connector is asked as the platform asks it for `take_invitation`'s
-/// `caldav.import`, and asked again once it settled, as the platform does while it waits.
+/// refused. The connector is handed `take_invitation`'s `caldav.import` as the platform hands
+/// it over, and its outcome asked once that settled, as the platform does while it waits.
 fn take_in(rig: &mut Rig, text: &str) -> Result<(), String> {
     let calendar = rig.calendars().remove(0);
     let key = rig.text("Calendar", &calendar, "key");
     let payload = serde_json::json!(["caldav-account", key, text]);
     match rig.origin.deliver("caldav.import", &payload) {
-        Delivery::Pending => {}
+        Delivery::Pending | Delivery::Deferred => {}
         Delivery::Rejected(reason) | Delivery::Offline(reason) => return Err(reason),
         Delivery::Delivered | Delivery::DeliveredWith(_) => return Ok(()),
     }
     rig.settle();
-    match rig.origin.deliver("caldav.import", &payload) {
-        Delivery::Delivered | Delivery::DeliveredWith(_) => {
+    match rig.origin.outcome("caldav.import", &payload) {
+        Some(Delivery::Delivered | Delivery::DeliveredWith(_)) => {
             rig.settle();
             Ok(())
         }
-        Delivery::Rejected(reason) | Delivery::Offline(reason) => Err(reason),
-        Delivery::Pending => Err("the connector settled nothing of the invitation".to_owned()),
+        Some(Delivery::Rejected(reason) | Delivery::Offline(reason)) => Err(reason),
+        Some(Delivery::Pending | Delivery::Deferred) | None => {
+            Err("the connector settled nothing of the invitation".to_owned())
+        }
     }
 }
 

@@ -2023,30 +2023,11 @@ impl Origin for ImapOrigin {
                 ));
             }
         }
-        let key = payload.to_string();
-        match self.sends.get(&key) {
-            Some(Sending::Going) => return Delivery::Pending,
-            Some(Sending::Gone) => {
-                self.sends.remove(&key);
-                return Delivery::Delivered;
-            }
-            Some(Sending::GoneUnfiled(reason)) => {
-                let reason = reason.clone();
-                self.sends.remove(&key);
-                return Delivery::DeliveredWith(reason);
-            }
-            Some(Sending::Refused(reason)) => {
-                let reason = reason.clone();
-                self.sends.remove(&key);
-                return Delivery::Rejected(reason);
-            }
-            Some(Sending::Unsent(reason)) => {
-                let reason = reason.clone();
-                self.sends.remove(&key);
-                return Delivery::Offline(reason);
-            }
-            None => {}
+        // A send this connector already has is answered, never handed to the server twice.
+        if let Some(delivery) = self.outcome(capability, payload) {
+            return delivery;
         }
+        let key = payload.to_string();
         let account = field(0);
         let message = outgoing(payload);
         match self.connector.send(&account, message) {
@@ -2066,5 +2047,35 @@ impl Origin for ImapOrigin {
             Err(Unmade::EngineStopped) => Delivery::Offline("the mail engine stopped".to_owned()),
             Err(Unmade::Missing(reason)) => Delivery::Rejected(reason),
         }
+    }
+
+    fn outcome(&mut self, capability: &str, payload: &Json) -> Option<Delivery> {
+        if capability != "smtp.send" {
+            return None;
+        }
+        let key = payload.to_string();
+        Some(match self.sends.get(&key)? {
+            // The server has it and has not answered yet.
+            Sending::Going => return None,
+            Sending::Gone => {
+                self.sends.remove(&key);
+                Delivery::Delivered
+            }
+            Sending::GoneUnfiled(reason) => {
+                let reason = reason.clone();
+                self.sends.remove(&key);
+                Delivery::DeliveredWith(reason)
+            }
+            Sending::Refused(reason) => {
+                let reason = reason.clone();
+                self.sends.remove(&key);
+                Delivery::Rejected(reason)
+            }
+            Sending::Unsent(reason) => {
+                let reason = reason.clone();
+                self.sends.remove(&key);
+                Delivery::Offline(reason)
+            }
+        })
     }
 }

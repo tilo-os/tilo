@@ -1390,6 +1390,7 @@ impl Store for AmStore {
         let (word, detail) = match state {
             EffectState::Queued => ("queued", ""),
             EffectState::Sending { by } => ("sending", by.as_str()),
+            EffectState::Awaiting { by } => ("awaiting", by.as_str()),
             EffectState::Waiting { reason } => ("waiting", reason.as_str()),
         };
         doc.put(&obj, "state", word).map_err(backend)?;
@@ -1490,6 +1491,7 @@ fn read_effect_entry(
     let detail = str_at(doc, &obj, "detail").unwrap_or_default();
     let state = match str_at(doc, &obj, "state").as_deref() {
         Some("sending") => EffectState::Sending { by: detail },
+        Some("awaiting") => EffectState::Awaiting { by: detail },
         Some("waiting") => EffectState::Waiting { reason: detail },
         _ => EffectState::Queued,
     };

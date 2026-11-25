@@ -234,6 +234,17 @@ fn until(app: &mut TubeApp, what: &str, mut done: impl FnMut(&mut TubeApp) -> bo
     panic!("the window never {what}; it shows {:?}", app.texts());
 }
 
+/// `count` frames of the window, each settling what the last brought in: the settles a window
+/// goes through while it waits on a connector's answer.
+fn frames(app: &mut TubeApp, count: usize) {
+    for _ in 0..count {
+        app.settle();
+        app.frame();
+        app.harness()
+            .wait_until(ui::time::Duration::from_millis(10), |_| false);
+    }
+}
+
 /// The resource `app` publishes `action` on, once it does: the one the window names with `marker`
 /// when a marker is named (the video the search found, by its title), else any.
 fn published(app: &mut TubeApp, action: &str, marker: Option<&str>) -> String {
@@ -293,6 +304,16 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     until(&mut app, "shows the video the search found", |app| {
         app.texts().iter().any(|text| text.contains(TITLE))
     });
+    // The connector answered `Pending`: the window waits on it, and many settles while and
+    // after the answer landed do not ask it again.
+    frames(&mut app, 20);
+    let searched = "search compositor";
+    assert_eq!(
+        asks(&profile).iter().filter(|line| *line == searched).count(),
+        1,
+        "the connector is asked a search once: {:?}",
+        asks(&profile)
+    );
     // Playing it asks the connector for the address its bytes play from: the address only the
     // scripted service names, answered for the video the window plays.
     let video = published(&mut app, "progress", Some(TITLE));
@@ -302,6 +323,16 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     until(&mut app, "asks the connector where the video plays from", |_| {
         asks(&profile).contains(&streamed)
     });
+    frames(&mut app, 20);
+    assert_eq!(
+        asks(&profile)
+            .iter()
+            .filter(|line| **line == streamed)
+            .count(),
+        1,
+        "the connector is asked the stream once: {:?}",
+        asks(&profile)
+    );
     drop(app);
     let _ = std::fs::remove_dir_all(&profile);
 }
