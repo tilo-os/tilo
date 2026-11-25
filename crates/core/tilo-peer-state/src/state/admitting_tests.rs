@@ -691,3 +691,87 @@ fn every_receiver_refuses_a_forged_removal_mark() {
         editor.device_public_key,
     );
 }
+
+/// A copy that answers with its whole workspace hands on several devices'
+/// own rows at once, each signed by the device it lists: every one is judged
+/// under its own device's operation, and all are taken in. One operation in
+/// such a batch writing another device's row is still refused, by name.
+#[test]
+fn a_batch_of_several_devices_own_rows_is_taken_in_and_a_forged_one_is_not() {
+    let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
+    let owner = peer.owner_certificates()[0].device_public_key;
+    // Further devices of the editor's own person, root 5.
+    let further = |seed: u8, label: &str| {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let mut cert = editor.clone();
+        cert.device_public_key = key.verifying_key().to_bytes();
+        cert.device_label = label.into();
+        sign_device_cert(&mut cert, &SigningKey::from_bytes(&[5; 32])).unwrap();
+        assert_eq!(cert.user_public_key, user);
+        (key, cert)
+    };
+    let (first_key, first) = further(77, "first");
+    let (second_key, second) = further(78, "second");
+    // The batch of `second_writer`'s row for `second` written on top of
+    // `first`'s own row, as one answer from the owner's whole copy.
+    let batch = |second_writer: &SigningKey| {
+        let mut changes = row_written_by(&peer, &first, &first_key, now);
+        let mut writer = peer.clone();
+        writer
+            .receive_from(
+                TransportOrigin::RetainedServerDelta(first.device_public_key),
+                NeighbourMsg::SyncResp {
+                    changes: changes.clone(),
+                    workspace: peer.workspace_id().to_owned(),
+                },
+                now,
+            )
+            .unwrap();
+        changes.extend(row_written_by(&writer, &second, second_writer, now));
+        NeighbourMsg::SyncResp {
+            changes,
+            workspace: peer.workspace_id().to_owned(),
+        }
+    };
+
+    let mut receiver = peer.clone();
+    receiver
+        .receive_from(
+            TransportOrigin::RetainedServerDelta(owner),
+            batch(&second_key),
+            now,
+        )
+        .unwrap();
+    for device in [&first, &second] {
+        assert_eq!(
+            receiver.role(&device.device_public_key, now).unwrap(),
+            Role::Editor
+        );
+    }
+
+    let mut receiver = peer.clone();
+    let refusal = receiver
+        .receive_from(
+            TransportOrigin::RetainedServerDelta(owner),
+            batch(&first_key),
+            now,
+        )
+        .unwrap_err();
+    let named = format!(
+        "device {} writes its own row",
+        hex::encode(second.device_public_key)
+    );
+    assert!(
+        matches!(
+            &refusal,
+            crate::AdmissionError::Rejected {
+                reason: neighbour_wire::RefusalReason::Forbidden,
+                detail,
+            } if detail.contains(&named)
+        ),
+        "{refusal:?}"
+    );
+    assert!(receiver.permissions(second.device_public_key, now).is_err());
+    assert!(receiver.permissions(first.device_public_key, now).is_err());
+}
