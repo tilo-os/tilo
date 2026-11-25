@@ -151,9 +151,9 @@ impl ContentPuts for BrokerContentPuts {
             })?
             .to_owned();
         let max = self.store.max_bytes();
-        if size == 0 || size > max {
+        if size > max {
             return Err(ActionCallError::InvalidRequest {
-                reason: format!("an upload is 1 to {max} bytes, not {size}"),
+                reason: format!("an upload is 0 to {max} bytes, not {size}"),
             });
         }
         broker(&self.state)?.may_put_content(caller, &workspace)?;

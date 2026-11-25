@@ -836,11 +836,17 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
         },
     )
     .map_err(anyhow::Error::msg)?;
-    ensure!(!report.lines.is_empty(), "the device installed nothing");
-    Ok(tilo_app_package::dev_app_id(
-        app,
-        &device.verifying_key().to_bytes(),
-    ))
+    let id = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
+    // The cache says what it installed: an answer that only says why it did not is no install.
+    ensure!(
+        report
+            .lines
+            .iter()
+            .any(|line| line.starts_with(&format!("installed development build: {id}"))),
+        "the device did not install {id}: {}",
+        report.lines.join("\n")
+    );
+    Ok(id)
 }
 
 /// Ask the profile's daemon to start `app` through the same launch a window takes.
