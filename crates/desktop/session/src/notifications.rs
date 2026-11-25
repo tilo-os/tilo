@@ -283,42 +283,6 @@ pub(crate) fn shown(
 const ANSWER_KEYS: [&str; 2] = ["accept", "answer"];
 const DECLINE_KEYS: [&str; 3] = ["decline", "reject", "hangup"];
 
-/// What the bar reads of the notifications each frame: how many are unread, whether fresh banners
-/// are held, and each app's own count.
-#[derive(Default)]
-pub(crate) struct NoticeSignals {
-    unread: Cell<u32>,
-    quiet: Cell<bool>,
-    badges: RefCell<BTreeMap<String, u32>>,
-}
-
-impl NoticeSignals {
-    fn set(&self, unread: u32, quiet: bool, badges: BTreeMap<String, u32>) {
-        self.unread.set(unread);
-        self.quiet.set(quiet);
-        *self.badges.borrow_mut() = badges;
-    }
-
-    /// The unread notifications in the centre, as the bar's bell counts.
-    #[cfg(test)]
-    pub(crate) fn unread(&self) -> u32 {
-        self.unread.get()
-    }
-
-    /// Whether fresh banners are held right now, for the silenced bell.
-    #[cfg(test)]
-    pub(crate) fn quiet(&self) -> bool {
-        self.quiet.get()
-    }
-
-    /// How many notifications each app (by verified id) is showing as unread, where it shows any
-    /// and this person keeps its badges on. The count on `app_id` 's badge.
-    #[cfg(test)]
-    pub(crate) fn badge(&self, app_id: &str) -> u32 {
-        self.badges.borrow().get(app_id).copied().unwrap_or(0)
-    }
-}
-
 /// Who a notification came from: the app the session sees in the sender's process (the one it shows
 /// a window for), or, for a sender with no window of its own, the app its process is named by — its
 /// systemd unit, the installed entry it runs, or its program — as the portal names one. Nothing the
@@ -409,7 +373,6 @@ pub(crate) struct SessionNotifications {
     sounds: SystemSounds,
     /// Each attributed app's latest unread count, kept while its badges are off.
     badges: BTreeMap<String, u32>,
-    signals: Rc<NoticeSignals>,
     opened: Opened,
     opening: RefCell<Vec<u64>>,
     /// The kept notifications the person handed to an agent, by id, until the pass sends them.
@@ -458,7 +421,6 @@ impl SessionNotifications {
         daemon: Notifications,
         desktop: DesktopNotifications,
         policy: Arc<Mutex<NotificationPolicy>>,
-        signals: Rc<NoticeSignals>,
         power: Option<PowerLink>,
         history: Option<KeptCentre>,
     ) -> Self {
@@ -540,7 +502,6 @@ impl SessionNotifications {
             policy,
             sounds: SystemSounds::new(),
             badges: BTreeMap::new(),
-            signals,
             opened,
             opening: RefCell::new(Vec::new()),
             handed: RefCell::default(),
@@ -1082,7 +1043,7 @@ impl SessionNotifications {
         {
             save_history(&self.desktop, &kept.record);
         }
-        self.publish_signals();
+        self.publish_badges();
         appeared
     }
 
@@ -1274,10 +1235,10 @@ impl SessionNotifications {
     }
 }
 
-/// What the bar reads after each pass: the unread total the bell counts,
-/// whether fresh banners are held, and each app's count as policy shows it.
+/// What the shell publishes of each app's badge after each pass: its unread count as the person's
+/// policy shows it, so every view that reads the badge needs no rule of its own.
 impl SessionNotifications {
-    fn publish_signals(&self) {
+    fn publish_badges(&self) {
         let badges: BTreeMap<String, u32> = {
             let policy = self.policy.lock_recover();
             self.badges
@@ -1292,10 +1253,7 @@ impl SessionNotifications {
                 })
                 .collect()
         };
-        let unread = u32::try_from(self.desktop.unread())
-            .unwrap_or(u32::MAX)
-            .min(MAX_BADGE);
-        self.signals.set(unread, self.desktop.quiet(), badges);
+        self.desktop.show_badges(badges);
     }
 }
 

@@ -532,7 +532,9 @@ impl DeviceLists {
             ),
             (
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
-                0,
+                // Each item's badge is its app's unread count: an arrival or a change of the
+                // person's badge policy is a tray reading that moved.
+                self.surfaces.notices.revision(),
                 0,
                 false,
             ),

@@ -57,7 +57,6 @@ struct Rig {
     desktop: DesktopNotifications,
     bridge: Rc<RefCell<SessionNotifications>>,
     policy: Arc<Mutex<NotificationPolicy>>,
-    signals: Rc<NoticeSignals>,
     power: PowerLink,
     heard: Arc<Heard>,
 }
@@ -97,13 +96,11 @@ fn rig_at(history: Option<super::KeptCentre>) -> Rig {
     let desktop = DesktopNotifications::default();
     desktop.show_banners_elsewhere();
     let policy = Arc::new(Mutex::new(NotificationPolicy::default()));
-    let signals = Rc::new(NoticeSignals::default());
     let power = PowerLink::default();
     let bridge = Rc::new(RefCell::new(SessionNotifications::new(
         daemon.clone(),
         desktop.clone(),
         Arc::clone(&policy),
-        Rc::clone(&signals),
         Some(power.clone()),
         history,
     )));
@@ -112,7 +109,6 @@ fn rig_at(history: Option<super::KeptCentre>) -> Rig {
         desktop,
         bridge,
         policy,
-        signals,
         power,
         heard,
     }
@@ -712,7 +708,7 @@ tilo_test_env::scenario! {
         let id = rig.daemon.alloc_id();
         rig.daemon.push(sent(id));
         rig.step();
-        assert_eq!(rig.signals.unread(), 1, "the bell counts it unread");
+        assert_eq!(rig.desktop.unread(), 1, "the bell counts it unread");
         assert_eq!(
             rig.bridge.borrow().centre().count,
             1,
@@ -736,11 +732,11 @@ tilo_test_env::scenario! {
         let id = rig.daemon.alloc_id();
         rig.daemon.push(sent(id));
         rig.step();
-        assert_eq!(rig.signals.unread(), 1, "the bell counts it unread");
+        assert_eq!(rig.desktop.unread(), 1, "the bell counts it unread");
 
         rig.desktop.mark_read();
         rig.step();
-        assert_eq!(rig.signals.unread(), 0, "opening the centre reads it");
+        assert_eq!(rig.desktop.unread(), 0, "opening the centre reads it");
         assert_eq!(
             rig.feed().banners.len(),
             1,
@@ -802,8 +798,7 @@ tilo_test_env::scenario! {
         let next = SessionNotifications::new(
             Notifications::new(),
             reopened,
-                Arc::clone(&rig.policy),
-            Rc::new(NoticeSignals::default()),
+            Arc::clone(&rig.policy),
             None,
             kept,
         );
@@ -915,8 +910,8 @@ tilo_test_env::scenario! {
         rig.step();
         assert!(rig.feed().banners.is_empty(), "quiet holds the banner");
         assert_eq!(rig.history(), ["New mail"], "it goes to the centre");
-        assert!(rig.signals.quiet(), "the bar shows a silenced bell");
-        assert_eq!(rig.signals.unread(), 1, "and counts it unread");
+        assert!(rig.desktop.quiet(), "the bar shows a silenced bell");
+        assert_eq!(rig.desktop.unread(), 1, "and counts it unread");
         assert!(rig.desktop.quiet());
 
         rig.policy.lock().unwrap().do_not_disturb = false;
@@ -924,7 +919,7 @@ tilo_test_env::scenario! {
         rig.daemon.push(sent(id));
         rig.step();
         assert_eq!(rig.feed().banners.len(), 1, "and shows it again after");
-        assert!(!rig.signals.quiet());
+        assert!(!rig.desktop.quiet());
     }
 
     phase the_do_not_disturb_switch_is_a_verb_of_the_centre;
@@ -970,8 +965,8 @@ tilo_test_env::scenario! {
         rig.step();
         assert!(rig.feed().banners.is_empty(), "quiet holds the banner");
         assert_eq!(rig.history(), ["New mail"], "it goes to the centre");
-        assert!(rig.signals.quiet(), "the bar shows a silenced bell");
-        assert_eq!(rig.signals.unread(), 1, "and counts it unread");
+        assert!(rig.desktop.quiet(), "the bar shows a silenced bell");
+        assert_eq!(rig.desktop.unread(), 1, "and counts it unread");
         assert!(
             !rig.policy.lock().unwrap().do_not_disturb,
             "presenting never rewrites the person's switch"
@@ -1002,7 +997,7 @@ tilo_test_env::scenario! {
             1,
             "it shows again once the hold is gone"
         );
-        assert!(!rig.signals.quiet());
+        assert!(!rig.desktop.quiet());
         assert!(rig.bridge.borrow().quiet_status().is_none());
         assert!(
             should_play(
@@ -1036,7 +1031,7 @@ tilo_test_env::scenario! {
         rig.step();
         assert!(rig.feed().banners.is_empty(), "nothing is put on screen");
         assert_eq!(rig.history(), ["New mail"], "the centre keeps it");
-        assert_eq!(rig.signals.unread(), 1, "the bar counts it unread");
+        assert_eq!(rig.desktop.unread(), 1, "the bar counts it unread");
 
         // An app with no rule of its own keeps its banners.
         let id = rig.daemon.alloc_id();
@@ -1047,7 +1042,7 @@ tilo_test_env::scenario! {
             1,
             "only the silenced app is quiet"
         );
-        assert_eq!(rig.signals.unread(), 2);
+        assert_eq!(rig.desktop.unread(), 2);
     }
 
     phase an_app_with_previews_off_shows_no_body_on_its_banner;
@@ -1125,17 +1120,31 @@ tilo_test_env::scenario! {
         message.badge_count = Some(7);
         rig.daemon.push(message);
         rig.step();
-        assert_eq!(rig.signals.badge("so.tilo.chat"), 7);
-        assert_eq!(rig.signals.badge("so.tilo.mail"), 0, "nothing for others");
+        assert_eq!(rig.desktop.app_badge("so.tilo.chat"), 7);
+        assert_eq!(rig.desktop.app_badge("so.tilo.mail"), 0, "nothing for others");
 
+        // What the shell publishes is already the person's verdict: its count stays to show
+        // again, and no view paints it while the badge is off.
         rig.policy.lock().unwrap().show_badges = false;
         rig.step();
-        assert_eq!(rig.signals.badge("so.tilo.chat"), 0, "hidden, not lost");
+        assert_eq!(rig.desktop.app_badge("so.tilo.chat"), 0, "hidden, not lost");
 
         rig.policy.lock().unwrap().show_badges = true;
         rig.step();
-        assert_eq!(rig.signals.badge("so.tilo.chat"), 7, "shown again as it is");
+        assert_eq!(rig.desktop.app_badge("so.tilo.chat"), 7, "shown again as it is");
 
+        // One app's own rule decides its badge over the global preference.
+        rig.policy.lock().unwrap().per_app.insert(
+            "so.tilo.chat".into(),
+            AppNotificationRule {
+                badges: Some(false),
+                ..AppNotificationRule::default()
+            },
+        );
+        rig.step();
+        assert_eq!(rig.desktop.app_badge("so.tilo.chat"), 0, "its own rule hides it");
+
+        rig.policy.lock().unwrap().per_app.clear();
         let id = rig.daemon.alloc_id();
         let mut cleared = sent(id);
         cleared.caller = Some(Caller {
@@ -1145,7 +1154,7 @@ tilo_test_env::scenario! {
         cleared.badge_count = Some(0);
         rig.daemon.push(cleared);
         rig.step();
-        assert_eq!(rig.signals.badge("so.tilo.chat"), 0, "the app says none");
+        assert_eq!(rig.desktop.app_badge("so.tilo.chat"), 0, "the app says none");
     }
 }
 

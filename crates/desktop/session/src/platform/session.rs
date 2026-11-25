@@ -187,9 +187,8 @@ impl Session {
         let notices = tilo_session_core::desktop::state::DesktopNotifications::default();
         // The centre opens with what it kept when this session last ended.
         let notice_history = crate::notifications::restore_history(&notices, &options);
-        // What the bar reads of the notifications, and the policy arrivals
-        // are judged by: the person may change it at any time.
-        let notice_signals = Rc::new(crate::notifications::NoticeSignals::default());
+        // The policy arrivals and their badges are judged by: the person may change it at any
+        // time.
         let notification_policy = std::sync::Arc::new(std::sync::Mutex::new(
             settings_store::notification_policy::NotificationPolicy::load(),
         ));
@@ -205,7 +204,6 @@ impl Session {
                     }),
                 notices.clone(),
                 std::sync::Arc::clone(&notification_policy),
-                Rc::clone(&notice_signals),
                 options.power.clone(),
                 notice_history,
             ),

@@ -62,8 +62,8 @@ pub struct NoticeState {
     /// Why fresh banners are held right now (Do Not Disturb, a focus schedule, presenting), as the
     /// bar and the centre's header say it.
     pub quiet: RefCell<Option<String>>,
-    /// How many unread notifications each app says it has, by the id the launcher attributed: what
-    /// its icon badges.
+    /// What each app's badge shows, by the id the launcher attributed: its unread count where the
+    /// person keeps its badges on, and none where they hide them.
     pub badges: RefCell<std::collections::BTreeMap<String, u32>>,
     /// The shell's own centre stands over the shell, as its reading says. Its own state: the shell
     /// knows when it closes, the shell's layer when its own does.
@@ -391,10 +391,23 @@ impl DesktopNotifications {
         self.log.log.borrow_mut().take_history_dirty()
     }
 
-    /// How many unread notifications the app with verified id `app_id` owns, as its icon badges.
+    /// How many unread notifications the app with verified id `app_id` shows as its badge: its
+    /// count where the person keeps its badges on, and none where they hide them.
     #[must_use]
     pub fn app_badge(&self, app_id: &str) -> u32 {
         self.log.badges.borrow().get(app_id).copied().unwrap_or(0)
+    }
+
+    /// Show each app's badge as `badges` says: its unread count where the person keeps its badges
+    /// on, and none where they hide them. What every view of the badges reads changes with it.
+    pub fn show_badges(&self, badges: std::collections::BTreeMap<String, u32>) {
+        let mut held = self.log.badges.borrow_mut();
+        if *held == badges {
+            return;
+        }
+        *held = badges;
+        drop(held);
+        self.log.touch();
     }
 
     /// When the shell's notifications next change with nobody asking: a banner's dwell running out,
