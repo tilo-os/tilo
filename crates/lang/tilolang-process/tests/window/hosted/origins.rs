@@ -102,6 +102,36 @@ fn until(app: &mut TubeApp, what: &str, mut done: impl FnMut(&mut TubeApp) -> bo
     panic!("the window never {what}; it shows {:?}", app.texts());
 }
 
+/// The resource `app` publishes `action` on, once it does: the one whose record holds `marker`
+/// when a marker is named (the video the search found), else any.
+fn published(app: &mut TubeApp, action: &str, marker: Option<&str>) -> String {
+    let began = std::time::Instant::now();
+    while began.elapsed() < std::time::Duration::from_secs(60) {
+        app.settle();
+        let surface = app.agent_surface();
+        for row in surface.as_array().into_iter().flatten() {
+            if row["action"] != action {
+                continue;
+            }
+            let Some(resource) = row["resource"].as_str() else {
+                continue;
+            };
+            let holds = marker.is_none_or(|marker| {
+                ui_core::resource::DocumentId::parse(resource)
+                    .and_then(|id| app.resource_document(&id))
+                    .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(marker))
+            });
+            if holds {
+                return resource.to_owned();
+            }
+        }
+        app.frame();
+        app.harness()
+            .wait_until(ui::time::Duration::from_millis(10), |_| false);
+    }
+    panic!("the window never offers `{action}`; it shows {:?}", app.texts());
+}
+
 #[test]
 fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     // The child the window starts as its connector.
@@ -113,7 +143,8 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     let _ = std::fs::remove_dir_all(&profile);
     crate::support::installed(TUBE_DIR);
     let mut app = TubeApp::open_data_dir(&profile).expect("the window opens");
-    app.call("search", json!({ "query": "compositor" }))
+    let root = published(&mut app, "search", None);
+    app.call_on(&root, "search", json!({ "query": "compositor" }))
         .expect("the client searches");
     // The answer reached the record through the connector, and the window shows it.
     until(&mut app, "shows the video the search found", |app| {
@@ -121,18 +152,12 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     });
     // Playing it asks the connector for the address its bytes play from, and the record keeps
     // what the connector answered.
-    let video = app
-        .open_resources()
-        .into_iter()
-        .find(|id| {
-            app.resource_document(id)
-                .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(TITLE))
-        })
-        .expect("the video's own record");
-    app.call_on(video.as_str(), "progress", json!({ "at": 0.0 }))
+    let video = published(&mut app, "progress", Some(TITLE));
+    app.call_on(&video, "progress", json!({ "at": 0.0 }))
         .expect("the client plays the video");
     until(&mut app, "plays the video's stream", |app| {
-        app.resource_document(&video)
+        ui_core::resource::DocumentId::parse(&video)
+            .and_then(|id| app.resource_document(&id))
             .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(STREAM))
     });
     drop(app);
