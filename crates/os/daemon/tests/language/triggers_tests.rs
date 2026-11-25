@@ -1356,3 +1356,227 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     );
     device.shutdown().await;
 }
+
+/// An agent's record wears a persona — a name and a picture — and a member mentions it in a
+/// conversation: the mention starts one turn for that agent, naming the message it answers, and
+/// the record the author is drawn from keeps the name and the picture a face reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
+    use tilo_action_policy::{Actor as Who, MemberId};
+    use tilo_resource_store::wire::{Command, Edit};
+    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+    use tilo_workspace_service::agents::triggered::{self, Where};
+
+    const CHAT: &str = "so.tilo.chat";
+    const MESSAGE: &str = "tl.so.tilo.chat.Message";
+    /// A picture a persona may carry: a 1-by-1 PNG.
+    const PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(tilo_workspace_service::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = tilo_workspace_service::workspaces::fixtures::governor();
+    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding(
+        dir.path(),
+        &key,
+        &cert,
+        keys,
+    )
+    .await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    // The language the daemon links, mounted as its program mounts it: Chat's types and verbs
+    // are what the store judges the conversation's writes by.
+    mount(workspaces);
+    workspaces.run_agents(Arc::new(ActsAsScout));
+    let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    save_signed(
+        workspaces,
+        &workspace,
+        triggered::triggers("scout", "Scout"),
+        (&key, &cert),
+    )
+    .await;
+
+    // The record makes the agent whose words a reply carries: its name and its picture, made
+    // through the record's own action.
+    let person = hex::encode(cert.user_public_key);
+    workspaces
+        .author_agents(&workspace, |doc| {
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(&person)
+                .in_app(tilo_workspace_agent::OWNER, "Workspace");
+            made.apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    avatar: Some(PICTURE.to_owned()),
+                    name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                    id: Some("scout".into()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, made.doc_mut());
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+    let caller =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&workspace);
+    // `by` writes the message `id` in `parent`, mentioning the agent: the app's own write for an
+    // action that was delivered to it.
+    let send = async |id: &str, parent: &str, by: &Who| {
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let stamp = Stamp {
+            verb: "$create".into(),
+            invoker: Stamp::by(by),
+            invocation: invocation.0.to_string(),
+            at: jiff::Timestamp::now().to_string(),
+            ..Stamp::default()
+        };
+        let commands = vec![
+            Command::Put {
+                kind: MESSAGE.into(),
+                id: id.into(),
+                resource: Resource {
+                    readers: "*".into(),
+                    parent: Some(parent.to_owned()),
+                    order: None,
+                    fields: std::collections::BTreeMap::new(),
+                },
+                stamp: stamp.clone(),
+            },
+            Command::Edit {
+                kind: MESSAGE.into(),
+                id: id.into(),
+                edits: vec![Edit::Set {
+                    field: "body".into(),
+                    value: json!({"blocks": [{"text": "Scout, look at this", "marks": [
+                        {"start": 0, "end": 5, "name": "mention", "value": {"Str": "{\"agent\":\"scout\"}"}}
+                    ]}]}),
+                }],
+                stamp,
+            },
+        ];
+        let context =
+            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+                CHAT,
+                &workspace,
+                caller.clone(),
+            )
+            .serving(vec![(invocation, by.clone())]);
+        workspaces
+            .resource_command(&context, Command::Batch(commands))
+            .await
+            .unwrap();
+    };
+    let put_channel = async {
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let stamp = Stamp {
+            verb: "$create".into(),
+            invoker: Stamp::by(&Who::member(MemberId::person(&person))),
+            invocation: invocation.0.to_string(),
+            at: jiff::Timestamp::now().to_string(),
+            ..Stamp::default()
+        };
+        let context =
+            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+                CHAT,
+                &workspace,
+                caller.clone(),
+            )
+            .serving(vec![(invocation, Who::member(MemberId::person(&person)))]);
+        workspaces
+            .resource_command(
+                &context,
+                Command::Put {
+                    kind: "tl.so.tilo.chat.TextChannel".into(),
+                    id: "general".into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: None,
+                        order: None,
+                        fields: [("name".to_owned(), Cell::One(Value::Text("general".into())))]
+                            .into_iter()
+                            .collect(),
+                    },
+                    stamp,
+                },
+            )
+            .await
+            .unwrap();
+    };
+    put_channel.await;
+    // What the runner fires on the records written since it last looked.
+    let mut fired = async |runner: &mut Runner| {
+        let mut since = Vec::new();
+        while let Ok(write) = writes.try_recv() {
+            since.push(write);
+        }
+        let before = started.0.lock().unwrap().len();
+        runner.pass(since).await;
+        started.0.lock().unwrap()[before..].to_vec()
+    };
+    let now = fired(&mut runner).await;
+    assert!(
+        now.is_empty(),
+        "opening a conversation asks nothing: {now:?}"
+    );
+
+    // A member mentions Scout: one turn for the agent, naming the message it answers.
+    send("m-1", "general", &Who::member(MemberId::person(&person))).await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    assert_eq!(firings[0].shortcut, triggered::shortcut_id("scout"));
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    let place = Where::of(&event).unwrap();
+    assert_eq!(
+        (place.record.as_str(), place.item.as_str()),
+        ("general", "m-1"),
+        "the answer goes to the message, in its conversation"
+    );
+
+    // The persona the answer is drawn under is the record's: the name and the picture, as the
+    // one value a face reads.
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let kept = workspaces
+        .read_resource::<WorkspaceAgents>(
+            &workspace,
+            (tilo_workspace_agent::OWNER, record.as_str()),
+        )
+        .await
+        .unwrap()
+        .expect("the record is kept");
+    let scout = kept
+        .agents
+        .iter()
+        .find(|agent| agent.id.0 == "scout")
+        .expect("the record keeps the agent");
+    assert_eq!(scout.name, "Scout");
+    assert_eq!(scout.avatar.as_deref(), Some(PICTURE));
+    assert!(
+        collab_types::avatar_of(PICTURE).is_some(),
+        "the picture is one a face draws"
+    );
+    host.shutdown().await;
+}
