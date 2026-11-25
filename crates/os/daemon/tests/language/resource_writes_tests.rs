@@ -466,8 +466,6 @@ async fn assert_scribed_as_agent(
     resource: Resource,
     stamp: &Stamp,
 ) -> tilo_actions::Actor {
-    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"));
-    let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
     // The agent works for the person whose device carried the write: what every receiver
     // decides it as, never as a bare name.
     let acted_for = hex::encode(
@@ -476,6 +474,11 @@ async fn assert_scribed_as_agent(
             .user_public_key()
             .expect("the device's person"),
     );
+    // An agent's member is the pair of its id and the person its certificate chains to: this
+    // device's person, whose own device handed it the session.
+    let agent =
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", acted_for.clone()));
+    let delivered = tilo_actions::InvocationId(uuid::Uuid::new_v4());
     // An agent writes what its person handed it: the delegation this workspace's member list
     // holds for `scribe`, as the person gives it from their own device.
     let grant = tilo_action_policy::Grant::new(
