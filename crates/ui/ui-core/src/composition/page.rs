@@ -1644,8 +1644,19 @@ pub fn theme_css(theme: &crate::Theme) -> String {
     };
     let (_, face_edge, _) = face(false);
     let (held, _, _) = face(true);
+    // A floating panel stands on the app's panel ground, rounds by its radius, and a menu's rule
+    // is the separator the app derives on that ground. An icon's stroke is the theme's, in pixels
+    // at every size, as the app strokes it.
+    let ground = crate::chrome::panel_ground(theme);
+    let floating = format!(
+        "--tilo-floating-ground:{};--tilo-floating-radius:{}px;--tilo-menu-rule:{};--tilo-icon-stroke:{}px;",
+        rgba(ground),
+        crate::widget::floating_surface::radius(theme),
+        rgba(crate::surface::edge_on(ground)),
+        theme.tokens.icon_stroke_px,
+    );
     let menu_props = format!(
-        "--tilo-face-edge:{};--tilo-held:{};--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;--tilo-floating-edge:{};--tilo-danger:{};",
+        "{floating}--tilo-face-edge:{};--tilo-held:{};--tilo-menu-row:{}px;--tilo-menu-inset:{inset}px;--tilo-menu-pad:{}px;--tilo-menu-icon:{}px;--tilo-menu-gap:{}px;--tilo-floating-edge:{};--tilo-danger:{};",
         face_edge.map_or_else(|| "transparent".to_owned(), rgba),
         rgba(held),
         (line + f64::from(tokens.spacing.s2)).max(f64::from(tokens.metrics.menu_row_height)),

@@ -3,8 +3,8 @@
 //! `page-menus OUT` writes `light.html`, `dark.html` and `contrast.html` (the closed window in
 //! each theme) and `menus.json` (for each menu, the button's name, what its rows are, its panel's
 //! size and the patches the page applies when it opens) into `OUT`; with `--native` it also
-//! writes each menu as the app paints it, open in light, dark and high contrast, as
-//! `OUT/native/{theme}-{menu}.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set
+//! writes the window as the app paints it, closed and with each menu open, in light, dark and
+//! high contrast, as `OUT/native/{theme}-closed.png` and `OUT/native/{theme}-{menu}.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set
 //! in the faces the page serves, and fails where the page draws it otherwise than the app: the
 //! page lays a menu's rows out itself, and only a browser measures them in the face it draws.
 #![allow(
@@ -18,7 +18,7 @@ use tilo_ui::app::driver::Driver;
 use tilo_ui::composition::Composed;
 use tilo_ui::composition::page::{Page, document};
 use tilo_ui::icons::Icon;
-use tilo_ui::widget::{Button, Column, IconWidget, MenuItem, Row, Text};
+use tilo_ui::widget::{Button, Column, IconSize, IconWidget, MenuItem, Row, Text};
 
 /// The menus, each on its own button: rows with glyphs and without, a long label, a separator, a
 /// destructive row that asks first, one with a shortcut, toggles and a nested menu.
@@ -93,7 +93,16 @@ fn window() -> Column {
                 .push(Box::new(Text::new(words))),
         ));
     }
-    tree
+    // Glyphs outside a menu, at each of the theme's icon sizes, stroked as the app strokes them.
+    let mut sizes = Row::new().with_gap(12.0);
+    for (icon, size) in [
+        (Icon::Folder, IconSize::Small),
+        (Icon::Pin, IconSize::Regular),
+        (Icon::Copy, IconSize::Large),
+    ] {
+        sizes = sizes.push(Box::new(IconWidget::new(icon).sized(size)));
+    }
+    tree.push(Box::new(sizes))
 }
 
 fn main() {
@@ -165,6 +174,11 @@ fn main() {
             ("dark", tilo_ui::Theme::dark()),
             ("contrast", tilo_ui::Theme::high_contrast()),
         ] {
+            let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
+            driver.set_theme(theme.clone());
+            driver.relayout();
+            driver.settle_for_capture(std::time::Duration::from_secs(2));
+            driver.render_png(&out.join("native").join(format!("{scheme}-closed.png")));
             for (name, _) in menus() {
                 let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
                 driver.set_theme(theme.clone());
