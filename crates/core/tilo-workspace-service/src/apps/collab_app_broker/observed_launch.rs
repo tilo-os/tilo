@@ -25,7 +25,6 @@ fn launch_descriptor(app: &str) -> tilo_actions::ActionDescriptor {
         input: tilo_actions::InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 

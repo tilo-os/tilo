@@ -151,8 +151,6 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPOR
 pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 
 #[cfg(feature = "broker-transport")]
-pub mod approved_checks;
-#[cfg(feature = "broker-transport")]
 mod broker;
 pub mod browser_service_sessions;
 pub mod channel_live_activity;
@@ -254,9 +252,9 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
 pub use runtime_collab::NearbyTransferPhase;
 /// The verb an app publishes a check its project's host approved under, whatever language the
-/// app is written in: the broker runs a check only for an invocation of it.
+/// app is written in: the device runs a check only as the work of an invocation of it.
 pub use runtime_collab::approved_checks::ACTION_ID as APPROVED_CHECK_ACTION;
-pub use runtime_collab::{file_clipboard, recall};
+pub use runtime_collab::{approved_checks, file_clipboard, recall};
 
 pub use collab_types::MemberId;
 use collab_types::presence::PresenceKey;

@@ -1,9 +1,5 @@
 //! Host-local invocation ownership. No wire caller can manufacture these checks.
 
-pub use runtime_collab::approved_checks::{
-    Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
-};
-
 #[cfg(feature = "broker-transport")]
 pub use ::collaboration::invocation_scope::ExternalModerationReply;
 pub use ::collaboration::invocation_scope::{
@@ -14,52 +10,6 @@ pub use ::collaboration::invocation_scope::{
 pub type ExternalModerationFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<registry_types::ModerationCase, String>> + Send>,
 >;
-
-/// A typed host check response, suitable for an existing effect worker.
-pub type ApprovedCheckFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<Output = Result<runtime_collab::approved_checks::Receipt, String>>
-            + Send,
-    >,
->;
-
-/// Informational reports enter the caller's existing effect reporter.
-pub type ApprovedCheckReportSink =
-    Box<dyn Fn(runtime_collab::approved_checks::ReportObservation) -> Result<(), String> + Send>;
-/// A queued approved check, attached to its original reporter by the effect worker.
-pub type ApprovedCheckReportedWork =
-    Box<dyn FnOnce(ApprovedCheckReportSink) -> ApprovedCheckFuture + Send>;
-
-#[cfg(feature = "broker-transport")]
-pub(crate) fn reported_check_work(
-    route: &str,
-    request: runtime_collab::approved_checks::Request,
-) -> Result<ApprovedCheckReportedWork, String> {
-    let (mut receipt, mut reports) =
-        crate::collaboration::approved_checks::enqueue_reported(route, request)?;
-    Ok(Box::new(move |report| {
-        Box::pin(async move {
-            loop {
-                tokio::select! {
-                    biased;
-                    result = &mut receipt => {
-                        return result.map_err(|_| "approved-check transport retired")?;
-                    }
-                    changed = reports.changed() => {
-                        if changed.is_err() {
-                            // Terminal delivery is the only completion authority.
-                            return receipt.await.map_err(|_| "approved-check transport retired")?;
-                        }
-                        let observed = reports.borrow_and_update().clone();
-                        if let Some(observed) = observed {
-                            report(observed.observation)?;
-                        }
-                    }
-                }
-            }
-        })
-    }))
-}
 
 thread_local! {
     static VIEWERS: std::cell::RefCell<Vec<tilo_actions::PresenceId>> =

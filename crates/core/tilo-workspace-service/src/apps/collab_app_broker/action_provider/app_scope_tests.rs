@@ -50,7 +50,6 @@ fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 

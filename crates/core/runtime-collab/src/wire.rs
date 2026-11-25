@@ -287,17 +287,6 @@ pub enum Answer {
     Action(Vec<u8>),
 }
 
-/// One step of an approved check's reported progress.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CheckProgress {
-    /// An encoded `approved_checks::Report`.
-    Report(Vec<u8>),
-    /// The encoded terminal `approved_checks::Receipt`; nothing follows.
-    Receipt(Vec<u8>),
-    /// The check failed; nothing follows.
-    Failed(String),
-}
-
 /// What a [`Operation::Changed`] waits on. Each wait says only that
 /// something changed; the endpoint asks again for what it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,8 +307,6 @@ pub enum Service {
     /// `BrowserServiceSessionCommand` -> `BrowserServiceSessionReply`; the
     /// Browser's only.
     BrowserServiceSession,
-    /// An `approved_checks::Request` -> its receipt.
-    ApprovedCheck,
     /// A command about the person's local files: selected discovery and
     /// opening, write attribution, external moderation or the file
     /// clipboard, each JSON in its own envelope.
@@ -396,9 +383,6 @@ pub enum Topic {
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
     Invocations { stable_ids: bool },
-    /// The reported progress of the approved check the encoded
-    /// `approved_checks::Request` starts, ending with its receipt.
-    ApprovedCheck(Vec<u8>),
     /// A workspace control session with `target_device`, open while the
     /// subscription lives; input goes in [`Operation::ControlInput`].
     WorkspaceControl { target_device: [u8; 32] },
@@ -476,7 +460,6 @@ pub enum Event {
     Context(ContextUpdate),
     /// An invocation handed to this app.
     Invocation(Invocation),
-    ApprovedCheck(CheckProgress),
     WorkspaceControl(WorkspaceControlEvent),
     /// A watched resource's reading changed: it as JSON, and the services'
     /// revision it was read at. `None` once no service publishes it.

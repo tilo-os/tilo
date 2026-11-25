@@ -2692,13 +2692,11 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
 /// The checks a project's host approved: this device's work, kept as its jobs at
 /// `devices/<device>/jobs` and read through the one record API. What runs comes from this
 /// device's own `checks` setting, so a check an app names never brings its own commands. A
-/// check's commands are ush's own, which a phone's app carries none of.
+/// check's commands are ush's own, which a phone's app carries none of. An app runs one as a
+/// step its own `run-approved-check` declares, for an invocation the dispatch delivered to it:
+/// that invocation names the project the check is for.
 #[cfg(all(unix, not(target_os = "android")))]
-fn approved_checks(
-    parts: &BrokerParts<'_>,
-) -> io::Result<
-    Option<Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>>,
-> {
+fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
     let jobs = Arc::new(super::approved_checks::CheckJobs::at(
         parts.root,
         parts.workspaces.copies().host_device(),
@@ -2708,29 +2706,26 @@ fn approved_checks(
         tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
         Arc::clone(&jobs) as Arc<dyn tilo_actions::remote::ResourceReads>,
     );
-    Ok(Some(Arc::new(super::approved_checks::NativeChecks::new(
-        parts.workspaces,
-        parts
-            .workspaces
-            .device_records()
-            .cloned()
-            .ok_or_else(|| io::Error::other("the device's settings are not kept for its checks"))?,
-        parts.root.to_path_buf(),
-        jobs,
-    ))
-        as Arc<
-            dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices,
-        >))
+    parts.workspaces.copies().providers().provide(
+        runtime_collab::approved_checks::PROVIDER,
+        tilo_app_id::apps::SETTINGS,
+        tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+        Arc::new(super::approved_checks::NativeChecks::new(
+            parts.workspaces,
+            parts.workspaces.device_records().cloned().ok_or_else(|| {
+                io::Error::other("the device's settings are not kept for its checks")
+            })?,
+            parts.root.to_path_buf(),
+            jobs,
+        )),
+    );
+    Ok(())
 }
 
 /// Elsewhere, a host approves no checks.
 #[cfg(not(all(unix, not(target_os = "android"))))]
-fn approved_checks(
-    _parts: &BrokerParts<'_>,
-) -> io::Result<
-    Option<Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>>,
-> {
-    Ok(None)
+fn approved_checks(_parts: &BrokerParts<'_>) -> io::Result<()> {
+    Ok(())
 }
 
 /// The seat's services, as the broker runs them: what the desktop session serves, the app windows
@@ -2948,9 +2943,8 @@ fn broker_services(
         shell: shell_published,
         apps: published,
     } = published_here(&parts);
-    let approved_checks = approved_checks(&parts)?;
+    approved_checks(&parts)?;
     let mut services = ProcessServices {
-        approved_checks,
         action_offload,
         document_content: Some(document_content),
         ..ProcessServices::default()

@@ -121,6 +121,7 @@ fn a_call_through_a_shared_handle_reaches_the_provider_admitted() {
     let admitted = Admitted {
         through: Some(Arc::clone(&through)),
         stop: Arc::clone(&stop),
+        ..Admitted::default()
     };
 
     let mut receipt =
@@ -152,6 +153,7 @@ fn a_call_through_an_erased_handle_reaches_the_provider_admitted() {
     let admitted = Admitted {
         through: None,
         stop: Arc::clone(&stop),
+        ..Admitted::default()
     };
 
     let mut receipt = <Arc<dyn ActionProvider + Send + Sync> as ActionProvider>::run(
@@ -179,6 +181,7 @@ fn a_handle_reaches_the_providers_question_and_live_result() {
     let admitted = Admitted {
         through: None,
         stop: Arc::clone(&stop),
+        ..Admitted::default()
     };
 
     let asking =

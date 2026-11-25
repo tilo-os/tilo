@@ -821,7 +821,6 @@ mod tests {
                 input: InputSpec::None,
                 params: Vec::new(),
                 view: None,
-                effects: Vec::new(),
             }),
             has_children: action.is_none(),
             visibility: None,

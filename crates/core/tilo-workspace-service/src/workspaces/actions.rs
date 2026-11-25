@@ -1197,7 +1197,6 @@ impl Verb {
                 input: InputSpec::None,
                 params,
                 view: None,
-                effects: Vec::new(),
             }),
             has_children: false,
             visibility: None,
@@ -1647,9 +1646,9 @@ impl Offer {
         if !rows.is_empty() {
             for row in &mut rows {
                 if let Some(action) = row.action.as_mut()
-                    && action.effects.is_empty()
+                    && action.contract.effects.is_empty()
                 {
-                    action.effects = tilo_actions::remote::declared_effects(
+                    action.contract.effects = tilo_actions::remote::declared_effects(
                         &tilo_actions::remote::RemoteActionTarget {
                             provider: row.provider.clone(),
                             address: action.address.clone(),

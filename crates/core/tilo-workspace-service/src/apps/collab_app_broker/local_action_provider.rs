@@ -820,7 +820,6 @@ mod tests {
                 input: tilo_actions::InputSpec::None,
                 params: Vec::new(),
                 view: None,
-                effects: Vec::new(),
             },
         )
     }

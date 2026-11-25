@@ -780,7 +780,6 @@ search-field-placeholder = Suchen
 search-field-name = Suche
 search-field-filter-name = Filter
 presentation-window-title = Präsentationsfenster
-approved-check-reports-disabled = Läuft
 
 author-bot-chip = Bot
 author-via-chip = über { $service }

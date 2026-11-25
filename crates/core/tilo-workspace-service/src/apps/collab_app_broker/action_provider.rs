@@ -97,6 +97,9 @@ pub(super) struct ConnectionActionProvider {
     /// The connection's revalidated admission: an application's own effect,
     /// directed back to it, runs under this original caller's ownership.
     pub(super) origin: super::published_invocation::InvocationCaller,
+    /// The invocation delivered to this connection that the request is the work of, as it was
+    /// delivered: what a provider registered on this device is told the call serves.
+    pub(super) serving: Option<Arc<dyn tilo_actions::remote::Serving>>,
 }
 
 impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
@@ -119,11 +122,10 @@ impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A channel connection carries no launcher-authenticated scope, so a
         // content launch by hash is refused rather than widened.
-        self.state.action_invoke_with_origin(
+        self.state.action_invoke_serving(
             caller,
             Some(self.own_peer),
-            None,
-            Some(&self.origin),
+            (Some(&self.origin), self.serving.clone()),
             &request,
         )
     }
@@ -398,7 +400,6 @@ pub(super) fn app_open_descriptor(
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -477,7 +478,6 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -1893,11 +1893,40 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.action_invoke_admitted(caller, own_peer, launch, (origin, None), request)
+    }
+
+    /// [`Self::action_invoke_with_origin`] for an app connection's request that is the work of
+    /// `serving`, an invocation delivered to that connection.
+    pub(super) fn action_invoke_serving(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.action_invoke_admitted(caller, own_peer, None, (origin, serving), request)
+    }
+
+    fn action_invoke_admitted(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A call an app makes for an invocation it runs carries that invocation as its proof
         // wherever it goes from here.
         let request = &self.with_served_proof(caller, request.clone());
         let (state, asking, asked) = (Arc::clone(self), caller.clone(), request.clone());
-        self.invoke_admitted(caller, own_peer, launch, origin, request)
+        self.invoke_admitted(caller, own_peer, launch, (origin, serving), request)
             .map(move |answer| match answer {
                 Err(error) => Err(state.with_asked_facts(&asking, &asked, error)),
                 Ok(mut receipt) => {
@@ -1915,7 +1944,10 @@ impl AppBrokerState {
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
-        origin: Option<&super::published_invocation::InvocationCaller>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
@@ -2010,7 +2042,7 @@ impl AppBrokerState {
         if !answered_where_published
             && let Some(registered) = self.registered(&request.target.provider)
         {
-            return self.invoke_registered(caller, origin, &registered, request);
+            return self.invoke_registered(caller, origin, serving, &registered, request);
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));
@@ -2061,7 +2093,7 @@ impl AppBrokerState {
         }) {
             let mut request = request.clone();
             request.target.provider = registered.provider.to_string();
-            return self.invoke_registered(caller, origin, &registered, &request);
+            return self.invoke_registered(caller, origin, None, &registered, &request);
         }
         self.invoke_launchable(caller, origin, request)
     }

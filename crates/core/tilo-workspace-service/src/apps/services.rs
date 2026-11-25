@@ -665,8 +665,6 @@ pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
 #[derive(Clone, Default)]
 pub struct ProcessServices {
-    /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
-    pub approved_checks: Option<Arc<dyn crate::apps::collab_app_broker::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the host can carry it.
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
@@ -759,7 +757,6 @@ impl ProcessServices {
     /// The names of these services, in the order the struct declares them: a field added
     /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const NAMES: &[&str] = &[
-        "approved_checks",
         "committed_documents",
         "native_media",
         "audio_output",

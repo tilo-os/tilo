@@ -287,60 +287,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase approved_check_reports_use_original_effect_progress_and_freeze_after_cancel;
-    {
-        let mut runner = runner();
-        let invocation = InvocationId::new();
-        let payload = payload(&Work::Count);
-        let op = effect_op(invocation, &payload);
-        let (forward, reports) = channel();
-        let checked: ui_core::invocation_scope::ApprovedCheckReportedWork = Box::new(move |report| {
-            forward.send(report).unwrap();
-            Box::pin(std::future::pending())
-        });
-        let started = runner
-            .start(&op, &mut (), None, |(), _, cx| {
-                Ok(cx.spawn(
-                    move |progress| attach_approved_check_reporter(checked, progress),
-                    |(), _receipt, _| Ok(Effected::Done(ActionOutput::default())),
-                ))
-            })
-            .unwrap();
-        assert!(matches!(started, Some(ResourceOperationStart::Accepted)));
-        let report = reports.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        for (sequence, phase) in [(1, "Synthesis"), (2, "Routing")] {
-            report(
-                ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
-                    phase: phase.into(),
-                    completed: Some(sequence),
-                    total: Some(2),
-                },
-            )
-            .unwrap();
-            assert!(matches!(runner.poll(invocation, false, &mut ()),
-                Some(InvocationUpdate::Progress { invocation: actual, sequence: observed,
-                    phase: actual_phase, completed: Some(done), total: Some(2), message: None })
-                if actual == invocation && observed == sequence && actual_phase == phase && done == sequence));
-            assert!(runner.poll(invocation, false, &mut ()).is_none());
-        }
-        assert!(matches!(runner.poll(invocation, true, &mut ()),
-            Some(InvocationUpdate::Cancelled { invocation: actual, .. }) if actual == invocation));
-        assert!(
-            report(
-                ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
-                    phase: "Late".into(),
-                    completed: None,
-                    total: None,
-                }
-            )
-            .is_err()
-        );
-        assert!(runner.poll(invocation, false, &mut ()).is_none());
-        drop(report);
-        drop(reports);
-        drop(runner);
-    }
-
     phase a_handler_reads_the_document_now_and_at_a_version;
     // A handler reads the document it answers about, now and at a past
     // version, and the document is back with its owner once it answered.

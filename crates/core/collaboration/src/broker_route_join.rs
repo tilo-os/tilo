@@ -160,7 +160,6 @@ pub(super) async fn join_route(
         committed_document::ask_chain_head(&channel, spec, inbound_tx).await?;
         tilo_startup_metrics::startup_mark("collab-join-chain-head");
         return Ok(SdkRoute {
-            _checks: None,
             _moderation: None,
             document: DocumentRoute {
                 spec: spec.clone(),
@@ -275,12 +274,6 @@ pub(super) async fn join_route(
 
     // Each of these queues is optional: without it the channel runs, and the
     // warn the `map_err` closure writes says which feature it lost and why.
-    let checks = super::super::approved_checks::register(channel_id.clone(), channel.clone())
-        .map_err(|error| {
-            tracing::warn!(%error, "collab: approved project check queue unavailable");
-            error
-        })
-        .ok();
     let moderation =
         super::super::external_moderation::register(channel_id.clone(), channel.clone())
             .map_err(|error| {
@@ -299,7 +292,6 @@ pub(super) async fn join_route(
         super::audio_output::install(channel.clone());
     }
     Ok(SdkRoute {
-        _checks: checks,
         _moderation: moderation,
         document: DocumentRoute {
             spec: spec.clone(),

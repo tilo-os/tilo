@@ -751,9 +751,9 @@ impl AppBrokerState {
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 pending_invocations: Mutex::new(HashMap::new()),
-                approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLog::default()),
+                child_calls: Mutex::default(),
                 ended_invocations: crate::apps::automation::BrokerInvocations::default(),
                 app_action_access: RwLock::new(
                     services

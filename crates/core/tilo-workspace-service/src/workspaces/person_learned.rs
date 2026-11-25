@@ -205,7 +205,6 @@ pub(crate) fn published(
         input: tilo_actions::InputSpec::None,
         params,
         view: None,
-        effects: Vec::new(),
     }
 }
 

@@ -1239,11 +1239,6 @@ fn broker_services(
         settings.register(&providers);
     }
     BrokerServices {
-        // No approved-check runner is installed with this session: a check a
-        // project's app asks for has nothing to run it.
-        approved_checks: BrokerService::unserved(
-            "no project's approved check runs here: this session installs no check service",
-        ),
         // No device daemon keeps a hosted session's workspaces for it to read.
         committed_documents: BrokerService::unserved(
             "a session in a workspace's VM runs no device daemon to read records at",

@@ -1,11 +1,13 @@
-//! A tilolang action runs a check its project's host approved through the queue a Rust app's
-//! check goes through: the request names the invocation the broker served, the invocation stays
-//! open while the check runs, its reports are the invocation's progress and its receipt the
-//! answer; the invocation's cancel stops it, and a press of the action goes through the dispatch.
+//! A tilolang action runs a check its project's host approved as the device's work for the
+//! invocation the broker served: it calls the device's approved checks through the one dispatch
+//! as that invocation's work, naming only the check. The invocation stays open while the check
+//! runs, the progress the device reports is the invocation's progress and its receipt the answer;
+//! the invocation's cancel stops the check, and a press of the action goes through the dispatch.
 
 use super::*;
-use collaboration::approved_checks::{
-    Binding, Diagnostic, Outcome, Receipt, Report, ReportObservation,
+use collaboration::approved_checks::{self as checks, Binding, Diagnostic, Outcome, Receipt};
+use tilo_actions::remote::{
+    InvocationReceipt, InvocationState, InvokeRequest, ReceiptStatus, RemoteActionMessage,
 };
 
 const CHECKED: &str = "so.tilo.lang.checked";
@@ -95,19 +97,49 @@ fn deliver_check(
     });
 }
 
-/// Run the host until `done` holds: what the check's thread hears wakes it off the frame.
-fn settle_until(host: &mut TilolangProcess, window: &mut Window, mut done: impl FnMut() -> bool) {
-    let began = std::time::Instant::now();
-    loop {
-        settle(host, window);
-        if done() {
-            return;
-        }
-        assert!(
-            began.elapsed() < SETTLE_LIMIT,
-            "what the check said never reached the broker"
-        );
-        std::thread::yield_now();
+/// The call to the device's approved checks the instance sent.
+fn check_call(sent: &Sent) -> Option<InvokeRequest> {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(invoke),
+                ..
+            } if invoke.target.provider == checks::PROVIDER => Some(invoke.clone()),
+            _ => None,
+        })
+}
+
+/// How many times the instance asked the dispatch how its call `call` stands.
+fn observed(sent: &Sent, call: tilo_actions::InvocationId) -> usize {
+    sent.borrow()
+        .iter()
+        .filter(|request| {
+            matches!(request, CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Observe { invocation, .. },
+                ..
+            } if *invocation == call)
+        })
+        .count()
+}
+
+/// The dispatch tells the instance `message` of its call.
+fn dispatch_says(inbox: &Inbox, message: RemoteActionMessage) {
+    inbox
+        .borrow_mut()
+        .push_back(CollabEvent::RemoteAction { message });
+}
+
+/// The dispatch's state of the call `call`, as it answers an ask.
+fn stands(
+    call: tilo_actions::InvocationId,
+    update: tilo_actions::InvocationUpdate,
+) -> RemoteActionMessage {
+    RemoteActionMessage::Update {
+        invocation: call,
+        state: Some(InvocationState::new(call, update)),
+        correlation: None,
     }
 }
 
@@ -163,7 +195,7 @@ fn passed(invocation: tilo_actions::InvocationId, check_id: &str) -> Receipt {
 }
 
 tilo_test_env::scenario! {
-    fn a_tilolang_action_runs_its_projects_approved_check_on_the_route_queue;
+    fn a_tilolang_action_runs_its_projects_approved_check_as_the_devices_work;
 
     phase the_check_is_published_as_the_cancellable_job_a_check_runs_as;
     {
@@ -184,38 +216,73 @@ tilo_test_env::scenario! {
             "what the commands printed is untrusted: {:?}",
             check.contract.tags
         );
+        assert!(
+            check.contract.declares(
+                checks::PROVIDER,
+                &tilo_actions::ActionAddress::new(checks::RESOURCE, checks::RUN)
+            ),
+            "the device's run is the action's declared step, covered by its yes: {:?}",
+            check.contract.effects
+        );
     }
 
-    phase the_served_invocation_reaches_the_queue_and_ends_with_the_receipt;
+    phase the_served_invocation_calls_the_device_and_ends_with_its_receipt;
     {
-        let (mut host, mut window, sent, inbox, route) = running_app("ada", CHECKED, checked());
-        let (_endpoint, mut queue) =
-            collaboration::approved_checks::admit_for_test(route.channel_id()).unwrap();
+        let (mut host, mut window, sent, inbox, _route) = running_app("ada", CHECKED, checked());
         settle(&mut host, &mut window);
         let address = the_check(&host).address;
         let invocation = tilo_actions::InvocationId::new();
         deliver_check(&inbox, 1, invocation, &address, "unit-tests");
         settle(&mut host, &mut window);
-        let job = queue.try_recv().expect("the check reached the route's queue");
-        assert_eq!(job.request.invocation, invocation.0.to_string(), "the served invocation");
-        assert_eq!(job.request.check_id, "unit-tests");
-        assert!(job.reports.is_some(), "its reports are observed");
+        let call = check_call(&sent).expect("the check went to the device through the dispatch");
+        assert_eq!(call.on_behalf_of, Some(invocation), "as the served invocation's work");
+        assert_eq!(
+            call.target.address,
+            tilo_actions::ActionAddress::new(checks::RESOURCE, checks::RUN)
+        );
+        match &call.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => {
+                assert_eq!(
+                    arguments,
+                    serde_json::json!({ "check_id": "unit-tests" }).as_object().unwrap(),
+                    "the call names the check and nothing else"
+                );
+            }
+            other => panic!("the check's id is the argument: {other:?}"),
+        }
         assert_eq!(
             answered(&sent, 1),
             None,
             "the invocation stays open while its check runs"
         );
-        job.reports.as_ref().unwrap().send_replace(Some(Report {
-            invocation: invocation.0.to_string(),
-            check_id: "unit-tests".to_owned(),
-            sequence: 1,
-            observation: ReportObservation::Reported {
-                phase: "Compiling".to_owned(),
-                completed: Some(3),
-                total: Some(10),
-            },
-        }));
-        settle_until(&mut host, &mut window, || !progress(&sent, 1).is_empty());
+
+        // The device took it: the instance follows it.
+        dispatch_says(
+            &inbox,
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: call.invocation,
+                status: ReceiptStatus::Accepted,
+            }),
+        );
+        settle(&mut host, &mut window);
+        assert_eq!(observed(&sent, call.invocation), 1, "the running check is followed");
+
+        // How far the device says it got is the invocation's progress.
+        dispatch_says(
+            &inbox,
+            stands(
+                call.invocation,
+                tilo_actions::InvocationUpdate::Progress {
+                    invocation: call.invocation,
+                    sequence: 1,
+                    phase: "Compiling".to_owned(),
+                    completed: Some(3),
+                    total: Some(10),
+                    message: None,
+                },
+            ),
+        );
+        settle(&mut host, &mut window);
         match progress(&sent, 1).first() {
             Some(tilo_actions::InvocationUpdate::Progress {
                 invocation: told,
@@ -230,13 +297,28 @@ tilo_test_env::scenario! {
             }
             other => panic!("the report is the invocation's progress: {other:?}"),
         }
-        job.reply.send(Ok(passed(invocation, "unit-tests"))).unwrap();
-        settle_until(&mut host, &mut window, || {
-            matches!(answered(&sent, 1), Some(tilo_actions::InvocationUpdate::Succeeded { .. }))
-        });
+        assert_eq!(observed(&sent, call.invocation), 2, "and followed on");
+
+        // The device's receipt is the invocation's answer.
+        dispatch_says(
+            &inbox,
+            stands(
+                call.invocation,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: call.invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(
+                            serde_json::to_value(passed(invocation, "unit-tests")).unwrap(),
+                        ),
+                        ..Default::default()
+                    },
+                },
+            ),
+        );
+        settle(&mut host, &mut window);
         let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) = answered(&sent, 1)
         else {
-            unreachable!()
+            panic!("the receipt answers the invocation: {:?}", answered(&sent, 1))
         };
         let receipt = output.value.expect("the answer is the receipt");
         assert_eq!(receipt["check_id"], "unit-tests");
@@ -263,43 +345,65 @@ tilo_test_env::scenario! {
 
     phase the_invocations_cancel_stops_its_check;
     {
-        let (mut host, mut window, sent, inbox, route) = running_app("ada", CHECKED, checked());
-        let (_endpoint, mut queue) =
-            collaboration::approved_checks::admit_for_test(route.channel_id()).unwrap();
+        let (mut host, mut window, sent, inbox, _route) = running_app("ada", CHECKED, checked());
         settle(&mut host, &mut window);
         let address = the_check(&host).address;
         deliver_check(&inbox, 2, tilo_actions::InvocationId::new(), &address, "slow-suite");
         settle(&mut host, &mut window);
-        let job = queue.try_recv().expect("the check reached the route's queue");
+        let call = check_call(&sent).expect("the check went to the device");
         inbox
             .borrow_mut()
             .push_back(CollabEvent::InvocationCancellation { id: 2 });
-        settle_until(&mut host, &mut window, || {
-            matches!(answered(&sent, 2), Some(tilo_actions::InvocationUpdate::Cancelled { .. }))
-        });
+        settle(&mut host, &mut window);
         assert!(
-            job.reply.is_closed(),
-            "the observer left the queue, which ends the host's work on the check"
+            sent.borrow().iter().any(|request| matches!(request, CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation },
+                ..
+            } if *invocation == call.invocation)),
+            "the device is asked to stop the check"
+        );
+        assert_eq!(answered(&sent, 2), None, "answered once the check stopped");
+        dispatch_says(
+            &inbox,
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: call.invocation,
+                status: ReceiptStatus::Cancelled { message: None },
+            }),
+        );
+        settle(&mut host, &mut window);
+        assert!(
+            matches!(answered(&sent, 2), Some(tilo_actions::InvocationUpdate::Cancelled { .. })),
+            "{:?}",
+            answered(&sent, 2)
         );
     }
 
-    phase a_route_with_no_check_queue_refuses_the_check_in_words_the_app_shows;
+    phase the_devices_refusal_answers_the_invocation_in_its_words;
     {
         let (mut host, mut window, sent, inbox, _route) = running_app("ada", CHECKED, checked());
         settle(&mut host, &mut window);
         let address = the_check(&host).address;
-        deliver_check(&inbox, 3, tilo_actions::InvocationId::new(), &address, "unit-tests");
+        deliver_check(&inbox, 3, tilo_actions::InvocationId::new(), &address, "unknown");
         settle(&mut host, &mut window);
-        assert!(
-            matches!(answered(&sent, 3), Some(tilo_actions::InvocationUpdate::Succeeded { .. })),
-            "the action ran and kept the refusal; nothing runs on: {:?}",
-            answered(&sent, 3)
+        let call = check_call(&sent).expect("the check went to the device");
+        dispatch_says(
+            &inbox,
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: call.invocation,
+                status: ReceiptStatus::Rejected {
+                    error: tilo_actions::remote::ActionCallError::Refused {
+                        reason: "This project's host approved no check `unknown`".to_owned(),
+                    },
+                },
+            }),
         );
-        assert!(
-            shown(&window).contains("did not take the check `unit-tests`"),
-            "{}",
-            shown(&window)
-        );
+        settle(&mut host, &mut window);
+        match answered(&sent, 3) {
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                assert!(error.message.contains("approved no check `unknown`"), "{error:?}");
+            }
+            other => panic!("the refusal answers the invocation: {other:?}"),
+        }
     }
 
     phase a_press_of_the_check_goes_through_the_dispatch;

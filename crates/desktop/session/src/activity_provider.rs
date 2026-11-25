@@ -156,7 +156,6 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 

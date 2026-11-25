@@ -15,7 +15,7 @@ use super::AppBrokerState;
 use crate::workspaces::providers::Registered;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
-    Pending, PendingPoll, ReceiptStatus, Reservation,
+    Pending, PendingPoll, ReceiptStatus, Reservation, Serving,
 };
 
 /// How a call of a registered provider stands once admitted, before it is taken.
@@ -36,6 +36,13 @@ struct RegisteredCall {
     approved: bool,
     /// What a step of an agent session does in turn goes through: the session's own api.
     through: Option<Arc<dyn ActionProvider + Send + Sync>>,
+}
+
+/// The app whose grants decide a call of `registered`: for a step an invocation's action
+/// declares, the app that invocation was delivered to, whose yes covers it; else the one the
+/// provider registered for.
+fn deciding_app<'a>(registered: &'a Registered, serving: Option<&'a Arc<dyn Serving>>) -> &'a str {
+    serving.map_or(&registered.app, |serving| serving.app())
 }
 
 /// How long a provider that answered a call as running is left before it is looked at again,
@@ -270,10 +277,11 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        serving: Option<Arc<dyn Serving>>,
         registered: &Registered,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.invoke_described(caller, origin, registered, request, None)
+        self.invoke_described(caller, (origin, serving), registered, request, None)
     }
 
     /// [`Self::invoke_registered`], with the descriptor of the action it calls where the
@@ -281,16 +289,25 @@ impl AppBrokerState {
     fn invoke_described(
         self: &Arc<Self>,
         caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn Serving>>,
+        ),
         registered: &Registered,
         request: &InvokeRequest,
         described: Option<tilo_actions::ActionDescriptor>,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let admitted = match self.admit_registered(caller, origin, registered, request, described) {
+        let admitted = match self.admit_registered(
+            caller,
+            (origin, serving.as_ref()),
+            registered,
+            request,
+            described,
+        ) {
             Ok(RegisteredAdmission::Call(admitted)) => admitted,
             Ok(RegisteredAdmission::Taken(receipt)) => return Pending::ready(Ok(receipt)),
             Ok(RegisteredAdmission::Undescribed) => {
-                return self.invoke_once_described(caller, origin, registered, request);
+                return self.invoke_once_described(caller, (origin, serving), registered, request);
             }
             Err(error) => return Pending::ready(Err(error)),
         };
@@ -300,13 +317,14 @@ impl AppBrokerState {
                 request,
                 &Admitted {
                     through: admitted.through.clone(),
-                    stop: Arc::default(),
+                    serving: serving.clone(),
+                    ..Admitted::default()
                 },
             )
         });
         let Some(Some(asking)) = asking else {
             return Pending::ready(
-                self.take_registered(caller, origin, registered, request, admitted),
+                self.take_registered(caller, origin, serving, registered, request, admitted),
             );
         };
         let (state, caller, origin, registered, request) = (
@@ -317,9 +335,14 @@ impl AppBrokerState {
             request.clone(),
         );
         asking.map(move |asked| match asked {
-            Ok(()) => {
-                state.take_registered(&caller, origin.as_ref(), &registered, &request, admitted)
-            }
+            Ok(()) => state.take_registered(
+                &caller,
+                origin.as_ref(),
+                serving,
+                &registered,
+                &request,
+                admitted,
+            ),
             Err(waits) => {
                 if let Ok(mut log) = state.remote_invocations.lock() {
                     log.abandon(&request.invocation);
@@ -336,7 +359,10 @@ impl AppBrokerState {
     fn invoke_once_described(
         self: &Arc<Self>,
         caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn Serving>>,
+        ),
         registered: &Registered,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
@@ -351,7 +377,7 @@ impl AppBrokerState {
         let (state, caller, origin, registered, request) = (
             Arc::clone(self),
             caller.clone(),
-            origin.cloned(),
+            (origin.cloned(), serving),
             registered.clone(),
             request.clone(),
         );
@@ -370,7 +396,7 @@ impl AppBrokerState {
             state
                 .invoke_described(
                     &caller,
-                    origin.as_ref(),
+                    (origin.0.as_ref(), origin.1),
                     &registered,
                     &request,
                     Some(descriptor),
@@ -392,7 +418,10 @@ impl AppBrokerState {
     fn admit_registered(
         self: &Arc<Self>,
         caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<&Arc<dyn Serving>>,
+        ),
         registered: &Registered,
         request: &InvokeRequest,
         described: Option<tilo_actions::ActionDescriptor>,
@@ -413,6 +442,13 @@ impl AppBrokerState {
         if !registered.reach.devices() && !is_local_host_caller(caller, origin) {
             return Err(abandon(ActionCallError::UnknownAction));
         }
+        // A step an invocation's action declares runs only while that invocation does: its
+        // caller still may, its app still holds it, and nobody cancelled it.
+        if let Some(serving) = serving {
+            serving
+                .recheck()
+                .map_err(|reason| abandon(ActionCallError::Refused { reason }))?;
+        }
         let Some(workspace_id) = caller.workspace() else {
             return Err(abandon(ActionCallError::NotPermitted));
         };
@@ -426,7 +462,7 @@ impl AppBrokerState {
             }
             return Ok(RegisteredAdmission::Undescribed);
         };
-        let app_id = &registered.app;
+        let app_id = deciding_app(registered, serving);
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
@@ -448,7 +484,7 @@ impl AppBrokerState {
         }
         self.framework_policy(
             (&workspace, &policy, now),
-            (app_id.as_ref(), &descriptor),
+            (app_id, &descriptor),
             request.confirmation.as_ref(),
             approved,
             false,
@@ -488,6 +524,7 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
+        serving: Option<Arc<dyn Serving>>,
         registered: &Registered,
         request: &InvokeRequest,
         call: RegisteredCall,
@@ -507,14 +544,14 @@ impl AppBrokerState {
             return Err(abandon(ActionCallError::NotPermitted));
         };
         let argument = request.argument.to_slot();
-        let app_id = &registered.app;
+        let app_id = deciding_app(registered, serving.as_ref());
         let admitted = self
             .admit_host_action(
                 caller,
                 origin,
                 super::host_action_admission::HostActionAdmission {
                     workspace: workspace_id,
-                    app_id: app_id.as_ref(),
+                    app_id,
                     descriptor: &descriptor,
                     request,
                 },
@@ -577,12 +614,27 @@ impl AppBrokerState {
                 .map_err(|reason| ActionCallError::Refused { reason })?;
             return Ok(self.receipt_for(request.invocation, id));
         }
+        let progress = {
+            let (state, id, invocation, owner) = (
+                Arc::downgrade(self),
+                admitted.id,
+                admitted.invocation,
+                admitted.owner.clone(),
+            );
+            Arc::new(move |phase: &str, done: Option<u64>, total: Option<u64>| {
+                if let Some(state) = state.upgrade() {
+                    state.host_step_progress((id, invocation, &owner), phase, done, total);
+                }
+            })
+        };
         let mut receipt = registered.answers.run(
             caller,
             request.clone(),
             Admitted {
                 through,
                 stop: Arc::clone(&stop),
+                serving,
+                progress,
             },
         );
         // A call this provider runs on goes on after `Accepted`: its observation and
@@ -610,6 +662,46 @@ impl AppBrokerState {
         );
         self.follow_admitted_host_step(admitted, started, stop);
         Ok(self.receipt_for(request.invocation, id))
+    }
+
+    /// How far host step `id`, which `owner` asked for and which still runs, got: whoever
+    /// follows it reads `phase`, and `done` of `total`, until it ends.
+    fn host_step_progress(
+        &self,
+        (id, invocation, owner): (u64, tilo_actions::InvocationId, &super::InvocationOwner),
+        phase: &str,
+        done: Option<u64>,
+        total: Option<u64>,
+    ) {
+        let Ok(mut completed) = self.completed_invocations.lock() else {
+            return;
+        };
+        let sequence = match completed.get(&id) {
+            Some((kept, update)) if kept == owner && !update.is_terminal() => match update {
+                tilo_actions::InvocationUpdate::Progress { sequence, .. } => {
+                    sequence.saturating_add(1)
+                }
+                _ => 1,
+            },
+            Some(_) => return,
+            None => 1,
+        };
+        completed.insert(
+            id,
+            (
+                owner.clone(),
+                tilo_actions::InvocationUpdate::Progress {
+                    invocation,
+                    sequence,
+                    phase: phase.to_owned(),
+                    completed: done,
+                    total,
+                    message: None,
+                },
+            ),
+        );
+        drop(completed);
+        self.invocation_changed();
     }
 
     /// Ask cancellable host step `id` to stop, if it is one: whether it was. The step's caller
@@ -1190,7 +1282,6 @@ mod identity_admin_tests {
                     input: tilo_actions::InputSpec::None,
                     params: Vec::new(),
                     view: None,
-                    effects: Vec::new(),
                 })
                 .collect()
         }
@@ -1430,7 +1521,7 @@ mod identity_admin_tests {
                                 published: Vec::new(),
                             };
                             state
-                                .invoke_registered(&caller, Some(&origin), &registered, asked)
+                                .invoke_registered(&caller, Some(&origin), None, &registered, asked)
                                 .wait_timeout(tilo_test_env::hang_bound())
                                 .ok()
                                 .flatten()
@@ -1860,7 +1951,6 @@ mod settings_documents_tests {
                 input: tilo_actions::InputSpec::None,
                 params: Vec::new(),
                 view: None,
-                effects: Vec::new(),
             }
         }
     }

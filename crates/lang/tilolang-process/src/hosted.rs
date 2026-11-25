@@ -990,7 +990,7 @@ impl Platform for HostPlatform {
     }
 
     /// A check the project's host approved, for the invocation the broker is serving on this
-    /// thread, on the route the instance joined: the same queue a Rust app's check goes through.
+    /// thread, as the device's work for that invocation, through the one dispatch.
     fn approved_check(&self, _app: &str, check_id: &str) -> Result<String, String> {
         let served = SERVING.with(|served| served.borrow().clone());
         self.checks.start(
@@ -1804,8 +1804,7 @@ fn open_instance(
     // A check goes out on the route the instance joined, the one its invocations arrive on; an
     // instance with no broker runs none.
     let checks = Rc::new(crate::approved_checks::Checks::new(
-        (!connection.is_local()).then(|| connection.route().channel_id()),
-        Arc::clone(wake),
+        (!connection.is_local()).then(|| connection.shared_manager()),
     ));
     let platform = HostPlatform {
         bundle: Arc::clone(bundle),
@@ -3033,6 +3032,11 @@ impl Hosted {
                     }
                     Some(crate::page_prompts::Answered::Said) => return true,
                     None => {}
+                }
+                // A check's call is the checks' to follow; its end answers the invocation it
+                // is the work of.
+                if self.checks.heard(&message) {
+                    return true;
                 }
                 return self.answered(&message);
             }

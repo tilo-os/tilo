@@ -48,17 +48,15 @@ use join_identity::*;
 )]
 use lifecycle::*;
 pub(crate) use lifecycle::{BrokerWiring, spawn_configured};
-mod approved_checks;
-mod external_moderation;
-mod local_document_action;
-mod subscriptions;
-mod surface_publication;
-pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
+mod external_moderation;
+mod local_document_action;
 mod observed_launch;
 mod presses;
+mod subscriptions;
+mod surface_publication;
 pub use observed_launch::AppOpen;
 mod offload_api;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
@@ -425,11 +423,13 @@ pub struct AppBrokerState {
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
-    approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLog<u64>>,
+    /// The calls each app connection made inside an invocation delivered to it, by connection
+    /// and call: whose they are, so the connection follows and cancels them as that caller.
+    child_calls: Mutex<HashMap<(u64, tilo_actions::InvocationId), tilo_actions::remote::Caller>>,
     /// Shortcut runs the API finished, until history records them.
     ended_invocations: crate::apps::automation::BrokerInvocations,
     /// What each application declared it may do on the action api under

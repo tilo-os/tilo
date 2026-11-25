@@ -854,6 +854,15 @@ pub struct ActionContract {
     /// is in no record of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<crate::remote::asked::Take>,
+    /// What it writes beside its own resource, each as the app, kind and verb of the step it
+    /// takes there ([`crate::ActionEffect`]). What a caller reads to know what the action
+    /// changes; what a device reading such a record checks to admit a step the call itself does
+    /// not name; and what a call its app makes for one of its invocations is held to: a call to
+    /// an action named here is covered by the yes that invocation was given and asks nobody
+    /// again, a call to any other action asks as any call does. Never from the call, always from
+    /// this declaration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<crate::ActionEffect>,
 }
 
 /// Largest CPU time an [`Offload`] may declare: a compute job's ceiling.
@@ -932,11 +941,23 @@ impl Default for ActionContract {
             item: None,
             shows: Vec::new(),
             takes: Vec::new(),
+            effects: Vec::new(),
         }
     }
 }
 
 impl ActionContract {
+    /// Whether it declares the call of `provider`'s `address` as one of its own steps
+    /// ([`Self::effects`]).
+    #[must_use]
+    pub fn declares(&self, provider: &str, address: &crate::ActionAddress) -> bool {
+        self.effects.iter().any(|effect| {
+            effect.app == provider
+                && effect.kind == address.resource
+                && effect.verb == address.action
+        })
+    }
+
     /// What an invocation needs when its value does not say otherwise: its
     /// kind, [`scoped`](Self::scoped).
     #[must_use]

@@ -300,7 +300,6 @@ fn action_row(
             input: tilo_actions::InputSpec::None,
             params,
             view: None,
-            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,

@@ -878,6 +878,45 @@ impl AppBrokerState {
         self.forget_windows_of(peer_id);
         self.disconnect_device_media(peer_id);
         self.disconnect_file_transfers(peer_id);
+        if let Ok(mut children) = self.child_calls.lock() {
+            children.retain(|(peer, _), _| *peer != peer_id);
+        }
+    }
+
+    /// Keep that the connection `peer_id` made the call `invocation` as `caller`, inside an
+    /// invocation delivered to it: it follows and cancels the call as that caller
+    /// ([`Self::child_call`]). What it keeps of calls that ended goes with the next one.
+    pub(super) fn made_child_call(
+        &self,
+        peer_id: u64,
+        invocation: tilo_actions::InvocationId,
+        caller: &tilo_actions::remote::Caller,
+    ) {
+        let Ok(mut children) = self.child_calls.lock() else {
+            return;
+        };
+        children
+            .retain(|(peer, call), kept| *peer != peer_id || self.remote_job(kept, call).is_some());
+        children.insert((peer_id, invocation), caller.clone());
+    }
+
+    /// The caller the connection `peer_id` follows or cancels a call it made inside an
+    /// invocation delivered to it as, when `message` follows or cancels one.
+    pub(super) fn child_call(
+        &self,
+        peer_id: u64,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Caller> {
+        let (tilo_actions::remote::RemoteActionMessage::Observe { invocation, .. }
+        | tilo_actions::remote::RemoteActionMessage::Cancel { invocation }) = message
+        else {
+            return None;
+        };
+        self.child_calls
+            .lock()
+            .ok()?
+            .get(&(peer_id, *invocation))
+            .cloned()
     }
     /// One route hold ended ([`route_holds`]): withdraw what it published
     /// and worked as there, and fail what was still pending on it.

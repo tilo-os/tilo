@@ -386,12 +386,6 @@ impl OriginalInvocationData {
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApprovedCheckArguments {
-    check_id: String,
-}
-
 enum TargetOwnership {
     Registered(Box<PrivateWorkerRegistration>),
     Native {
@@ -542,11 +536,16 @@ impl OriginalInvocation {
         Ok(())
     }
 
-    pub(super) fn for_external_moderation(
+    /// The invocation `invocation` the broker delivered to `channel`'s connection and still
+    /// runs, as it delivered it: what a call that connection makes for it is the work of.
+    ///
+    /// # Errors
+    /// The connection runs no such invocation, two share the id, its target no longer holds
+    /// it, or its caller no longer stands.
+    pub(super) fn served(
         channel: &super::JoinedChannel,
-        request: &runtime_collab::external_moderation::Request,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<Arc<Self>, String> {
-        request.validate()?;
         let route = channel.route();
         let admitted = channel
             .state
@@ -559,14 +558,13 @@ impl OriginalInvocation {
                 .lock()
                 .map_err(|_| "invocation registry unavailable")?;
             let mut matches = pending.values().filter(|pending| {
-                pending.peer_id == channel.peer_id
-                    && pending.update.invocation().0.to_string() == request.invocation
+                pending.peer_id == channel.peer_id && pending.update.invocation() == invocation
             });
             let selected = matches
                 .next()
-                .ok_or("external moderation has no retained target invocation")?;
+                .ok_or("the connection was delivered no such invocation")?;
             if matches.next().is_some() {
-                return Err("ambiguous external moderation invocation identity".into());
+                return Err("two invocations the connection was delivered share an id".into());
             }
             let original = selected
                 .original
@@ -575,8 +573,51 @@ impl OriginalInvocation {
             drop(pending);
             original
         };
-        if route.app_id != "so.tilo.store"
-            || data.route != route
+        if data.route != route {
+            return Err("the invocation was delivered for another record".into());
+        }
+        let worker = if let Some(worker) = admitted.worker_registration.clone() {
+            TargetOwnership::Registered(Box::new(worker))
+        } else {
+            let connection = channel
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.local_media.as_ref())
+                .filter(|connection| connection.current())
+                .cloned()
+                .ok_or("native target process ownership unavailable")?;
+            admitted
+                .certificate
+                .as_ref()
+                .ok_or("native target certificate unavailable")?;
+            TargetOwnership::Native {
+                connection,
+                admitted: Box::new(admitted),
+            }
+        };
+        let original = Arc::new(Self {
+            broker: Arc::downgrade(&channel.state),
+            peer: channel.peer_id,
+            worker,
+            data,
+        });
+        original.check_execution_frontier(&channel.state)?;
+        original.check_lifecycle()?;
+        Ok(original)
+    }
+
+    pub(super) fn for_external_moderation(
+        channel: &super::JoinedChannel,
+        request: &runtime_collab::external_moderation::Request,
+    ) -> Result<Arc<Self>, String> {
+        request.validate()?;
+        let invocation = request
+            .invocation
+            .parse::<tilo_actions::InvocationId>()
+            .map_err(|_| "external moderation names no invocation")?;
+        let original = Self::served(channel, invocation)?;
+        let data = &original.data;
+        if data.route.app_id != "so.tilo.store"
             || data.kind != tilo_actions::OperationKind::Effect
             || data.contract.kind != tilo_actions::ActionKind::Outside
         {
@@ -601,119 +642,7 @@ impl OriginalInvocation {
                 .unwrap_or(argument),
             &request.operation,
         )?;
-        let worker = if let Some(worker) = admitted.worker_registration.clone() {
-            TargetOwnership::Registered(Box::new(worker))
-        } else {
-            let connection = channel
-                .lease
-                .as_ref()
-                .and_then(|lease| lease.local_media.as_ref())
-                .filter(|connection| connection.current())
-                .cloned()
-                .ok_or("native target process ownership unavailable")?;
-            admitted
-                .certificate
-                .as_ref()
-                .ok_or("native target certificate unavailable")?;
-            TargetOwnership::Native {
-                connection,
-                admitted: Box::new(admitted),
-            }
-        };
-        let original = Arc::new(Self {
-            broker: Arc::downgrade(&channel.state),
-            peer: channel.peer_id,
-            worker,
-            data,
-        });
-        original.check_execution_frontier(&channel.state)?;
         original.check_resource_publication(&channel.state)?;
-        original.check_lifecycle()?;
-        Ok(original)
-    }
-
-    pub(super) fn for_approved_check(
-        channel: &super::JoinedChannel,
-        request: &runtime_collab::approved_checks::Request,
-    ) -> Result<Arc<Self>, String> {
-        let route = channel.route();
-        let admitted = channel
-            .state
-            .revalidate_admission(&route, &channel.verified_identity)
-            .map_err(|error| error.to_string())?;
-        let data = {
-            let pending = channel
-                .state
-                .pending_invocations
-                .lock()
-                .map_err(|_| "invocation registry unavailable")?;
-            let mut matches = pending.values().filter(|pending| {
-                pending.peer_id == channel.peer_id
-                    && pending.update.invocation().0.to_string() == request.invocation
-            });
-            let selected = matches
-                .next()
-                .ok_or("approved check has no retained target invocation")?;
-            if matches.next().is_some() {
-                return Err("ambiguous approved-check invocation identity".into());
-            }
-            let original = selected.original.clone();
-            drop(pending);
-            original.ok_or("original invocation authority unavailable")?
-        };
-        if data.route != route
-            || data.request.address.action != runtime_collab::approved_checks::ACTION_ID
-            || data.kind != tilo_actions::OperationKind::Effect
-            || data.contract.execution
-                != (tilo_actions::ExecutionMode::Background { cancellable: true })
-            || data.contract.kind != tilo_actions::ActionKind::Undoable
-        {
-            return Err("approved check target action or contract mismatch".into());
-        }
-        let argument = data
-            .request
-            .argument
-            .as_deref()
-            .ok_or("approved check ID argument missing")?;
-        if argument.len() > runtime_collab::approved_checks::MAX_REQUEST_BYTES {
-            return Err("approved check arguments exceed bound".into());
-        }
-        let arguments: ApprovedCheckArguments = serde_json::from_str(
-            argument
-                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                .unwrap_or(argument),
-        )
-        .map_err(|error| error.to_string())?;
-        if arguments.check_id != request.check_id {
-            return Err("approved check ID differs from accepted action".into());
-        }
-        let worker = if let Some(worker) = admitted.worker_registration.clone() {
-            TargetOwnership::Registered(Box::new(worker))
-        } else {
-            let connection = channel
-                .lease
-                .as_ref()
-                .and_then(|lease| lease.local_media.as_ref())
-                .filter(|connection| connection.current())
-                .cloned()
-                .ok_or("native target process ownership unavailable")?;
-            admitted
-                .certificate
-                .as_ref()
-                .ok_or("native target certificate unavailable")?;
-            TargetOwnership::Native {
-                connection,
-                admitted: Box::new(admitted),
-            }
-        };
-        let original = Arc::new(Self {
-            broker: Arc::downgrade(&channel.state),
-            peer: channel.peer_id,
-            worker,
-            data,
-        });
-        original.check_execution_frontier(&channel.state)?;
-        original.check_lifecycle()?;
         Ok(original)
     }
 
@@ -839,6 +768,51 @@ impl OriginalInvocation {
         Ok(())
     }
 }
+impl tilo_actions::remote::Serving for OriginalInvocation {
+    fn invocation(&self) -> tilo_actions::InvocationId {
+        self.data.request.invocation
+    }
+    fn app(&self) -> &str {
+        &self.data.route.app_id
+    }
+    fn workspace(&self) -> &str {
+        &self.data.route.cluster_id
+    }
+    fn record(&self) -> &str {
+        &self.data.route.document_id
+    }
+    fn address(&self) -> &tilo_actions::ActionAddress {
+        &self.data.request.address
+    }
+    fn kind(&self) -> tilo_actions::OperationKind {
+        self.data.kind
+    }
+    fn contract(&self) -> &tilo_actions::ActionContract {
+        &self.data.contract
+    }
+    fn argument(&self) -> Option<&str> {
+        self.data.request.argument.as_deref()
+    }
+    fn resource_identity(&self) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
+        Self::resource_identity(self)
+    }
+    fn recheck(&self) -> Result<(), String> {
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        self.check_execution_frontier(&state)?;
+        self.check_resource_publication(&state)?;
+        drop(state);
+        self.check_lifecycle()?;
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        self.check_execution_frontier(&state)
+    }
+}
+
 /// What a test asks for the original invocation a worker was delivered.
 #[cfg(test)]
 pub(crate) type OriginalLookup =

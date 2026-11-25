@@ -44,7 +44,6 @@ fn probe() -> Arc<TestProvider> {
                             "What the probe answers",
                         )],
                         view: None,
-                        effects: Vec::new(),
                     },
                 );
                 let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);

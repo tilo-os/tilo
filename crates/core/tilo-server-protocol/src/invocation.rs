@@ -422,7 +422,7 @@ pub fn declared_effect(
 }
 
 /// Whether `context` records a step the action `target` names declares it takes
-/// ([`tilo_actions::ActionDescriptor::effects`], read from the action's declaration, never from
+/// ([`tilo_actions::ActionContract::effects`], read from the action's declaration, never from
 /// the call), in a record of the app `keeper`: the app of the record the change is in, when the
 /// device that signed the change keeps that record for the workspace. `None` for any other
 /// device, which takes no step for a call but the call's own. The record's app is the one

@@ -422,7 +422,7 @@ include!("../resolved_invocation_tests.rs");
 #[cfg(test)]
 include!("../external_moderation_rpc_tests.rs");
 #[cfg(test)]
-include!("../approved_check_tests.rs");
+include!("../served_invocation_tests.rs");
 #[cfg(test)]
 include!("../canonical_route_tests.rs");
 #[cfg(all(test, target_os = "linux"))]

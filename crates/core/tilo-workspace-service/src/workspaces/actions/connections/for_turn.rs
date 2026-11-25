@@ -274,7 +274,6 @@ fn command_row(connection: &Connection, site: &str, command: &Command) -> Catalo
             input: InputSpec::None,
             params: params_of(&command.schema),
             view: None,
-            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,

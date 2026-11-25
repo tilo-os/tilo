@@ -371,7 +371,6 @@ pub fn descriptors() -> Vec<tilo_actions::api::ActionDescriptor> {
                 fetch_params()
             },
             view: None,
-            effects: Vec::new(),
         })
         .collect()
 }

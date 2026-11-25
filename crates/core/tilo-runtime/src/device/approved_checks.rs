@@ -1,11 +1,13 @@
 //! The checks a project's host approved, run as this device's work.
 //!
-//! An app asks for a check by its id only. What runs, and the device's own paths it runs on,
-//! come from the device's setting `devices/<device>/settings/checks`: one entry per approved
-//! project, written and removed through the settings actions by the device's person or whoever
-//! they granted there. The daemon reads it again for every check, so a request naming a check,
-//! a project, a record or a resource identity the setting does not approve is refused, and so
-//! is the next run after the entry is removed.
+//! An app asks for a check by its id only, as the work of its `run-approved-check` invocation the
+//! dispatch delivered to it: the device's [`checks::RUN`] runs only as such work, and reads the
+//! app, record and resource the check is for from that invocation, never from the call. What
+//! runs, and the device's own paths it runs on, come from the device's setting
+//! `devices/<device>/settings/checks`: one entry per approved project, written and removed through
+//! the settings actions by the device's person or whoever they granted there. The daemon reads it
+//! again for every check, so a check, a project, a record or a resource identity the setting does
+//! not approve is refused, and so is the next run after the entry is removed.
 //!
 //! The check is work of this device, like a turn an offloaded action takes: [`takes_turn`]
 //! decides whether it runs here, the device keeps the job at `devices/<device>/jobs/<job>` while
@@ -18,18 +20,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use runtime_collab::approved_checks::{
-    Binding, Diagnostic, MAX_PREVIEW_BYTES, Outcome, Receipt, ReportObservation,
+    self as checks, Binding, Diagnostic, MAX_PREVIEW_BYTES, Outcome, Receipt, ReportObservation,
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
-use tilo_actions::ResourceSemanticIdentity;
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec, PlacedAction};
+use tilo_actions::contract::{ActionContract, ActionKind};
+use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
-    Caller, ReadsAnswer, ResourceAddress, ResourceCopy, ResourceReads, reads_answer,
+    Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Pending, ReadsAnswer, ResourceAddress,
+    ResourceCopy, ResourceReads, Serving, reads_answer,
+};
+use tilo_actions::{
+    ActionFailure, ActionOutput, ExecutionLocus, ExecutionMode, OperationKind,
+    ResourceSemanticIdentity,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::collab_app_broker::{
-    ApprovedCheckContext, ApprovedCheckServices,
-};
 use tilo_workspace_service::work::{Actor, Claim, Turn, takes_turn};
 use ush::approved_checks::{
     ApprovedCheck, ApprovedChecks, CheckOutcome, CheckReceipt, ProjectBinding,
@@ -375,7 +381,7 @@ impl Placement for WorkspaceTurns {
     }
 }
 
-/// One check a caller asked this device to run.
+/// One check an app asked this device to run.
 pub(crate) struct Ask<'a> {
     pub app: &'a str,
     pub workspace: &'a str,
@@ -389,6 +395,7 @@ pub(crate) struct Ask<'a> {
 
 /// The device's checks, as its dispatch asks for them: the approval setting it reads again for
 /// every check, the device's turn of work, and the jobs it keeps.
+#[derive(Clone)]
 pub(crate) struct NativeChecks {
     approvals: Arc<dyn Approvals>,
     placement: Arc<dyn Placement>,
@@ -483,22 +490,150 @@ impl NativeChecks {
     }
 }
 
-impl ApprovedCheckServices for NativeChecks {
-    fn run(&self, context: &ApprovedCheckContext) -> Result<Receipt, String> {
-        let identity = context.resource_identity()?.clone();
-        let invocation = context.invocation();
-        let ask = Ask {
-            app: context.app_id(),
-            workspace: context.workspace(),
-            record: context.record(),
-            resource: context.resource(),
-            identity: &identity,
-            check_id: context.check_id(),
-            invocation: &invocation,
-        };
-        self.run_ask(&ask, &|| context.recheck(), &|observation| {
-            let _ = context.report(observation);
-        })
+/// Why a call that is no app's `run-approved-check` at work is refused.
+const NOT_THE_CHECK: &str = "An approved check runs only as the work of the app's own \
+     run-approved-check action, for the check that action was asked to run";
+
+/// The check `request` names, when it is the one `serving` was asked to run: an approved check
+/// runs only for the app's own `run-approved-check`, published as the cancellable background job
+/// a check is, and for the check its person or agent asked for.
+fn asked_check<'a>(serving: &dyn Serving, request: &'a InvokeRequest) -> Result<&'a str, String> {
+    let contract = serving.contract();
+    if serving.address().action != checks::ACTION_ID
+        || serving.kind() != OperationKind::Effect
+        || contract.kind != ActionKind::Undoable
+        || contract.execution != (ExecutionMode::Background { cancellable: true })
+    {
+        return Err(NOT_THE_CHECK.to_owned());
+    }
+    let InvokeArgument::Json(arguments) = &request.argument else {
+        return Err("an approved check is named by its id".to_owned());
+    };
+    let check_id = arguments
+        .get(checks::ARGUMENT)
+        .and_then(serde_json::Value::as_str)
+        .filter(|check_id| checks::is_check_id(check_id))
+        .ok_or("an approved check is named by its id, never by a command")?;
+    let delivered = serving
+        .argument()
+        .and_then(|argument| argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+        .and_then(|argument| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(argument).ok()
+        });
+    let asked = delivered
+        .as_ref()
+        .and_then(|arguments| arguments.get(checks::ARGUMENT))
+        .and_then(serde_json::Value::as_str);
+    if asked != Some(check_id) {
+        return Err(NOT_THE_CHECK.to_owned());
+    }
+    Ok(check_id)
+}
+
+/// The action an approved check runs by.
+fn check_rows() -> Vec<PlacedAction> {
+    tilo_actions::remote::admitted::top_level(vec![ActionDescriptor {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        address: ActionAddress::new(checks::RESOURCE, checks::RUN),
+        resource_kind: checks::PROVIDER.to_owned(),
+        resource_label: "Approved checks".to_owned(),
+        action_label: "Run an approved check".to_owned(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        locus: ExecutionLocus::ClientLocal,
+        kind: OperationKind::Effect,
+        contract: ActionContract {
+            kind: ActionKind::Undoable,
+            execution: ExecutionMode::Background { cancellable: true },
+            ..ActionContract::default()
+        },
+        input: InputSpec::None,
+        params: vec![ActionParam::required(
+            checks::ARGUMENT,
+            ParamType::Text,
+            "The check the project's host approved",
+        )],
+        view: None,
+    }])
+}
+
+impl Admits for NativeChecks {
+    const PROVIDER: &'static str = checks::PROVIDER;
+    const APP: &'static str = tilo_app_id::apps::SETTINGS;
+
+    fn rows(&self) -> Vec<PlacedAction> {
+        check_rows()
+    }
+
+    fn start(
+        &self,
+        _caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<tilo_actions::remote::Outcome>, String> {
+        if request.target.address != ActionAddress::new(checks::RESOURCE, checks::RUN) {
+            return Err(format!(
+                "this device runs no `{}` on its approved checks",
+                request.target.address.action
+            ));
+        }
+        let serving = admitted.serving.clone().ok_or(NOT_THE_CHECK)?;
+        let check_id = asked_check(&*serving, request)?.to_owned();
+        serving.recheck()?;
+        let identity = serving.resource_identity()?.clone();
+        let checks = self.clone();
+        let stop = Arc::clone(&admitted.stop);
+        let progress = Arc::clone(&admitted.progress);
+        let (end, outcome) = tilo_actions::remote::pending();
+        std::thread::Builder::new()
+            .name("approved-check".into())
+            .spawn(move || {
+                let invocation = serving.invocation().0.to_string();
+                let ask = Ask {
+                    app: serving.app(),
+                    workspace: serving.workspace(),
+                    record: serving.record(),
+                    resource: &serving.address().resource,
+                    identity: &identity,
+                    check_id: &check_id,
+                    invocation: &invocation,
+                };
+                let recheck = || {
+                    if stop.load(std::sync::atomic::Ordering::Acquire) {
+                        return Err("the check was stopped".to_owned());
+                    }
+                    serving.recheck()
+                };
+                let ran = checks.run_ask(&ask, &recheck, &|observation| {
+                    if let ReportObservation::Reported {
+                        phase,
+                        completed,
+                        total,
+                    } = observation
+                    {
+                        progress(&phase, completed, total);
+                    }
+                });
+                end.complete(
+                    ran.map(|receipt| ActionOutput {
+                        value: Some(serde_json::to_value(&receipt).expect("a receipt is JSON")),
+                        ..ActionOutput::default()
+                    })
+                    .map_err(|message| {
+                        Box::new(ActionFailure {
+                            code: "action_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        })
+                    }),
+                );
+            })
+            .map_err(|error| format!("the check did not start: {error}"))?;
+        Ok(outcome)
     }
 }
 

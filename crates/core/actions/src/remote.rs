@@ -37,7 +37,7 @@ pub use window_actions::{
 };
 
 pub mod admitted;
-pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome};
+pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome, ReportsProgress, Serving};
 pub mod agent_tools;
 mod application;
 pub mod asked;
@@ -421,7 +421,7 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
 ];
 
 /// What the action `target` names declares it writes besides its own resource
-/// ([`crate::ActionDescriptor::effects`]), from its declaration: a device reading a record checks
+/// ([`crate::ActionContract::effects`]), from its declaration: a device reading a record checks
 /// here whether a step a call's change takes there is one the called action takes. Every action
 /// that writes another record declares it, and nothing a call carries adds to it.
 #[must_use]
@@ -696,7 +696,6 @@ pub mod device_tickets {
             input: crate::InputSpec::None,
             params,
             view: None,
-            effects: Vec::new(),
         })
     }
 
@@ -3183,7 +3182,6 @@ mod tests {
             input: InputSpec::None,
             params: Vec::new(),
             view: None,
-            effects: Vec::new(),
         }
     }
 

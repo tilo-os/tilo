@@ -83,7 +83,8 @@ mod external_moderation_rpc_tests {
             let origin = self.origin.get().cloned();
             tokio::task::spawn_local(async move {
                 let Some(origin) = origin else {
-                    *written.lock().unwrap() = Some(Err("the fixture's origin is not named".to_owned()));
+                    *written.lock().unwrap() =
+                        Some(Err("the fixture's origin is not named".to_owned()));
                     return;
                 };
                 // The same admission the connection's own provider makes of an app's call.
@@ -100,7 +101,11 @@ mod external_moderation_rpc_tests {
             Ok(())
         }
 
-        fn declined(&self, _: &Caller, _: tilo_actions::InvocationId) -> Result<(), ActionCallError> {
+        fn declined(
+            &self,
+            _: &Caller,
+            _: tilo_actions::InvocationId,
+        ) -> Result<(), ActionCallError> {
             Ok(())
         }
     }
@@ -627,18 +632,20 @@ mod external_moderation_rpc_tests {
             _: Option<[u8; 32]>,
             maximum: usize,
         ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
-        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
-            self.authorize(context)?;
-            if self.0.len() > maximum {
-                return Err("report exceeds bound".into());
-            }
-            Ok(NativeDocumentRead::Captured {
-                revision: *blake3::hash(&self.0).as_bytes(),
-                heads: Vec::new(),
-                body: Box::new(ReportDocument(self.0.clone())),
-            })
-        })()))
-    }
+            Box::pin(std::future::ready(
+                (|| -> Result<NativeDocumentRead, String> {
+                    self.authorize(context)?;
+                    if self.0.len() > maximum {
+                        return Err("report exceeds bound".into());
+                    }
+                    Ok(NativeDocumentRead::Captured {
+                        revision: *blake3::hash(&self.0).as_bytes(),
+                        heads: Vec::new(),
+                        body: Box::new(ReportDocument(self.0.clone())),
+                    })
+                })(),
+            ))
+        }
     }
 
     fn committed_report(note: &str, case: Option<&str>) -> Arc<dyn NativeDocumentReads> {
@@ -905,7 +912,13 @@ mod external_moderation_rpc_tests {
                 );
                 let foreign = opened(&rpc, &foreign_route.channel_key()).await.unwrap();
                 // The foreign record is its own route hold, never handed this invocation.
-                refused(&foreign, &request, id, "no retained target invocation").await;
+                refused(
+                    &foreign,
+                    &request,
+                    id,
+                    "the connection was delivered no such invocation",
+                )
+                .await;
                 let mut replacement = descriptor;
                 replacement.resource = "replacement-store-resource".into();
                 target.handle.publish_actions(&[replacement]).await.unwrap();
@@ -1056,10 +1069,16 @@ mod external_moderation_rpc_tests {
                         &target.handle,
                         &unknown_request,
                         unknown,
-                        "no retained target invocation",
+                        "the connection was delivered no such invocation",
                     )
                     .await;
-                    refused(&other.handle, &request, id, "no retained target invocation").await;
+                    refused(
+                        &other.handle,
+                        &request,
+                        id,
+                        "the connection was delivered no such invocation",
+                    )
+                    .await;
 
                     let mut changed = descriptor.clone();
                     changed.contract.kind = tilo_actions::ActionKind::Read;

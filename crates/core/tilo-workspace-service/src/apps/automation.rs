@@ -314,7 +314,6 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         input: InputSpec::None,
         params,
         view: None,
-        effects: Vec::new(),
     })
 }
 
@@ -350,7 +349,6 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         // The inputs are the parameters; what the run answers is `output`.
         params: shortcut.inputs.clone(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -1674,7 +1672,6 @@ mod tests {
                 input: InputSpec::None,
                 params,
                 view: None,
-                effects: Vec::new(),
             }),
             has_children: false,
             visibility: None,
