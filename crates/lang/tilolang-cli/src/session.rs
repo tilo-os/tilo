@@ -376,14 +376,59 @@ impl Peer {
 
     /// Start `app` through the session's daemon, as a person's window starts: the launch the
     /// installed package names, with its sandbox and grants.
-    pub(crate) fn start_app(&self, bin: &Path, app: &str) -> Result<(), String> {
-        status(
-            self.command(&bin.join("tilo-runtime"))
-                .args(["--run-app", app])
-                .stdout(Stdio::null()),
-            &format!("starting {app}"),
-        )
+    ///
+    /// A development loop starts one instance, so it asks for a plain start (`presentation:
+    /// false`) at the daemon's native endpoint. The presentation start first brings a running
+    /// window forward, which the daemon asks of itself over a second connection that the first
+    /// launch of a session has not yet admitted.
+    pub(crate) fn start_app(&self, _bin: &Path, app: &str) -> Result<(), String> {
+        let socket = self
+            .control
+            .parent()
+            .ok_or_else(|| "the session names no runtime directory".to_owned())?
+            .join("tilo")
+            .join(tilo_paths::machine::DAEMON_NATIVE);
+        let answered = native_call(&socket, &serde_json::json!({"native": "status"}))?;
+        let workspace = answered
+            .get("workspace")
+            .and_then(serde_json::Value::as_str)
+            .filter(|workspace| !workspace.is_empty())
+            .ok_or_else(|| "the session serves no workspace to start an app in yet".to_owned())?;
+        let answer = native_call(
+            &socket,
+            &serde_json::json!({
+                "native": runtime_portal::native::LAUNCH,
+                "app_id": app,
+                "workspace": workspace,
+                "presentation": false,
+            }),
+        )?;
+        match answer.get("error").and_then(serde_json::Value::as_str) {
+            Some(error) => Err(format!("starting {app}: {error}")),
+            None => Ok(()),
+        }
     }
+}
+
+/// One request to the daemon's native endpoint, and the line it answers.
+fn native_call(socket: &Path, request: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let refused = |error: std::io::Error| format!("{}: {error}", socket.display());
+    let mut stream = tilo_files::native::socket::connect(socket).map_err(refused)?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(refused)?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(refused)?;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .map_err(refused)?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .map_err(refused)?;
+    serde_json::from_str(&line).map_err(|error| format!("the daemon answered no line: {error}"))
 }
 
 pub(crate) fn status(command: &mut Command, what: &str) -> Result<(), String> {
