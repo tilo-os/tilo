@@ -511,6 +511,10 @@ d-dywbbsoi = Grund des Wartens
     .w-some-files-details-are-on-neither = zu einigen Dateien fehlen die Angaben, auf diesem Computer und auf { $server }
     .w-some-changes-haven-t-reached-yet = einige Änderungen haben { $server } noch nicht erreicht und werden erneut gesendet
 
+d-jfdcwsgz = Kennzeichen-Text
+    .w-yes = ja
+    .w-no = nein
+
 d-vipg3gla = Synchronisierung
 
 d-agni63m4 = Akku
@@ -1093,6 +1097,88 @@ d-qxbh2c44 = Teilname
 d-y45hdphl = Name des Dock-Eintrags
     .w-launcher = Launcher
 
+d-uaxwjp2w = Verlaufstitel
+    .w-recent-in = Zuletzt in { $app_title }
+    .w-recent = Zuletzt
+
+d-n53wzmxo = Geöffnet von
+    .w-opened-by-you = Von dir geöffnet
+    .w-opened-by = Von { $by } geöffnet
+
+d-ykfkkuil = Launcher-Status
+    .w-searching = Wird gesucht…
+    .w-nothing-matches = Nichts passt zu { $query }
+
+d-f4dklcup = Aussehen
+    .w-custom-based-on-tilo = Eigene, basierend auf Tilo
+    .w-custom-based-on-macos = Eigene, basierend auf macOS
+    .w-custom-based-on-windows = Eigene, basierend auf Windows
+    .w-custom-based-on-gnome = Eigene, basierend auf GNOME
+    .w-custom-based-on-the-traditional-desktop = Eigene, basierend auf dem traditionellen Desktop
+    .w-custom-based-on-minimal = Eigene, basierend auf Minimal
+    .w-tilo = Tilo
+    .w-like-macos = Wie macOS
+    .w-like-windows = Wie Windows
+    .w-like-gnome = Wie GNOME
+    .w-minimal = Minimal
+
+d-3rrz5qxq = Beschreibung
+    .w-a-dock-at-the-bottom-and = Ein Dock unten und die obere Leiste, immer sichtbar.
+    .w-a-floating-rounded-dock-that-hides = Ein schwebendes, abgerundetes Dock, das sich versteckt, wenn ein Fenster es bedeckt; die Leiste trägt die Menüs der App.
+    .w-a-full-width-taskbar-at-the = Eine Taskleiste über die ganze Breite unten, immer sichtbar.
+    .w-the-top-bar-alone-the-overview = Nur die obere Leiste; die Übersicht auf Abruf.
+    .w-windows-floating-over-the-screen-each = Fenster schweben über dem Bildschirm, jedes mit eigener Leiste, die Befehle des fokussierten Fensters in der oberen Leiste und ein Dock am Fuß.
+    .w-no-chrome-at-rest-the-screen = Keine Bedienelemente in Ruhe: die Bildschirmkanten zeigen die Leiste und das Dock.
+
+d-lpwr6szi = Ungelesen-Zeile
+    .w-all-read = Alles gelesen
+    .w-1-unread = 1 ungelesen
+    .w-unread = { $waiting } ungelesen
+
+d-k5yod4ck = Vor gesagt
+    .w-just-now = gerade eben
+    .w-min-ago = vor { $value } Min.
+    .w-h-ago = vor { $value } Std.
+    .w-d-ago = vor { $value } T.
+
+d-76ufqa7r = Bildschirmanzeige-Name
+    .w-volume = Lautstärke
+    .w-brightness = Helligkeit
+    .w-keyboard = Tastatur
+
+d-glfjge4b = Bildschirmanzeige-Wert
+    .w-muted = Stumm
+    .w-off = Aus
+
+d-ow4oy2u7 = Bildschirmanzeige-Wörter
+    .w-volume = Lautstärke
+    .w-brightness = Helligkeit
+    .w-keyboard-backlight = Tastaturbeleuchtung
+    .w-microphone-on = Mikrofon an
+    .w-microphone-muted = Mikrofon stumm
+    .w-airplane-mode-on = Flugmodus an
+    .w-airplane-mode-off = Flugmodus aus
+    .w-touchpad-on = Touchpad an
+    .w-touchpad-off = Touchpad aus
+    .w-playing = Spielt { $named }
+    .w-play = Abspielen
+    .w-paused = Pausiert { $named }
+    .w-pause = Pause
+    .w-next-track = Nächster Titel
+    .w-previous-track = Vorheriger Titel
+    .w-stop = Stopp
+    .w-no-adjustable-display = Kein verstellbarer Bildschirm
+    .w-night-light-on = Nachtlicht an
+    .w-night-light-off = Nachtlicht aus
+    .w-do-not-disturb-on = Nicht stören an
+    .w-do-not-disturb-off = Nicht stören aus
+    .w-magnifier-on = Lupe an
+    .w-magnifier-off = Lupe aus
+    .w-input-source = Eingabequelle
+    .w-keys-captured = Tasten eingefangen
+    .w-pointer-released = Zeiger freigegeben
+    .w-changed = Geändert
+
 d-6t5hb2z7 = Anfrageansicht
     .w-retry = Erneut versuchen
     .w-nothing-matched = Nichts passt zu { $text }
@@ -1144,6 +1230,7 @@ d-dgtjjxex = Menü der Person
     .w-who-is-here = Wer hier ist
     .w-people = Personen
     .w-your-card = Deine Karte
+    .w-you = Du
 
 d-zlo3t3an = Aufnahmestatus
     .w-watching = { $label } sieht zu
@@ -1446,6 +1533,11 @@ d-6o7nacnz = Launcher-Zeile anders öffnen
 d-6o7nacnz-packed = Gepackt
 
 d-6o7nacnz-current = Aktuell
+
+d-ar6xlcsz = Launcher-Abfrage
+    .doc = Das Feld des Launchers wurde bearbeitet: die Abfrage der offenen Suche ist der Text, den es jetzt hält, sodass die angezeigten Zeilen und die Suchressource, die ein Agent oder ein Skript liest, sagen, was die Person getippt hat, nicht was sie vorher getippt hat.
+
+d-ar6xlcsz-text = Text
 
 d-q6bzrju7 = Oberfläche öffnen
     .doc = Öffnet die Fläche `surface` der Shell (`overview`, `workspaces`, `centre`), wie es die eigenen Bedienelemente der Leiste tun.
@@ -1933,6 +2025,88 @@ d-mxfb2qdk = Wo-Zeile
     .w-viewing = Sieht { $title }
     .w-in = In { $in_app }
 
+d-vqx3nbw5 = Anwesenheitsstatus
+    .w-away = abwesend
+    .w-offline = offline
+    .w-busy = beschäftigt
+    .w-online = online
+
+d-bwowjxfr = Verfügbarkeitswort
+    .w-focusing = Fokussiert
+    .w-away = Abwesend
+    .w-idle = Inaktiv
+    .w-available = Verfügbar
+
+d-ldpcj75n = Verfügbarkeit benannt
+    .w-focusing = Fokussiert
+    .w-away = Abwesend
+    .w-idle = Inaktiv
+    .w-available = Verfügbar
+
+d-urz5g437 = Energiemodus-Bezeichnung
+    .w-power-saver = Energiesparen
+    .w-performance = Leistung
+    .w-balanced = Ausgewogen
+
+d-ijtt4qaw = Kopier-Bezeichnung
+    .w-a-picture = Ein Bild
+    .w-a-copy = Eine Kopie
+
+d-xlwpoanc = Kopiert von
+    .w-from = Von { $from }
+
+d-b7ima7hy = Akkuwörter
+    .w-minutes-left = { $percentage } %, noch { $left } Minuten
+
+d-rdw57vib = Akkustatus
+    .w-charging = wird geladen
+    .w-on-the-battery = im Akkubetrieb
+    .w-empty = leer
+    .w-full = voll
+    .w-about-to-charge = lädt gleich
+    .w-about-to-drain = entlädt sich bald
+    .w-plugged-in = am Strom
+
+d-5bw77ouj = Gerätezeile
+    .w-takes-the-sound-you-send = Nimmt den Ton an, den du sendest
+    .w-here-now = Jetzt hier
+    .w-away = Abwesend
+
+d-annpbov6 = Ort in der Nähe
+    .w-away = Abwesend
+    .w-receiver = Empfänger
+    .w-in-reach = In Reichweite
+
+d-fezzuk6j = Übertragung läuft
+    .w-from = Von { $peer }, { $progress } %
+    .w-to = An { $peer }, { $progress } %
+
+d-6p4qx5lf = Steuerungsbezeichnung
+    .w-wi-fi = WLAN
+    .w-bluetooth = Bluetooth
+    .w-vpn = VPN
+    .w-night-light = Nachtlicht
+    .w-airplane-mode = Flugmodus
+    .w-mobile-data = Mobile Daten
+    .w-do-not-disturb = Nicht stören
+    .w-rotation-lock = Rotationssperre
+    .w-power-mode = Energiemodus
+
+d-mqcgotiw = Stiltitel
+    .w-strips = Streifen
+
+d-inhjxrxz = Fenstersymbol
+    .w-app-window = app-window
+
+d-24skrsf6 = Abfrageüberschrift
+    .w-looking-for-in = Suche nach { $text } in { $in_app }
+
+d-3fx2uvyj = Menüleistenname
+    .w-a-window = Ein Fenster
+
+d-bzkjwd5u = Ortstitel
+    .w-window = Fenster
+
 d-xgvy7oje = Personen
 
 d-avkcokw5 = Personentafel
@@ -1959,6 +2133,7 @@ d-vyjuo52r = Zeile einer Person
     .w-someone = Jemand
     .w-joined = Beigetreten um { $joined }
     .w-go-where-works = Dorthin gehen, wo { $name } arbeitet
+    .w-go-there = Dorthin
 
 d-uw37p3tz = Titel der Liste
     .w-who-is-here = Wer hier ist
@@ -2146,6 +2321,9 @@ d-q6dyi7r7 = Zugriffsangabe
     .w-shared-with = Geteilt mit { $name }
     .w-shared-with-and = Geteilt mit { $name } und { $second }
     .w-shared-with-and-others = Geteilt mit { $name } und { $more } weiteren
+
+d-amkomces = App-Zeile
+    .w-on = { $origin_app } auf { $device_name }
 
 d-3ytya6pk = Gesicht-Schaltfläche
     .w-someone = Jemand
