@@ -338,8 +338,7 @@ tilo_test_env::scenario! {
         let fired = queue.take();
         let scrolled = fired
             .iter()
-            .filter(|f| f.event == "scrolled")
-            .next_back()
+            .rfind(|f| f.event == "scrolled")
             .expect("the lane scrolled");
         let at = floats(scrolled.value.as_ref())[0];
         assert!((at - 10.0).abs() < 1.0, "a quarter of the track is half the cut: {at}");
@@ -350,8 +349,7 @@ tilo_test_env::scenario! {
         let fired = queue.take();
         let paged = fired
             .iter()
-            .filter(|f| f.event == "scrolled")
-            .next_back()
+            .rfind(|f| f.event == "scrolled")
             .expect("a page");
         assert!(floats(paged.value.as_ref())[0] > at, "a page goes on from where it stood");
     }

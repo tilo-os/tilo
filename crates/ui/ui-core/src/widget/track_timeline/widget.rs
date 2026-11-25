@@ -1873,11 +1873,6 @@ impl TrackTimeline {
     pub(crate) fn scrollbar_for_test(&self) -> Option<(Rect, Rect)> {
         self.scrollbar()
     }
-
-    #[cfg(test)]
-    pub(crate) fn bar_metrics_for_test(&self) -> ScrollMetrics {
-        self.scroll_metrics()
-    }
 }
 
 impl Widget for TrackTimeline {
