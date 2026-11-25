@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use automerge::{ROOT, transaction::Transactable as _};
+
 use tilo_actions::remote::ActionCallError;
 use tilo_peer_state::members::MembershipOpCommand;
 use tilo_peer_state::workspace::GovernanceRow;
@@ -33,6 +35,9 @@ use crate::common::{
     Linked, TestDevice, TestUser, copy_says, invitation, redeem, servers_action, start_server,
     write,
 };
+
+/// The app the record naming the computer's picture is written in.
+const PHOTOS: &str = "so.tilo.photos";
 
 /// How long the invitation a server issues a device logging in there stays redeemable
 /// (`OWN_INVITATION_SECONDS`), and some: the clock is moved past it once the computer is in.
@@ -298,11 +303,57 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
         "the computer's records reach server A",
     )
     .await;
-    // Not covered yet: a file's content moving with the workspace. A server keeps the content a
-    // record names by reading the record, so such a record is written in the clear; a server
-    // that joins is caught up with the sealed writes the others keep, never a record in the
-    // clear, and the server it replaces does not let go of a record it alone holds. The content
-    // moves once members hand it to the servers keeping their workspace.
+    // The computer posts a picture: a sealed record names it, and the computer pushes the
+    // bytes to server A over its link, unasked, as a writer pushes the content it writes.
+    let picture: Vec<u8> = b"a picture Alice's laptop took. "
+        .iter()
+        .copied()
+        .cycle()
+        .take(300 * 1024 + 11)
+        .collect();
+    let hash = blake3::hash(&picture).to_hex().to_string();
+    on_a.write(&laptop.sk, (PHOTOS, "album"), |doc| {
+        doc.put(ROOT, "photo", format!("blake3:{hash}:{}", picture.len()))
+            .unwrap();
+    })
+    .expect("the computer writes the record naming its picture, sealed");
+    let mut pushes = Vec::new();
+    let mut packer = neighbour_wire::content::Packer::new(
+        tilo_peer_state::peer_handle(&laptop.device_pubkey()),
+        tilo_peer_state::peer_handle(&a_device.device_pubkey()),
+        &company.workspace,
+        |frame| pushes.push(frame),
+    );
+    let total = u64::try_from(picture.len()).unwrap();
+    for (at, piece) in picture
+        .chunks(neighbour_wire::content::PIECE_BYTES)
+        .enumerate()
+    {
+        packer.piece(neighbour_wire::content::Piece {
+            app_id: PHOTOS.into(),
+            hash: hash.clone(),
+            total,
+            offset: u64::try_from(at * neighbour_wire::content::PIECE_BYTES).unwrap(),
+            bytes: piece.to_vec(),
+        });
+    }
+    packer.finish();
+    for push in pushes {
+        on_a.send(push)
+            .expect("the computer's link carries every piece");
+    }
+    tilo_test_env::within("server A keeps the computer's picture", async {
+        while a
+            .workspaces()
+            .kept_content(company.workspace_id, &hash)
+            .await
+            .as_deref()
+            != Some(picture.as_slice())
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 
     // The computer keeps its copy of the workspace; its daemon's own service holds the workspace
     // from here on, the one copy its key writes.
@@ -431,6 +482,16 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
     })
     .await;
 
+    // B keeps the picture A held for the computer, whose own service never held its bytes.
+    assert_eq!(
+        b.workspaces()
+            .kept_content(company.workspace_id, &hash)
+            .await
+            .as_deref(),
+        Some(picture.as_slice()),
+        "server B keeps the picture once server A lets the workspace go"
+    );
+
     // The server the workspace moved to takes no part in governing it, and Alice's computer
     // signed both changes to which servers keep it.
     let at_b = b
@@ -482,6 +543,15 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
     assert!(
         host_says(&b, company.workspace_id, "note:1", "note 1").await,
         "B reads what the computer wrote at A"
+    );
+    // And serves the picture from its own store alone.
+    assert_eq!(
+        b.workspaces()
+            .kept_content(company.workspace_id, &hash)
+            .await
+            .as_deref(),
+        Some(picture.as_slice()),
+        "B serves the picture the computer pushed to A"
     );
     // Not covered yet: the computer's daemon holding the workspace at B and writing there. B
     // administers nothing, and a further device of a member that enters by the certificate its
