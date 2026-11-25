@@ -5600,6 +5600,9 @@ impl Widget for TextInput {
     /// and a field sitting in a window people are not touching must not keep
     /// that window drawing.
     fn needs_redraw(&self) -> bool {
+        if self.moved || self.paint_changed() {
+            eprintln!("DBGTI {:?} moved {} repaint {} layout {} kids {} rect {:?}", self.text.chars().take(12).collect::<String>(), self.moved, self.repaint, self.layout_dirty, crate::widget::redraw_or_children(false, self), self.rect);
+        }
         self.moved || self.paint_changed()
     }
 

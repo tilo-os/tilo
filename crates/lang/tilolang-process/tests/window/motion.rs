@@ -700,12 +700,7 @@ fn the_mark_box(app: &mut impl Driven) -> [f64; 4] {
                 .nodes()
                 .into_iter()
                 .filter_map(|node| node.semantics.as_ref())
-                .filter(|access| {
-                    matches!(
-                        access.role,
-                        ui::a11y::Role::ToggleButton | ui::a11y::Role::Button
-                    )
-                })
+                .filter(|access| access.name.is_some())
                 .map(|access| (access.role, access.name.clone()))
                 .collect();
             panic!("the opened task's page offers to complete it: {offered:?}")
@@ -1005,6 +1000,7 @@ fn a_still_window_produces_no_frames() {
             let (drew, samples) = ui::tilo_resource::profiling::observe(|| draw(&mut app, at));
             let quiet = app.harness().quiet_frames() > quiet_before;
             let layout = app.harness().last_relayout();
+            eprintln!("DBGMARK step {step} drew {drew} quiet {quiet} moving {} phases {:?} req {:?} redraw {:?}", moving(&mut app), samples.len(), app.harness().frame_requesters(), app.harness().redraw_sources());
             if !moving(&mut app) {
                 break (samples, drew, layout, quiet);
             }

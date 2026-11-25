@@ -2453,6 +2453,7 @@ impl Widget for Button {
                 self.take_up(kept, found);
             }
             self.turn.follow(on, theme.motion(), now);
+            eprintln!("DBGMARK turn {} on {on} shown {:?} moving {} level {}", self.id, self.turn.shown, self.turn.mark.is_moving(now), self.turn.mark.level(now));
         }
         let turning = self
             .turn
@@ -2598,7 +2599,6 @@ impl Widget for Button {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.painted_turning
             || self.turn.mark.is_moving(crate::time::now())
             || self.motion.moving(crate::time::now())
             || self.i18n_revision != crate::i18n::I18nManager::revision()

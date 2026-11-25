@@ -1361,6 +1361,32 @@ impl App {
             && !self.wake_pending()
             && !self.actions.bound_calls_running()
             && !crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
+        eprintln!(
+            "DBGQUIET upd {} syn {} pub {} pres {} rebuilt {} idle {} redraw {} anim {} wake {} calls {} ctrl {}",
+            pump.updated, pump.synced, pump.published, pump.presentation_changed, structure_rebuilt,
+            self.root_widget.needs_idle_sync(), self.root_widget.needs_redraw(),
+            self.root_widget.needs_animation_frame(), self.wake_pending(),
+            self.actions.bound_calls_running(),
+            crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
+        );
+        {
+            fn visit(widget: &dyn crate::widget::Widget, parent: &str, out: &mut Vec<String>) {
+                if !widget.needs_redraw() {
+                    return;
+                }
+                let path = format!("{parent}/{}", widget.name());
+                let before = out.len();
+                for child in widget.children() {
+                    visit(child, &path, out);
+                }
+                if out.len() == before {
+                    out.push(path);
+                }
+            }
+            let mut leaves = Vec::new();
+            visit(self.root_widget.as_ref(), "", &mut leaves);
+            eprintln!("DBGQUIET leaves {leaves:?}");
+        }
         let frames = &mut self.layout.frames;
         frames.laid_out = frames.laid_out.saturating_add(1);
         if quiet {
