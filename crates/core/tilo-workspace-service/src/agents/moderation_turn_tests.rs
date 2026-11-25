@@ -153,7 +153,8 @@ async fn keep_scout(workspaces: &crate::workspaces::Workspaces, workspace: &str,
     workspaces
         .author_agents(workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(owner);
+                .as_author(owner)
+                .in_app(tilo_workspace_agent::OWNER, "Workspace");
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     avatar: None,

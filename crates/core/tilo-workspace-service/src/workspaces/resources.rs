@@ -1815,7 +1815,9 @@ impl Workspaces {
                 .await
                 .map(tilo_resource_store::wire::Reply::Ids);
         }
-        let device = self.member_identity()?;
+        // The write is this device's, not a member copy a plain service does not keep: the
+        // same device `record_command` signs as.
+        let device = self.signing_device();
         let writing = command.writes();
         // What a view's caller writes outside an invocation: each write's resource type and verb.
         let mut unserved = Vec::new();

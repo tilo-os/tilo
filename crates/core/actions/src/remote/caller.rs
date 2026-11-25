@@ -252,6 +252,24 @@ impl Caller {
         )
     }
 
+    /// An agent a device handed its session to: `user_public_key`'s root certified the key
+    /// `device_public_key` for `agent_id`, which is the device of `owner`, not the agent's
+    /// person's. The change names the agent acting for its person, and `owner`'s device as the
+    /// one that ran it.
+    #[must_use]
+    pub fn handed_agent(
+        agent_id: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+        owner: [u8; 32],
+    ) -> Self {
+        Self::admitted(
+            Acting::handed_agent(agent_id.into(), hex::encode(user_public_key))
+                .agent_of(hex::encode(owner)),
+            Some((user_public_key, device_public_key)),
+        )
+    }
+
     /// An agent acting inside a turn: `person`'s message in `turn`'s conversation caused it, and
     /// the agent takes part there. It may do exactly what that person may, held to the bound its
     /// own record carries, and its reads are decided inside the turn, so a conversation's own

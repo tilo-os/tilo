@@ -279,6 +279,25 @@ pub fn app_of_kind(kind: &str) -> Option<String> {
     kinds().lock_recover().get(kind).cloned()
 }
 
+/// The name an app publishes the verb `id` under, when a surface this process knows declares
+/// it: a tilolang app offers its actions by the names its code declares, while a change of one
+/// claims the id the declaration keeps, and a caller's signed invocation names the offered one.
+#[must_use]
+pub fn published_name(id: &str) -> Option<String> {
+    if id.is_empty() {
+        return None;
+    }
+    every().into_iter().find_map(|file| {
+        file.resources.iter().find_map(|resource| {
+            resource
+                .verbs
+                .iter()
+                .find(|verb| verb.id == id)
+                .map(|verb| verb.offered().to_owned())
+        })
+    })
+}
+
 /// The hash of the surface the changes to a record of kind `kind` are
 /// decided against: its app's.
 #[must_use]

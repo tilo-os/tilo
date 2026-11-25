@@ -291,6 +291,7 @@ pub fn verify_recorded(
     (workspace, keeper): (&str, Option<RecordHost<'_>>),
     revocations: &RevocationList,
     at_ns: u64,
+    published_name: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> Result<Option<DeviceCert>, InvocationError> {
     let invoker = context.invoker.as_ref().map(|invoker| &invoker.acting);
     let Some(call) = context.signed.as_deref() else {
@@ -318,7 +319,7 @@ pub fn verify_recorded(
     // Or it is a step the called action declares it takes in another record, written by the
     // device that keeps that record. A host that ran another resource's action for the call, or
     // another action on it, is refused here.
-    let declared = outside_call(context, &statement.target);
+    let declared = outside_call(context, &statement.target, published_name);
     if declared && !declared_step(context, &statement.target, keeper.map(|keeper| keeper.app)) {
         return Err(StatementMismatch::Target.into());
     }
@@ -374,6 +375,7 @@ pub struct RecordHost<'a> {
 fn outside_call(
     context: &tilo_actions::ActionContext,
     target: &tilo_actions::remote::RemoteActionTarget,
+    published_name: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> bool {
     let named = &target.address.resource;
     let in_resource = match &context.resource {
@@ -381,10 +383,28 @@ fn outside_call(
         None => context.what.is_none(),
     };
     let names_verb = match &context.what {
-        Some(tilo_actions::Did::Verb(verb)) => verb.action.action == target.address.action,
+        Some(tilo_actions::Did::Verb(verb)) => same_action(
+            &verb.action.action,
+            &target.address.action,
+            published_name,
+        ),
         _ => true,
     };
     !(in_resource && names_verb)
+}
+
+/// Whether the verb `claimed`, as a change names it, is the action `signed` the caller asked
+/// for: the same text, or the id the app publishes under that name (a tilolang app offers its
+/// actions by the names its code declares while a change claims the declaration's id).
+fn same_action(
+    claimed: &str,
+    signed: &str,
+    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+) -> bool {
+    claimed == signed
+        || published_name
+            .and_then(|published| published(claimed))
+            .is_some_and(|name| name == signed)
 }
 
 /// Whether the change `context` records is a step the call it keeps declares, rather than the
@@ -392,11 +412,13 @@ fn outside_call(
 /// call ([`verify_recorded`] checks that it may). Such a step is decided as the call's effect:
 /// its caller's, under the call that was allowed, never again as an edit the agent makes.
 #[must_use]
-pub fn declared_effect(context: &tilo_actions::ActionContext) -> bool {
-    context
-        .signed
-        .as_deref()
-        .is_some_and(|call| outside_call(context, &call.signed.statement().target))
+pub fn declared_effect(
+    context: &tilo_actions::ActionContext,
+    published_name: Option<&dyn Fn(&str) -> Option<String>>,
+) -> bool {
+    context.signed.as_deref().is_some_and(|call| {
+        outside_call(context, &call.signed.statement().target, published_name)
+    })
 }
 
 /// Whether `context` records a step the action `target` names declares it takes
@@ -452,6 +474,7 @@ pub fn verify_carried(
     record: &collab_types::receipt::WrittenDocument<'_>,
     claim: &collab_types::claim::ChangeClaim,
     revocations: &RevocationList,
+    published_name: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> Result<DeviceCert, InvocationError> {
     check_signature(signed)?;
     let statement = signed.statement();
@@ -464,7 +487,7 @@ pub fn verify_carried(
     // was made for one call that named neither or only one. Or, where the
     // device that signed the change keeps the record (`kept`), every verb the
     // claim names is a step the called action declares it takes there.
-    let outside = carried_effect(signed, record, claim);
+    let outside = carried_effect(signed, record, claim, published_name);
     let verbs = claimed_verbs(claim);
     let declared = keeper.is_some()
         && !verbs.is_empty()
@@ -520,14 +543,22 @@ pub fn carried_effect(
     signed: &SignedInvocation,
     record: &collab_types::receipt::WrittenDocument<'_>,
     claim: &collab_types::claim::ChangeClaim,
+    published_name: Option<&dyn Fn(&str) -> Option<String>>,
 ) -> bool {
     let target = &signed.statement().target;
     let named = &target.address.resource;
+    // The call names the record the change is of, the app, the kind of it, or a resource the
+    // app publishes in it (`tl:<app>:<id>`, a tilolang app's own address for what it holds).
+    let in_app = named
+        .strip_prefix("tl:")
+        .and_then(|rest| rest.strip_prefix(record.app))
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|id| !id.is_empty());
     let in_record =
-        named == record.document || named == record.app || claim_names_kind(claim, named);
+        named == record.document || named == record.app || in_app || claim_names_kind(claim, named);
     let names_verb = claimed_verbs(claim)
         .iter()
-        .all(|action| action.action == target.address.action);
+        .all(|action| same_action(&action.action, &target.address.action, published_name));
     !(in_record && names_verb)
 }
 
@@ -1167,6 +1198,7 @@ mod tests {
                     (WORKSPACE, None),
                     &RevocationList::new(),
                     NOW,
+                    None,
                 )
             };
             let scout = for_person(Acting::agent("scout"));
@@ -1233,7 +1265,7 @@ mod tests {
             let none = RevocationList::new();
             // The call's own resource and action are inside it; another of either is not.
             assert_eq!(
-                verify_recorded(&change("note:1", "note", "rename"), (WORKSPACE, None), &none, NOW),
+                verify_recorded(&change("note:1", "note", "rename"), (WORKSPACE, None), &none, NOW, None),
                 Ok(Some(cert))
             );
             for outside in [
@@ -1241,7 +1273,7 @@ mod tests {
                 change("note:1", "note", "delete"),
             ] {
                 assert_eq!(
-                    verify_recorded(&outside, (WORKSPACE, None), &none, NOW),
+                    verify_recorded(&outside, (WORKSPACE, None), &none, NOW, None),
                     Err(InvocationError::Mismatch(StatementMismatch::Target))
                 );
             }
@@ -1291,13 +1323,13 @@ mod tests {
             let none = RevocationList::new();
             let host = [7; 32];
             let keeper = |app| RecordHost { app, device: &host };
-            let kept_by = |keeper| verify_recorded(&step("keep-sealed"), (WORKSPACE, keeper), &none, NOW);
+            let kept_by = |keeper| verify_recorded(&step("keep-sealed"), (WORKSPACE, keeper), &none, NOW, None);
             assert_eq!(kept_by(Some(keeper("so.tilo.passwords"))), Ok(Some(cert)));
             let refused = Err(InvocationError::Mismatch(StatementMismatch::Target));
             assert_eq!(kept_by(None), refused);
             assert_eq!(kept_by(Some(keeper("so.tilo.notes"))), refused);
             assert_eq!(
-                verify_recorded(&step("remove-sealed"), (WORKSPACE, Some(keeper("so.tilo.passwords"))), &none, NOW),
+                verify_recorded(&step("remove-sealed"), (WORKSPACE, Some(keeper("so.tilo.passwords"))), &none, NOW, None),
                 refused
             );
         }
@@ -1345,13 +1377,13 @@ mod tests {
                 })
             };
             let used = step("keep-uses", &agent);
-            assert!(declared_effect(&used));
+            assert!(declared_effect(&used, None));
             assert_eq!(
-                verify_recorded(&used, (WORKSPACE, keeper(&host.device_public_key)), &none, NOW),
+                verify_recorded(&used, (WORKSPACE, keeper(&host.device_public_key)), &none, NOW, None),
                 Ok(Some(host.clone()))
             );
             assert!(
-                verify_recorded(&used, (WORKSPACE, keeper(&[9; 32])), &none, NOW).is_err(),
+                verify_recorded(&used, (WORKSPACE, keeper(&[9; 32])), &none, NOW, None).is_err(),
                 "another device than the keeper signed it"
             );
             assert_eq!(
@@ -1359,7 +1391,8 @@ mod tests {
                     &step("keep-sealed", &agent),
                     (WORKSPACE, keeper(&host.device_public_key)),
                     &none,
-                    NOW
+                    NOW,
+                    None
                 ),
                 Err(InvocationError::Mismatch(StatementMismatch::Target)),
                 "a fill writes down its use and keeps no item"
@@ -1369,7 +1402,8 @@ mod tests {
                     &step("keep-uses", &Acting::person(ada)),
                     (WORKSPACE, keeper(&host.device_public_key)),
                     &none,
-                    NOW
+                    NOW,
+                    None
                 ),
                 Err(InvocationError::NotInvoker),
                 "the host never names the person as having made it"
@@ -1404,6 +1438,7 @@ mod tests {
                     (WORKSPACE, None),
                     &RevocationList::new(),
                     NOW,
+                    None,
                 )
             };
             let by_ada = signed(&request(), &ada_device, &laptop, NOW);

@@ -16,7 +16,7 @@
 //! What a sub-agent may read and change is not decided here: it is one more actor in its
 //! starter's chain ([`tilo_actions::remote::Caller::working_under`]), decided as every action is.
 
-use serde_json::{Map, json};
+use serde_json::Map;
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -193,7 +193,7 @@ impl ServerAgents {
                     let mut saying =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                             .as_acting(chain.clone())
-                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
+                            .in_app(tilo_workspace_agent::OWNER, "Workspace");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     saying.set_now_ms(tilo_clock::unix_now_ms_i64());
                     let applied = saying

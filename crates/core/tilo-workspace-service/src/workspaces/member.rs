@@ -533,6 +533,9 @@ impl Workspaces {
     /// saves is signed by the device this service signs its own writes as
     /// ([`Self::signing_device`]), so its triggers fire for that person as one they saved.
     ///
+    /// The save is this device's own settings change wherever the workspace is held: a member
+    /// copy's is sent to the device serving the workspace, which arms the trigger there too.
+    ///
     /// # Errors
     /// The shortcut could not be signed, or the workspace did not take the change.
     pub async fn change_own_shortcuts(
@@ -549,7 +552,7 @@ impl Workspaces {
                 device.signer.as_ref(),
             )?;
         }
-        self.commit_own_membership(
+        self.commit_own_change(
             workspace,
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
                 tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
@@ -557,8 +560,6 @@ impl Workspaces {
             None,
         )
         .await
-        .map(drop)
-        .map_err(|error| error.to_string())
     }
 
     /// The device a member copy acts as, when this service serves one.

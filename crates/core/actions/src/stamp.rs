@@ -364,6 +364,11 @@ impl Stamp {
         if context.source_invocation.is_none() {
             context.source_invocation = self.invocation.parse().ok();
         }
+        // A store write keeps the call its caller signed in its stamp: the change's history
+        // entry names it, so every holder checks that caller asked for it, and with which key.
+        if context.signed.is_none() {
+            context.signed.clone_from(&self.signed);
+        }
         if context.what.is_none() {
             let op = match (self.verb.as_str(), &self.undoes) {
                 (Self::CHECKPOINT_VERB, _) => Some(crate::HistoryOp::Checkpoint {

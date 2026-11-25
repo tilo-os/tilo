@@ -1437,7 +1437,8 @@ async fn keeps_an_assistant(
     workspaces
         .author_agents(workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(&person);
+                .as_author(&person)
+                .in_app(tilo_workspace_agent::OWNER, "Workspace");
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     avatar: None,
@@ -2213,7 +2214,8 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     workspaces
         .author_agents(&workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(&person);
+                .as_author(&person)
+                .in_app(tilo_workspace_agent::OWNER, "Workspace");
             made.apply(
                 WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     avatar: Some(PICTURE.to_owned()),

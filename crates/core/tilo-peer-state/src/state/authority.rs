@@ -104,6 +104,23 @@ fn allowing<'a>(
     caller_refused: &'a std::cell::RefCell<Option<(String, String, ActionKind)>>,
 ) -> impl Fn(Option<&tilo_action_policy::Acting>, &TreePath, ActionKind) -> bool + 'a {
     move |invoker, node, kind| {
+        // An agent a device that is not its person's runs hands its session to the agent: it
+        // acts with its person's preset, as an agent on that person's own device does. A
+        // change's record keeps who the agent acted for; the device that wrote it is the
+        // author's, and its person is not.
+        let handed;
+        let invoker = match invoker {
+            Some(acting)
+                if acting.is_agent()
+                    && acting
+                        .acted_for_person()
+                        .is_some_and(|person| Some(person) != member.acting.person_id()) =>
+            {
+                handed = acting.clone().handed();
+                Some(&handed)
+            }
+            other => other,
+        };
         // The device that signed the change bounds it, whatever member the
         // change names.
         if collab_types::ChangeAuthor::answer(member, None, node, kind, cx)
@@ -1465,6 +1482,9 @@ impl StatePeer {
             document: record,
         };
         let keeper = self.signed_by_governor(source).then_some(source);
+        // The action a change names is the one its caller signed, once the app's own surface
+        // publishes the two names as one action.
+        let published_name = |id: &str| collab_types::app_surface::published_name(id);
         let mut caller: Option<CallerAccess> = None;
         let mut bare = false;
         for claim in &envelope.claims {
@@ -1492,6 +1512,7 @@ impl StatePeer {
                 &document,
                 claim,
                 &self.core.revocations,
+                Some(&published_name),
             )
             .map_err(|error| {
                 refused_invocation(
@@ -1502,7 +1523,12 @@ impl StatePeer {
                 )
             })?;
             let effect = keeper.is_some()
-                && tilo_server_protocol::invocation::carried_effect(call, &document, claim);
+                && tilo_server_protocol::invocation::carried_effect(
+                    call,
+                    &document,
+                    claim,
+                    Some(&published_name),
+                );
             // A call the keeper carried out for an agent, and signed as the device that did, is
             // the call of the person the agent acts for.
             let person = match invoker.acted_for_person() {
@@ -1625,6 +1651,9 @@ impl StatePeer {
                 device: source,
             },
         );
+        // The action a change names is the one its caller signed, once the app's own surface
+        // publishes the two names as one action.
+        let published_name = |id: &str| collab_types::app_surface::published_name(id);
         let mut caller: Option<CallerAccess> = None;
         let mut bare = false;
         'changes: for change in changes {
@@ -1661,6 +1690,7 @@ impl StatePeer {
                     (&self.core.workspace, keeper),
                     &self.core.revocations,
                     crate::state::now_ns(authorization_time),
+                    Some(&published_name),
                 )
                 .map_err(|error| {
                     refused_invocation(
@@ -1691,7 +1721,10 @@ impl StatePeer {
                 match certificate {
                     Some(certificate) => {
                         let effect = keeper.is_some()
-                            && tilo_server_protocol::invocation::declared_effect(&context);
+                            && tilo_server_protocol::invocation::declared_effect(
+                                &context,
+                                Some(&published_name),
+                            );
                         let person = called_person(&invoker.acting, &certificate, source, effect);
                         caller = Some(self.called_by(
                             (&route, source, envelope),
