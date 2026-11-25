@@ -399,16 +399,20 @@ fn the_shells_surface_and_the_popovers_stand_one_at_a_time() {
 }
 
 #[test]
-fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
-    // The menus, the picker and the strip ribbon open and close with the widgets that draw them,
-    // which say so to the same stack: the session's verb refuses them rather than putting up a
-    // second one.
+fn the_sessions_verb_raises_and_takes_down_the_surfaces_the_chrome_opens() {
+    // The menus, the picker and the strip ribbon stand on the one stack the shell draws, which the
+    // widgets that open them write too: the session's verb raises each there and takes it down
+    // again, so an agent or a script opens what the person's press does.
     let mut session = session();
     for part in ["emoji", "workspace-menu", "strips"] {
-        let opened = session.invoke(OVERLAYS, "open-surface", &args(&json!({ "part": part })));
-        assert!(opened.is_err(), "{part} is the chrome's");
-        let closed = session.invoke(OVERLAYS, "close-surface", &args(&json!({ "part": part })));
-        assert!(closed.is_err(), "{part} is the chrome's");
+        session
+            .invoke(OVERLAYS, "open-surface", &args(&json!({ "part": part })))
+            .unwrap_or_else(|error| panic!("{part} opens: {error}"));
+        assert_eq!(parts(&session), [part], "{part} is up, alone");
+        session
+            .invoke(OVERLAYS, "close-surface", &args(&json!({ "part": part })))
+            .unwrap_or_else(|error| panic!("{part} closes: {error}"));
+        assert!(parts(&session).is_empty(), "{part} went down");
     }
     assert!(
         session
