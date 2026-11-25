@@ -30,6 +30,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("control_hints", Holder::Person),
     ("default_apps", Holder::Person),
     ("desktop_controls", Holder::Person),
+    (crate::emoji::SECTION, Holder::Person),
     ("display_person", Holder::Person),
     ("identity", Holder::Person),
     ("input", Holder::Person),

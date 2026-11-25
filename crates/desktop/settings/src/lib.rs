@@ -69,6 +69,7 @@ pub mod display_placement;
 pub mod display_scale;
 pub mod display_tools;
 pub mod display_tuning;
+pub mod emoji;
 pub mod hardware;
 pub mod identity;
 pub mod index;
