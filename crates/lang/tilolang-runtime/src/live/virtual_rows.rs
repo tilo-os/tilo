@@ -87,14 +87,6 @@ impl Rows {
         })
     }
 
-    /// The collection whose items the rows are, if they are a collection's.
-    fn coll(&self) -> Option<Rc<CollRef>> {
-        match self {
-            Self::Coll { coll, .. } => Some(Rc::clone(coll)),
-            Self::List { .. } => None,
-        }
-    }
-
     /// Whether [`Self::len`] is the rows' length and not the most they can hold: a listing that
     /// checks its items one by one as it reads them says how many it holds only once it has read
     /// them all, and before then the most its run can name, a number that moves with the run's

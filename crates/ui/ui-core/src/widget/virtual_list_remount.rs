@@ -29,7 +29,11 @@ impl VirtualRows {
             return near;
         }
         let overscan = self.viewport.overscan();
-        let ahead = overscan + self.viewport.viewport();
+        // A glide going on carries the view on to where it rests: the rows there are mounted with
+        // these, so a wheel notch asks for the rows it brings once rather than each time its glide
+        // passes the rows mounted a view ahead.
+        let glide = self.scroll.momentum.rest_distance().abs();
+        let ahead = overscan + self.viewport.viewport().max(glide);
         if near.start < mounted.start {
             self.viewport.range_around(ahead, overscan)
         } else {

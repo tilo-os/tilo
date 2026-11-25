@@ -359,43 +359,51 @@ impl Core {
         })?;
         let value = match list {
             Ok(item) => item.map_or_else(Value::none, Value::some),
-            Err(coll) => {
-                let (at, rows) = match self.place_of(&coll, &want) {
-                    Some((at, rows)) => (Some(at), rows),
-                    None => (
-                        match Self::item_id(&want) {
-                            Some(id) => match self.coll_listing(&coll)?.position(id) {
+            Err(coll) => match Self::item_id(&want) {
+                Some(item) => {
+                    let (at, rows) = match self.place_of(&coll, item)? {
+                        Some((at, rows)) => (Some(at), rows),
+                        None => {
+                            let listing = self.coll_listing(&coll)?;
+                            let at = match listing.position(item) {
                                 Some(at) => at,
-                                None => self
-                                    .coll_listing(&coll)?
-                                    .iter()
-                                    .position(|other| *other == *id),
-                            },
-                            None => None,
-                        },
-                        None,
-                    ),
-                };
-                match (at, Self::item_id(&want)) {
-                    (Some(at), Some(item)) => self.coll_before(&coll, at, item, rows.as_deref())?,
-                    _ => Value::none(),
+                                None => listing.iter().position(|other| *other == *item),
+                            };
+                            (at, None)
+                        }
+                    };
+                    match at {
+                        Some(at) => self.coll_before(&coll, at, item, rows.as_deref())?,
+                        None => Value::none(),
+                    }
                 }
-            }
+                None => Value::none(),
+            },
         };
         self.ret_h(value)
     }
 
     /// Where `item` stands in `coll` while a view renders the row of it: the place the host gave
     /// the row, which the row's own body knows without reading the rows before it, and the rows
-    /// the list holds it among, where those are not the collection's listing as it is.
+    /// the list holds it among, where those are not the collection's listing as it is. The row's
+    /// collection is the one its view reads whatever reference the view holds of it, and the place
+    /// is the row's own only when its item stands there.
     fn place_of(
         &self,
         coll: &Rc<crate::value::CollRef>,
-        item: &Value,
-    ) -> Option<(usize, Option<Rc<crate::store::Listing>>)> {
-        let place = self.row_place.borrow().clone()?;
-        (Rc::ptr_eq(&place.coll, coll) && Self::item_id(item).is_some())
-            .then_some((place.at, place.rows))
+        item: &str,
+    ) -> HResult<Option<(usize, Option<Rc<crate::store::Listing>>)>> {
+        let Some(place) = self.row_place.borrow().clone() else {
+            return Ok(None);
+        };
+        if !(Rc::ptr_eq(&place.coll, coll) || *place.coll == **coll) {
+            return Ok(None);
+        }
+        let there = match &place.rows {
+            Some(rows) => rows.get(place.at),
+            None => self.coll_listing(coll)?.get(place.at),
+        };
+        Ok((there.as_deref() == Some(item)).then_some((place.at, place.rows)))
     }
 
     /// The item `v` is a reference to, if it is a reference.
