@@ -1016,6 +1016,69 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// The documents provider entry of an app that serves its person's workspace files to Android's
+/// own pickers, or nothing.
+fn workspace_files_provider(workspace_files: bool, id: &str) -> String {
+    if workspace_files {
+        format!(
+            r#"
+        <!-- The person's workspaces as roots of the system file picker: the Files app and every
+             app's file chooser browse the workspace's folders and open and save its files.
+             MANAGE_DOCUMENTS keeps it to the system, which is what replaces the picker. -->
+        <provider
+            android:name="so.tilo.android.TiloWorkspaceFiles"
+            android:authorities="{id}.tilo.workspace"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+"#
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// The query and the receiver an app that takes `UnifiedPush` pushes declares, or nothing.
+fn unified_push_entries(unified_push: bool) -> (&'static str, &'static str) {
+    // An app that takes pushes from a UnifiedPush distributor the person installed registers with
+    // it as the connector protocol says, and receives what it carries here.
+    // A push's distributor is another app: naming its registration action is what lets this one
+    // see it.
+    let queries = if unified_push {
+        r#"
+        <intent>
+            <action android:name="org.unifiedpush.android.connector.REGISTER" />
+        </intent>"#
+    } else {
+        ""
+    };
+    let push = if unified_push {
+        r#"
+        <!-- Pushes reach this app through the UnifiedPush distributor its person installed, and
+             each one is shown as a notification by Tilo's Rust. -->
+        <meta-data android:name="so.tilo.unified-push" android:value="true" />
+        <receiver
+            android:name="so.tilo.android.TiloPush"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+                <action android:name="org.unifiedpush.android.distributor.DISTRIBUTOR" />
+            </intent-filter>
+        </receiver>
+"#
+    } else {
+        ""
+    };
+    (queries, push)
+}
+
 /// The `AndroidManifest.xml` of an APK whose activity loads `lib<lib_name>.so`. `workspace_files`
 /// declares the app's documents provider, which serves the person's workspace files to Android's
 /// own pickers: only the app whose library answers it (`workspace-files` in its
@@ -1038,59 +1101,8 @@ pub fn android_manifest(
             );
             text
         });
-    let documents = if workspace_files {
-        format!(
-            r#"
-        <!-- The person's workspaces as roots of the system file picker: the Files app and every
-             app's file chooser browse the workspace's folders and open and save its files.
-             MANAGE_DOCUMENTS keeps it to the system, which is what replaces the picker. -->
-        <provider
-            android:name="so.tilo.android.TiloWorkspaceFiles"
-            android:authorities="{id}.tilo.workspace"
-            android:exported="true"
-            android:grantUriPermissions="true"
-            android:permission="android.permission.MANAGE_DOCUMENTS">
-            <intent-filter>
-                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
-            </intent-filter>
-        </provider>
-"#
-        )
-    } else {
-        String::new()
-    };
-    // An app that takes pushes from a UnifiedPush distributor the person installed registers with
-    // it as the connector protocol says, and receives what it carries here.
-    // A push's distributor is another app: naming its registration action is what lets this one
-    // see it.
-    let queries = if app.unified_push {
-        r#"
-        <intent>
-            <action android:name="org.unifiedpush.android.connector.REGISTER" />
-        </intent>"#
-    } else {
-        ""
-    };
-    let push = if app.unified_push {
-        r#"
-        <!-- Pushes reach this app through the UnifiedPush distributor its person installed, and
-             each one is shown as a notification by Tilo's Rust. -->
-        <meta-data android:name="so.tilo.unified-push" android:value="true" />
-        <receiver
-            android:name="so.tilo.android.TiloPush"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
-                <action android:name="org.unifiedpush.android.connector.REGISTRATION" />
-                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
-                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
-                <action android:name="org.unifiedpush.android.distributor.DISTRIBUTOR" />
-            </intent-filter>
-        </receiver>
-"#
-    } else {
-        ""
-    };
+    let documents = workspace_files_provider(workspace_files, &id);
+    let (queries, push) = unified_push_entries(app.unified_push);
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
