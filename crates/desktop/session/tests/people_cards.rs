@@ -125,6 +125,26 @@ fn open_who_is_here(session: &mut Session) {
     });
 }
 
+/// The node `label` names, as the reader an assistive client is reads it, and the place of the
+/// window the shell exports it in.
+fn a11y_node(session: &Session, label: &str) -> (usize, ui::accesskit::NodeId) {
+    let windows = session.a11y_windows();
+    for (place, _, tree) in &windows {
+        if let Some((node, _)) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+        {
+            return (*place, *node);
+        }
+    }
+    let said: Vec<&str> = windows
+        .iter()
+        .flat_map(|(_, _, tree)| tree.nodes.iter().filter_map(|(_, node)| node.label()))
+        .collect();
+    panic!("no node named {label:?}; the shell says {said:?}")
+}
+
 /// Wait until the shell shows the control `name`.
 fn shows(session: &mut Session, name: &str) {
     wait_for(session, format!("the shell's {name}"), |session| {
@@ -318,11 +338,14 @@ fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
             "Editing the launch note",
         )],
     );
-    // Who is here, where the agent has its row, and a press on the row opens its card. The row is
-    // pressed by the name a reader hears for it, which is the row and nothing else: its title alone
-    // names the text, whose place in a row carrying software's mark is not the row's.
+    // Who is here, where the agent has its row, and a press on the row opens its card: pressed
+    // through the window the shell exports, as a screen reader activates the row it reads.
     open_who_is_here(&mut session);
-    press(&mut session, "Agent Fieldwork");
+    let (place, row) = a11y_node(&session, "Agent Fieldwork");
+    assert!(
+        session.a11y_perform(place, row, &ui::a11y::Action::Activate),
+        "the shell took the press its window offers"
+    );
     // What it is at, as its live line, and what can be asked of it: Stop, Undo run, Take over and
     // Revoke, each carried out by its card in Console.
     says(&mut session, "Editing the launch note");
