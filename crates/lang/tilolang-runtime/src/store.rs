@@ -1648,8 +1648,14 @@ pub trait Store {
     }
 
     /// The run `run` ended: what it wrote stays, and is published as the one action it is.
-    fn end_run(&mut self, run: &str) {
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the store refuses what the run wrote: the caller answers the run as
+    /// failed rather than as a success whose writes were dropped.
+    fn end_run(&mut self, run: &str) -> Result<(), StoreError> {
         let _ = run;
+        Ok(())
     }
 
     /// The run `run` failed somewhere: take everything it wrote back out, in every document it

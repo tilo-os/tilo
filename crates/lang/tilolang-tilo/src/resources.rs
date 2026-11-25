@@ -5266,17 +5266,15 @@ impl Store for ResourceStore {
         runs.push((run.to_owned(), saved, invocation));
     }
 
-    fn end_run(&mut self, run: &str) {
+    fn end_run(&mut self, run: &str) -> Result<(), StoreError> {
         {
             let mut runs = self.inner.runs.borrow_mut();
             let Some(at) = runs.iter().rposition(|(open, _, _)| open == run) else {
-                return;
+                return Ok(());
             };
             runs.truncate(at);
         }
-        if let Err(error) = self.settle() {
-            tracing::warn!(%error, "the store refused what a run wrote");
-        }
+        self.settle()
     }
 
     fn abort_run(&mut self, run: &str) {

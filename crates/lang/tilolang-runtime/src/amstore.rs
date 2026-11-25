@@ -1044,8 +1044,9 @@ impl Store for AmStore {
             .or_default();
     }
 
-    fn end_run(&mut self, run: &str) {
+    fn end_run(&mut self, run: &str) -> Result<(), StoreError> {
         self.inner.borrow_mut().runs.remove(run);
+        Ok(())
     }
 
     fn abort_run(&mut self, run: &str) {

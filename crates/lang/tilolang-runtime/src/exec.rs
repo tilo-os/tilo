@@ -1729,19 +1729,31 @@ impl Core {
             self.running.set(false);
             if !invocation.is_empty() {
                 let mut store = self.store.borrow_mut();
-                match &outcome {
+                let settled = match &outcome {
                     // A run waiting on another app's answer is still one action: what it wrote
                     // stays apart until it ends, and a failure after the answer takes it all back.
-                    Ok(RunOutcome::Waits { .. }) => {}
+                    Ok(RunOutcome::Waits { .. }) => Ok(()),
                     Ok(_) => store.end_run(&invocation),
-                    Err(_) => store.abort_run(&invocation),
-                }
+                    Err(_) => {
+                        store.abort_run(&invocation);
+                        Ok(())
+                    }
+                };
                 drop(store);
-                match &outcome {
-                    Ok(RunOutcome::Waits { .. }) => {}
-                    Ok(_) => self.ended(&invocation, true),
-                    Err(_) => self.ended(&invocation, false),
+                // A run whose writes the store refused is no success: the answer says why,
+                // rather than standing for changes the workspace never took.
+                let outcome = match settled {
+                    Ok(()) => outcome,
+                    Err(error) => Err(RuntimeError::Trap(format!(
+                        "the store refused what the run wrote: {error}"
+                    ))),
+                };
+                // A run that waits has not ended: it goes on as a new one, and the view waiting
+                // on it keeps waiting.
+                if !matches!(outcome, Ok(RunOutcome::Waits { .. })) {
+                    self.ended(&invocation, outcome.is_ok());
                 }
+                return outcome;
             }
         }
         outcome
