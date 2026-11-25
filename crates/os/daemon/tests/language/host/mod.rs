@@ -574,7 +574,7 @@ impl Host {
             DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
-            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            self.daemon().api_here(),
             key,
             cert,
             label,
@@ -592,7 +592,7 @@ impl Host {
             DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
-            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            self.daemon().api_here(),
             key,
             cert,
             label,
@@ -617,7 +617,7 @@ impl Host {
             DeviceCapabilities::own_key_grant(AgentScope::Workspace(id)),
         );
         let direct = tilo_api::direct::Direct::here(
-            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            self.daemon().api_here(),
             key,
             cert,
             label,
@@ -635,7 +635,7 @@ impl Host {
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         );
         let direct = tilo_api::direct::Direct::here(
-            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            self.daemon().api_here(),
             key,
             cert,
             label,
@@ -651,7 +651,7 @@ impl Host {
     pub fn page_key(&self, label: &str) -> Key {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
         let direct = tilo_api::direct::Direct::here(
-            self.daemon() as Arc<dyn tilo_api::session::Here>,
+            self.daemon().api_here(),
             key,
             cert,
             label,

@@ -1358,7 +1358,7 @@ impl Daemon {
             return Ok(Arc::clone(api));
         }
         // The API reaches the daemon without keeping it: the daemon keeps the API.
-        let here = Arc::new(DaemonHere(Arc::downgrade(self))) as Arc<dyn tilo_api::session::Here>;
+        let here = self.api_here();
         let api = Arc::new(
             tilo_api::direct::Direct::here(
                 here,
@@ -4262,6 +4262,15 @@ impl Daemon {
     /// its person here keeps them itself, and answers for them.
     pub(crate) fn keeps_its_own_account(&self) -> bool {
         self.first.founds()
+    }
+
+    /// The daemon as its API reaches it, without keeping it: what a key's connection answers
+    /// through, as the daemon's own listeners do. A `Daemon` cannot be handed as itself: its
+    /// account is one only while the daemon is held, so the API reaches it through the weak
+    /// handle [`DaemonHere`] keeps.
+    #[must_use]
+    pub fn api_here(self: &Arc<Self>) -> Arc<dyn tilo_api::session::Here> {
+        Arc::new(DaemonHere(Arc::downgrade(self)))
     }
 }
 
