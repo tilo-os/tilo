@@ -26,6 +26,9 @@ export function webhookSend({ webhook, tokenItem, origin = API }, op) {
     username: op.username,
     avatar_url: op.avatar_url ?? undefined,
     content: op.content,
+    // Only a user written as `<@id>` is pinged: never `@everyone`, `@here` or a role, whatever
+    // the workspace's text says.
+    allowed_mentions: ONLY_USERS,
     thread_id: op.thread ?? undefined,
     attachments: op.attachments.map((file, index) => ({
       id: index,
@@ -62,6 +65,9 @@ export function webhookSend({ webhook, tokenItem, origin = API }, op) {
   };
 }
 
+/// What a message from the workspace may ping in Discord: the users it names, nobody else.
+const ONLY_USERS = { parse: ["users"] };
+
 /// Edits a message the bridge sent.
 export function webhookEdit({ webhook, tokenItem, origin = API }, op) {
   return {
@@ -69,7 +75,7 @@ export function webhookEdit({ webhook, tokenItem, origin = API }, op) {
     key: tokenItem,
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: op.content }),
+    body: JSON.stringify({ content: op.content, allowed_mentions: ONLY_USERS }),
     reason: "an edit made in the workspace",
   };
 }
