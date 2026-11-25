@@ -270,7 +270,7 @@ mod tests {
         // The daemon listens where the identity's clients dial it: its profile's own sockets.
         let daemon = StandInDaemon::start(
             tilo_device_identity::login::daemon::DeviceActions::here(IdentityPaths::under(
-                &home.join("certified"),
+                home.join("certified"),
             ))
             .expect("the daemon's sockets")
             .native()
