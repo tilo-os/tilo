@@ -121,6 +121,11 @@ label = "Local sockets bind and connect at any path length"
 run = "python3 tools/policy/check_socket_paths.py"
 
 [[step]]
+name = "compiled-surfaces"
+label = "Built code embeds a surface in its compiled form"
+run = "python3 tools/policy/check_compiled_surfaces.py"
+
+[[step]]
 name = "words-that-go"
 label = "The words docs/architecture/core.md says go are only ever used less"
 run = "python3 tools/policy/check_words_that_go.py"
