@@ -331,10 +331,7 @@ fn a_host_out_of_reach_is_told_from_one_that_answers_nothing() {
             socket: None,
             name: "unused".into(),
         };
-        let why = hosted
-            .try_read(now)
-            .err()
-            .expect("the host is out of reach");
+        let why = hosted.try_read(now).expect_err("the host is out of reach");
         assert!(why.contains("plans.json"), "{why}");
         // The tolerant read still answers what it can, for the callers that want that.
         assert!(hosted.read(now).plans.is_empty());
@@ -343,18 +340,17 @@ fn a_host_out_of_reach_is_told_from_one_that_answers_nothing() {
     {
         std::fs::write(&plans, serde_json::to_vec(&selling()).unwrap()).unwrap();
         // A socket under a path that is no directory: the host cannot be reached there.
-        let socket = plans.clone().join("hosted-vm.sock");
+        let socket = plans.join("hosted-vm.sock");
         let hosted = ServerAccountSource {
             account: "acct-1".into(),
-            plans: plans.clone(),
+            plans,
             log: None,
             socket: Some(socket),
             name: "unused".into(),
         };
         let why = hosted
             .try_read(now)
-            .err()
-            .expect("the host's service is out of reach");
+            .expect_err("the host's service is out of reach");
         assert!(why.contains("hosted-vm.sock"), "{why}");
     }
 }
