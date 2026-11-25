@@ -600,11 +600,14 @@ const WRITER_HELPER: &str = "TILO_DAEMON_WRITER_HELPER";
 const WRITER_APP: &str = "dev.tilo.writer";
 const WRITER_KIND: &str = "dev.tilo.writer.note";
 const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
+/// The writer's surface, in the canonical form a package ships it: the note it keeps, whose text
+/// its plain edits write.
+const WRITER_SURFACE: &str = r#"{"resources":[{"fields":[{"path":"text","stored":"value","type":"text"}],"kind":"dev.tilo.writer.note","label":"Note","verbs":[{"id":"type","kind":"undoable","params":[]}],"version":1}]}"#;
 const WRITTEN: &str = "written by an SDK app";
 
-/// What the workspace host this session runs keeps of the writer's record in the
-/// profile's own workspace, opened with the channel's keys. `Err` says where the
-/// write stops on the way there, so a write that never arrives is explained.
+/// The text of the writer's note as the store of the workspace host this session
+/// runs keeps it in the profile's own workspace. `Err` says where the read stops,
+/// so a write that never arrives is explained.
 fn written(session: &Daemon) -> Result<Option<String>, String> {
     use automerge::ReadDoc as _;
     let workspace = WorkspaceId::parse(&session.workspace().map_err(|error| error.to_string())?)
@@ -612,9 +615,11 @@ fn written(session: &Daemon) -> Result<Option<String>, String> {
     let record = ui::resource::DocumentId::for_file_document(
         uuid::Uuid::parse_str(WRITER_RECORD).map_err(|error| error.to_string())?,
     );
-    let bytes = session
-        .workspaces
-        .test_kept_document(workspace, WRITER_APP, record.as_str())?;
+    let store = session.workspaces.service().workspaces();
+    let Some(bytes) = store.stored_record(&workspace.to_string(), WRITER_APP, record.as_str())?
+    else {
+        return Err("the workspace's store holds nothing of the record".to_owned());
+    };
     let doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
     Ok(doc
         .get(automerge::ROOT, "text")
@@ -662,6 +667,9 @@ fn watch_for_stop(manager: &mut ui::collaboration::CollaborationManager) -> ! {
         {
             panic!("the app stopped publishing its write: {reason}");
         }
+        if let Some(refused) = manager.refused_change() {
+            panic!("the workspace refused the app's write: {refused}");
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -687,10 +695,11 @@ pub(crate) fn helper_hang_bound() -> String {
 )]
 fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart() {
     // Helper role: an ordinary SDK app joins one record of the runtime's
-    // workspace and writes it once. The SDK holds the write until the runtime's
-    // identity service hands out the route's keys, then seals and sends it.
+    // workspace and writes it once; the device's store seals and keeps it.
     if std::env::var_os(WRITER_HELPER).is_some() {
         use automerge::transaction::Transactable as _;
+        // The app runs with its package's surface, which its writes name.
+        collab_types::app_surface::register_package(WRITER_APP, WRITER_SURFACE.as_bytes());
         let checkout = ui::resource::DocumentCheckout::new(
             ui::resource::DocumentId::for_file_document(
                 uuid::Uuid::parse_str(WRITER_RECORD).unwrap(),
@@ -701,7 +710,11 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
         wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
-        doc.commit();
+        // An edit of the note's content, as the app's window makes it: its surface's `type` verb.
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
         assert!(
             manager.send(ui::collaboration::CollabRequest::document_snapshot(
                 doc.save()
@@ -712,6 +725,8 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     let Some(root) = isolated_root(WRITER_TEST) else {
         return;
     };
+    // The writer is an app this device installed, whose package's surface declares its note.
+    collab_types::app_surface::register_package(WRITER_APP, WRITER_SURFACE.as_bytes());
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
     let log = std::fs::File::create(root.join("writer.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
