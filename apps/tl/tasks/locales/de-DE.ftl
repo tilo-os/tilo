@@ -397,6 +397,7 @@ d-odjzaby6 = Von einer Person gestoppt
 
 d-rs3ubifz = Neue Aufgabe
     .doc = Legt eine Aufgabe im Eingang oder in `p` an, in der Liste `s` seines Boards: der Eintrag am Ende einer Liste füllt `title` mit den Worten, die sonst niemand dort aufnimmt, dazu den Tag, den Zeitpunkt und die Person, die er nennt, sodass „Vermieter fr 10 Uhr anrufen @Bo“ eine Aufgabe ist, fällig Freitag um zehn, für Bo.
+    .w-is-not-in-this-workspace = { $value } ist nicht in diesem Arbeitsbereich
 
 d-rs3ubifz-p = P
 
@@ -596,6 +597,7 @@ d-c6y4cxdd = Zuweisen
     .w-the-pieces-in-work-already-fill = Die Teile in Arbeit füllen schon, was diese Aufgabe gleichzeitig arbeiten lässt
     .w-it-is-theirs-already = Sie gehört bereits dieser Person
     .w-a-task-is-a-member-s = Eine Aufgabe gehört einem Mitglied oder einem Kontakt, nicht beiden
+    .w-is-not-in-this-workspace = { $value } ist nicht in diesem Arbeitsbereich
 
 d-c6y4cxdd-who = Wer
 
@@ -603,6 +605,7 @@ d-jwva2bcv = Zuweisen
     .doc = Gibt alle gewählten Aufgaben einer Person (oder niemandem), als eine Änderung.
     .did = Aufgaben zugewiesen
     .w-choose-the-tasks-to-assign = Wähle die zuzuweisenden Aufgaben
+    .w-is-not-in-this-workspace = { $value } ist nicht in diesem Arbeitsbereich
 
 d-jwva2bcv-chosen = Auswahl
 
@@ -767,6 +770,8 @@ d-5ohbulhj = Teilen mit
 d-5ohbulhj-from = Von
 
 d-cfituto7 = fügt Aufgaben hinzu
+
+d-vzdj67kf = fügt eine Aufgabe hinzu
 
 d-r3lxwimd = setzt die Art
 

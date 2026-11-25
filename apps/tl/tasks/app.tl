@@ -347,6 +347,7 @@ primary action new_task(
     remind: Option<Time> = .none,
     notes: RichText = RichText(""),
 ) -> Task uses time (icon: .plus, label: "New task", key: "Ctrl+N") {
+    require may_take(assignee, invoker) "{assignee?.name() ?? ""} is not in this workspace"
     tasks.numbers += 1
     // A task made for an agent is given to it as `assign` gives one: who gave it, and when, are
     // what its work starts from and what Agent work lists it by.
@@ -811,6 +812,7 @@ action assign(
     contact: Option<contacts.Contact> = .none,
 ) uses time (label: "Assign", icon: .user, settles: t.assignee) {
     require not (who != .none and contact != .none) "A task is a member's or a contact's, not both"
+    require may_take(who, invoker) "{who?.name() ?? ""} is not in this workspace"
     require not (who?.kind() == .agent and held_back(t)) "The pieces in work already fill what this task lets work at once"
     require not (t.assignee == who and t.contact == contact) "It is theirs already"
     t.assignee = who
@@ -827,6 +829,7 @@ action assign_many(chosen: List<Task>, who: Option<Actor>) uses time (
     did: "assigned tasks",
 ) {
     require not chosen.is_empty() "Choose the tasks to assign"
+    require may_take(who, invoker) "{who?.name() ?? ""} is not in this workspace"
     for t in chosen {
         if t.assignee != who or t.contact != .none {
             t.assignee = who
@@ -836,6 +839,22 @@ action assign_many(chosen: List<Task>, who: Option<Actor>) uses time (
             t.assigned_at = if to_agent { .some(now) } else { .none }
         }
     }
+}
+
+/// Whether `who` may be given a task by `me`: an agent, `me`, or a person of the workspace. A
+/// task assigned to someone the workspace does not hold would be one nobody is doing. A host
+/// that knows no membership at all (none but a workspace's own policy names it) refuses no one
+/// by it, so a window staged for a shot or a test that names nobody still takes an assignee.
+fn in_workspace(who: Actor, me: Actor) -> Bool {
+    who.kind() != .person
+        or who == me
+        or workspace.members.people.is_empty()
+        or workspace.members.people.contains(who)
+}
+
+/// Whether a task may be given to `who` by `me`: naming nobody gives it to nobody, which is fine.
+fn may_take(who: Option<Actor>, me: Actor) -> Bool {
+    if let w = who { in_workspace(w, me) } else { true }
 }
 
 /// Links a task to another, with how they relate: the workspace's own link between two tasks,

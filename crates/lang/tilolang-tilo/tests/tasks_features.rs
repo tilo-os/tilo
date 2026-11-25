@@ -225,6 +225,80 @@ fn a_file_is_attached_and_detached() {
     );
 }
 
+/// A task is given only to someone of the workspace, or to the one giving it: a person the
+/// workspace does not hold would be one nobody is doing the task. The refusal names them.
+#[test]
+fn a_task_is_given_only_to_a_member_or_the_one_giving_it() {
+    use tilolang_runtime::RuntimeError;
+    use tilolang_runtime::members::Member;
+    let (ada, root) = workspace();
+    ada.host.runtime().set_members(
+        vec![
+            Member::person("ada", tilo_actions::policy::Role::Owner),
+            Member::person("bo", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    let who = |name: &str| Value::Actor(Actor::from(MemberId::person(name)));
+    let one = task(&ada, &root, "Plan the trip");
+    let give = |to: &Value| vec![one.clone(), some(to.clone())];
+    // The same task added already given to someone: `new_task` takes its assignee sixth.
+    let adding = |to: &Value| {
+        let mut args = create(&root, "Call the bank");
+        args[5] = some(to.clone());
+        args
+    };
+    let refused = |action: &str, args: Vec<Value>| -> String {
+        let id = ada
+            .host
+            .package(APP)
+            .unwrap()
+            .meta
+            .actions
+            .iter()
+            .find(|a| a.name == action)
+            .unwrap_or_else(|| panic!("no action {action}"))
+            .id
+            .clone();
+        match ada
+            .host
+            .runtime()
+            .invoke_action(&Actor::from(MemberId::person("ada")), (id.as_str(), args))
+        {
+            Err(RuntimeError::Trap(reason)) => reason,
+            other => panic!("{action} is refused: {other:?}"),
+        }
+    };
+    assert_eq!(
+        refused("assign", give(&who("cy"))),
+        "cy is not in this workspace",
+        "a task is not given to someone the workspace does not hold"
+    );
+    assert_eq!(
+        refused("new_task", adding(&who("cy"))),
+        "cy is not in this workspace",
+        "a task is not made for someone the workspace does not hold"
+    );
+    assert_eq!(items(&ada).len(), 1, "and the refused task is not kept");
+    call(&ada, "assign", give(&who("bo")));
+    ada.commit();
+    assert_eq!(
+        read(&ada, &one, "assignee"),
+        some(who("bo")),
+        "a member of the workspace takes it"
+    );
+    call(&ada, "assign", give(&who("ada")));
+    ada.commit();
+    assert_eq!(
+        read(&ada, &one, "assignee"),
+        some(who("ada")),
+        "and so does the person giving it"
+    );
+    call(&ada, "new_task", adding(&who("bo")));
+    ada.commit();
+    assert_eq!(items(&ada).len(), 2, "a task is made for a member");
+}
+
 #[test]
 fn giving_a_task_to_an_agent_keeps_who_gave_it_and_when() {
     use tilolang_runtime::members::Member;

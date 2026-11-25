@@ -1,5 +1,13 @@
 scenario "a busy week" -> Task {
-    let mia = person("Mia")
+    // Who the launch post is given to: a real workspace holds its own people and takes no other,
+    // so the seed gives the post to one of them — a colleague where there is one, the person
+    // running the seed otherwise — and never to an agent, whose assignment would start its work.
+    // A staged window knows no people of the workspace, so Mia is one of its own, as she reads.
+    let mia = if workspace.members.people.is_empty() {
+        person("Mia")
+    } else {
+        workspace.members.people.find(p -> p.kind() == .person and p != invoker) ?? invoker
+    }
     let flat = invoke(
         new_project(tasks, notes: RichText("Keys on the 15th. The van is booked for the morning.")),
     )
@@ -403,7 +411,9 @@ scenario "a discussion on a task" -> Task {
 /// changed three of them, so the header counts what it holds unseen and the rows are marked.
 scenario "while you were away" -> Task {
     tasks.numbers += 4
-    let ada = invoker
+    // The person the window shows: named as one of the workspace's people, since a staged
+    // workspace holds only the people its scenario names, and Bo gives one of them a task.
+    let ada = person("ada")
     let bo = person("Bo")
     let scout = agent("Scout")
     let paper = Task(number: 1, title: "Sort the paper mail")
