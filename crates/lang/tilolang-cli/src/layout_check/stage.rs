@@ -655,7 +655,7 @@ mod tests {
     /// The packages of the app `name` of the apps the
     /// platform ships (`apps/tl/<name>`) and what it
     /// uses.
-    fn app_packages(name: &str) -> Rc<Packages> {
+    pub(crate) fn app_packages(name: &str) -> Rc<Packages> {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../apps/tl")
             .join(name);
@@ -2524,6 +2524,204 @@ mod tests {
                 shows(tree.tree(), marker),
                 "choosing {place} shows its page, with a {marker} on it: {:#?}",
                 tree.tree()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod maps_layout {
+    use super::*;
+
+    const SIZE: (u32, u32) = (1280, 800);
+
+    /// The Maps package, compiled from `apps/tl/maps`, and the app's id.
+    fn maps_packages() -> (Rc<Packages>, String) {
+        tilo_app_window::i18n::ensure();
+        let packages = super::tests::app_packages("maps");
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
+        (packages, app)
+    }
+
+    /// The Maps window at a laptop's size, laid out as a person's window is, with the view `states`
+    /// staged as the layout check's `--state` stages them.
+    fn maps(packages: &Rc<Packages>, app: &str, states: &[&str]) -> Staged {
+        let theme = ui::Theme::light();
+        let mut staged = Staged::over_workspace(
+            app,
+            packages,
+            SIZE,
+            theme.clone(),
+            Staging {
+                states: states.iter().map(|state| (*state).to_owned()).collect(),
+                ..Staging::default()
+            },
+        )
+        .expect("the map opens");
+        staged
+            .lay_out(
+                SIZE,
+                theme,
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the map lies out");
+        staged
+    }
+
+    /// The path from `node` to the first node named `name`.
+    fn path_to<'a>(
+        node: &'a ui::headless::InspectionNode,
+        name: &str,
+        path: &mut Vec<&'a ui::headless::InspectionNode>,
+    ) -> bool {
+        path.push(node);
+        if node
+            .semantics
+            .as_ref()
+            .is_some_and(|access| access.answers_to(name))
+        {
+            return true;
+        }
+        for child in &node.children {
+            if path_to(child, name, path) {
+                return true;
+            }
+        }
+        path.pop();
+        false
+    }
+
+    /// The rect of the node named `name`, and of the stack that holds it: the layer a view placed
+    /// there. Each rect is `[x, y, width, height]`, as the toolkit's inspection reads it.
+    fn holding(root: &ui::headless::InspectionNode, name: &str) -> ([f64; 4], [f64; 4]) {
+        let mut path = Vec::new();
+        assert!(path_to(root, name, &mut path), "the window shows {name:?}");
+        let shown = path.last().expect("the named node").rect;
+        let layer = path
+            .iter()
+            .rev()
+            .skip(1)
+            .find(|node| node.test_id.is_some() && node.widget == "Stack")
+            .unwrap_or_else(|| panic!("a stack holds {name:?}"))
+            .rect;
+        (layer, shown)
+    }
+
+    /// The rect of the first widget of kind `widget`.
+    fn widget(root: &ui::headless::InspectionNode, widget: &str) -> [f64; 4] {
+        root.nodes()
+            .into_iter()
+            .find(|node| node.widget == widget)
+            .unwrap_or_else(|| panic!("the window draws a {widget}"))
+            .rect
+    }
+
+    /// Where a rect `[x, y, width, height]` ends on either axis.
+    fn right(rect: [f64; 4]) -> f64 {
+        rect[0] + rect[2]
+    }
+
+    fn bottom(rect: [f64; 4]) -> f64 {
+        rect[1] + rect[3]
+    }
+
+    /// Whether two edges stand at the same place: layout arithmetic is in fractions of a pixel, so
+    /// the same edge reads within half a one.
+    fn same(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 0.5
+    }
+
+    /// Every part of the map's own layers stands where it says: the map fills them, the controls
+    /// stand on its trailing edge and the footer on its bottom edge, across its width. A view call
+    /// the layers held as one box of its own left the footer's rows at the map's top leading
+    /// corner, over the map, rather than under it.
+    #[test]
+    fn maps_places_its_map_controls_and_footer_on_their_layers() {
+        let (packages, app) = maps_packages();
+        let staged = maps(&packages, &app, &[]);
+        let root = &staged.harness().inspection().root;
+        let map = widget(root, "Map");
+        let (controls, zoom_in) = holding(root, "Zoom in");
+        let (footer, copyright) = holding(root, "© OpenStreetMap contributors");
+
+        assert!(
+            same(right(controls), right(map)),
+            "the controls stand on the map's trailing edge: {controls:?} in {map:?}"
+        );
+        assert!(
+            same(controls[1] + controls[3] / 2.0, map[1] + map[3] / 2.0),
+            "the controls stand at the map's middle: {controls:?} in {map:?}"
+        );
+        assert!(
+            zoom_in[0] >= controls[0] && right(zoom_in) <= right(controls),
+            "the zoom control stands in the controls' stack: {zoom_in:?} in {controls:?}"
+        );
+        assert!(
+            same(bottom(footer), bottom(map)),
+            "the footer stands on the map's bottom edge: {footer:?} in {map:?}"
+        );
+        assert!(
+            same(footer[0], map[0]) && same(footer[2], map[2]),
+            "the footer spans the map: {footer:?} in {map:?}"
+        );
+        assert!(
+            footer[1] > map[1] + map[3] / 2.0,
+            "the footer stands in the map's lower half: {footer:?} in {map:?}"
+        );
+        assert!(
+            copyright[1] > map[1] + map[3] / 2.0,
+            "the footer's words stand in the map's lower half: {copyright:?} in {map:?}"
+        );
+    }
+
+    /// What a view call under the map's layers opens over it stands where its layer says: the
+    /// status line across the map's top when a control the person presses puts one there, and the
+    /// offline sheet and the attribution dialog over the map rather than beyond the window.
+    #[test]
+    fn maps_places_the_status_line_and_the_sheets_over_the_map() {
+        let (packages, app) = maps_packages();
+        let (map, status, window) = {
+            let mut staged = maps(&packages, &app, &[]);
+            let id = crate::layout_check::button_named(
+                &staged.harness().inspection().root,
+                "Use my location",
+            )
+            .expect("the map offers the location control");
+            staged
+                .press(&id, false)
+                .expect("the location control presses");
+            staged.freshen().expect("the map comes to rest");
+            let root = &staged.harness().inspection().root;
+            (
+                widget(root, "Map"),
+                holding(root, "Dismiss").0,
+                widget(root, "TilolangWindow"),
+            )
+        };
+        assert!(
+            same(status[0], map[0]) && same(status[1], map[1]) && same(status[2], map[2]),
+            "the status line stands across the map's top: {status:?} in {map:?}"
+        );
+
+        // A sheet the map opens in its outer layers stands in the window, drawn over the map.
+        for (state, drawn) in [
+            ("sheet=offline", "FloatingPanel"),
+            ("sheet=info", "ModalDialog"),
+        ] {
+            let staged = maps(&packages, &app, &[state]);
+            let root = &staged.harness().inspection().root;
+            let sheet = widget(root, drawn);
+            assert!(
+                sheet[2] > 0.0 && sheet[3] > 0.0,
+                "the {drawn} {state} is drawn: {sheet:?}"
+            );
+            assert!(
+                sheet[0] >= window[0]
+                    && sheet[1] >= window[1]
+                    && right(sheet) <= right(window)
+                    && bottom(sheet) <= bottom(window),
+                "the {drawn} {state} stands in the window: {sheet:?} in {window:?}"
             );
         }
     }
