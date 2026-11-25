@@ -80,6 +80,17 @@ impl Windows {
         Some(self.theme.clone())
     }
 
+    /// The theme package the appearance applied, by its installed id: the bundle every window's own
+    /// process loads its painter sets from, so the theme it is told draws as the shell does. `None`
+    /// for the theme the mode names.
+    pub(crate) fn applied_theme_package(&self) -> Option<String> {
+        self.document
+            .get(ui::theme::APPEARANCE_SECTION)
+            .and_then(|appearance| appearance.get(ui::theme::THEME_PACKAGE_KEY))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
     /// Give every open window its appearance, and look at the temperatures
     /// when they are due (a workspace switch, a new wallpaper, or the few
     /// seconds between looks), with `person` sitting at this machine,
@@ -94,6 +105,7 @@ impl Windows {
         network: HostNetworkStatus,
         now: Instant,
     ) {
+        let theme_package = self.applied_theme_package();
         handle.read(|tree| {
             let active = Some(tree.active);
             if self.warmth.due(active, now) {
@@ -116,6 +128,7 @@ impl Windows {
                 |app| self.warmth.appearance_of(tree, app, &self.theme),
                 |app, instance| workspace_sync(tree, app, instance, person, &persons),
                 &self.theme,
+                theme_package.as_deref(),
                 network,
             );
         });

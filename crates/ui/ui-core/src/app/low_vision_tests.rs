@@ -366,7 +366,7 @@ tilo_test_env::scenario! {
         app.set_text_scale(1.5);
         let appearance = crate::theme::WindowAppearance::default();
         for theme in [Theme::light(), Theme::high_contrast(), Theme::dark()] {
-            let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme);
+            let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme, None);
             let wire = serde_json::to_vec(&message).unwrap();
             let received = serde_json::from_slice(&wire).unwrap();
             assert!(app.apply_floating_host_messages(vec![received]));
@@ -386,6 +386,7 @@ tilo_test_env::scenario! {
         let mut wire = serde_json::to_value(FloatingSurfaceHostMessage::appearance_with_theme(
             &appearance,
             &Theme::light(),
+            None,
         ))
         .unwrap();
         wire["theme"]["schema_version"] = serde_json::json!(0);
@@ -468,7 +469,7 @@ fn a_theme_message_or_a_rebuild_between_frames_repaints_the_whole_surface() {
 
         let appearance = crate::theme::WindowAppearance::default();
         let message =
-            FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &Theme::dark());
+            FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &Theme::dark(), None);
         assert!(app.apply_floating_host_messages(vec![message]));
         let themed = frame(&mut app);
         assert!(

@@ -107,6 +107,9 @@ pub fn bwrap_argv(
     ]);
     // The machine code the device's daemon compiled for the modules this host runs, read-only.
     crate::sandbox::push_compiled_modules(&mut argv);
+    // The store the device's theme packages are installed in, so an instance this host draws in
+    // its own process wears the applied theme.
+    crate::sandbox::push_theme_packages(&mut argv);
     // Landlock inside the namespace, through the launcher's own binary: read and execute the runtime,
     // write the storage, no TCP; every descriptor but the socket closed.
     argv.extend([
@@ -119,6 +122,8 @@ pub fn bwrap_argv(
         runtime_mount.display().to_string(),
     ]);
     super::push_runtime_landlock_rules(&mut argv, Some(app_runtime));
+    // The package store and the compiled painter sets the instance's theme is read from.
+    crate::sandbox::push_theme_packages_landlock(&mut argv);
     for zone in ZONE_PATHS {
         argv.extend(["--ro-noexec", zone].map(str::to_owned));
     }

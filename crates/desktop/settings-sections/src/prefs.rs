@@ -1803,16 +1803,13 @@ impl Default for AppearancePrefs {
 }
 
 /// The theme the installed package `id` draws on this device: its bundle loaded through
-/// [`ui::theme_bundle::load_from`], which registers each painter set it names on the machine code
-/// the device's daemon compiled when the package arrived, and its document. `None` when the
+/// [`ui::theme::applied_theme_package`], which registers each painter set it names on the machine
+/// code the device's daemon compiled when the package arrived, and its document. `None` when the
 /// package is not installed here, or its bundle is refused: the device then shows the theme the
 /// appearance's mode names, and Settings says the package is missing.
 #[must_use]
 pub fn applied_theme(id: &str) -> Option<ui::theme::ThemeDocument> {
-    let installed = package_store::find_installed(id).ok().flatten()?;
-    let compiled = runtime_portal::process_link::compiled_modules();
-    ui::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).ok()?;
-    ui::theme_bundle::document(&installed.payload_root).ok()
+    ui::theme::applied_theme_package(id)
 }
 
 impl AppearancePrefs {

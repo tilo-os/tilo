@@ -12,6 +12,7 @@
 //! the same daemon and used as the person ([`DaemonShell`]), and the state and windows the session
 //! publishes. Nothing here reaches into the session's or the daemon's internals.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,13 +32,14 @@ use crate::common::{HEIGHT, WIDTH, wait_for};
 /// built and installed as a device has it, whose window publishes its actions.
 pub const DEFAULT_APP: &str = "so.tilo.chat";
 
-/// How the fixture is made: which app it installs, who the person is, and how many of the
-/// person's devices it holds.
+/// How the fixture is made: which app it installs, who the person is, how many of the
+/// person's devices it holds, and the services its session hosts.
 pub struct Builder {
     app: Option<String>,
     start_it: bool,
     person: String,
     devices: usize,
+    services: Vec<Box<dyn tilo_service::Service>>,
 }
 
 impl Builder {
@@ -49,6 +51,7 @@ impl Builder {
             start_it: true,
             person: "Ada".to_owned(),
             devices: 1,
+            services: Vec::new(),
         }
     }
 
@@ -61,6 +64,7 @@ impl Builder {
             start_it: false,
             person: "Ada".to_owned(),
             devices: 1,
+            services: Vec::new(),
         }
     }
 
@@ -72,7 +76,16 @@ impl Builder {
             start_it: false,
             person: "Ada".to_owned(),
             devices: 1,
+            services: Vec::new(),
         }
+    }
+
+    /// Have the session host `service` beside the desktop's own, as a development one does (the
+    /// person's settings service among them).
+    #[must_use]
+    pub fn service(mut self, service: Box<dyn tilo_service::Service>) -> Self {
+        self.services.push(service);
+        self
     }
 
     /// The person whose session this is, by the name the fixture keeps of them.
@@ -110,6 +123,9 @@ impl Builder {
         );
         let within = tilo_test_env::hang_bound();
         let (home, launcher) = home_with_apps(self.app.is_some());
+        // The store the fixture's apps are installed in: a test that installs a package of its own
+        // (a theme's bundle) reads the same store the launcher runs its apps from.
+        let store = home.data().join("tilo-apps");
         // The environment a launch starts apps in, read once the home's variables are set.
         let environment = SessionEnvironment::from_process();
         let wake = tilo_service::LoopWake::default();
@@ -153,6 +169,7 @@ impl Builder {
                     launch: Some(Rc::clone(&apps)),
                     launches: Arc::clone(&launches),
                     lists,
+                    services: self.services,
                     shell_link: Some(session_link),
                     shell_daemon: Some(Box::new((daemon, profile, home))),
                     wake,
@@ -188,6 +205,7 @@ impl Builder {
             app: self.app,
             person: self.person,
             person_id: person,
+            store,
         };
         if self.start_it
             && let Some(app) = fixture.app.clone()
@@ -245,6 +263,8 @@ pub struct Fixture {
     pub person: String,
     /// The person's root, as the workspace and its apps name them.
     pub person_id: String,
+    /// The store this computer installed its packages in, as the launcher reads it.
+    pub store: PathBuf,
 }
 
 impl Fixture {

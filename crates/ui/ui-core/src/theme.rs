@@ -8,9 +8,11 @@ pub use crate::theme_layers::{
     DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
     DistributionDefaults, DistributionPolicy, FinishLayer, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY,
     PIN_EMPHASIS, PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE,
-    PINNABLE, TRANSLUCENCY_KEY, ThemeLayerStack, UI_FACE_KEY, WORKSPACE_TEMPERATURES_KEY,
-    resolve_theme_layers, user_document, workspace_temperature_override,
+    PINNABLE, TRANSLUCENCY_KEY, THEME_PACKAGE_KEY, ThemeLayerStack, UI_FACE_KEY,
+    WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document, workspace_temperature_override,
 };
+#[cfg(all(feature = "model", not(target_arch = "wasm32")))]
+pub use crate::theme_layers::applied_theme_package;
 #[cfg(feature = "model")]
 pub use crate::theme_record::{
     Ink as ThemeInk, Presence as ThemePresence, Status as ThemeStatus,

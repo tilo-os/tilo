@@ -315,6 +315,7 @@ struct Link {
 struct Delivered {
     window: WindowAppearance,
     theme: ThemeDocument,
+    theme_package: Option<String>,
     network: Option<HostNetworkStatus>,
     sync: Option<WorkspaceSync>,
 }
@@ -954,6 +955,7 @@ impl AppTabs {
         appearance_of: impl Fn(&str) -> WindowAppearance,
         sync_of: impl Fn(&str, Option<u64>) -> Option<WorkspaceSync>,
         theme: &Theme,
+        theme_package: Option<&str>,
         network: HostNetworkStatus,
     ) {
         for link in self.links.values_mut() {
@@ -963,13 +965,15 @@ impl AppTabs {
             let unchanged = link.told.as_ref().is_some_and(|last| {
                 last.window == window
                     && last.theme == theme.document
+                    && last.theme_package.as_deref() == theme_package
                     && last.network == network
                     && last.sync == sync
             });
             if unchanged {
                 continue;
             }
-            let mut message = FloatingSurfaceHostMessage::appearance_with_theme(&window, theme);
+            let mut message =
+                FloatingSurfaceHostMessage::appearance_with_theme(&window, theme, theme_package);
             if let FloatingSurfaceHostMessage::Appearance {
                 network_status,
                 workspace_sync,
@@ -993,6 +997,7 @@ impl AppTabs {
             link.told = Some(Delivered {
                 window,
                 theme: theme.document.clone(),
+                theme_package: theme_package.map(str::to_owned),
                 network,
                 sync,
             });

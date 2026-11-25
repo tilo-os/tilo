@@ -2107,6 +2107,9 @@ fn splice_sandbox_shim(
         argv.push("--ro".to_string());
         argv.push(p.clone());
     }
+    // The package store and the compiled painter sets the toolkit reads the applied theme package
+    // and its sets from: both were bound above, and an unnamed bind is unreadable under Landlock.
+    crate::sandbox::push_theme_packages_landlock(argv);
     // The same list the binds came from: an unnamed bind is visible but returns EACCES on every open.
     for path in crate::profile::landlock_ro_paths(ctx.egress.shares_host_network()) {
         argv.push("--ro".to_string());

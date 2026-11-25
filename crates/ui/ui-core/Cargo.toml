@@ -28,7 +28,7 @@ default = ["native", "broker-transport", "model"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read", "dep:package-store"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -544,6 +544,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 # Private files need an OS; the browser supplies them through its host instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The packages this device installed: the appearance may apply one whose payload is a theme
+# bundle, which `theme_layers::applied_theme_package` loads through the bundle loader.
+package-store = { package = "tilo-package-store", version = "0.1.0", path = "../../core/package-store", optional = true }
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
 tilo-paint-stream = { version = "0.1.0", path = "../../engines/paint-stream", features = ["svg"] }

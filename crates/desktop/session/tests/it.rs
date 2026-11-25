@@ -286,6 +286,8 @@ mod shell_themes;
 mod shortcut_effects;
 #[path = "theme_package.rs"]
 mod theme_package;
+#[path = "theme_package_process.rs"]
+mod theme_package_process;
 #[path = "shortcut_guide.rs"]
 mod shortcut_guide;
 #[path = "speaker_groups.rs"]
