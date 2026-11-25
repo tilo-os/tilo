@@ -503,7 +503,15 @@ impl Connection {
                 .map_err(|_| NOT_CHOSEN)?;
             let relative = plain_relative(within).ok_or(NOT_CHOSEN)?;
             let file = if relative.as_os_str().is_empty() {
-                let choice = if write { granted.choice } else { Choice::Read };
+                // A folder opens as a folder, to read what it holds; a file to read unless the
+                // app asked to write what its choice lets it.
+                let choice = match granted.choice {
+                    Choice::Folder { write: may } => Choice::Folder {
+                        write: write && may,
+                    },
+                    _ if write => granted.choice,
+                    _ => Choice::Read,
+                };
                 File::from(open_document(&granted, choice).map_err(|_| NOT_CHOSEN)?)
             } else {
                 if !matches!(granted.choice, Choice::Folder { .. }) {

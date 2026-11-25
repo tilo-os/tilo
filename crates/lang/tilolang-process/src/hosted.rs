@@ -599,6 +599,14 @@ impl HostPlatform {
         self.content.as_ref().unwrap_or(&self.own_content)
     }
 
+    /// The person's chooser, through which the app reaches the files and folders they chose for
+    /// it, and nothing else of this computer.
+    fn chosen_files(&self) -> Result<&dyn tilo_dialogs::FilePicker, String> {
+        self.chooser
+            .as_deref()
+            .ok_or_else(|| crate::files::NO_CHOSEN_FILES.to_owned())
+    }
+
     /// The device's preview cache, opened the first time a preview is asked for; `None` on a host
     /// that keeps no previews.
     fn previews(&self) -> Option<Arc<thumbnail::ThumbnailService>> {
@@ -1157,19 +1165,21 @@ impl Platform for HostPlatform {
             .and_then(|clipboard| clipboard.paste(types))
     }
 
+    /// `File.list`: a folder the person chose for the app, through their chooser, which opens it
+    /// only while their grant stands.
     fn list_files(&self, path: &str) -> Result<Vec<tilolang_tilo::runtime::files::Entry>, String> {
-        crate::files::list(std::path::Path::new(path))
+        crate::files::list(self.chosen_files()?, path)
     }
 
     fn stat_file(
         &self,
         path: &str,
     ) -> Result<Option<tilolang_tilo::runtime::files::Entry>, String> {
-        crate::files::stat(std::path::Path::new(path))
+        crate::files::stat(self.chosen_files()?, path)
     }
 
     fn read_file_bytes(&self, path: &str) -> Result<Vec<u8>, String> {
-        crate::files::read_bytes(std::path::Path::new(path))
+        crate::files::read_bytes(self.chosen_files()?, path)
     }
 
     fn watch_folder(&self, path: &str, run: &str) -> Result<String, String> {
@@ -1280,7 +1290,7 @@ impl Platform for HostPlatform {
         path: &str,
         bytes: &[u8],
     ) -> Result<tilolang_tilo::runtime::files::Entry, String> {
-        crate::files::write(path, bytes)
+        crate::files::write(self.chosen_files()?, path, bytes)
     }
 
     fn rename_file(

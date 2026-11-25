@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use tilolang_tilo::engine::{JobOp, JobSink, Needs, State};
 
-use crate::files::{STOPPED, copy_tree_told, remove_tree, resolve};
+use crate::files::{STOPPED, copy_tree_told, remove_tree};
 
 /// The app this engine answers for.
 pub const APP: &str = "so.tilo.file-explorer";
@@ -41,7 +41,7 @@ impl tilolang_tilo::engine::Provider for Transfers {
 
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
-            "facts" => facts(&resolve(input)),
+            "facts" => facts(Path::new(input)),
             other => Err(format!("`{other}` is no op this device runs for {APP}")),
         }
     }
@@ -148,7 +148,7 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
     if ask.paths.is_empty() {
         return Err("there is nothing to put there".to_owned());
     }
-    let folder = resolve(&ask.folder);
+    let folder = PathBuf::from(&ask.folder);
     if !folder.is_dir() {
         return Err(format!("{} is not a folder", folder.display()));
     }
@@ -164,7 +164,7 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
     std::thread::Builder::new()
         .name("files-transfer".to_owned())
         .spawn(move || {
-            let sources: Vec<PathBuf> = ask.paths.iter().map(|path| resolve(path)).collect();
+            let sources: Vec<PathBuf> = ask.paths.iter().map(PathBuf::from).collect();
             job.total.store(
                 sources.iter().map(|path| size_of(path)).sum(),
                 Ordering::Relaxed,

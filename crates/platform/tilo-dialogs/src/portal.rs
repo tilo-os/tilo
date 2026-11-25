@@ -810,21 +810,34 @@ pub(crate) fn file_name_of(path: &Path) -> String {
         .unwrap_or_else(|| "selected file".to_string())
 }
 
-/// The files under a chosen folder, walked through the folder's own descriptor: what an app's
-/// folder chooser hands on, never a host path. Each is named by where it stands in the folder,
-/// symlinks and pipes are skipped, and the walk stops with an error once more than `limit` bytes
-/// would be read.
+/// What one entry of a chosen folder is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChosenKind {
+    Folder,
+    File,
+    /// A link, a pipe or a device: never followed or read.
+    Other,
+}
+
+/// One entry of a chosen folder, as the folder's own descriptor answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChosenEntry {
+    pub name: String,
+    pub kind: ChosenKind,
+    /// Its size in bytes.
+    pub size: u64,
+    /// When its content last changed, in Unix seconds.
+    pub modified: i64,
+}
+
+/// The entries of the folder open at `fd`, read through the descriptor alone: nothing beneath it
+/// is opened, and a link is told as one, never followed. A name that is not text, or an entry
+/// gone between reading the folder and asking about it, is left out.
+///
+/// # Errors
+/// The descriptor is no folder that can be read.
 #[cfg(unix)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one walk keeps the descriptor discipline a reader checks in one place"
-)]
-pub fn walk_chosen_folder(folder: &File, limit: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
-    use std::os::fd::{AsRawFd as _, FromRawFd as _};
-
-    /// The most files one folder choice hands over.
-    const MAX_FILES: usize = 10_000;
-
+pub fn chosen_folder_entries(fd: std::os::fd::RawFd) -> Result<Vec<ChosenEntry>, String> {
     struct Dir(*mut libc::DIR);
     impl Drop for Dir {
         fn drop(&mut self) {
@@ -833,118 +846,139 @@ pub fn walk_chosen_folder(folder: &File, limit: usize) -> Result<Vec<(String, Ve
         }
     }
 
+    // SAFETY: duplicating a descriptor the caller holds open; the copy is closed by `Dir`.
+    let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if dup < 0 {
+        return Err("the chosen folder can't be read".to_owned());
+    }
+    // SAFETY: `dup` is a fresh descriptor to a directory, and `fdopendir` takes it over.
+    let raw = unsafe { libc::fdopendir(dup) };
+    if raw.is_null() {
+        // SAFETY: `fdopendir` failed, so the descriptor is still this call's to close.
+        unsafe { libc::close(dup) };
+        return Err("the chosen folder can't be read".to_owned());
+    }
+    let dir = Dir(raw);
+    let mut entries = Vec::new();
+    loop {
+        // SAFETY: `readdir` reads the stream; the entry it answers is valid until the next call,
+        // and is copied out before one.
+        let entry = unsafe { libc::readdir(dir.0) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: `d_name` is a NUL-terminated name inside the entry.
+        let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        let Ok(text) = name.to_str() else {
+            continue;
+        };
+        // SAFETY: `fstatat` writes the buffer it is given, for the name at `fd`.
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let asked =
+            unsafe { libc::fstatat(fd, name.as_ptr(), &raw mut stat, libc::AT_SYMLINK_NOFOLLOW) };
+        if asked != 0 {
+            continue;
+        }
+        let kind = match stat.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => ChosenKind::Folder,
+            libc::S_IFREG => ChosenKind::File,
+            _ => ChosenKind::Other,
+        };
+        entries.push(ChosenEntry {
+            name: text.to_owned(),
+            kind,
+            size: u64::try_from(stat.st_size).unwrap_or(0),
+            modified: stat.st_mtime,
+        });
+    }
+    Ok(entries)
+}
+
+/// The files under a chosen folder, walked through the folder's own descriptor: what an app's
+/// folder chooser hands on, never a host path. Each is named by where it stands in the folder,
+/// symlinks and pipes are skipped, and the walk stops with an error once more than `limit` bytes
+/// would be read.
+#[cfg(unix)]
+pub fn walk_chosen_folder(folder: &File, limit: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    /// The most files one folder choice hands over.
+    const MAX_FILES: usize = 10_000;
+
     fn walk(
         fd: std::os::fd::RawFd,
         prefix: &str,
         limit: &mut usize,
         out: &mut Vec<(String, Vec<u8>)>,
     ) -> Result<(), String> {
-        // SAFETY: duplicating a descriptor this walk owns; the copy is closed by `Dir`.
-        let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-        if dup < 0 {
-            return Err("the chosen folder can't be read".to_owned());
-        }
-        // SAFETY: `dup` is a fresh descriptor to a directory, and `fdopendir` takes it over.
-        let raw = unsafe { libc::fdopendir(dup) };
-        if raw.is_null() {
-            // SAFETY: `fdopendir` failed, so the descriptor is still this call's to close.
-            unsafe { libc::close(dup) };
-            return Err("the chosen folder can't be read".to_owned());
-        }
-        let dir = Dir(raw);
-        loop {
-            // SAFETY: `readdir` reads the stream; the entry it answers is valid until the next
-            // call, and is copied out before one.
-            let entry = unsafe { libc::readdir(dir.0) };
-            if entry.is_null() {
-                break;
-            }
-            // SAFETY: `d_name` is a NUL-terminated name inside the entry.
-            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }
-                .to_string_lossy()
-                .into_owned();
-            if name == "." || name == ".." {
-                continue;
-            }
-            let Ok(cname) = std::ffi::CString::new(name.as_str()) else {
+        for entry in chosen_folder_entries(fd)? {
+            let Ok(cname) = std::ffi::CString::new(entry.name.as_str()) else {
                 continue;
             };
             let relative = if prefix.is_empty() {
-                name.clone()
+                entry.name.clone()
             } else {
-                format!("{prefix}/{name}")
+                format!("{prefix}/{}", entry.name)
             };
             if out.len() >= MAX_FILES {
                 return Err("the chosen folder holds too many files".to_owned());
             }
-            // The entry's own type, or the file's when the filesystem does not say.
-            let mut kind = unsafe { (*entry).d_type };
-            if kind == libc::DT_UNKNOWN {
-                // SAFETY: `fstatat` writes the buffer it is given, for the name at `fd`.
-                let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
-                let asked = unsafe {
-                    libc::fstatat(fd, cname.as_ptr(), &raw mut stat, libc::AT_SYMLINK_NOFOLLOW)
-                };
-                if asked != 0 {
-                    continue;
+            match entry.kind {
+                ChosenKind::Folder => {
+                    // SAFETY: opening a name inside the chosen folder, never following a link out.
+                    let sub = unsafe {
+                        libc::openat(
+                            fd,
+                            cname.as_ptr(),
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if sub < 0 {
+                        continue;
+                    }
+                    let walked = walk(sub, &relative, limit, out);
+                    // SAFETY: the descriptor was opened by this walk and nothing else holds it.
+                    unsafe { libc::close(sub) };
+                    walked?;
                 }
-                kind = if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
-                    libc::DT_DIR
-                } else if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
-                    libc::DT_REG
-                } else {
-                    libc::DT_LNK
-                };
-            }
-            if kind == libc::DT_DIR {
-                // SAFETY: opening a name inside the chosen folder, never following a link out.
-                let sub = unsafe {
-                    libc::openat(
-                        fd,
-                        cname.as_ptr(),
-                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                };
-                if sub < 0 {
-                    continue;
+                ChosenKind::File => {
+                    // SAFETY: opening a regular name inside the chosen folder, never a link.
+                    let file = unsafe {
+                        libc::openat(
+                            fd,
+                            cname.as_ptr(),
+                            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if file < 0 {
+                        continue;
+                    }
+                    // SAFETY: `file` is a fresh descriptor this walk owns.
+                    let mut file = unsafe { File::from_raw_fd(file) };
+                    let Ok(metadata) = file.metadata() else {
+                        continue;
+                    };
+                    if !metadata.is_file() {
+                        continue;
+                    }
+                    let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+                    if size > *limit {
+                        return Err(
+                            "Those files are too large for the app to read. Choose fewer or smaller files."
+                                .to_owned(),
+                        );
+                    }
+                    let mut bytes = Vec::with_capacity(size);
+                    if std::io::Read::read_to_end(&mut file, &mut bytes).is_err() {
+                        continue;
+                    }
+                    *limit = limit.saturating_sub(bytes.len());
+                    out.push((relative, bytes));
                 }
-                let walked = walk(sub, &relative, limit, out);
-                // SAFETY: the descriptor was opened by this walk and nothing else holds it.
-                unsafe { libc::close(sub) };
-                walked?;
-            } else if kind == libc::DT_REG {
-                // SAFETY: opening a regular name inside the chosen folder, never a link.
-                let file = unsafe {
-                    libc::openat(
-                        fd,
-                        cname.as_ptr(),
-                        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    )
-                };
-                if file < 0 {
-                    continue;
-                }
-                // SAFETY: `file` is a fresh descriptor this walk owns.
-                let mut file = unsafe { File::from_raw_fd(file) };
-                let Ok(metadata) = file.metadata() else {
-                    continue;
-                };
-                if !metadata.is_file() {
-                    continue;
-                }
-                let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-                if size > *limit {
-                    return Err(
-                        "Those files are too large for the app to read. Choose fewer or smaller files."
-                            .to_owned(),
-                    );
-                }
-                let mut bytes = Vec::with_capacity(size);
-                if std::io::Read::read_to_end(&mut file, &mut bytes).is_err() {
-                    continue;
-                }
-                *limit = limit.saturating_sub(bytes.len());
-                out.push((relative, bytes));
+                ChosenKind::Other => {}
             }
         }
         Ok(())

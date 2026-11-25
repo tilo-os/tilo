@@ -25,43 +25,6 @@ use tilolang_tilo::runtime::blob::{
 /// truth where nobody is at the computer, and what an action can do instead.
 pub const NO_CHOOSER: &str = "nobody is at this computer to choose a file; name the file instead";
 
-/// This device's home folder: what a `~` at the front of a path names.
-///
-/// A person's files are the workspace their login mounted, which a device's login gives the
-/// session and its apps (`TILO_WORKSPACE_ROOTS`): that is their home folder, and `File.list("~")`
-/// lists the folder Files and the person's other apps read. A computer serving no workspace (a
-/// desktop started without one) keeps the account's home.
-#[must_use]
-pub fn home() -> Option<std::path::PathBuf> {
-    workspace().or_else(|| {
-        std::env::var_os("HOME")
-            .filter(|home| !home.is_empty())
-            .map(std::path::PathBuf::from)
-    })
-}
-
-/// The workspace the login mounted for this session, when it mounted one: the first absolute
-/// root of `TILO_WORKSPACE_ROOTS`.
-fn workspace() -> Option<std::path::PathBuf> {
-    let roots = std::env::var_os("TILO_WORKSPACE_ROOTS")?;
-    std::env::split_paths(&roots).find(|root| root.is_absolute() && !root.as_os_str().is_empty())
-}
-
-/// The path a program named as a real one: `~` and `~/…` are this device's home folder, as the
-/// shell reads them, and everything else stands as it is.
-#[must_use]
-pub fn resolve(path: &str) -> std::path::PathBuf {
-    if path == "~" {
-        return home().unwrap_or_else(|| std::path::PathBuf::from("~"));
-    }
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = home()
-    {
-        return home.join(rest);
-    }
-    std::path::PathBuf::from(path)
-}
-
 /// What a person is told when a file handed to the app cannot be read on a device that keeps no
 /// content store: the file could not be opened, which is what they need to know, not the name of
 /// what is missing. A file they choose themselves is kept in the window's own store instead.
@@ -277,7 +240,6 @@ pub fn preview(
     path: &std::path::Path,
     size: u32,
 ) -> Result<Option<FileValue>, String> {
-    let path = &resolve(&path.to_string_lossy());
     let category = thumbnail::category_for_path(path);
     if !category.has_preview() {
         return Ok(None);
@@ -297,7 +259,11 @@ pub fn preview(
     let edge = size.clamp(1, 4096);
     let dimension = thumbnail::ThumbSize::edge(edge);
     let key = thumbnail::ThumbKey::of_path_meta(path, mtime, meta.len(), dimension);
-    let state = thumbnails.request(thumbnail::ThumbRequest::file(key, category, path.clone()));
+    let state = thumbnails.request(thumbnail::ThumbRequest::file(
+        key,
+        category,
+        path.to_path_buf(),
+    ));
     let preview = match state {
         thumbnail::ThumbState::Ready(preview) => Some(preview),
         thumbnail::ThumbState::Badge(_) => None,
@@ -373,71 +339,167 @@ fn entry(path: &std::path::Path) -> Result<Entry, String> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        });
-    Ok(Entry {
-        hidden: name.starts_with('.'),
+    Ok(described(
         name,
-        path: path.to_string_lossy().into_owned(),
-        folder: meta.is_dir(),
-        size: if meta.is_dir() {
-            0
-        } else {
-            i64::try_from(meta.len()).unwrap_or(i64::MAX)
-        },
-        modified,
-    })
+        path.to_string_lossy().into_owned(),
+        Facts::of(&meta),
+    ))
 }
 
-/// The entries of the folder `path`: what `File.list` reads, in the order the disk answers.
+/// What an app's `File.list`, `File.stat`, `File.read` and `File.write` are told where the
+/// session opened no chooser for it: the person's files are reached only through what they chose.
+pub const NO_CHOSEN_FILES: &str =
+    "nobody is at this computer to choose a folder for this app, so it reaches no files";
+
+/// The file or folder at `path`, opened by the person's chooser: a reference the chooser answered
+/// for this app, or a path inside a folder it answered. The chooser opens it only while the
+/// person's grant to the app stands (a workspace's folder by the grant on its node), so nothing
+/// else of this computer is reached, and a path it never answered is refused in its words.
+fn chosen(chooser: &dyn FilePicker, path: &str, write: bool) -> Result<std::fs::File, String> {
+    match wait(&chooser.reopen(std::path::Path::new(path), write))? {
+        OpenFileOutcome::Opened(opened) => Ok(opened.into_file().into_std()),
+        OpenFileOutcome::Failed(why) => Err(why),
+        OpenFileOutcome::Cancelled => Err(format!("{path} was not opened")),
+    }
+}
+
+/// What a folder says of one of its entries.
+#[derive(Clone, Copy)]
+struct Facts {
+    folder: bool,
+    size: u64,
+    /// When its content last changed, in Unix seconds.
+    modified: i64,
+}
+
+impl Facts {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        Self {
+            folder: meta.is_dir(),
+            size: meta.len(),
+            modified: meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| {
+                    i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+                }),
+        }
+    }
+}
+
+/// The entry named `name` at `path`, as `facts` describe it.
+fn described(name: String, path: String, facts: Facts) -> Entry {
+    Entry {
+        hidden: name.starts_with('.'),
+        name,
+        path,
+        folder: facts.folder,
+        size: if facts.folder {
+            0
+        } else {
+            i64::try_from(facts.size).unwrap_or(i64::MAX)
+        },
+        modified: facts.modified,
+    }
+}
+
+/// The last name of `path`, and the path of the folder it stands in.
+fn split(path: &str) -> Option<(&str, &str)> {
+    let path = path.trim_end_matches('/');
+    let (folder, name) = path.rsplit_once('/')?;
+    (!name.is_empty() && !folder.is_empty()).then_some((folder, name))
+}
+
+/// The entries of the folder `path` the person chose for the app, or of a folder inside it: what
+/// `File.list` reads, in the order the disk answers. Each entry's path is the folder's own path
+/// with its name after it, which the chooser opens again.
 ///
 /// # Errors
 ///
-/// Why it cannot be read (it is not a folder, the sandbox refuses it, it is gone).
-pub fn list(path: &std::path::Path) -> Result<Vec<Entry>, String> {
-    let path = &resolve(&path.to_string_lossy());
-    let reading =
-        std::fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
+/// The person never chose it for the app (or took the choice back), it is not a folder, or it is
+/// gone.
+pub fn list(chooser: &dyn FilePicker, path: &str) -> Result<Vec<Entry>, String> {
+    let folder = chosen(chooser, path, false)?;
+    let base = path.trim_end_matches('/');
     let mut entries = Vec::new();
-    for item in reading {
-        // A name the reader cannot take is one entry's loss, never the folder's.
-        let Ok(item) = item else {
-            continue;
-        };
-        if let Ok(entry) = entry(&item.path()) {
-            entries.push(entry);
-        }
+    for (name, facts) in folder_entries(&folder, path)? {
+        let at = format!("{base}/{name}");
+        entries.push(described(name, at, facts));
     }
     Ok(entries)
 }
 
-/// The entry `path` is, or none when nothing is there.
-///
-/// # Errors
-///
-/// Why the disk could not be asked (the sandbox refuses it, it is unreadable).
-pub fn stat(path: &std::path::Path) -> Result<Option<Entry>, String> {
-    let path = &resolve(&path.to_string_lossy());
-    match std::fs::metadata(path) {
-        Ok(_) => entry(path).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("{}: {error}", path.display())),
+/// The entries of the open folder `folder`, read through its descriptor: the app's sandbox has no
+/// path to it, and nothing beneath it is opened to read them.
+#[cfg(unix)]
+fn folder_entries(folder: &std::fs::File, path: &str) -> Result<Vec<(String, Facts)>, String> {
+    use std::os::fd::AsRawFd as _;
+    if !folder
+        .metadata()
+        .map_err(|error| format!("{path}: {error}"))?
+        .is_dir()
+    {
+        return Err(format!("{path} is not a folder"));
     }
+    Ok(
+        tilo_dialogs::portal::chosen_folder_entries(folder.as_raw_fd())?
+            .into_iter()
+            .map(|entry| {
+                let facts = Facts {
+                    folder: entry.kind == tilo_dialogs::portal::ChosenKind::Folder,
+                    size: entry.size,
+                    modified: entry.modified,
+                };
+                (entry.name, facts)
+            })
+            .collect(),
+    )
 }
 
-/// The bytes `path` holds: what `File.read` reads.
+#[cfg(not(unix))]
+fn folder_entries(_folder: &std::fs::File, path: &str) -> Result<Vec<(String, Facts)>, String> {
+    Err(format!(
+        "{path}: a chosen folder is listed only on Linux and macOS"
+    ))
+}
+
+/// The entry `path` is, or none when nothing is there: the folder the person chose for the app,
+/// or anything inside it.
 ///
 /// # Errors
 ///
-/// Why they cannot be read (it is a folder, the sandbox refuses it, it is gone).
-pub fn read_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    let path = &resolve(&path.to_string_lossy());
-    std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+/// The person never chose it, or the folder it stands in, for the app.
+pub fn stat(chooser: &dyn FilePicker, path: &str) -> Result<Option<Entry>, String> {
+    if let Some((folder, name)) = split(path)
+        && let Ok(listed) = list(chooser, folder)
+    {
+        return Ok(listed.into_iter().find(|entry| entry.name == name));
+    }
+    // The folder the person chose itself: the folder it stands in was never theirs to give.
+    let opened = chosen(chooser, path, false)?;
+    let meta = opened
+        .metadata()
+        .map_err(|error| format!("{path}: {error}"))?;
+    let name = split(path).map_or(path, |(_, name)| name).to_owned();
+    Ok(Some(described(name, path.to_owned(), Facts::of(&meta))))
+}
+
+/// The bytes of the file `path`, one the person chose for the app or one inside a folder they
+/// chose: what `File.read` reads.
+///
+/// # Errors
+///
+/// The person never chose it for the app, it is a folder, or it is gone.
+pub fn read_bytes(chooser: &dyn FilePicker, path: &str) -> Result<Vec<u8>, String> {
+    let mut file = chosen(chooser, path, false)?;
+    if file.metadata().is_ok_and(|meta| meta.is_dir()) {
+        return Err(format!("{path} is a folder"));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)
+        .map_err(|error| format!("{path}: {error}"))?;
+    Ok(bytes)
 }
 
 /// Make the folder `path`, answering the entry it made.
@@ -446,27 +508,27 @@ pub fn read_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
 ///
 /// Why it cannot be made (it exists, its parent is not there, the name is empty).
 pub fn mkdir(path: &str) -> Result<Entry, String> {
-    let path = resolve(path);
+    let path = std::path::PathBuf::from(path);
     std::fs::create_dir(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     entry(&path)
 }
 
-/// Write `bytes` as the new file `path`, answering the entry it made.
+/// Write `bytes` as the new file `path`, in a folder the person chose for the app to change:
+/// what `File.write` writes, answering the entry it made.
 ///
 /// # Errors
 ///
-/// Why it cannot be written (it exists, its folder is gone, the name is empty).
-pub fn write(path: &str, bytes: &[u8]) -> Result<Entry, String> {
+/// It exists, the person never chose its folder for the app to change, or the folder is gone.
+pub fn write(chooser: &dyn FilePicker, path: &str, bytes: &[u8]) -> Result<Entry, String> {
     use std::io::Write as _;
-    let path = resolve(path);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if stat(chooser, path)?.is_some() {
+        return Err(format!("{path} already exists"));
+    }
+    let mut file = chosen(chooser, path, true)?;
     file.write_all(bytes)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
-    entry(&path)
+        .map_err(|error| format!("{path}: {error}"))?;
+    drop(file);
+    stat(chooser, path)?.ok_or_else(|| format!("{path} was not written"))
 }
 
 /// Pack `paths`, each with its name and everything in it, into the new archive `to`: what
@@ -479,7 +541,7 @@ pub fn compress(paths: &[String], to: &str) -> Result<i64, String> {
     if paths.is_empty() {
         return Err("choose an entry to compress".to_owned());
     }
-    let to = resolve(to);
+    let to = std::path::PathBuf::from(to);
     let named = to.to_string_lossy().to_ascii_lowercase();
     let packing = if std::path::Path::new(&named)
         .extension()
@@ -491,7 +553,10 @@ pub fn compress(paths: &[String], to: &str) -> Result<i64, String> {
     } else {
         return Err("name the archive `.zip` or `.tar.zst`".to_owned());
     };
-    let sources: Vec<std::path::PathBuf> = paths.iter().map(|path| resolve(path)).collect();
+    let sources: Vec<std::path::PathBuf> = paths
+        .iter()
+        .map(|path| std::path::PathBuf::from(path))
+        .collect();
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -514,8 +579,8 @@ pub fn compress(paths: &[String], to: &str) -> Result<i64, String> {
 ///
 /// Why it cannot be extracted (the folder is taken, the archive cannot be made one).
 pub fn extract(from: &str, to: &str) -> Result<i64, String> {
-    let from = resolve(from);
-    let to = resolve(to);
+    let from = std::path::PathBuf::from(from);
+    let to = std::path::PathBuf::from(to);
     if to.symlink_metadata().is_ok() {
         return Err(format!("{} already exists", to.display()));
     }
@@ -538,7 +603,7 @@ pub fn extract(from: &str, to: &str) -> Result<i64, String> {
 ///
 /// Why it cannot be renamed (the name is taken, it has no folder, it is gone).
 pub fn rename(path: &str, name: &str) -> Result<Entry, String> {
-    let path = resolve(path);
+    let path = std::path::PathBuf::from(path);
     let folder = path
         .parent()
         .ok_or_else(|| format!("{} has no folder", path.display()))?;
@@ -552,8 +617,8 @@ pub fn rename(path: &str, name: &str) -> Result<Entry, String> {
 
 /// The entry at `path` moved into `folder`, or copied there when `copy` is set.
 fn place(path: &str, folder: &str, copy: bool) -> Result<Entry, String> {
-    let from = resolve(path);
-    let folder = resolve(folder);
+    let from = std::path::PathBuf::from(path);
+    let folder = std::path::PathBuf::from(folder);
     let name = from
         .file_name()
         .ok_or_else(|| format!("{} has no name", from.display()))?
@@ -694,8 +759,8 @@ pub fn copy(path: &str, folder: &str) -> Result<Entry, String> {
 ///
 /// Why it cannot be copied (the name is taken, the folder is gone).
 pub fn copy_to(path: &str, to: &str) -> Result<Entry, String> {
-    let from = resolve(path);
-    let to = resolve(to);
+    let from = std::path::PathBuf::from(path);
+    let to = std::path::PathBuf::from(to);
     if to.symlink_metadata().is_ok() {
         return Err(format!("{} already exists", to.display()));
     }
@@ -709,7 +774,7 @@ pub fn copy_to(path: &str, to: &str) -> Result<Entry, String> {
 ///
 /// Why it cannot be removed (it is in use, its parent is not writable).
 pub fn remove(path: &str) -> Result<bool, String> {
-    let path = resolve(path);
+    let path = std::path::PathBuf::from(path);
     match path.symlink_metadata() {
         Ok(_) => {
             remove_tree(&path)?;
@@ -725,7 +790,6 @@ fn trash_dirs() -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let data = std::env::var_os("XDG_DATA_HOME")
         .filter(|data| !data.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| home().map(|home| home.join(".local/share")))
         .ok_or_else(|| "this device has no data folder".to_owned())?;
     let root = data.join("Trash");
     let files = root.join("files");
@@ -916,7 +980,7 @@ fn trash_entry(files: &std::path::Path, info: &std::path::Path, name: &str) -> O
 /// Why it cannot be trashed (it is gone, the trash cannot be reached, its receipt cannot be
 /// written).
 pub fn trash(path: &str) -> Result<TrashEntry, String> {
-    let from = resolve(path);
+    let from = std::path::PathBuf::from(path);
     let name = from
         .file_name()
         .ok_or_else(|| format!("{} has no name", from.display()))?
@@ -996,7 +1060,7 @@ pub fn restore(name: &str) -> Result<Entry, String> {
     let name = name.strip_suffix(".trashinfo").unwrap_or(name);
     let (original, _) =
         receipt(&info, name).ok_or_else(|| format!("{name} is not in this device's trash"))?;
-    let to = resolve(&original);
+    let to = std::path::PathBuf::from(&original);
     if to.symlink_metadata().is_ok() {
         return Err(format!("{} already exists", to.display()));
     }
@@ -1067,7 +1131,7 @@ impl Watches {
     /// Why it cannot be watched (it is not a folder, the sandbox refuses it, no watcher can be
     /// made for it).
     pub fn watch(&self, path: &str, run: &str, actor: &str) -> Result<String, String> {
-        let folder = resolve(path);
+        let folder = std::path::PathBuf::from(path);
         let folder = folder.as_path();
         let meta = std::fs::metadata(folder).map_err(|error| format!("{path}: {error}"))?;
         if !meta.is_dir() {
@@ -1414,50 +1478,171 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_home_folder_is_the_workspace_the_login_mounted() {
-        let mut home = tilo_test_env::TestHome::new().unwrap();
-        assert_eq!(
-            resolve("~"),
-            home.home().to_path_buf(),
-            "a computer serving no workspace keeps the account's home"
-        );
-        let workspace = home.root().join("workspace");
-        std::fs::create_dir(&workspace).unwrap();
-        let roots = std::env::join_paths([&workspace, &home.root().join("elsewhere")]).unwrap();
-        home.env().set("TILO_WORKSPACE_ROOTS", roots);
-        assert_eq!(
-            resolve("~"),
-            workspace,
-            "the person's files are the workspace their login mounted"
-        );
-        assert_eq!(resolve("~/notes/todo.md"), workspace.join("notes/todo.md"));
+    /// The person at the computer, choosing the folder the test put in front of them.
+    #[cfg(unix)]
+    struct ChoosesFolder(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl tilo_dialogs::chooser_service::Person for ChoosesFolder {
+        fn choose(
+            &self,
+            _caller: &tilo_dialogs::chooser_service::Caller,
+            _handle: String,
+            question: &tilo_dialogs::chooser_service::Question,
+        ) -> Result<Vec<std::path::PathBuf>, tilo_dialogs::chooser_service::Asked> {
+            assert!(question.directory, "the app asked for a folder");
+            Ok(vec![self.0.clone()])
+        }
     }
 
+    /// The person's grants as a host keeps them: each choice is the app's that asked for it, and
+    /// a reference opens again only for that app.
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct GrantsByApp(std::sync::Mutex<Vec<(String, tilo_dialogs::chooser_service::Granted)>>);
+
+    #[cfg(unix)]
+    impl tilo_dialogs::chooser_service::Grants for GrantsByApp {
+        fn grant(
+            &self,
+            caller: &tilo_dialogs::chooser_service::Caller,
+            chosen: &std::path::Path,
+            choice: tilo_dialogs::chooser_service::Choice,
+        ) -> Result<tilo_dialogs::chooser_service::Granted, String> {
+            let name = chosen
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .ok_or_else(|| "the choice names no folder".to_owned())?;
+            let granted = tilo_dialogs::chooser_service::Granted {
+                reference: std::path::Path::new(tilo_dialogs::chosen::CHOSEN_ROOT)
+                    .join("records/token")
+                    .join(&name),
+                name,
+                host: chosen.to_path_buf(),
+                choice,
+                save_sibling: None,
+            };
+            self.0
+                .lock()
+                .unwrap()
+                .push((caller.app.clone(), granted.clone()));
+            Ok(granted)
+        }
+
+        fn document(
+            &self,
+            caller: &tilo_dialogs::chooser_service::Caller,
+            reference: &std::path::Path,
+        ) -> Option<tilo_dialogs::chooser_service::Granted> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(app, granted)| {
+                    *app == caller.app && reference.starts_with(&granted.reference)
+                })
+                .map(|(_, granted)| granted.clone())
+        }
+    }
+
+    #[cfg(unix)]
+    struct OpensNothing;
+
+    #[cfg(unix)]
+    impl tilo_dialogs::chooser_service::Opens for OpensNothing {
+        fn open(&self, _workspace: &str, _uri: &str) -> Result<Option<()>, String> {
+            Ok(None)
+        }
+    }
+
+    /// An app lists, reads and writes the folder the person chose for it, through the chooser
+    /// service that holds the person's grant, and through nothing else: no home folder, no host
+    /// path, nothing above the folder, and nothing of it for an app it was not chosen for.
+    #[cfg(unix)]
     #[test]
-    fn a_folder_lists_its_entries_and_reads_their_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("books")).unwrap();
-        std::fs::write(dir.path().join("a.epub"), b"EPUB").unwrap();
-        let mut listed: Vec<(String, bool)> = list(dir.path())
+    fn an_app_reaches_the_folder_chosen_for_it_and_no_other_app_does() {
+        use tilo_dialogs::chooser_service::{NOT_CHOSEN, Serving, pair};
+        let root = tempfile::tempdir().unwrap();
+        let projects = root.path().join("Projects");
+        std::fs::create_dir_all(projects.join("site")).unwrap();
+        std::fs::write(projects.join("plan.md"), b"Spring planting").unwrap();
+        std::fs::write(root.path().join("secret.txt"), b"never chosen").unwrap();
+        let grants = std::sync::Arc::new(GrantsByApp::default());
+        let picker = |app: &str| {
+            let serving = Serving {
+                person: Some(std::sync::Arc::new(ChoosesFolder(projects.clone()))),
+                grants: std::sync::Arc::clone(&grants) as _,
+                opens: std::sync::Arc::new(OpensNothing),
+            };
+            let stream = pair(serving, app, "5ba25f73-87c5-447f-a5a6-880dc4249a81").unwrap();
+            tilo_dialogs::shell::picker(stream, tilo_dialogs::unavailable_picker()).unwrap()
+        };
+        let git = picker("so.tilo.git-client");
+        let notes = picker("so.tilo.notes");
+
+        // Nothing is reached before the person chooses: not a home folder, not a host path.
+        let host = root.path().to_str().unwrap().to_owned();
+        for path in ["~", "~/Projects", "/etc", host.as_str()] {
+            assert_eq!(list(&*git, path).unwrap_err(), NOT_CHOSEN, "{path}");
+        }
+
+        // The person chooses the folder for the git client, to change too.
+        let OpenFileOutcome::Opened(opened) = git
+            .open_handle(PickRequest::writable_directory("Open a repository", ""))
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap()
+        else {
+            panic!("the chosen folder was not handed over");
+        };
+        let folder = opened.reference().unwrap().to_str().unwrap().to_owned();
+        let plan = format!("{folder}/plan.md");
+
+        let mut listed: Vec<(String, String, bool)> = list(&*git, &folder)
             .unwrap()
             .into_iter()
-            .map(|entry| (entry.name, entry.folder))
+            .map(|entry| (entry.name, entry.path, entry.folder))
             .collect();
         listed.sort();
         assert_eq!(
             listed,
-            vec![("a.epub".to_owned(), false), ("books".to_owned(), true)]
+            vec![
+                ("plan.md".to_owned(), plan.clone(), false),
+                ("site".to_owned(), format!("{folder}/site"), true),
+            ],
+            "the folder's entries, each by a path the chooser opens again"
         );
-        let found = stat(&dir.path().join("a.epub")).unwrap().unwrap();
-        assert_eq!(found.size, 4, "its bytes' length");
+        assert_eq!(read_bytes(&*git, &plan).unwrap(), b"Spring planting");
+        assert_eq!(stat(&*git, &plan).unwrap().unwrap().size, 15);
+        assert!(stat(&*git, &folder).unwrap().unwrap().folder);
+        assert!(stat(&*git, &format!("{folder}/gone")).unwrap().is_none());
+        assert!(list(&*git, &format!("{folder}/site")).unwrap().is_empty());
+        assert!(
+            read_bytes(&*git, &folder).is_err(),
+            "a folder is not a file"
+        );
+        assert!(
+            read_bytes(&*git, &format!("{folder}/../secret.txt")).is_err(),
+            "nothing above the chosen folder"
+        );
+
+        let page = format!("{folder}/site/index.html");
+        let written = write(&*git, &page, b"<h1>Hello</h1>").unwrap();
+        assert_eq!((written.name.as_str(), written.size), ("index.html", 14));
         assert_eq!(
-            read_bytes(&dir.path().join("a.epub")).unwrap(),
-            b"EPUB",
-            "what File.read reads"
+            std::fs::read(projects.join("site/index.html")).unwrap(),
+            b"<h1>Hello</h1>"
         );
-        assert!(stat(&dir.path().join("gone")).unwrap().is_none());
-        assert!(read_bytes(dir.path()).is_err(), "a folder is not a file");
+        assert!(
+            write(&*git, &page, b"again").is_err(),
+            "a new file, never over one"
+        );
+
+        // The folder is the git client's: another app is refused every bit of it.
+        assert_eq!(list(&*notes, &folder).unwrap_err(), NOT_CHOSEN);
+        assert_eq!(read_bytes(&*notes, &plan).unwrap_err(), NOT_CHOSEN);
+        assert!(stat(&*notes, &plan).is_err());
+        assert!(write(&*notes, &format!("{folder}/note.md"), b"x").is_err());
+        assert!(!projects.join("note.md").exists());
     }
 
     #[test]
