@@ -2403,3 +2403,60 @@ fn a_kept_glyph_column_lines_up_rows_with_and_without_a_glyph() {
         kept.text_x
     );
 }
+
+/// A Viewer's click on a row's check whose action their grants refuse: the press is sent, the
+/// workspace refuses it and the window says why, and the box keeps its mark.
+#[test]
+fn a_refused_check_says_why_and_keeps_its_mark() {
+    let ran = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&ran);
+    let root = crate::widget::effect_fixture::sends_through(
+        move || counted.set(counted.get() + 1),
+        |binding| {
+            let mut row = ListRow::new("send", "Send").checkbox(false, |_| {});
+            row.check_action = Some(ActionEmitter::new(binding));
+            Box::new(row)
+        },
+    );
+    let mut driver = Driver::new_with_theme(crate::State::new(), root, (600, 400), Theme::dark());
+    driver.connect_peer();
+    driver.set_permission_ctx(::collaboration::permissions::PermissionContext::member(
+        &::collaboration::permissions::MemberId::person("ada"),
+        ::collaboration::permissions::Role::Viewer,
+    ));
+    driver.relayout();
+    let the_check = |driver: &Driver| {
+        driver
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("Mark"))
+            })
+            .expect("the row shows its check")
+    };
+    let check = the_check(&driver);
+    let name = check.name.clone().unwrap_or_default();
+    let marked = |driver: &Driver| {
+        driver
+            .semantic_tree()
+            .find_by_name(&name)
+            .and_then(|node| node.state.checked)
+    };
+    assert_eq!(marked(&driver), Some(false));
+    let at = check
+        .bounds
+        .expect("the check stands where it is drawn")
+        .center();
+    driver.click_at(at.x, at.y);
+    driver.relayout();
+    assert_eq!(ran.get(), 0, "a Viewer's check sends nothing");
+    assert!(
+        driver.refusal_said().is_some(),
+        "the check is refused out loud: {:?}",
+        driver.control_failures()
+    );
+    assert_eq!(marked(&driver), Some(false), "the box keeps its mark");
+}

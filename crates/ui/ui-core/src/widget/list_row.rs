@@ -2455,8 +2455,24 @@ impl ListRow {
         }))
     }
 
+    /// The person's click on the row's check. One whose action they may not run keeps its mark,
+    /// and the press is sent all the same, to be refused with why
+    /// ([`crate::widget::ActionEmitter::press`]).
+    fn click_checkbox(&mut self) -> bool {
+        if let Some(action) = &mut self.check_action
+            && !action.is_available()
+            && matches!(self.leading, Some(Leading::Checkbox { .. }))
+        {
+            if let Err(error) = action.press(()) {
+                tracing::warn!(%error, "a row's check refused the action's arguments");
+            }
+            return true;
+        }
+        self.toggle_checkbox()
+    }
+
     fn toggle_checkbox(&mut self) -> bool {
-        // A check the person may not make keeps its mark; the press is sent to be refused with why.
+        // A check whose action is not available keeps its mark.
         let refused = self
             .check_action
             .as_ref()
@@ -3030,7 +3046,7 @@ impl Widget for ListRow {
                                 self.run_action(index);
                             }
                             RowPart::Check => {
-                                self.toggle_checkbox();
+                                self.click_checkbox();
                             }
                             RowPart::Change => {
                                 if let Some(show) =
