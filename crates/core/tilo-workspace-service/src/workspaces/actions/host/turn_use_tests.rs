@@ -70,10 +70,13 @@ pub(super) async fn dispatched(
         && caller.workspace() == Some(workspace.as_str())
         && let (Some(agent), Some(person)) = (caller.acting().agent_id(), caller.turn_person())
     {
-        listed(workspaces, &workspace, &hex::encode(person), agent, &[]).await;
+        let person = hex::encode(person);
+        listed(workspaces, &workspace, &person, agent, &[]).await;
         // A turn given no policy leaves the workspace's grants as the test set them.
         if let Some(policy) = turn.policy {
-            let named = tilo_action_policy::Grantee::agent(agent.to_owned(), "owner");
+            // An agent is the pair of its id and its person: the turn's answers are the ones its
+            // own person gave it.
+            let named = tilo_action_policy::Grantee::agent(agent.to_owned(), person);
             let answers: Vec<_> = policy
                 .grants
                 .iter()
@@ -771,7 +774,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
 
     let kept_from_vault = tilo_action_policy::Grant::new(
         "test:scout-kept-from-vault",
-        tilo_action_policy::Grantee::agent("scout", hex::encode(owner.user_public_key)),
+        tilo_action_policy::Grantee::agent("scout", hex::encode(ada.user_public_key)),
         TreePath::workspace(&workspace)
             .app(tilo_app_id::apps::PASSWORDS)
             .kind("passwords.workspace-vault"),
