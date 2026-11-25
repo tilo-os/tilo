@@ -9,110 +9,117 @@ view themes_pane(s: Settings) {
     state editing: Text = ""
     state new_id: Text = ""
     state base: Text = "tilo-dark"
-    let a = settings.appearance
-    let packages = settings.theme_packages
-    if let chosen = a.theme_package {
-        if not packages.packages.any(p -> p.key == chosen) {
-            ui.Banner(
-                "The theme package is not installed on this device",
-                message: "Every app shows Tilo's theme until the package is installed here; your other devices that have it show it.",
-                kind: .warning,
-            )
-        }
-    }
-    ui.Section("Shown") {
-        setting("In dark mode", "A look's dark side, or one of your themes") {
-            ui.Text(theme_title(a.dark_theme), role: .body)
-        }
-        setting("In light mode", "A look's light side, or one of your themes") {
-            ui.Text(theme_title(a.light_theme), role: .body)
-        }
-    }
-    ui.Section("Looks") {
-        for look in ["Tilo", "Paper", "Moss", "Dusk", "Mono"] {
-            ui.ListRow(look, secondary: "Designed for light and for dark", icon: .palette) {
-                on activate: settings.choose_theme(a, theme: look)
+    // The packages installed on this device, read beside the appearance: a device that has none
+    // says so rather than showing an empty section.
+    std.readable(
+        of: settings.theme_packages,
+        message: "Theme packages could not be read",
+    ) {
+        let a = settings.appearance
+        let packages = settings.theme_packages
+        if let chosen = a.theme_package {
+            if not packages.packages.any(p -> p.key == chosen) {
+                ui.Banner(
+                    "The theme package is not installed on this device",
+                    message: "Every app shows Tilo's theme until the package is installed here; your other devices that have it show it.",
+                    kind: .warning,
+                )
             }
         }
-    }
-    ui.Section("Installed theme packages") {
-        if packages.packages.is_empty() {
-            ui.Text(
-                "A theme package brings its own painters; install one from the Store and it appears here.",
-                role: .caption,
-                secondary: true,
-            )
+        ui.Section("Shown") {
+            setting("In dark mode", "A look's dark side, or one of your themes") {
+                ui.Text(theme_title(a.dark_theme), role: .body)
+            }
+            setting("In light mode", "A look's light side, or one of your themes") {
+                ui.Text(theme_title(a.light_theme), role: .body)
+            }
         }
-        for package in packages.packages {
-            ui.ListRow(
-                package.name,
-                secondary: package.key,
-                selected: a.theme_package == .some(package.key),
-                icon: .palette,
-            ) {
-                on activate: settings.apply_theme(a, package: package.key)
-                trailing: {
-                    ui.Button("Use", size: .small) {
-                        on press: settings.apply_theme(a, package: package.key)
+        ui.Section("Looks") {
+            for look in ["Tilo", "Paper", "Moss", "Dusk", "Mono"] {
+                ui.ListRow(look, secondary: "Designed for light and for dark", icon: .palette) {
+                    on activate: settings.choose_theme(a, theme: look)
+                }
+            }
+        }
+        ui.Section("Installed theme packages") {
+            if packages.packages.is_empty() {
+                ui.Text(
+                    "A theme package brings its own painters; install one from the Store and it appears here.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for package in packages.packages {
+                ui.ListRow(
+                    package.name,
+                    secondary: package.key,
+                    selected: a.theme_package == .some(package.key),
+                    icon: .palette,
+                ) {
+                    on activate: settings.apply_theme(a, package: package.key)
+                    trailing: {
+                        ui.Button("Use", size: .small) {
+                            on press: settings.apply_theme(a, package: package.key)
+                        }
                     }
                 }
             }
         }
-    }
-    ui.Section("Your themes") {
-        if a.themes.is_empty() {
-            ui.Text(
-                "Start one from a look or a theme, and change any of its roles.",
-                role: .caption,
-                secondary: true,
-            )
+        ui.Section("Your themes") {
+            if a.themes.is_empty() {
+                ui.Text(
+                    "Start one from a look or a theme, and change any of its roles.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for t in a.themes {
+                ui.ListRow(
+                    t.name,
+                    secondary: shown_as(a, t.id, t.dark),
+                    selected: editing == t.id,
+                    icon: if t.dark { .moon } else { .sun },
+                ) {
+                    on activate: set(editing, t.id).then(review_contrast_now(t.id))
+                    trailing: {
+                        row(gap: .related, align: .center) {
+                            ui.Button("Use", size: .small) {
+                                on press: settings.use_theme(a, theme: t.id)
+                            }
+                            ui.Button(
+                                "Delete",
+                                icon: .trash,
+                                icon_only: true,
+                                role: .plain,
+                                size: .small,
+                            ) {
+                                on press: settings.delete_theme(a, theme: t.id)
+                            }
+                        }
+                    }
+                }
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(bind: new_id, placeholder: "A name for it, such as harbour", fill)
+                ui.Dropdown(
+                    bind: base,
+                    options: preset_ids() + a.themes.map(t -> t.id),
+                    caption: "Start from",
+                )
+                ui.Button("New theme", icon: .plus, role: .primary, size: .small) {
+                    on press: settings.new_theme(a, id: new_id, base: base)
+                }
+                // A theme saved with Export on another workspace, taken in whole: every role, tuned
+                // value and glass shader, under an id made from its name.
+                ui.Button("Import", icon: .upload, size: .small) {
+                    on press: file.choose(import_theme(s), accept: [".theme.json", "application/json"])
+                }
+            }
         }
         for t in a.themes {
-            ui.ListRow(
-                t.name,
-                secondary: shown_as(a, t.id, t.dark),
-                selected: editing == t.id,
-                icon: if t.dark { .moon } else { .sun },
-            ) {
-                on activate: set(editing, t.id).then(review_contrast_now(t.id))
-                trailing: {
-                    row(gap: .related, align: .center) {
-                        ui.Button("Use", size: .small) {
-                            on press: settings.use_theme(a, theme: t.id)
-                        }
-                        ui.Button(
-                            "Delete",
-                            icon: .trash,
-                            icon_only: true,
-                            role: .plain,
-                            size: .small,
-                        ) {
-                            on press: settings.delete_theme(a, theme: t.id)
-                        }
-                    }
-                }
+            if t.id == editing {
+                theme_editor(t)
             }
-        }
-        row(gap: .related, align: .center, wrap: true) {
-            ui.TextInput(bind: new_id, placeholder: "A name for it, such as harbour", fill)
-            ui.Dropdown(
-                bind: base,
-                options: preset_ids() + a.themes.map(t -> t.id),
-                caption: "Start from",
-            )
-            ui.Button("New theme", icon: .plus, role: .primary, size: .small) {
-                on press: settings.new_theme(a, id: new_id, base: base)
-            }
-            // A theme saved with Export on another workspace, taken in whole: every role, tuned
-            // value and glass shader, under an id made from its name.
-            ui.Button("Import", icon: .upload, size: .small) {
-                on press: file.choose(import_theme(s), accept: [".theme.json", "application/json"])
-            }
-        }
-    }
-    for t in a.themes {
-        if t.id == editing {
-            theme_editor(t)
         }
     }
 }
