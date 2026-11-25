@@ -640,6 +640,13 @@ class MachineDaemon:
                # The unit's own environment, over the walk's identity root.
                "HOME": str(self.PROFILE),
                "TILO_IDENTITY_ROOT": str(self.state / "identity"),
+               # The session's system store, runtimes and trusted publishers are the image's
+               # (/usr/share/tilo-apps and the rest on a device): the daemon serves the person's
+               # apps from them, and with none it lists no app installed.
+               "TILO_APPS_SYSTEM_DIR": str(self.state / "system"),
+               "TILO_RUNTIME_BUNDLE_DIR": str(self.state / "runtimes"),
+               "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
+                   str(self.state / "keys/runtime-publishers.txt"),
                "XDG_RUNTIME_DIR": str(self.RUNTIME),
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
         self.log = (logs / "machine-daemon.log").open("w")
