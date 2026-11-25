@@ -335,10 +335,15 @@ impl Workspaces {
     /// would ask for this host's whole state, in which every device's row
     /// arrives at once, and each device's row reads as written by the others.
     ///
+    /// Only a host whose own person is in the workspace lets a device in: a
+    /// server that holds another person's workspace reads and serves it, and
+    /// holding it admits no one. Who comes in is the signed member list's and
+    /// its owners' to decide.
+    ///
     /// # Errors
     ///
-    /// The row does not let the device in, or the workspace could not keep or
-    /// carry it.
+    /// This host's person is not in the workspace, the row does not let the
+    /// device in, or the workspace could not keep or carry it.
     pub(crate) async fn take_own_row(
         &self,
         governed: &mut crate::workspaces::GovernedWorkspace,
@@ -346,6 +351,17 @@ impl Workspaces {
         admission: &[Vec<u8>],
         now: u64,
     ) -> Result<(), String> {
+        let policy = governed
+            .peer()
+            .governance()
+            .governed_policy()
+            .map_err(|error| error.to_string())?;
+        let host = hex::encode(self.inner.host.cert.user_public_key);
+        if !policy.is_owner(&host) && policy.active_role(&host).is_none() {
+            return Err(
+                "this server holds the workspace for someone else and lets no one in".to_owned(),
+            );
+        }
         let key = self.inner.host.key.clone();
         let mut candidate = governed.peer().clone();
         if !candidate.admit_own(
