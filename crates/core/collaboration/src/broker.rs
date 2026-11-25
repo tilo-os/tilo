@@ -99,11 +99,39 @@ const SDK_DOCUMENT_EVENT_BYTES: usize =
 const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 
 /// The transport's outbound queue as the process reaches it from outside: the
-/// session's published resources ([`SessionResource`]) and the device commands
-/// (the display control).
-static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
-    std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
-> = std::sync::OnceLock::new();
+/// session's published resources ([`SessionResource`]), the store commands of
+/// the records it holds beside its windows' and the device commands (the
+/// display control).
+static PUBLISHED_COMMAND_BRIDGE: ProcessBridge = ProcessBridge::new();
+
+/// The outbound queues of the process's transports, oldest first: the
+/// process's own connection is the one it made first (its launch's, or the
+/// one a process that is its own launcher made for itself), and a transport an
+/// instance joins later in the same process for another app never takes its
+/// place. While that one runs, what the process sends goes on it; once it has
+/// ended, on the oldest that still runs.
+struct ProcessBridge(std::sync::Mutex<Vec<tokio_mpsc::WeakSender<QueuedSdkCommand>>>);
+
+impl ProcessBridge {
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+
+    /// Have `outbound` carry what the process sends once every transport made
+    /// before it has ended.
+    fn register(&self, outbound: tokio_mpsc::WeakSender<QueuedSdkCommand>) {
+        let mut held = self.0.lock_recover();
+        held.retain(|sender| sender.strong_count() > 0);
+        held.push(outbound);
+    }
+
+    /// The queue of the oldest transport that still runs.
+    fn sender(&self) -> Option<tokio_mpsc::Sender<QueuedSdkCommand>> {
+        let mut held = self.0.lock_recover();
+        held.retain(|sender| sender.strong_count() > 0);
+        held.iter().find_map(tokio_mpsc::WeakSender::upgrade)
+    }
+}
 
 /// How long a store command waits for its workspace's answer.
 const RESOURCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -121,11 +149,7 @@ pub fn resource_command(
     command: Vec<u8>,
 ) -> Result<mpsc::Receiver<Result<Vec<u8>, String>>, String> {
     let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "the workspace connection is unavailable".to_owned())?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .sender()
         .ok_or_else(|| "this process has no workspace connection".to_owned())?;
     let (reply, received) = mpsc::sync_channel(1);
     if !enqueue_sdk_command(
@@ -145,10 +169,7 @@ pub fn resource_command(
 /// Whether this process has a workspace connection a store command can go on.
 #[must_use]
 pub fn has_resource_connection() -> bool {
-    PUBLISHED_COMMAND_BRIDGE
-        .get()
-        .and_then(|bridge| bridge.lock().ok()?.as_ref()?.upgrade())
-        .is_some()
+    PUBLISHED_COMMAND_BRIDGE.sender().is_some()
 }
 
 static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
@@ -163,11 +184,7 @@ pub fn display_control(
         return Err("The display request exceeds its wire bound.".into());
     }
     let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "The display service is unavailable.")?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .sender()
         .ok_or("Displays need the certified collaboration service.")?;
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     if !enqueue_sdk_command(
@@ -306,12 +323,7 @@ fn service_session_refusal(
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
 pub(super) fn flush_settings() {
-    let Some(sender) = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|bridge| bridge.as_ref().and_then(tokio_mpsc::WeakSender::upgrade))
-    else {
+    let Some(sender) = PUBLISHED_COMMAND_BRIDGE.sender() else {
         return;
     };
     let _ = enqueue_sdk_command(&sender, SdkCommand::FlushSettings, &BridgeState::new());
@@ -321,12 +333,7 @@ pub(super) fn flush_settings() {
 /// ([`super::channel_live_activity`]). Without a connected transport it waits
 /// for the primary route, whose join sends it.
 pub(super) fn flush_live_activity() {
-    let Some(sender) = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|bridge| bridge.as_ref().and_then(tokio_mpsc::WeakSender::upgrade))
-    else {
+    let Some(sender) = PUBLISHED_COMMAND_BRIDGE.sender() else {
         return;
     };
     let _ = enqueue_sdk_command(&sender, SdkCommand::FlushLiveActivity, &BridgeState::new());
@@ -560,15 +567,11 @@ impl BrokerTransport {
     }
 
     /// Route the process's published commands and device commands through
-    /// this transport for its whole life, connecting or connected: a view
-    /// followed while it connects is served when the shovel takes it.
+    /// this transport for its whole life, connecting or connected, once every
+    /// transport made before it has ended ([`ProcessBridge`]): a view followed
+    /// while it connects is served when the shovel takes it.
     fn register_command_bridge(&self) {
-        if let Ok(mut bridge) = PUBLISHED_COMMAND_BRIDGE
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-        {
-            *bridge = Some(self.outbound_tx.downgrade());
-        }
+        PUBLISHED_COMMAND_BRIDGE.register(self.outbound_tx.downgrade());
     }
 }
 

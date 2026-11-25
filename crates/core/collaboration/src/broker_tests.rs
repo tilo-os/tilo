@@ -4426,13 +4426,38 @@ mod bridge {
         let (transport, _init) =
             CollaborationManager::start_sdk(SdkConnectSource::Env, SdkIdentitySource::Ready(None))
                 .expect("the shovel thread starts");
-        let registered = PUBLISHED_COMMAND_BRIDGE
-            .get()
-            .and_then(|bridge| bridge.lock().ok()?.as_ref()?.upgrade());
+        let registered = PUBLISHED_COMMAND_BRIDGE.sender();
         assert!(
             registered.is_some(),
             "the process's bridge points at the transport while it connects"
         );
         drop(transport);
+    }
+
+    #[test]
+    fn a_later_transport_takes_the_process_bridge_only_once_the_first_has_ended() {
+        // A process that is its own launcher (a phone running the device's daemon) makes its
+        // own connection first, and each app it opens joins over one of its own later: what the
+        // process sends for its own records goes on its own connection, never on an app's,
+        // which the workspace attests as that app, and does not end when that app's window does.
+        let start = || {
+            CollaborationManager::start_sdk(SdkConnectSource::Env, SdkIdentitySource::Ready(None))
+                .expect("the shovel thread starts")
+                .0
+        };
+        let first = start();
+        let second = start();
+        let carries = |transport: &BrokerTransport| {
+            PUBLISHED_COMMAND_BRIDGE
+                .sender()
+                .is_some_and(|sender| sender.same_channel(&transport.outbound_tx))
+        };
+        assert!(carries(&first), "the process's own connection carries it");
+        drop(first);
+        assert!(
+            carries(&second),
+            "once the first has ended, the one that still runs carries it"
+        );
+        drop(second);
     }
 }

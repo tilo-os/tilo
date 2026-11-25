@@ -8,7 +8,6 @@ use super::{
 };
 use crate::time::Duration;
 use std::sync::Arc;
-use tokio::sync::mpsc as tokio_mpsc;
 
 /// How long a change of a published resource waits for the broker's answer:
 /// the worker replies as soon as the API took it, so this bounds a lost
@@ -90,11 +89,7 @@ impl SessionResource {
         let (first_tx, first_rx) = mpsc::sync_channel(1);
         let (cancel, cancel_rx) = tokio::sync::watch::channel(());
         let sender = PUBLISHED_COMMAND_BRIDGE
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .map_err(|_| "The session's services are unavailable.")?
-            .as_ref()
-            .and_then(tokio_mpsc::WeakSender::upgrade)
+            .sender()
             .ok_or("Published resources need the certified collaboration service.")?;
         if !enqueue_sdk_command(
             &sender,
@@ -174,11 +169,7 @@ impl SessionResource {
     ) -> Result<(), String> {
         tilo_rt::off_ui_thread();
         let sender = PUBLISHED_COMMAND_BRIDGE
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .map_err(|_| "The session's services are unavailable.")?
-            .as_ref()
-            .and_then(tokio_mpsc::WeakSender::upgrade)
+            .sender()
             .ok_or("Published resources need the certified collaboration service.")?;
         let (reply, receiver) = mpsc::sync_channel(1);
         if !enqueue_sdk_command(
