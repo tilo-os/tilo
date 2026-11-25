@@ -621,7 +621,7 @@ async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
         kind: MESSAGE.to_owned(),
         id: "m-ada".to_owned(),
     };
-    let tilo_resource_store::wire::Reply::Content(Some(message)) =
+    let collab_types::store::wire::Reply::Content(Some(message)) =
         adas.resource_command(&context, content).await.unwrap()
     else {
         panic!("Ada's message is kept");

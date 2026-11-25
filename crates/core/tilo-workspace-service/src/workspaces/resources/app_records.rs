@@ -4,9 +4,9 @@
 //! words a person reads, so the app tells them it can't keep its records rather than failing
 //! where nobody looks.
 
+use collab_types::store::wire::Command;
 use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath};
 use tilo_resource_store::Stamp;
-use tilo_resource_store::wire::Command;
 
 use super::super::Workspaces;
 
