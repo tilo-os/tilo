@@ -646,12 +646,7 @@ async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningKey, 
         governed
             .peer()
             .governance_mut()
-            .admit_agent(
-                cert.clone(),
-                delegation,
-                &workspaces.inner.host.key,
-                tilo_clock::wall(),
-            )
+            .admit_agent(cert.clone(), delegation, &key, tilo_clock::wall())
             .unwrap();
     }
     let person = hex::encode(root.verifying_key().to_bytes());
