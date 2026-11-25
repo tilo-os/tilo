@@ -24,8 +24,8 @@ use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{
-    Hosted, Linked, TestDevice, TestUser, copy_says, holds_writes, keys_of, receives, serve_in,
-    serve_on, write, write_sealed,
+    Hosted, Linked, RECORDS_APP as APP, TestDevice, TestUser, holds_writes, keys_of, receives,
+    serve_in, serve_on, write_sealed,
 };
 use tilo_server::WorkspaceId;
 

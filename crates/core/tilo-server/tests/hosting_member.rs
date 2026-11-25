@@ -17,15 +17,11 @@ use tilo_server_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{
-    Hosted, Linked, TestDevice, TestUser, copy_says, host_holds, host_writes, keys_of, next,
-    reaches_host, receives, serve_on, write, write_sealed,
+    Hosted, Linked, RECORDS_APP as APP, TestDevice, TestUser, copy_says, host_holds, host_writes,
+    keys_of, next, reaches_host, receives, serve_on, write, write_sealed,
 };
 use tilo_server::WorkspaceId;
 use tilo_workspace_service::workspaces::AdmittedWrite;
-
-/// The app the tests write records in. Each step writes a record of its own, so a change is read
-/// back as the one that step made.
-const APP: &str = "test.app";
 
 /// How long the holders are watched doing nothing: longer than the holder's
 /// first two waits before dialing again, so a link that kept ending would show.
