@@ -19691,6 +19691,7 @@ dependencies = [
  "tilo-package-store",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-reference",
  "tilo-registry-types",
  "tilo-render-protocol",
  "tilo-resource",
