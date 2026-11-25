@@ -31,7 +31,7 @@ use tilo_device_identity::login::{
 use tilo_lock::MutexRecover as _;
 
 use super::ticket::{
-    INFO, device_info, device_only_catalogue, failed, failed_as, logged_in, login_asked, provider,
+    INFO, device_info, device_only_catalogue, failed, failed_as, logged_in, login_asked, providers,
     succeeded,
 };
 
@@ -786,7 +786,7 @@ impl ActionProvider for DeviceOnly {
             // device's beside their workspace's apps.
             None => {
                 let mut page = device_only_catalogue(&query);
-                page.providers.push(provider(""));
+                page.providers.extend(providers(""));
                 page.providers.push(crate::seats::provider());
                 if self.packages().is_some() {
                     page.providers.push(CatalogueProvider {
