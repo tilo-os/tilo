@@ -582,17 +582,6 @@ impl JoinedChannel {
             })
         })
     }
-    /// The private window instance this route's launch shows: none. A committed document kept one
-    /// for a workspace whose documents its owner committed in the clear, and every workspace seals
-    /// its documents under their routes' keys now.
-    #[expect(
-        clippy::unused_self,
-        clippy::unnecessary_wraps,
-        reason = "the answer is read wherever a route may bind a private window; none does"
-    )]
-    pub(super) fn native_private_window_instance(&self) -> Result<Option<u64>, String> {
-        Ok(None)
-    }
 
     pub(super) fn continuation_instance(&self) -> Result<u64, String> {
         self.route()
@@ -1108,7 +1097,10 @@ impl JoinedChannel {
                 let _ = watch.arm();
                 let ended = match self.document_read_context() {
                     Ok(context) => context.revalidate_read().await.is_err(),
-                    Err(_) => true,
+                    Err(error) => {
+                        tracing::warn!(%error, "a committed read's context ended while it waited its turn");
+                        true
+                    }
                 };
                 if ended || granted.borrow().is_some() {
                     return self.answer_wait(known_revision).await;

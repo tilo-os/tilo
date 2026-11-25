@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_actions::remote::person_telling::{Kind, Told};
+use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
@@ -60,24 +60,7 @@ pub trait Outside: Send + Sync {
 /// keeps them on the host, the body says only where to look.
 #[must_use]
 pub fn words_outside(told: &Told) -> (String, String) {
-    let name = told
-        .from
-        .as_ref()
-        .map(|from| from.name.trim())
-        .filter(|name| !name.is_empty());
-    let title = match (told.kind, name) {
-        (Kind::Question, Some(name)) => format!("{name} needs you"),
-        (Kind::Question, None) => "An agent needs you".to_owned(),
-        (Kind::Mention, Some(name)) => format!("{name} mentioned you"),
-        (_, Some(name)) => name.to_owned(),
-        (_, None) => "Tilo".to_owned(),
-    };
-    let body = if told.outside {
-        told.words.clone()
-    } else {
-        "Open Tilo to see it.".to_owned()
-    };
-    (title, body)
+    tilo_actions::remote::person_telling::words_outside(told)
 }
 
 /// When a thing is told outside Tilo.

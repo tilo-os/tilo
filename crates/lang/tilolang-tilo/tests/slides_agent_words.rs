@@ -97,21 +97,17 @@ fn an_agents_field_edit_of_a_boxes_words_shows_in_the_deck() {
     let mut view = ada
         .host
         .runtime()
-        .open_view(
-            &person("ada"),
-            &view_id(&ada, "deck"),
-            vec![deck],
-        )
+        .open_view(&person("ada"), &view_id(&ada, "deck"), vec![deck])
         .expect("the deck's window opens");
     view.poll_patches().unwrap();
     let mut editors = 0usize;
-    of_kind(view.tree(), "ui.BlockEditor", &mut editors, &mut |node| {
-        matches!(node.props.get("value"), Some(Value::Rich(rich)) if rich.written_text() == "The harbour at noon")
-    });
-    assert!(
-        editors > 0,
-        "the deck draws the box's words the agent set"
+    of_kind(
+        view.tree(),
+        "ui.BlockEditor",
+        &mut editors,
+        &mut |node| matches!(node.props.get("value"), Some(Value::Rich(rich)) if rich.written_text() == "The harbour at noon"),
     );
+    assert!(editors > 0, "the deck draws the box's words the agent set");
 }
 
 fn of_kind(

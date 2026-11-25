@@ -70,6 +70,7 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
         app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
             to: vec![report.clone()],
             pointing: true,
+            carried: Vec::new(),
         }])
     );
     frames(&mut app);
@@ -135,6 +136,7 @@ fn escape_leaves_pointing_without_a_box() {
         app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
             to: vec![],
             pointing: true,
+            carried: Vec::new(),
         }])
     );
     frames(&mut app);
@@ -162,6 +164,7 @@ fn the_box_the_shell_asks_for_stands_in_any_window() {
         app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
             to: vec![],
             pointing: false,
+            carried: Vec::new(),
         }])
     );
     frames(&mut app);

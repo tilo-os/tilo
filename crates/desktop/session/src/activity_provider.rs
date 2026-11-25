@@ -93,10 +93,14 @@ fn caller_of(caller: &Caller, workspace: &str) -> Caller {
     let member = BrokerActor::for_caller(caller);
     // A bot's installation id may carry a `:` of its own: it is software, so
     // it reaches the activity as itself, never through a person's id.
-    let caller = match member.member() {
-        tilo_actions::policy::MemberId::Agent(agent) => Caller::local_agent(agent.as_str()),
-        tilo_actions::policy::MemberId::Bot(bot) => Caller::local_bot(bot.as_str()),
-        tilo_actions::policy::MemberId::Person(person) => Caller::local_person(person.clone()),
+    use tilo_actions::policy::{Actor, MemberId};
+    let caller = match member.actor() {
+        Actor::Member(MemberId::Agent(agent)) => Caller::local_agent(agent.as_str()),
+        Actor::Member(MemberId::Bot(bot)) => Caller::local_bot(bot.as_str()),
+        Actor::Member(MemberId::Person(person)) => Caller::local_person(person.clone()),
+        // An app acting by itself reaches the activity as itself.
+        Actor::App(app) => Caller::local_app(app.as_str()),
+        Actor::Automation(_) | Actor::Visitor(_) => caller.clone(),
     };
     caller.in_workspace(workspace)
 }
@@ -156,7 +160,6 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 

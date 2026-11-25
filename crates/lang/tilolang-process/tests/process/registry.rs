@@ -34,7 +34,9 @@ action look() -> Int {
 
 action poke(address: Text, arguments: json.Value) -> Text {
     let made = actions.call(address: address, arguments: arguments)
-    made.status.label()
+    if made.status == .ended { "ended" }
+    else if made.status == .waiting { "waiting" }
+    else { made.status.label() }
 }
 "#;
 
@@ -125,6 +127,53 @@ fn succeeded(update: &tilo_actions::InvocationUpdate) -> serde_json::Value {
     }
 }
 
+/// Deliver `poke`, asking to write in a note, answer its child call with `answer`, and answer
+/// what the app read of it.
+fn poked(
+    host: &mut TilolangProcess,
+    window: &mut Window,
+    sent: &Sent,
+    inbox: &Inbox,
+    id: u64,
+    poke: &tilo_actions::ActionAddress,
+    answer: serde_json::Value,
+) -> String {
+    let served = InvocationId::new();
+    inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id,
+        invocation: served,
+        resource: poke.resource.clone(),
+        action: poke.action.clone(),
+        argument: Some(format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({
+                "address": "so.tilo.notes/notes.note:1#write",
+                "arguments": {"title": "Take the ferry"},
+            })
+        )),
+        actor: tilo_actions::MemberId::person("ada").into(),
+        context: None,
+    });
+    settle(host, window);
+    let child = child_sent(sent).expect("the call went through the dispatch");
+    assert_eq!(child.target.provider, "tilo.actions");
+    assert_eq!(child.target.address.action, "call");
+    assert_eq!(child.on_behalf_of, Some(served));
+    let given = match &child.argument {
+        tilo_actions::remote::InvokeArgument::Json(given) => given.clone(),
+        other => panic!("the address and arguments were sent: {other:?}"),
+    };
+    assert_eq!(given["address"], "so.tilo.notes/notes.note:1#write");
+    assert_eq!(given["arguments"]["title"], "Take the ferry");
+    receipt(inbox, child.invocation, completed(answer));
+    settle(host, window);
+    match succeeded(&answered(sent, id).expect("it ends")) {
+        serde_json::Value::String(text) => text,
+        other => panic!("the status read as text: {other:?}"),
+    }
+}
+
 tilo_test_env::scenario! {
     fn the_registry_is_read_and_called_by_address_as_the_running_invocations_child;
 
@@ -173,47 +222,45 @@ tilo_test_env::scenario! {
             running_app("ada", APP, bundle());
         settle(&mut host, &mut window);
         let poke = published(&host, "poke");
-        let served = InvocationId::new();
-        inbox.borrow_mut().push_back(CollabEvent::Invocation {
-            id: 2,
-            invocation: served,
-            resource: poke.resource.clone(),
-            action: poke.action.clone(),
-            argument: Some(format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::json!({
-                    "address": "so.tilo.notes/notes.note:1#write",
-                    "arguments": {"title": "Take the ferry"},
-                })
-            )),
-            actor: tilo_actions::MemberId::person("ada").into(),
-            context: None,
-        });
-        settle(&mut host, &mut window);
-        let child = child_sent(&sent).expect("the call went through the dispatch");
-        assert_eq!(child.target.provider, "tilo.actions");
-        assert_eq!(child.target.address.action, "call");
-        assert_eq!(child.on_behalf_of, Some(served));
-        let given = match &child.argument {
-            tilo_actions::remote::InvokeArgument::Json(given) => given.clone(),
-            other => panic!("the address and arguments were sent: {other:?}"),
-        };
-        assert_eq!(given["address"], "so.tilo.notes/notes.note:1#write");
-        assert_eq!(given["arguments"]["title"], "Take the ferry");
         // The dispatch kept the call as its asked record: the run reads the invocation waiting.
-        receipt(
-            &inbox,
-            child.invocation,
-            completed(serde_json::json!({
-                "id": "inv-1",
-                "status": "waiting",
-                "action": "notes.note:1#write",
-                "started_ms": 1,
-            })),
+        assert_eq!(
+            poked(
+                &mut host,
+                &mut window,
+                &sent,
+                &inbox,
+                2,
+                &poke,
+                serde_json::json!({
+                    "id": "inv-1",
+                    "status": "waiting",
+                    "action": "notes.note:1#write",
+                    "started_ms": 1,
+                }),
+            ),
+            "waiting"
         );
-        settle(&mut host, &mut window);
-        assert_eq!(succeeded(&answered(&sent, 2).expect("it ends")), "Waiting");
+        // A call the dispatch answered ended reads as the case the code compares it with: the
+        // status the record carries is the one `.{case}` builds, not only what its label says.
+        assert_eq!(
+            poked(
+                &mut host,
+                &mut window,
+                &sent,
+                &inbox,
+                4,
+                &poke,
+                serde_json::json!({
+                    "id": "inv-2",
+                    "status": "ended",
+                    "action": "notes.note:1#write",
+                    "started_ms": 1,
+                    "ended_ms": 2,
+                    "output": {"title": "Take the ferry"},
+                }),
+            ),
+            "ended"
+        );
     }
 
     phase a_call_the_caller_may_not_make_is_refused;

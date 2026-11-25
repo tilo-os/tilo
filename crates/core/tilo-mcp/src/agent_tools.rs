@@ -16,7 +16,8 @@ use agent_provider_config::protocol::ToolDefinition;
 use serde_json::{Value, json};
 use tilo_actions::remote::agent_tools as wire;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState, InvokeRequest, Pending, WatchScope,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending, WatchScope,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId};
 use tilo_agent_turn::Answer;
@@ -355,7 +356,6 @@ impl ActionProvider for Latest {
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         self.provider().cancel(caller, id)
     }
-
 
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider().content_puts()

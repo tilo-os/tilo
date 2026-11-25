@@ -99,11 +99,15 @@ impl AppBrokerState {
                 if route.cluster_id != workspace {
                     return Err("original local caller does not match invocation workspace".into());
                 }
-                let expected = current.agent_id.as_ref().map_or_else(
-                    || MemberId::person(super::person_id_for_root(certificate.user_public_key)),
-                    |agent| MemberId::agent(super::delegated_agent_name(agent)),
-                );
-                if *actor.member() == expected {
+                let expected: tilo_action_policy::Actor = current
+                    .agent_id
+                    .as_ref()
+                    .map_or_else(
+                        || MemberId::person(super::person_id_for_root(certificate.user_public_key)),
+                        |agent| MemberId::agent(super::delegated_agent_name(agent)),
+                    )
+                    .into();
+                if *actor.actor() == expected {
                     InvocationOwner::AuthenticatedLocal {
                         root: certificate.user_public_key,
                         device: certificate.device_public_key,
@@ -116,12 +120,12 @@ impl AppBrokerState {
                     // invocation, is decided as that actor and stays
                     // actor-owned: never attested as the connection's.
                     InvocationOwner::Local {
-                        actor: actor.member().clone(),
+                        actor: actor.actor().clone(),
                     }
                 }
             }
             None => InvocationOwner::Local {
-                actor: actor.member().clone(),
+                actor: actor.actor().clone(),
             },
         })
     }

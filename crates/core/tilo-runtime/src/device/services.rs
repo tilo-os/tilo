@@ -227,12 +227,29 @@ impl Daemon {
                     serde_json::Value::Object(serde_json::Map::new()),
                 ),
             };
+            let until = tilo_clock::now() + JOIN_WAIT;
             let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
                 .wait_timeout(JOIN_WAIT)
                 .ok()
                 .flatten()
                 .ok_or("the device did not answer the join in time")?
                 .map_err(|error| error.to_string())?;
+            // An admitted join runs on: it is answered once the device is in the call.
+            let receipt = match receipt.status {
+                tilo_actions::remote::ReceiptStatus::Accepted => tilo_actions::remote::settle_with(
+                    &tree,
+                    &caller,
+                    receipt.invocation,
+                    None,
+                    until,
+                )
+                .wait_timeout(JOIN_WAIT)
+                .ok()
+                .flatten()
+                .flatten()
+                .map_or(receipt, |state| state.receipt()),
+                _ => receipt,
+            };
             match receipt.status {
                 tilo_actions::remote::ReceiptStatus::Completed { output } => match output.value {
                     Some(value) => serde_json::from_value::<super::live_speaking::Joined>(value)
@@ -984,6 +1001,14 @@ impl Daemon {
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
         self.workspaces.copies()
+    }
+
+    /// The record content of this device's workspaces: where the bytes of their records' files
+    /// are kept and asked for. `None` before the device's content store is open.
+    pub(crate) fn record_content(
+        &self,
+    ) -> Option<Arc<tilo_workspace_service::content::RouteContent>> {
+        self.workspaces.record_content_service()
     }
 
     /// Whether this device runs what waits for a device that keeps a person's root.
@@ -2722,13 +2747,12 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
 
 /// The checks a project's host approved: this device's work, kept as its jobs at
 /// `devices/<device>/jobs` and read through the one record API. What runs comes from this
-/// device's own `checks` setting, so a check an app names never brings its own commands.
-#[cfg(unix)]
-fn approved_checks(
-    parts: &BrokerParts<'_>,
-) -> io::Result<
-    Option<Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>>,
-> {
+/// device's own `checks` setting, so a check an app names never brings its own commands. A
+/// check's commands are ush's own, which a phone's app carries none of. An app runs one as a
+/// step its own `run-approved-check` declares, for an invocation the dispatch delivered to it:
+/// that invocation names the project the check is for.
+#[cfg(all(unix, not(target_os = "android")))]
+fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
     let jobs = Arc::new(super::approved_checks::CheckJobs::at(
         parts.root,
         parts.workspaces.copies().host_device(),
@@ -2738,29 +2762,26 @@ fn approved_checks(
         tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
         Arc::clone(&jobs) as Arc<dyn tilo_actions::remote::ResourceReads>,
     );
-    Ok(Some(Arc::new(super::approved_checks::NativeChecks::new(
-        parts.workspaces,
-        parts
-            .workspaces
-            .device_records()
-            .cloned()
-            .ok_or_else(|| io::Error::other("the device's settings are not kept for its checks"))?,
-        parts.root.to_path_buf(),
-        jobs,
-    ))
-        as Arc<
-            dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices,
-        >))
+    parts.workspaces.copies().providers().provide(
+        runtime_collab::approved_checks::PROVIDER,
+        tilo_app_id::apps::SETTINGS,
+        tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+        Arc::new(super::approved_checks::NativeChecks::new(
+            parts.workspaces,
+            parts.workspaces.device_records().cloned().ok_or_else(|| {
+                io::Error::other("the device's settings are not kept for its checks")
+            })?,
+            parts.root.to_path_buf(),
+            jobs,
+        )),
+    );
+    Ok(())
 }
 
 /// Elsewhere, a host approves no checks.
-#[cfg(not(unix))]
-fn approved_checks(
-    _parts: &BrokerParts<'_>,
-) -> io::Result<
-    Option<Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>>,
-> {
-    Ok(None)
+#[cfg(not(all(unix, not(target_os = "android"))))]
+fn approved_checks(_parts: &BrokerParts<'_>) -> io::Result<()> {
+    Ok(())
 }
 
 /// The seat's services, as the broker runs them: what the desktop session serves, the app windows
@@ -2964,6 +2985,7 @@ fn broker_services(
     // The hosts of the workspaces placed on another device: the one dispatch sends a call of a
     // typed action of one of their records there, as the broker sends its apps' invocations.
     let hosts = super::hosts::Hosts::of(parts.workspaces);
+    parts.workspaces.hold_hosts(Arc::clone(&hosts));
     let placed = Arc::clone(&hosts);
     parts
         .workspaces
@@ -2978,9 +3000,8 @@ fn broker_services(
         shell: shell_published,
         apps: published,
     } = published_here(&parts);
-    let approved_checks = approved_checks(&parts)?;
+    approved_checks(&parts)?;
     let mut services = ProcessServices {
-        approved_checks,
         action_offload,
         document_content: Some(document_content),
         ..ProcessServices::default()
@@ -3237,6 +3258,43 @@ impl Daemon {
     /// The workspace is not one this device may act in, or its admission cannot be opened.
     fn provider_for(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
         self.person()?.provider(workspace)
+    }
+
+    /// A call of one of the person's actions in `workspace`, made as the person on this device:
+    /// what their own runs reach of a provider the workspace's host answers (`tilo.telling`), or
+    /// an action of the workspace itself. It is the one dispatch every call of theirs takes, so
+    /// what the host decides for them decides this too.
+    ///
+    /// # Errors
+    /// The workspace is not one this device may act in, or its admission cannot be opened.
+    pub(crate) fn person_action(
+        &self,
+        workspace: &str,
+        provider_name: &str,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Map<String, Value>,
+        wait_ms: u32,
+    ) -> io::Result<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        let dispatch = self.person()?;
+        let caller = dispatch.caller(workspace);
+        let provider = dispatch.provider(workspace)?;
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: provider_name.to_owned(),
+                address: tilo_actions::ActionAddress::new(resource, action),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: Some(wait_ms),
+            appearance: None,
+            signed: None,
+        };
+        Ok(provider.invoke(&caller, request))
     }
 
     /// The one dispatch the person's own calls on this device reach, as them.
@@ -4853,6 +4911,13 @@ impl RuntimeActionProvider {
         if let Err(refusal) = session.check(caller, &self.workspaces) {
             return Pending::ready(Err(refusal.into()));
         }
+        // What the workspace's host keeps for the person — their rule and log, their vault,
+        // their accounts and models, their connections and their formats — is the host's to
+        // answer, wherever the workspace is kept: a device asks it over the device action
+        // service, as the person its transport certified, and never answers it here.
+        if tilo_actions::remote::kept_by_workspace_host(&request.target.provider) {
+            return self.workspace_kept(session.acting(), request);
+        }
         // The person's own act on the workspace's tree (adding to its vault, installing an
         // app), answered as this device ([`Self::workspace_tree`]) and recorded as theirs, so
         // following it reaches what took it.
@@ -4926,6 +4991,7 @@ impl RuntimeActionProvider {
                             .map_or_else(String::new, |(app, _)| app.to_owned()),
                         instance: pressed.instance.clone(),
                         resource: pressed.resource.clone(),
+                        at: None,
                     }
                 }),
             };
@@ -4994,6 +5060,38 @@ fn whichever_first(
         });
     }
     waited
+}
+
+impl RuntimeActionProvider {
+    /// `request`, one of what the workspace's host keeps for the person
+    /// ([`tilo_actions::remote::kept_by_workspace_host`]), asked of the device that hosts the
+    /// workspace as `caller`, a device's person: it is the host's to answer on the device action
+    /// service, and nothing of it is decided or kept here.
+    fn workspace_kept(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // What the host keeps for a person is the person's alone: no agent and no app asks it
+        // through a device's dispatch.
+        if !(caller.acting().is_person() && caller.acting().app().is_none()) {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        let Some(workspace) = caller.workspace() else {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        };
+        let hosts = self
+            .workspaces
+            .hosts()
+            .unwrap_or_else(|| super::hosts::Hosts::of(&self.workspaces));
+        let Some(host) = hosts.host_actions(workspace) else {
+            return Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "this device keeps this workspace itself, and what its host keeps for                          the person is asked there"
+                    .into(),
+            }));
+        };
+        host.invoke(caller, request)
+    }
 }
 
 impl ActionProvider for RuntimeActionProvider {

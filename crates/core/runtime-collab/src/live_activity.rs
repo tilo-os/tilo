@@ -10,8 +10,8 @@
 //! [`LiveActivityServer`] over its [`LiveActivities`], the board it presents
 //! every app's activity from and presses controls on.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use runtime_portal::NotAvailable;

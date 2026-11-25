@@ -79,7 +79,10 @@ fn a_check_refuses_an_id_a_package_beside_it_holds() {
     let (passed, said) = check(&dir, false);
     assert!(!passed, "the counter's increment shares its id:\n{said}");
     assert!(
-        said.contains(&format!("id `{taken}` of `increment@Counter` is also {}'s", beside.display())),
+        said.contains(&format!(
+            "id `{taken}` of `increment@Counter` is also {}'s",
+            beside.display()
+        )),
         "{said}"
     );
 

@@ -13,6 +13,7 @@ impl App {
         bounds: Option<[f64; 4]>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],
+        carried: &[tilo_reference::Attached],
     ) {
         let anchor = bounds
             .filter(|bounds| bounds.iter().all(|value| value.is_finite()))
@@ -24,7 +25,7 @@ impl App {
             .get()
             .or_else(|| Some(self.root_widget.get_rect()));
         self.window_box
-            .open_window_box(about, anchor, draft, to, viewport);
+            .open_window_box(about, anchor, draft, to, carried, viewport);
         self.layout.layout_dirty = true;
     }
 

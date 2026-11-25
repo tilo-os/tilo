@@ -12,7 +12,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_resource::NoEffect;

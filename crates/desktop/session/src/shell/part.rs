@@ -507,7 +507,10 @@ impl Loads for ShellPlatform {
             host.runtime()
                 .app_failed(&shell.meta.app, error.to_string());
         }
-        host.runtime().set_invoker(PlaceInvoker {
+        // The shell's own record is the shell's: its actions run here, and one shell action
+        // calling another is one change of the shell, not a call sent out. Other apps' resources
+        // and the session's loose actions are their own, and those go through `PlaceInvoker`.
+        host.runtime().set_foreign_invoker(PlaceInvoker {
             link: Rc::clone(&self.link),
             session: session_addresses(),
             verbs: session_verbs(),

@@ -276,19 +276,18 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
     {
         let shape: serde_json::Value =
             serde_json::from_str(raw).map_err(|error| error.to_string())?;
-        let valid =
-            shape.is_object()
-                && shape
-                    .get("releases")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|entries| {
-                        entries.iter().all(|entry| {
-                            entry.is_object()
+        let valid = shape.is_object()
+            && shape
+                .get("releases")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|entries| {
+                    entries.iter().all(|entry| {
+                        entry.is_object()
                             && ["purpose", "layout"]
                                 .iter()
                                 .all(|key| entry.get(*key).is_none_or(serde_json::Value::is_string))
-                        })
-                    });
+                    })
+                });
         if !valid {
             return Err(
                 "Catalog records must be JSON objects with string purpose/layout tags.".into(),

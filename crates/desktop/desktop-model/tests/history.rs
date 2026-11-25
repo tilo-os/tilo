@@ -7,7 +7,7 @@ use tilo_desktop_model::*;
 fn receipt(n: u128) -> WorkspaceEffectReceipt {
     WorkspaceEffectReceipt {
         invocation: InvocationId(uuid::Uuid::from_u128(n)),
-        actor: tilo_actions::MemberId::person("owner"),
+        actor: tilo_actions::MemberId::person("owner").into(),
         context: ActionContext::default(),
         status: EffectReceiptStatus::Succeeded,
         completed_at: 42,

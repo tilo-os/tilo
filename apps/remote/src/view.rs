@@ -110,17 +110,15 @@ pub(crate) fn kind_icon(kind: ConnectionKind) -> Icon {
     }
 }
 
-fn connection_row(
-    actions: Option<&ResourceActions<Remote>>,
-    row: &RowModel,
-) -> ListRow {
+fn connection_row(actions: Option<&ResourceActions<Remote>>, row: &RowModel) -> ListRow {
     let mut list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
         .icon(kind_icon(row.kind))
         .leading_tooltip(CATALOG.t(row.kind.label_message()))
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected);
-    match actions.and_then(|actions| actions.effect(&RemoteEffect::Connect { connection: row.id })) {
+    match actions.and_then(|actions| actions.effect(&RemoteEffect::Connect { connection: row.id }))
+    {
         Some(open) => list_row = list_row.on_action(open),
         None => list_row = list_row.with_enabled(false),
     }

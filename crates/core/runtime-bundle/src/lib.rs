@@ -463,9 +463,7 @@ pub enum CarriedError {
 ///
 /// # Errors
 /// A build is not exact, or the host declared its carried runtimes already.
-pub fn carry_in_host(
-    builds: impl IntoIterator<Item = String>,
-) -> Result<(), CarriedError> {
+pub fn carry_in_host(builds: impl IntoIterator<Item = String>) -> Result<(), CarriedError> {
     let builds: Vec<String> = builds.into_iter().collect();
     for build in &builds {
         if !is_exact_build(build) {
@@ -2900,7 +2898,10 @@ mod tests {
             Err(CarriedError::Inexact(release_only)),
             "a release alone is no build a host can say it carries"
         );
-        let tilo = format!("tilo-runtime/2026.07+native.{}", "0123456789abcdef".repeat(2));
+        let tilo = format!(
+            "tilo-runtime/2026.07+native.{}",
+            "0123456789abcdef".repeat(2)
+        );
         carry_in_host([tilo.clone(), "tilolang/0.1.0+tilolang".to_owned()]).unwrap();
         assert_eq!(
             carried("tilo-runtime/2026.07"),
@@ -2916,7 +2917,11 @@ mod tests {
             "tilo-runtime/2026.07+native.ffffffffffffffffffffffffffffffff",
             "tilolang/0.2.0+tilolang",
         ] {
-            assert_eq!(carried(other), None, "{other} is no build this host carries");
+            assert_eq!(
+                carried(other),
+                None,
+                "{other} is no build this host carries"
+            );
         }
         assert_eq!(carry_in_host([]), Err(CarriedError::AlreadyDeclared));
     }

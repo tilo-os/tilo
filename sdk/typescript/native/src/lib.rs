@@ -14,6 +14,7 @@
 // passes the default limit of 128.
 #![recursion_limit = "256"]
 
+use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use std::sync::Arc;
 use tilo_api::calls::Calls;
@@ -123,4 +124,80 @@ impl Daemon {
             Err(refused) => serde_json::json!({ "refused": refused }),
         }
     }
+
+    /// Carry the outside call `pair` (`{outside, tilo}`) names into the workspace call, or let go
+    /// of the one carried (`null`), on this app's connection: `{answer}`, or `{refused}`. The
+    /// first carry joins the call as the app, which the workspace's grants decide.
+    #[napi]
+    pub async fn carry_call(&self, pair: serde_json::Value) -> serde_json::Value {
+        let calls = Arc::clone(&self.calls);
+        match calls.carry_call(pair).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
+
+    /// Say who is in the outside calls and where the app stands in them (`{calls, link,
+    /// status}`): `{answer}`, or `{refused}`.
+    #[napi]
+    pub async fn report_call(&self, report: serde_json::Value) -> serde_json::Value {
+        let calls = Arc::clone(&self.calls);
+        match calls.report_call(report).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
+
+    /// Hand the workspace's call one Opus frame `speaker`, an outside account, said: `null`, or
+    /// `{refused}`. Nothing waits for an answer, as nothing waits in a live call.
+    #[napi]
+    pub fn hear_call(&self, speaker: String, opus: Buffer) -> serde_json::Value {
+        match self.calls.hear_call(speaker, opus.into()) {
+            Ok(()) => serde_json::Value::Null,
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
+
+    /// What the workspace's call said since the last time, and where the device asks the app to
+    /// be, when that is new. Throws the refusal's body, as JSON, on a connection that is no app's.
+    #[napi]
+    pub fn said_call(&self) -> napi::Result<CallSaid> {
+        let said = self
+            .calls
+            .said_call()
+            .map_err(|refused| napi::Error::from_reason(refused.to_string()))?;
+        Ok(CallSaid {
+            frames: said
+                .frames
+                .into_iter()
+                .map(|(speaker, opus)| CallFrame {
+                    speaker,
+                    opus: opus.into(),
+                })
+                .collect(),
+            asked: said.asked.map(|(call, status)| CallAsk { call, status }),
+        })
+    }
+}
+
+/// One Opus frame of a call, and the account that said it.
+#[napi(object)]
+pub struct CallFrame {
+    pub speaker: String,
+    pub opus: Buffer,
+}
+
+/// Where the device asks an app to be in the outside call it carries (`call: null`: in none), and
+/// the line to show there about who is on the workspace's side.
+#[napi(object)]
+pub struct CallAsk {
+    pub call: Option<String>,
+    pub status: Option<String>,
+}
+
+/// What a carried call said since the app last looked.
+#[napi(object)]
+pub struct CallSaid {
+    pub frames: Vec<CallFrame>,
+    pub asked: Option<CallAsk>,
 }

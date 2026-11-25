@@ -24,7 +24,7 @@ tilo-wake = { path = "../../platform/tilo-wake" }
 # The resource model an artwork, a layer and a mark are kept as.
 tilo-resource = { path = "../../core/tilo-resource" }
 # The drawing layer under the components: colour, geometry, pictures, text.
-tilo-ui = { path = "../../ui/ui-core", default-features = false }
+tilo-ui = { path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # An SVG is imported by reading its shape tree, and its pictures are embedded base64.
 usvg = { version = "0.47", default-features = false }
 base64.workspace = true

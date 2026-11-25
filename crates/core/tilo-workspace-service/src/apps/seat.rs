@@ -75,7 +75,6 @@ pub mod calls {
     pub const CHANGED: &str = "changed";
     pub const REPORT: &str = "report";
     pub const CLEAR: &str = "clear";
-    pub const HANDOFF: &str = "handoff";
     pub const SNAPSHOT: &str = "snapshot";
     pub const READ: &str = "read";
     pub const INVOKE: &str = "invoke";
@@ -367,26 +366,6 @@ impl tilo_broker_core::steps::ContinuationServices for SeatContinuations {
             calls::CONTINUATIONS,
             calls::CLEAR,
             json!({"workspace": workspace.to_string(), "app": app, "instance": instance}),
-        );
-        Ok(())
-    }
-
-    fn handoff(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceId,
-        app: String,
-        instance: u64,
-        message: Vec<u8>,
-    ) -> Result<(), String> {
-        self.0.tell(
-            calls::CONTINUATIONS,
-            calls::HANDOFF,
-            json!({
-                "workspace": workspace.to_string(),
-                "app": app,
-                "instance": instance,
-                "message": message,
-            }),
         );
         Ok(())
     }
@@ -1346,7 +1325,7 @@ pub struct ClipboardFacts {
     pub window: String,
     pub app_id: String,
     pub workspace: String,
-    pub owner: tilo_action_policy::MemberId,
+    pub owner: tilo_action_policy::Actor,
 }
 
 impl From<&FileClipboardContext> for ClipboardFacts {

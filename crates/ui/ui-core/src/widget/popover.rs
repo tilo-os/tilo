@@ -56,6 +56,28 @@ struct Options {
 /// under its button is too small to be one.
 pub const SHEET_WIDTH: f64 = 480.0;
 
+/// Where the first primary button in `content` stands, as it is laid out: a panel's main answer,
+/// a destructive one where what it does Undo does not bring back.
+fn primary_button(content: &dyn Widget) -> Option<Rect> {
+    use crate::widget::ButtonRole;
+    let mut pending: Vec<&dyn Widget> = vec![content];
+    while let Some(widget) = pending.pop() {
+        if let Some(button) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::Button>())
+            && matches!(
+                button.role_of(),
+                ButtonRole::Primary | ButtonRole::Destructive
+            )
+        {
+            return Some(widget.get_rect());
+        }
+        // Children first in the order they stand.
+        pending.extend(widget.children().into_iter().rev());
+    }
+    None
+}
+
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
 #[crate::component::not_a_component(
@@ -78,6 +100,9 @@ struct PopoverPanel {
     label: Option<String>,
     open: bool,
     anchor: Rect,
+    /// A point the panel stands its main answer on ([`Popover::set_aim`]): where a press raised
+    /// it, so pressing again there answers it.
+    aim: Option<Point>,
     side: PopoverSide,
     resolved_side: PopoverSide,
     fallback_side: Option<PopoverSide>,
@@ -142,6 +167,7 @@ impl<C: Widget> Popover<C> {
                 label: None,
                 open: false,
                 anchor: Rect::ZERO,
+                aim: None,
                 side: PopoverSide::Below,
                 resolved_side: PopoverSide::Below,
                 fallback_side: None,
@@ -320,6 +346,23 @@ impl<C: Widget> Popover<C> {
         self.panel.set_anchor(anchor)
     }
 
+    /// Stand the panel where a press at `aim` (window coordinates) raised it: anchored there,
+    /// with its main answer, the primary button of its content, under the point, so the next
+    /// press at the same spot takes it. It stays inside the window, so a point near an edge
+    /// moves it only as far as the window allows. `None` anchors it as before.
+    pub fn set_aim(&mut self, aim: Option<Point>) {
+        if self.panel.aim == aim {
+            return;
+        }
+        self.panel.aim = aim;
+        if let Some(point) = aim {
+            self.panel
+                .set_anchor(Rect::from_origin_size(point, (0.0, 0.0)));
+        }
+        self.panel.stale = true;
+        self.panel.dirty = true;
+    }
+
     pub fn set_open(&mut self, open: bool) {
         self.panel.set_open(open)
     }
@@ -471,6 +514,11 @@ impl PopoverPanel {
         self.panel_in(viewport, (w, h), theme);
         if self.host_content.is_none() {
             self.place_content(content, tr, theme);
+            // Aimed at a press: moved so its main answer stands under it.
+            if let Some(moved) = self.aimed(content, theme) {
+                self.rect = moved;
+                self.place_content(content, tr, theme);
+            }
         }
     }
 
@@ -674,6 +722,30 @@ impl PopoverPanel {
         )
     }
 
+    /// Where the panel stands so the primary button of `content`, laid out where the panel is
+    /// now, has its centre on the point it is aimed at ([`Popover::set_aim`]), kept inside the
+    /// window: `None` where it is aimed nowhere, holds no primary button, or stands there
+    /// already.
+    fn aimed(&self, content: &dyn Widget, theme: &Theme) -> Option<Rect> {
+        let aim = self.aim?;
+        let button = primary_button(content)?;
+        let moved = self.rect + (aim - button.center());
+        let area = self.area(theme);
+        let (w, h) = (moved.width(), moved.height());
+        let x = if w <= area.width() {
+            moved.x0.clamp(area.x0, area.x1 - w)
+        } else {
+            area.x0
+        };
+        let y = if h <= area.height() {
+            moved.y0.clamp(area.y0, area.y1 - h)
+        } else {
+            area.y0
+        };
+        let moved = floating_surface::on_device_pixels(Rect::new(x, y, x + w, y + h));
+        (moved != self.rect).then_some(moved)
+    }
+
     fn apply_layout(&mut self, content: &mut dyn Widget, taffy: &TaffyTree<()>, node: NodeId) {
         if let Some(hosted) = taffy
             .children(node)
@@ -689,16 +761,24 @@ impl PopoverPanel {
                     self.place(content, tr, &theme);
                 });
             }
-            let target = self.content_target(&theme);
-            content.apply_layout(
-                taffy,
-                hosted,
+            let at = |target: Point| {
                 Point::new(
                     target.x - f64::from(l.location.x),
                     target.y - f64::from(l.location.y),
-                ),
-            );
-            self.content_origin = target;
+                )
+            };
+            let target = self.content_target(&theme);
+            content.apply_layout(taffy, hosted, at(target));
+            // Aimed at a press: moved so its main answer stands under it, and laid out again
+            // there.
+            if self.open
+                && let Some(moved) = self.aimed(content, &theme)
+            {
+                self.rect = moved;
+                let target = self.content_target(&theme);
+                content.apply_layout(taffy, hosted, at(target));
+            }
+            self.content_origin = self.content_target(&theme);
             self.stale = false;
             return;
         }

@@ -834,7 +834,8 @@ fn the_switcher_dims_what_it_covers_in_light_and_dark() {
         choose_theme(&mut session, theme);
         step(&mut session, 40);
         let plain = frame(&mut session);
-        let before = brightness(&plain, at).unwrap_or_else(|| panic!("{} has a screen", theme.name));
+        let before =
+            brightness(&plain, at).unwrap_or_else(|| panic!("{} has a screen", theme.name));
 
         session
             .invoke(

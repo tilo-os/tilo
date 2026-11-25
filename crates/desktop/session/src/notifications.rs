@@ -19,7 +19,6 @@ use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
-use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_client::device_records::{Arrived, DeviceRecord};
 use tilo_session_core::desktop::notifications;

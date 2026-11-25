@@ -153,7 +153,6 @@ fn resolve_action(invocation: &str) -> crate::ActionDescriptor {
             ),
         ],
         view: None,
-        effects: Vec::new(),
     }
 }
 

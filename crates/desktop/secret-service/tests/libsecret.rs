@@ -45,7 +45,8 @@ impl Session {
             }
         }
         let bus = tilo_test_env::PrivateBus::start_at(&root.path().join("run/bus"));
-        let device = DeviceDaemon::start(&root.path().join("identity"), &root.path().join("daemon"));
+        let device =
+            DeviceDaemon::start(&root.path().join("identity"), &root.path().join("daemon"));
         let mut session = Self {
             root,
             bus,

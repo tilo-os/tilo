@@ -509,9 +509,7 @@ fn device_ticket(fleet: &mut dyn Fleet, from: Guest) -> Result<String, String> {
         {
             return Ok(ticket.to_owned());
         }
-        if !answered
-            && let Some((invocation, workspace)) = asked_to_add(fleet, from)
-        {
+        if !answered && let Some((invocation, workspace)) = asked_to_add(fleet, from) {
             answer_as_person(fleet, from, &invocation, &workspace)?;
             answered = true;
         }
@@ -779,8 +777,9 @@ mod tests {
                 });
             }
             if command.starts_with("tilo login --new-identity") {
-                return Ok(json!({"tickets": [{"kind": "device", "ticket": "tilo1ticket"}]})
-                    .to_string());
+                return Ok(
+                    json!({"tickets": [{"kind": "device", "ticket": "tilo1ticket"}]}).to_string(),
+                );
             }
             if command.starts_with("tilo login") {
                 return Ok(String::new());

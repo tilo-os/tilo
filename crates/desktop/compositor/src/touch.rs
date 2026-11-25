@@ -127,7 +127,7 @@ impl State {
         if let Some((surface, _)) = focus.as_ref() {
             self.note_input_on(surface);
             // A finger the person put on a window is their press, as a click is.
-            self.note_person_press(surface, serial.into(), person);
+            self.note_person_press(surface, serial.into(), person, Some(at));
         }
         if pointer {
             self.touch_pointer(focus, at, Some(ButtonState::Pressed), serial, time);

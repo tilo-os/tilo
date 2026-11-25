@@ -3413,7 +3413,8 @@ scenario "the problem report's picker" -> Layout {
 }
 
 /// A press that needs the person's yes: Notes' Share asked before it gives Mia the note, and the
-/// question stands over the window it was pressed in, with what it would share and with whom.
+/// question stands at the control it was pressed on in that window, its Share under the press,
+/// with what it would share and with whom.
 scenario "a press that needs a yes" {
     let d = root Layout
     d.person = "Ada Lovelace"
@@ -3494,10 +3495,12 @@ scenario "a press that needs a yes" {
                         app: "so.tilo.notes",
                         instance: "p1",
                         resource: "",
+                        at: .some(invocations.PressPoint(x: 640, y: 212)),
                     ),
                 ),
                 .none,
                 invoker,
+                [],
                 [],
             ),
         ],
@@ -3531,6 +3534,7 @@ scenario "questions waiting" {
                 .some("studio/chat/launch"),
                 invoker,
                 [],
+                [],
             ),
             waiting_record(
                 "home",
@@ -3550,6 +3554,7 @@ scenario "questions waiting" {
                 .none,
                 .none,
                 invoker,
+                [],
                 [],
             ),
             waiting_record(
@@ -3584,6 +3589,171 @@ scenario "questions waiting" {
                 .none,
                 invoker,
                 [],
+                [],
+            ),
+        ],
+    )
+}
+
+/// A call that writes more than the record it names: Scout adds a mail account, signing in with
+/// a password the workspace's vault keeps, so the person is told before they allow it that it
+/// also writes to Passwords. Another call beside it writes only its own record, and says nothing
+/// of what it writes.
+scenario "a call that writes another record" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/mail-1",
+                "Add mail account from vault",
+                invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
+                2,
+                "",
+                .some("Work mail"),
+                [invocations.Fact(label: "Incoming server", value: "imap.work.example:993")],
+                [],
+                false,
+                "add",
+                .some("accounts"),
+                .none,
+                .none,
+                invoker,
+                [],
+                [
+                    invocations.DeclaredEffect(
+                        app: "Passwords",
+                        what: "Record where an entry was used",
+                        app_id: "so.tilo.passwords",
+                        kind: "passwords.workspace-vault",
+                        verb: "keep-uses",
+                    ),
+                ],
+            ),
+            waiting_record(
+                "studio",
+                "invocations/alarm-3",
+                "Set alarm",
+                invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
+                1,
+                "",
+                .some("Stand-up"),
+                [invocations.Fact(label: "At", value: "09:30 every weekday")],
+                [],
+                false,
+                "set",
+                .some("alarms"),
+                .none,
+                .none,
+                invoker,
+                [],
+                [],
+            ),
+        ],
+    )
+}
+
+/// The same call with ten records written besides its own, each in a long name: what the card
+/// reads as when an action declares a great deal.
+scenario "a call that writes ten records" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/sweep-1",
+                "Archive the quarter",
+                invocations.Asker(agent: .some(invocations.Named(id: "scout", name: "Scout"))),
+                2,
+                "",
+                .some("Studio"),
+                [],
+                [],
+                false,
+                "archive",
+                .some("quarters"),
+                .none,
+                .none,
+                invoker,
+                [],
+                [
+                    invocations.DeclaredEffect(
+                        app: "Passwords for the Clayton–Lovelace household",
+                        what: "Record where an entry was used",
+                        app_id: "so.tilo.passwords",
+                        kind: "passwords.workspace-vault",
+                        verb: "keep-uses",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "The household's shared photo library",
+                        what: "File the quarter's photographs under the year",
+                        app_id: "so.tilo.photos",
+                        kind: "photos.library",
+                        verb: "file",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Notes shared with everyone in the studio",
+                        what: "Record that the quarter was archived",
+                        app_id: "so.tilo.notes",
+                        kind: "notes.notebook",
+                        verb: "record",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Calendar for the studio and the household",
+                        what: "Close the quarter's past events",
+                        app_id: "so.tilo.calendar",
+                        kind: "calendar.calendar",
+                        verb: "close",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Tasks of the studio's release programme",
+                        what: "Mark every finished task of the quarter done",
+                        app_id: "so.tilo.tasks",
+                        kind: "tasks.tracker",
+                        verb: "finish",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Mail of the household's two accounts",
+                        what: "Move the quarter's read mail into the archive",
+                        app_id: "so.tilo.mail",
+                        kind: "mail.mailbox",
+                        verb: "archive",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Chat, with every channel of the studio",
+                        what: "Say in the release channel that the quarter is archived",
+                        app_id: "so.tilo.chat",
+                        kind: "chat.channels",
+                        verb: "say",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Files of the shared workspace folder",
+                        what: "Move the quarter's reports into the archive folder",
+                        app_id: "so.tilo.file-explorer",
+                        kind: "files.folder",
+                        verb: "move",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "The workspace's activity record",
+                        what: "Write down what the archive moved",
+                        app_id: "so.tilo.history",
+                        kind: "history.activity",
+                        verb: "record",
+                    ),
+                    invocations.DeclaredEffect(
+                        app: "Contacts of the studio and the household",
+                        what: "Note the addresses the archive wrote to",
+                        app_id: "so.tilo.contacts",
+                        kind: "contacts.book",
+                        verb: "note",
+                    ),
+                ],
             ),
         ],
     )
@@ -3641,6 +3811,7 @@ scenario "a call to change before approving" {
                         multiline: false,
                     ),
                 ],
+                [],
             ),
         ],
     )
@@ -3666,6 +3837,7 @@ fn waiting_record(
     conversation: Option<Text>,
     waiting_for: Actor,
     form: List<invocations.FormField>,
+    effects: List<invocations.DeclaredEffect>,
 ) -> invocations.Invocation {
     let names = asked_in == "home"
     return invocations.Invocation(
@@ -3698,6 +3870,7 @@ fn waiting_record(
                 words: words,
                 on: on,
                 facts: facts,
+                effects: effects,
                 destructive: destructive,
                 choices: choices,
                 verb: verb,

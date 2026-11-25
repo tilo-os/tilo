@@ -430,7 +430,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let agents = ServerAgents::on_device(
         beas.clone(),
         dispatch.clone(),
-        Arc::new(super::Keys([9; 32])),
+        Arc::new(super::CertifiedKeys::of(&bea_root, &workspace, SCOUT)),
     )
     .scripted(model);
     let event = serde_json::from_value(firing.inputs[tilo_automation::EVENT_INPUT].clone())

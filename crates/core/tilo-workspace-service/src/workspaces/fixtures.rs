@@ -652,34 +652,6 @@ async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_relay::Rela
     .await;
 }
 
-/// Admit `member` to `workspace` as a reader, as the governor `key` decides it.
-///
-/// # Panics
-///
-/// The workspace is not governed here, or refuses the certificate.
-pub async fn admit_view_reader(
-    workspaces: &Workspaces,
-    workspace: &str,
-    key: &SigningKey,
-    member: &DeviceCert,
-) {
-    let state = workspaces
-        .workspace(workspace)
-        .await
-        .expect("a governed workspace");
-    let mut workspace = state.lock().await;
-    let now = tilo_clock::wall();
-    let mut candidate = workspace.peer().clone();
-    candidate
-        .governance_mut()
-        .admit_member_device(member, key, now)
-        .expect("the workspace admits the certificate");
-    let collaboration = workspace.collaboration().clone();
-    workspace
-        .commit(candidate, key, now, |_, _| Ok(collaboration))
-        .expect("the admission commits");
-}
-
 /// Project `workspace`'s members onto the server's own runtime for it, as a
 /// settled decision does: what a member's change is decided against on its way
 /// in, before the workspace's governance reaches the server by its own path.

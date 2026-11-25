@@ -30,6 +30,7 @@
         "words": "",
         "on": null,
         "facts": [],
+        "effects": [],
         "destructive": false,
         "choices": [],
         "verb": "",
@@ -69,6 +70,7 @@
             "value": "tilo.content:5f2b"
           }
         ],
+        "effects": [],
         "destructive": false,
         "choices": [],
         "verb": "",

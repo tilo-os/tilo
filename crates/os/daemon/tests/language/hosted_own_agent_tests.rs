@@ -440,7 +440,21 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         .expect("the channel Chat made")
         .to_owned();
 
-    // The server runs every member's shortcuts: Bea's trigger for Scout arms there.
+    // The server runs every member's shortcuts: Bea's trigger for Scout arms there. The save
+    // reaches the server's copy of the workspace through the link, and its runner re-arms when
+    // that copy changes; this one arms once, so wait for the trigger to be there first.
+    let arming = std::time::Instant::now() + tilo_test_env::hang_bound();
+    while !adas.described().await.iter().any(|workspace| {
+        workspace.shortcuts.iter().any(|saved| {
+            saved.id() == tilo_workspace_service::agents::triggered::shortcut_id(SCOUT)
+        })
+    }) {
+        assert!(
+            std::time::Instant::now() < arming,
+            "the server never held Bea's trigger"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     let started = Arc::new(Started::default());
     let mut runner = Runner::new(
         adas.clone(),
@@ -535,12 +549,26 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         request.target.address.resource,
         format!("tl:{CHAT}:{general}")
     );
-    assert!(
-        argument(&request, "body")
-            .as_str()
-            .is_some_and(|body| body.contains(PLAN_READY)),
-        "{request:?}"
+    assert_eq!(
+        argument(&request, "reply_to")["id"],
+        json!("m-1"),
+        "a reference to the message it answers"
     );
+    // The reply begins empty, naming the turn, and takes the model's words as it writes them.
+    let deadline = tilo_test_env::hang_deadline();
+    while !dispatch.asked().iter().any(|asked| {
+        matches!(asked.target.address.action.as_str(), "send" | "edit")
+            && argument(asked, "body")
+                .as_str()
+                .is_some_and(|body| body.contains(PLAN_READY))
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reply never took the answer: {:?}",
+            dispatch.asked()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(caller.acting().agent_id(), Some(SCOUT), "Scout's own call");
     assert_eq!(
         caller.user_public_key(),
@@ -612,7 +640,11 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         .first()
         .and_then(|version| version.stamp.clone())
         .expect("the reply names the action that made it");
-    assert_eq!(made.verb, "send", "{made:?}");
+    let send = tilolang_workspace::records::built_in(CHAT)
+        .unwrap()
+        .expect("Chat is built in")
+        .action_id("send");
+    assert_eq!(Some(made.verb.clone()), send, "{made:?}");
     assert_eq!(
         made.invoker,
         Stamp::by(&caller.acting().by),
@@ -740,7 +772,8 @@ async fn an_agent_the_server_adds_is_answered_without_a_restart() {
     let person = hex::encode(hosted.ada_cert.user_public_key);
     adas.author_agents(&workspace, |doc| {
         let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-            .as_author(&person);
+            .as_author(&person)
+            .in_app(tilo_workspace_agent::OWNER, "Workspace");
         made.apply(WorkspaceAgents::CREATE_AGENT.with(
             tilo_workspace_agent::workspace_agents::CreateAgent {
                 name: tilo_resource::NonBlank::parse("Herald").unwrap(),

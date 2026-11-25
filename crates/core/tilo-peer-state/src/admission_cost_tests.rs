@@ -94,7 +94,7 @@ pub(crate) fn admit(peer: &mut StatePeer, authority: &SigningKey, n: u32, now: S
     let mut next = peer.clone();
     assert!(
         next.governance_mut()
-            .admit_invited_member(&redemption, authority, now)
+            .admit_invited_member(&redemption, &person(n).0, now)
             .unwrap()
     );
     next.governance_mut()

@@ -20,9 +20,7 @@ use tilo_app_id::AppId;
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 
-use super::{
-    DocumentCheckout, DocumentId, ResourceOpenError, ResourceType, content_genesis,
-};
+use super::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType, content_genesis};
 
 mod actions;
 mod arrival;
@@ -48,7 +46,6 @@ pub use sync::{DocumentSync, Outbound};
 /// The scope of the person's own resources, `(app, personal)`: theirs and not a workspace's, so
 /// their own workspace's route carries them.
 pub use collab_types::document::PERSONAL_SCOPE;
-
 
 /// How long a flush waits for the workspace to take what the store wrote.
 const FLUSH_WAIT: crate::time::Duration = crate::time::Duration::from_secs(10);

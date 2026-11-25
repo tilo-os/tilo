@@ -22,9 +22,9 @@ use serde_json::{Map, Value, json};
 use tilo_actions::ApiError;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::OutputConfig;
-use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::{AppActions, AppLists, Lists, Options, Session};
+use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
 use crate::common::{HEIGHT, PERSON, WIDTH, key, press, type_text};
 

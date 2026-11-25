@@ -590,7 +590,11 @@ pub async fn read_resources<Reads: ResourceReads + ?Sized>(
             return Ok(readings);
         }
         let mut woken = std::pin::pin!(woken);
+        #[cfg(not(tilo_no_js))]
         let mut passed = std::pin::pin!(tilo_rt::sleep(deadline.saturating_duration_since(now)));
+        // A model module has no runtime and so no timer: it only waits for the write.
+        #[cfg(tilo_no_js)]
+        let mut passed = std::pin::pin!(std::future::pending::<()>());
         std::future::poll_fn(|cx| {
             if woken.as_mut().poll(cx).is_ready() || passed.as_mut().poll(cx).is_ready() {
                 std::task::Poll::Ready(())
@@ -654,8 +658,17 @@ pub(crate) fn on_a_task(reading: ReadingAnswer) -> super::Pending<super::RemoteA
         drop(runtime.spawn(task));
         return answered;
     }
-    drop(tilo_rt::app().spawn(task));
-    answered
+    #[cfg(not(tilo_no_js))]
+    {
+        drop(tilo_rt::app().spawn(task));
+        answered
+    }
+    // A model module applies actions and answers no API, so nothing posts a read to it.
+    #[cfg(tilo_no_js)]
+    {
+        drop((task, answered));
+        unreachable!("a model module answers no record reads")
+    }
 }
 
 /// What a provider that reads no records answers a read of one: the API posts every read through

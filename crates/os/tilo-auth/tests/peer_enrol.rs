@@ -404,7 +404,11 @@ impl Devices {
                         }
                     })
                     .await;
-                    routers.push(Router::builder(endpoint).accept(ENROL_ALPN, answering).spawn());
+                    routers.push(
+                        Router::builder(endpoint)
+                            .accept(ENROL_ALPN, answering)
+                            .spawn(),
+                    );
                 }
                 ready.send(()).expect("the test waits for the devices");
                 let _ = stopped.recv();
@@ -610,8 +614,16 @@ fn enrols_and_opens(profile: &Path) {
     // the enrolment asks it.
     let running = tilo_runtime::daemon::Running::start(profile).expect("the daemon starts");
     let here = tilo_api::daemon::this_computer().unwrap();
-    assert_eq!(running.native_socket(), here.native(), "the daemon every client finds");
-    assert_eq!(listed(&here, &[&earlier_boot]).len(), 1, "the record keeps the boot key");
+    assert_eq!(
+        running.native_socket(),
+        here.native(),
+        "the daemon every client finds"
+    );
+    assert_eq!(
+        listed(&here, &[&earlier_boot]).len(),
+        1,
+        "the record keeps the boot key"
+    );
     // The daemon asks them in the order their record lists them.
     let order = listed(&here, &[&laptop, &phone]);
     assert_eq!(order.len(), 2, "the record keeps both devices");
@@ -932,8 +944,7 @@ fn enrols_and_opens(profile: &Path) {
         runner: &with_tpm,
         has_tpm: true,
     };
-    run_with_peers(&required, machine, None)
-        .expect("a required TPM that is there seals it");
+    run_with_peers(&required, machine, None).expect("a required TPM that is there seals it");
     let status = enrol::status(&with_tpm, &sealed).unwrap();
     assert_eq!(status.sealing, Sealing::Tpm2);
     let token = luks::sibling(&with_tpm, &sealed).unwrap().unwrap();

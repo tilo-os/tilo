@@ -7,7 +7,6 @@
 //! the Tilo model (masters, charts, SmartArt, transitions and animation) are
 //! intentionally not invented; the file UI tells users about that boundary.
 
-
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::assigning_clones,
@@ -34,10 +33,10 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Write};
 
-use crate::colour::{Palette, Rgb as Color};
-use crate::odp::Package;
-use crate::model::Block;
 use crate::Pictures;
+use crate::colour::{Palette, Rgb as Color};
+use crate::model::Block;
+use crate::odp::Package;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -1003,7 +1002,9 @@ fn theme_xml(palette: &Palette) -> String {
 }
 
 fn rgb(color: Color) -> String {
-    crate::colour::to_hex(color).trim_start_matches('#').to_owned()
+    crate::colour::to_hex(color)
+        .trim_start_matches('#')
+        .to_owned()
 }
 
 fn scheme_color(theme: &str, slot: &str) -> Option<Color> {

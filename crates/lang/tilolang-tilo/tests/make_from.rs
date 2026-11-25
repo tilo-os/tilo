@@ -157,7 +157,12 @@ fn workspace() -> (Replica, ResourceRef, ResourceRef) {
         &ada,
         CHAT_APP,
         "new_channel",
-        vec![all, Value::text("design"), Value::text(""), Value::some(team)],
+        vec![
+            all,
+            Value::text("design"),
+            Value::text(""),
+            Value::some(team),
+        ],
     );
     ada.commit();
     let said = Value::Rich(RichValue::from_text(SAID));

@@ -240,7 +240,7 @@ impl AppBrokerState {
                 caller.acting().agent_id() == Some(agent.as_str())
                     && caller.acting_for_person() == Some(saver.person.as_str())
             }
-            None => actor.member().person_id() == Some(saver.person.as_str()),
+            None => actor.actor().person_id() == Some(saver.person.as_str()),
         });
         if !runs_as_saver {
             return Err(ActionCallError::NotPermitted);
@@ -342,7 +342,7 @@ impl AppBrokerState {
             .runtime()
             .map_err(|reason| ActionCallError::Unavailable { reason })?;
         let hooks = hooks(runtime.clone(), start.invocation);
-        let actor = BrokerActor::for_caller(caller).member().clone();
+        let actor = BrokerActor::for_caller(caller).actor().clone();
         let _lifecycle = self
             .lifecycle
             .read()

@@ -54,7 +54,7 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 #[serde(deny_unknown_fields)]
 pub(super) enum InvocationOwner {
     Local {
-        actor: tilo_action_policy::MemberId,
+        actor: tilo_action_policy::Actor,
     },
     Certified {
         root: [u8; 32],
@@ -1653,7 +1653,7 @@ mod tests {
             let mut local = key();
             local.host = journal.host();
             local.owner = InvocationOwner::Local {
-                actor: tilo_actions::MemberId::person("person"),
+                actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("person")),
             };
             journal.admit(local, serde_json::json!({}), 1).unwrap();
             drop(journal);
@@ -1709,7 +1709,7 @@ mod tests {
             let mut local = key();
             local.host = journal.host();
             local.owner = InvocationOwner::Local {
-                actor: tilo_actions::MemberId::person("person"),
+                actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("person")),
             };
             journal.admit(local, serde_json::json!({}), 2).unwrap();
             assert_eq!(
@@ -1725,7 +1725,7 @@ mod tests {
             let mut foreign = recovered.snapshot.records[0].key.clone();
             for owner in [
                 InvocationOwner::Local {
-                    actor: tilo_actions::MemberId::person("person"),
+                    actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("person")),
                 },
                 InvocationOwner::Certified {
                     root: [1; 32],
@@ -1760,7 +1760,7 @@ mod tests {
             journal.admit(k, serde_json::json!({}), 1).unwrap();
             let mut conflicting = journal.snapshot.records[0].clone();
             conflicting.key.owner = InvocationOwner::Local {
-                actor: tilo_actions::MemberId::person("other"),
+                actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("other")),
             };
             conflicting.wire_id = 2;
             journal.snapshot.records.push(conflicting);

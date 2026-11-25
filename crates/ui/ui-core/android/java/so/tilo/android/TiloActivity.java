@@ -1,6 +1,8 @@
 package so.tilo.android;
 
 import android.app.NativeActivity;
+import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
@@ -48,6 +50,16 @@ public class TiloActivity extends NativeActivity {
 
     private void installExtensions() {
         TiloTextInput.install(this);
+        // An app whose manifest takes pushes registers with its distributor, and a launch a
+        // notification started leaves the link it opened for Rust to read.
+        TiloPush.install(this, getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        TiloPush.rememberTap(this, intent);
     }
 
     @Override
@@ -75,10 +87,20 @@ public class TiloActivity extends NativeActivity {
     }
 
     private String libraryName() {
+        return libraryName(this);
+    }
+
+    /**
+     * The library this package's native classes resolve in, which the activity's manifest names:
+     * the activity loads it, and so does a provider the system starts before any window opens.
+     */
+    static String libraryName(Context context) {
         try {
             ActivityInfo info =
-                    getPackageManager()
-                            .getActivityInfo(getComponentName(), PackageManager.GET_META_DATA);
+                    context.getPackageManager()
+                            .getActivityInfo(
+                                    new ComponentName(context, TiloActivity.class),
+                                    PackageManager.GET_META_DATA);
             return info.metaData.getString(META_DATA_LIB_NAME);
         } catch (PackageManager.NameNotFoundException e) {
             throw new IllegalStateException("TiloActivity is not in its own manifest", e);

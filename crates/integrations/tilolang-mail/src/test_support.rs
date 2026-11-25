@@ -2,7 +2,8 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    reason = "a test says what it needs in a sentence when what it needs is not there"
+    clippy::arithmetic_side_effects,
+    reason = "a test says what it needs in a sentence when what it needs is not there, and its bounds are constants counting down a settle"
 )]
 
 //! The mail origin's harness: the Mail app's record shape over a real store, its origin over
@@ -72,9 +73,13 @@ impl Rig {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         });
+        // The engine wakes the origin when it has an answer, as a connector process does over
+        // its socket: without it nothing that a server said is ever taken in.
+        let woken = Arc::new(AtomicBool::new(true));
+        let awake = Arc::clone(&woken);
         let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
-            Arc::new(|| {}),
+            Arc::new(move || awake.store(true, std::sync::atomic::Ordering::Release)),
             certificates,
         )
         .expect("the mail engine opens");
@@ -82,10 +87,7 @@ impl Rig {
         let connector = EngineConnector::new(source, requests, events);
         Self {
             host,
-            origin: Box::new(ImapOrigin::new(
-                Box::new(connector),
-                Arc::new(AtomicBool::new(true)),
-            )),
+            origin: Box::new(ImapOrigin::new(Box::new(connector), woken)),
             accounts: shared,
         }
     }

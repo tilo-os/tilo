@@ -637,8 +637,14 @@ impl Checker<'_> {
                     span: name.span,
                     from_template_of: None,
                 };
-                let keys =
-                    self.higher_order(Ex::local(held, held_ty.clone()), elem, &map, args, span, None);
+                let keys = self.higher_order(
+                    Ex::local(held, held_ty.clone()),
+                    elem,
+                    &map,
+                    args,
+                    span,
+                    None,
+                );
                 let Ty::List(key) = keys.ty.clone() else {
                     return Some(Ex::error());
                 };

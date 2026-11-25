@@ -512,7 +512,7 @@ impl AppBrokerState {
         };
         serde_json::json!({ "request": request,
             "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-            "context": receipt_context, "actor": actor.member(), "app_id": offered.0.app_id,
+            "context": receipt_context, "actor": actor.actor(), "app_id": offered.0.app_id,
             "document_id": offered.0.route.document_id,
             "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
             "action": offered.1.action, "revision": revision })
@@ -746,7 +746,7 @@ impl AppBrokerState {
     }
     pub fn invocation_statuses(
         &self,
-        actor: &MemberId,
+        actor: &tilo_action_policy::Actor,
     ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.invocation_statuses_for_owner(&InvocationOwner::Local {
             actor: actor.clone(),
@@ -783,7 +783,7 @@ impl AppBrokerState {
     pub(crate) fn request_cancellation(
         &self,
         id: u64,
-        actor: &MemberId,
+        actor: &tilo_action_policy::Actor,
     ) -> Result<invocation_journal::Durable, String> {
         self.request_cancellation_for_owner(
             id,
@@ -840,7 +840,7 @@ impl AppBrokerState {
             .insert(id);
         Ok(durable)
     }
-    pub fn can_cancel(&self, id: u64, actor: &MemberId) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> bool {
         self.can_cancel_for_owner(
             id,
             &InvocationOwner::Local {
@@ -871,13 +871,54 @@ impl AppBrokerState {
     /// A connection ended: every route it held is withdrawn, then what the
     /// connection itself owned.
     pub(super) fn remove_connection(&self, peer_id: u64) {
-        for hold in self.connection_holds(peer_id) {
+        let holds = self.connection_holds(peer_id);
+        self.drop_saves_of(&holds);
+        for hold in holds {
             self.withdraw_route_hold(hold);
         }
         self.launch_disconnected(peer_id);
         self.forget_windows_of(peer_id);
         self.disconnect_device_media(peer_id);
         self.disconnect_file_transfers(peer_id);
+        if let Ok(mut children) = self.child_calls.lock() {
+            children.retain(|(peer, _), _| *peer != peer_id);
+        }
+    }
+
+    /// Keep that the connection `peer_id` made the call `invocation` as `caller`, inside an
+    /// invocation delivered to it: it follows and cancels the call as that caller
+    /// ([`Self::child_call`]). What it keeps of calls that ended goes with the next one.
+    pub(super) fn made_child_call(
+        &self,
+        peer_id: u64,
+        invocation: tilo_actions::InvocationId,
+        caller: &tilo_actions::remote::Caller,
+    ) {
+        let Ok(mut children) = self.child_calls.lock() else {
+            return;
+        };
+        children
+            .retain(|(peer, call), kept| *peer != peer_id || self.remote_job(kept, call).is_some());
+        children.insert((peer_id, invocation), caller.clone());
+    }
+
+    /// The caller the connection `peer_id` follows or cancels a call it made inside an
+    /// invocation delivered to it as, when `message` follows or cancels one.
+    pub(super) fn child_call(
+        &self,
+        peer_id: u64,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Caller> {
+        let (tilo_actions::remote::RemoteActionMessage::Observe { invocation, .. }
+        | tilo_actions::remote::RemoteActionMessage::Cancel { invocation }) = message
+        else {
+            return None;
+        };
+        self.child_calls
+            .lock()
+            .ok()?
+            .get(&(peer_id, *invocation))
+            .cloned()
     }
     /// One route hold ended ([`route_holds`]): withdraw what it published
     /// and worked as there, and fail what was still pending on it.

@@ -75,8 +75,7 @@ fn mark(page: usize, info: &tilo_pdf::AnnotationInfo) -> ExistingMark {
             .collect(),
         size: info.font_size,
         in_reply_to: info.in_reply_to,
-        reply: matches!(info.reply_type, tilo_pdf::ReplyType::Reply)
-            && info.in_reply_to.is_some(),
+        reply: matches!(info.reply_type, tilo_pdf::ReplyType::Reply) && info.in_reply_to.is_some(),
         hidden: info.is_hidden(),
         readable: info.kind.is_reader_markup(),
     }

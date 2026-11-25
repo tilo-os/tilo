@@ -84,7 +84,7 @@ const VERBS: [Verb; 18] = [
     },
     Verb {
         id: person_accounts::SIGN_INS,
-        label: "Read the logins the vault keeps for mail",
+        label: "Read the logins the vault keeps",
         check: "",
         kind: ActionKind::Read,
         params: no_params,
@@ -519,11 +519,11 @@ mod surface_tests {
                 ),
                 record(
                     "MailSignIns",
-                    "The logins the workspace's vault keeps for mail servers.",
+                    "The logins the workspace's vault keeps.",
                     &[(
                         "sign_ins",
                         list(named("MailSignIn".to_owned())),
-                        "Each by its reference, its name and its servers.",
+                        "Each by its reference, its name and the places it belongs to.",
                     )],
                 ),
                 record(

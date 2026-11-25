@@ -35,12 +35,16 @@ impl Core {
 
     /// The bytes of a deck's presentation file, of the format named.
     pub(crate) fn presentation_export(&self, deck: &str, format: &str) -> Result<Vec<u8>, String> {
-        let deck: tilo_deck::Deck = serde_json::from_str(deck)
-            .map_err(|why| format!("the deck is not JSON: {why}"))?;
+        let deck: tilo_deck::Deck =
+            serde_json::from_str(deck).map_err(|why| format!("the deck is not JSON: {why}"))?;
         let format = match format.trim().to_ascii_lowercase().as_str() {
             "odp" => tilo_deck::Format::Odp,
             "pptx" => tilo_deck::Format::Pptx,
-            other => return Err(format!("`{other}` is not a presentation format: odp or pptx")),
+            other => {
+                return Err(format!(
+                    "`{other}` is not a presentation format: odp or pptx"
+                ));
+            }
         };
         let borrowed = self.blobs.borrow();
         let pictures = borrowed.as_ref().map(|blobs| HostPictures {
@@ -52,7 +56,6 @@ impl Core {
         };
         tilo_deck::export(&deck, pictures, format)
     }
-
 }
 
 /// Bridges the workspace's content store to the engine's pictures.
@@ -68,7 +71,10 @@ impl Pictures for HostPictures<'_> {
 
     fn keep(&self, bytes: &[u8]) -> Option<String> {
         let media = tilo_content_types::image_format(bytes)?.mime;
-        self.blobs.keep("picture", media, bytes).ok().map(|file| file.url())
+        self.blobs
+            .keep("picture", media, bytes)
+            .ok()
+            .map(|file| file.url())
     }
 }
 

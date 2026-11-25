@@ -793,7 +793,7 @@ async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_res
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
-    let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, member) = member_device(&workspaces, &workspace, &cert, 3).await;
     let mut writer = Writer::for_member(&workspaces, &workspace, member_key, &member).await;
 
     let mut woken = workspaces.document_writes();
@@ -976,7 +976,7 @@ async fn a_members_store_document_reads_back_the_content_its_cells_name() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Photos").await.unwrap();
     let workspace = created.workspace;
-    let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, member) = member_device(&workspaces, &workspace, &cert, 3).await;
     let mut writer = Writer::for_member(&workspaces, &workspace, member_key, &member).await;
     let hash = "ab".repeat(32);
     let reference = format!("blake3:{hash}:4096");
@@ -1505,7 +1505,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     }));
     let created = workspaces.create("Tasks").await.unwrap();
     let workspace = created.workspace;
-    let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, member) = member_device(&workspaces, &workspace, &cert, 3).await;
     let document = index_retained_checkpoint(
         &workspaces,
         &workspace,

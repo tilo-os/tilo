@@ -40,6 +40,10 @@ pub mod grant;
 #[cfg(feature = "app_call")]
 pub mod app_call;
 
+/// Several speakers' Opus frames as the one stream a service that takes one hears.
+#[cfg(feature = "mix")]
+pub mod mix;
+
 /// The one place a device says its presence in a workspace: the daemon's, over the live session
 /// it holds.
 #[cfg(feature = "app_call")]

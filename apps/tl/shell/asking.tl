@@ -7,11 +7,12 @@ use tilo.invocations as invocations
 /// person answers any of them, on every device of theirs and on the web alike. No window draws
 /// its own.
 ///
-/// A question the person caused with a press here stands over the window they pressed in, where
-/// they are looking. Every other one stands with the banners, and all of them wait in the
-/// notification centre. An answer is the record's own `resolve`, as any caller would call it, so
-/// it is admitted, attributed and kept in history like every other action; a question answered
-/// on another device, or by someone else, leaves this view as its record stops waiting.
+/// A question the person caused with a press here stands at the control they pressed, where they
+/// are looking, its yes under their press. Every other one stands with the banners, and all of
+/// them wait in the notification centre. An answer is the record's own `resolve`, as any caller
+/// would call it, so it is admitted, attributed and kept in history like every other action; a
+/// question answered on another device, or by someone else, leaves this view as its record stops
+/// waiting.
 ///
 /// The folder a question that asks for files shows, as this device reads it: the shell's own
 /// look at the disk while the person chooses, never what they chose.
@@ -65,10 +66,15 @@ fn asked_in(w: device.Window) -> List<invocations.Invocation> {
     return waiting().filter(q -> pressed_in(q, w))
 }
 
-/// Whether the press that asked `q` was made in the window `w`.
+/// Whether the press that asked `q` was made in the window `w`: a window shown from another
+/// device by that device's id, a window of this device by this device's.
 fn pressed_in(q: invocations.Invocation, w: device.Window) -> Bool {
     if let p = q.asked?.pressed {
-        return p.instance == w.key and p.device == w.device
+        if p.instance != w.key {
+            return false
+        }
+        return p.device == w.device
+            or not w.elsewhere and w.device == "" and p.device == this_device()
     }
     return false
 }
@@ -108,30 +114,70 @@ fn key_of(q: invocations.Invocation) -> Text {
     return q.id
 }
 
-/// The questions a press in the window `w` made, over it where the person pressed: the newest
-/// takes Escape, or a press on the window outside it, as its way out, declining it, as the
-/// system's questions always have; the older ones wait behind it. More than two wait in the
-/// notification centre.
+/// The questions a press in the window `w` made, standing at the control the person pressed:
+/// the newest one's answer that does what they pressed for stands under the point they pressed,
+/// so pressing again at the same spot answers yes. It takes Escape, or a press outside it, as
+/// its way out, declining it, as the system's questions always have; the older ones wait behind
+/// it. More than two wait in the notification centre. A press that said nowhere in the window
+/// (a key) asks over the window.
 view asked_over(w: device.Window) {
     let asked = asked_in(w)
     if not asked.is_empty() {
         if let q = asked.at(0) {
             if let a = q.asked {
-                ui.ModalDialog(
-                    title: if a.words != "" { a.words } else { a.name },
-                    open: true,
-                    destructive: a.destructive,
-                    icon: .triangle_alert,
-                ) {
-                    on dismiss: decline(key_of(q))
-                    question_body(key_of(q), answered_here(q), a, "")
-                    if asked.len() > 1 {
-                        more_asked(asked.len() - 1)
+                if let at = a.pressed?.at {
+                    ui.Popover(
+                        label: title_of(a),
+                        open: true,
+                        at: [at.x.to_float(), at.y.to_float()],
+                    ) {
+                        on dismiss: decline(key_of(q))
+                        question_body(key_of(q), answered_here(q), a, title_of(a))
+                        if skips_with_shift(a) {
+                            ui.Text("Hold Shift to skip", role: .caption, secondary: true)
+                        }
+                        if asked.len() > 1 {
+                            more_asked(asked.len() - 1)
+                        }
+                    }
+                } else {
+                    ui.ModalDialog(
+                        title: title_of(a),
+                        open: true,
+                        destructive: a.destructive,
+                        icon: .triangle_alert,
+                    ) {
+                        on dismiss: decline(key_of(q))
+                        question_body(key_of(q), answered_here(q), a, "")
+                        if skips_with_shift(a) {
+                            ui.Text("Hold Shift to skip", role: .caption, secondary: true)
+                        }
+                        if asked.len() > 1 {
+                            more_asked(asked.len() - 1)
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/// What a question asks, as its title: the asker's own words, else the action's name.
+fn title_of(a: invocations.Asked) -> Text {
+    return if a.words != "" { a.words } else { a.name }
+}
+
+/// Whether pressing the control again with Shift down would have skipped `a`: only what Undo
+/// takes back. A call that takes away what Undo does not bring back, or reaches outside the
+/// workspace, always asks.
+fn skips_with_shift(a: invocations.Asked) -> Bool {
+    if a.destructive {
+        return false
+    }
+    if let effect = a.effect {
+        return effect != .outside
+    }
+    return true
 }
 
 /// The questions that stand with the banners: the newest two no window here stands for.
@@ -255,6 +301,9 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                 }
             }
         }
+        // What else the call writes, beyond the record it names: each app and what the step
+        // does there, read from the action's declaration into the asked record.
+        std.action_effects(a.effects, writer: e -> e.app, what: e -> e.what)
         if a.destructive {
             ui.Text("Undo can't bring this back", secondary: true)
         }

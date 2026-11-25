@@ -582,13 +582,106 @@ impl Workspaces {
     /// surface the host asked for, into the content store the host decides
     /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
-        let message = match NeighbourMsg::decode(frame) {
-            Ok(message) => message,
+        match NeighbourMsg::decode(frame) {
+            Ok(message) => self.content_message_for_host(workspace, from, message),
             Err(error) => {
                 tracing::warn!(workspace, from = %hex::encode(from), %error, "a content frame from a member did not decode");
-                return;
             }
-        };
+        }
+    }
+
+    /// One link's intake of what members answer this host's asks with in
+    /// `workspace` ([`Self::content_for_host`]): one thread takes the answers
+    /// in, in the order the link carried them, and the link's reader waits
+    /// while that thread is two answers behind. A fast link is held back by
+    /// the link's own flow control, and never by a crowd of threads each
+    /// waiting on the keeper with one piece.
+    pub(super) fn content_intake(
+        &self,
+        workspace: &str,
+    ) -> tokio::sync::mpsc::Sender<([u8; 32], NeighbourMsg)> {
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel(2 * neighbour_wire::content::PIECES_PER_ANSWER);
+        let workspaces = self.downgrade();
+        let workspace = workspace.to_owned();
+        tokio::task::spawn_blocking(move || {
+            while let Some((from, message)) = receiver.blocking_recv() {
+                // The host is gone: so is what it asked for.
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                workspaces.content_message_for_host(&workspace, from, message);
+            }
+        });
+        sender
+    }
+
+    /// One link's answers to what members ask this device for in `workspace`
+    /// ([`Self::content_answer`]): each ask is read once the link to its asker
+    /// has room for its answer, so the link decides how many are read at once
+    /// ([`tilo_peer_state::direct::DirectSync::content_room`]). One by one,
+    /// every ask waited for each read before it, and so did its asker.
+    pub(super) fn content_asks(
+        &self,
+        workspace: &str,
+        link: &tilo_peer_state::direct::DirectSync,
+    ) -> tokio::sync::mpsc::Sender<([u8; 32], Vec<u8>)> {
+        // The reader hands over one ask at a time: an ask waiting for room
+        // holds the reader, and so the link's other frames, no longer than that.
+        let (sender, mut asks) = tokio::sync::mpsc::channel::<([u8; 32], Vec<u8>)>(1);
+        let workspaces = self.downgrade();
+        let (workspace, link) = (workspace.to_owned(), link.clone());
+        tokio::spawn(async move {
+            while let Some((asker, body)) = asks.recv().await {
+                let Some(room) = link.content_room(asker).await else {
+                    continue;
+                };
+                // The host is gone: so is what it was asked.
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                let (workspace, link) = (workspace.clone(), link.clone());
+                tokio::spawn(async move {
+                    // A mounted workspace's file bytes are read from its Files daemon: the read
+                    // waits on a thread of its own, never on the runtime's.
+                    let read = tokio::task::spawn_blocking(move || {
+                        workspaces.content_answer(&workspace, &asker, &body)
+                    })
+                    .await;
+                    let answers = match read {
+                        Ok(answers) => answers,
+                        Err(error) => {
+                            tracing::warn!(%error, "reading what a member asked for ended early");
+                            return;
+                        }
+                    };
+                    let mut room = Some(room);
+                    for answer in answers {
+                        let message = match NeighbourMsg::decode(&answer) {
+                            Ok(message) => message,
+                            Err(error) => {
+                                tracing::warn!(%error, "a content answer did not encode");
+                                continue;
+                            }
+                        };
+                        // The first answer goes in the room the ask took; the
+                        // rest wait while the asker's link is full.
+                        let sent = match room.take() {
+                            Some(room) => link.send_content_in(room, message).await,
+                            None => link.send_content(message).await,
+                        };
+                        if let Err(error) = sent {
+                            tracing::debug!(%error, "a content answer did not reach its asker");
+                        }
+                    }
+                });
+            }
+        });
+        sender
+    }
+
+    /// [`Self::content_for_host`] for a message already decoded.
+    fn content_message_for_host(&self, workspace: &str, from: [u8; 32], message: NeighbourMsg) {
         let lacks = matches!(message, NeighbourMsg::DocumentContentLacks { .. });
         self.keep_content_for_host(workspace, from, message);
         // Told once what it brings is kept.

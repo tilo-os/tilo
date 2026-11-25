@@ -180,7 +180,11 @@ async fn a_computer_holding_the_root_logs_in_at_a_server_by_its_line_and_is_aske
     )
     .await
     .expect("the server lets the root's own device in");
-    tilo_test_env::within("the device's service keeps the workspace", own.hold(&entered)).await;
+    tilo_test_env::within(
+        "the device's service keeps the workspace",
+        own.hold(&entered),
+    )
+    .await;
     assert!(entered.admitted(company.workspace_id).await);
 
     // The server's ask for content it lacks reaches the laptop now.

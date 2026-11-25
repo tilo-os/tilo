@@ -448,10 +448,12 @@ view ticks(list: Ticks) {
 }
 "#;
 
-/// A store held in this process that counts the resources its pages answered with.
+/// A store held in this process that counts the resources its pages answered with, and the
+/// resources it was asked for one by one.
 struct Counted {
     port: tilo_resource_store::LocalPort,
     rows: std::cell::Cell<usize>,
+    gets: std::cell::Cell<usize>,
 }
 
 impl tilo_resource_store::Port for Counted {
@@ -459,6 +461,9 @@ impl tilo_resource_store::Port for Counted {
         &self,
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
+        if matches!(command, tilo_resource_store::wire::Command::Get { .. }) {
+            self.gets.set(self.gets.get() + 1);
+        }
         let reply = tilo_resource_store::Port::command(&self.port, command)?;
         if let tilo_resource_store::wire::Reply::Page(page) = &reply {
             self.rows.set(self.rows.get() + page.resources.len());
@@ -486,6 +491,7 @@ fn a_filter_after_an_actions_own_write_reads_what_the_index_narrows_it_to() {
     let port = std::rc::Rc::new(Counted {
         port: tilo_resource_store::LocalPort::in_memory(),
         rows: std::cell::Cell::new(0),
+        gets: std::cell::Cell::new(0),
     });
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
@@ -542,5 +548,45 @@ fn a_filter_after_an_actions_own_write_reads_what_the_index_narrows_it_to() {
         titles(view.tree())[9..12],
         ["item 9", "item 20", "item 10"],
         "the item finished last stands first among the finished ones"
+    );
+}
+
+/// A resource the store holds none of, read again and again (each row of a list naming another
+/// app's root nobody made yet), is asked of the store once: its answer holds until its record
+/// moves, and then the store is asked again.
+#[test]
+fn a_resource_the_store_holds_none_of_is_asked_for_once_until_its_record_moves() {
+    let compiled = tilolang::compile_package(TICKS, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"));
+    let port = std::rc::Rc::new(Counted {
+        port: tilo_resource_store::LocalPort::in_memory(),
+        rows: std::cell::Cell::new(0),
+        gets: std::cell::Cell::new(0),
+    });
+    let store = ResourceStore::new(port.clone());
+    store.declare(&compiled.meta);
+    let ty = &compiled
+        .meta
+        .types
+        .iter()
+        .find(|held| held.name == "Ticks")
+        .unwrap()
+        .id;
+    let nobody = ResourceRef::root("root-nobody-made-this", ty.clone());
+    for _ in 0..1000 {
+        assert!(!store.contains(&nobody));
+    }
+    assert_eq!(
+        port.gets.get(),
+        1,
+        "a thousand reads of a resource the store holds none of asked it {} times",
+        port.gets.get()
+    );
+    store.moved_docs(&std::collections::BTreeSet::from([nobody.doc.clone()]));
+    assert!(!store.contains(&nobody));
+    assert_eq!(
+        port.gets.get(),
+        2,
+        "its record moved: the store is asked again, once"
     );
 }

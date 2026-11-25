@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { connect, INTENTS } from "../src/gateway.js";
+import { missingToSpeak } from "../src/permissions.js";
 
 /// Wait until `check()` is true, or fail the test after `timeout`.
 async function until(check, what, timeout = 3_000) {
@@ -49,12 +50,18 @@ function fakeGateway() {
               t: "GUILD_CREATE",
               d: {
                 id: "123",
+                owner_id: "1",
                 channels: [
                   { id: "456", type: 0, name: "design", position: 0 },
                   { id: "457", type: 4, name: "Text", position: 1 },
-                  { id: "458", type: 2, name: "Call", position: 2 },
+                  { id: "458", type: 2, name: "Call", position: 2, permission_overwrites: [] },
                 ],
-                roles: [],
+                // `@everyone` may see and connect; the bot's role "7" may speak.
+                roles: [
+                  { id: "123", permissions: String((1 << 10) | (1 << 20)) },
+                  { id: "7", permissions: String(1 << 21) },
+                ],
+                members: [{ user: { id: "900" }, roles: ["7"] }],
                 emojis: [{ id: "22", name: "party" }],
               },
             }),
@@ -169,6 +176,54 @@ test("the gateway identifies with the bridge's intents and carries Discord's eve
   expect(by("MEMBER_CHANGED").roles).toEqual(["5"]);
 
   await until(() => discord.received.some((frame) => frame.op === 1), "a heartbeat");
+  client.destroy();
+  discord.stop();
+});
+
+test("the gateway keeps what decides the bot's permissions as Discord changes it", async () => {
+  const discord = fakeGateway();
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: () => {},
+  });
+  await until(() => client.standing("123"), "the server described");
+  const missing = () => missingToSpeak(client.standing("123"), "458");
+  expect(missing()).toEqual([]);
+
+  // The call's channel denies the bot Speak.
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "CHANNEL_UPDATE",
+    d: {
+      id: "458",
+      guild_id: "123",
+      permission_overwrites: [{ id: "900", type: 1, allow: "0", deny: String(1 << 21) }],
+    },
+  });
+  await until(() => missing().length > 0, "the overwrite kept");
+  expect(missing()).toEqual(["Speak"]);
+
+  // The bot's role becomes Administrator, which no overwrite takes away.
+  discord.send({
+    op: 0,
+    s: 4,
+    t: "GUILD_ROLE_UPDATE",
+    d: { guild_id: "123", role: { id: "7", permissions: String(1 << 3) } },
+  });
+  await until(() => missing().length === 0, "the role kept");
+
+  // The bot loses the role: back to what `@everyone` and the overwrite leave it.
+  discord.send({
+    op: 0,
+    s: 5,
+    t: "GUILD_MEMBER_UPDATE",
+    d: { guild_id: "123", user: { id: "900" }, roles: [] },
+  });
+  await until(() => missing().length > 0, "the bot's roles kept");
+  expect(missing()).toEqual(["Speak"]);
+  expect(client.standing("999")).toBe(null);
   client.destroy();
   discord.stop();
 });

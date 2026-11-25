@@ -56,7 +56,7 @@ fn invoked_with(
         .map(|execution| execution.presence(actor))
         .transpose()?;
     // A Shortcut's step is admitted as its person: the invoker stays them.
-    let admitting = caller.filter(|caller| caller.acting().by.member_id() == Some(actor.member()));
+    let admitting = caller.filter(|caller| caller.acting().by == *actor.actor());
     // Without a caller, the admitted actor says whom an agent acts for.
     let admitted = admitting.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
 

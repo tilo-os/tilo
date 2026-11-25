@@ -562,7 +562,7 @@ async fn a_person_who_left_the_workspace_is_refused() {
             .replica
             .write(|peer| peer
                 .governance_mut()
-                .admit_invited_member(&redemption, &a.0, now))
+                .admit_invited_member(&redemption, &g.0, now))
             .unwrap()
     );
 
@@ -1040,7 +1040,6 @@ impl ActionProvider for Described {
             description: None,
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::Effect,
-            effects: Vec::new(),
             contract: tilo_actions::contract::ActionContract {
                 kind,
                 ..tilo_actions::contract::ActionContract::default()

@@ -116,12 +116,13 @@ pub(crate) fn answer(action: &str, args: &Value, key: &SigningKey) -> Result<Val
             Ok(json!({ "plain": hex::encode(plain.as_slice()) }))
         }
         CHECK_CALLER_PROOF => {
-            let caller_key = tilo_seal::secret_service::CallerKey::derive(seed.as_ref()).map_err(
-                |error| Refusal {
-                    code: "device-action",
-                    message: error.to_string(),
-                },
-            )?;
+            let caller_key =
+                tilo_seal::secret_service::CallerKey::derive(seed.as_ref()).map_err(|error| {
+                    Refusal {
+                        code: "device-action",
+                        message: error.to_string(),
+                    }
+                })?;
             let proven = caller_key.verify(
                 &bytes(args, "challenge")?,
                 text(args, "caller")?,
@@ -185,17 +186,9 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
             "Check a caller's proof",
             "Whether a process proved to the Secret Service that it has this device's identity.",
             &[
-                ActionParam::required(
-                    "challenge",
-                    ParamType::Text,
-                    "The challenge, in hex.",
-                ),
+                ActionParam::required("challenge", ParamType::Text, "The challenge, in hex."),
                 ActionParam::required("caller", ParamType::Text, "The caller's bus name."),
-                ActionParam::required(
-                    "program",
-                    ParamType::Text,
-                    "The program it named, in hex.",
-                ),
+                ActionParam::required("program", ParamType::Text, "The program it named, in hex."),
                 ActionParam::required("proof", ParamType::Text, "Its proof, in hex."),
             ],
         ),
@@ -237,10 +230,7 @@ const DIAL_FOR: std::time::Duration = std::time::Duration::from_secs(20);
 ///
 /// # Errors
 /// The arguments cannot be read, or no device could be asked.
-pub(crate) async fn enrol_boot(
-    endpoint: &iroh::Endpoint,
-    args: &Value,
-) -> Result<Value, Refusal> {
+pub(crate) async fn enrol_boot(endpoint: &iroh::Endpoint, args: &Value) -> Result<Value, Refusal> {
     use tilo_unlock_protocol::{APPROVAL_TIMEOUT_NS, ENROL_ALPN, EnrolRequest, decode_frame};
     let frame = bytes(args, "request")?;
     // The request is an enrolment request, whole: nothing else is carried for the caller.
@@ -274,10 +264,10 @@ pub(crate) async fn enrol_boot(
     let relays: Vec<iroh::RelayUrl> = tilo_endpoint_reachability::relays().relays.urls();
     let mut unable = None;
     for device in devices {
-        let address = relays
-            .iter()
-            .cloned()
-            .fold(iroh::EndpointAddr::new(device), iroh::EndpointAddr::with_relay_url);
+        let address = relays.iter().cloned().fold(
+            iroh::EndpointAddr::new(device),
+            iroh::EndpointAddr::with_relay_url,
+        );
         let asked = async {
             let connection = tokio::time::timeout(DIAL_FOR, endpoint.connect(address, ENROL_ALPN))
                 .await

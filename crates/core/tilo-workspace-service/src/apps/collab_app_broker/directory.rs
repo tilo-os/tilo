@@ -713,7 +713,7 @@ impl<'a> DirectoryQuestion<'a> {
     ) -> bool {
         !(self.private_view || self.shown_here)
             || actor
-                .member()
+                .actor()
                 .person_id()
                 .is_some_and(|me| publishing_person == Some(me))
     }

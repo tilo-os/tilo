@@ -283,7 +283,7 @@ impl Connectivity {
 
     /// Keep the open networks this device keeps from joining by themselves: the person asks
     /// first, as the policy says.
-    fn keep_open_networks_asked(&mut self) {
+    fn keep_open_networks_asked(&self) {
         self.worker.run(move |device| {
             let result = device.change(&Change::OpenNetworks { ask: true });
             Landed::Kept {
@@ -1450,12 +1450,12 @@ fn network_modes(key: &str) -> Result<os_actions::NetworkModes, String> {
 
 impl Connectivity {
     fn modem(&mut self, action: ModemAction) -> Result<Started, ApiError> {
-        let id = action.id();
+        let id = action.id().to_owned();
         // What the modem answers is the reading's to show, not a change's.
-        match &action {
+        let change = match action {
             ModemAction::ScanOperators { modem } => {
                 let path = self.modem_at(modem.as_deref())?;
-                return Ok(self.answer_from_modem(id, path, |device, path| {
+                return Ok(self.answer_from_modem(&id, path, |device, path| {
                     device.scan_operators(path).map(|found| {
                         Answer::Operators(model::ordered_operators(
                             found.iter().map(model::Operator::from).collect(),
@@ -1465,8 +1465,7 @@ impl Connectivity {
             }
             ModemAction::SendCode { modem, code } => {
                 let path = self.modem_at(modem.as_deref())?;
-                let code = code.clone();
-                return Ok(self.answer_from_modem(id, path, move |device, path| {
+                return Ok(self.answer_from_modem(&id, path, move |device, path| {
                     device
                         .send_code(path, &code)
                         .map(|answer| Answer::Code(Some(model::Code::from(&answer))))
@@ -1474,8 +1473,7 @@ impl Connectivity {
             }
             ModemAction::AnswerCode { modem, answer } => {
                 let path = self.modem_at(modem.as_deref())?;
-                let answer = answer.clone();
-                return Ok(self.answer_from_modem(id, path, move |device, path| {
+                return Ok(self.answer_from_modem(&id, path, move |device, path| {
                     device
                         .answer_code(path, &answer)
                         .map(|answer| Answer::Code(Some(model::Code::from(&answer))))
@@ -1483,13 +1481,10 @@ impl Connectivity {
             }
             ModemAction::CancelCode { modem } => {
                 let path = self.modem_at(modem.as_deref())?;
-                return Ok(self.answer_from_modem(id, path, |device, path| {
+                return Ok(self.answer_from_modem(&id, path, |device, path| {
                     device.cancel_code(path).map(|()| Answer::Code(None))
                 }));
             }
-            _ => {}
-        }
-        let change = match action {
             ModemAction::RefreshModems => {
                 refresh(&self.worker.jobs());
                 return Ok(Started::Accepted);
@@ -1542,14 +1537,8 @@ impl Connectivity {
                     operator,
                 }
             }
-            ModemAction::ScanOperators { .. }
-            | ModemAction::SendCode { .. }
-            | ModemAction::AnswerCode { .. }
-            | ModemAction::CancelCode { .. } => {
-                unreachable!("answered above, before the change")
-            }
         };
-        Ok(self.start(Part::Modem, id, change))
+        Ok(self.start(Part::Modem, &id, change))
     }
 
     /// Run `work` on the worker: what the modem at `path` answered, which its reading then shows

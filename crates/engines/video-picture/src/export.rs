@@ -1097,7 +1097,8 @@ mod gst_pipeline {
             };
             debug_assert_eq!(rgba.len(), frame_bytes);
             let sound = with_audio.then(|| {
-                let block = video_edit::audio::mix_block(project, t, audio_frames_for(i, fps), &mut pcm);
+                let block =
+                    video_edit::audio::mix_block(project, t, audio_frames_for(i, fps), &mut pcm);
                 video_edit::audio::to_s16le(&block)
             });
             graph.push(i, &rgba, sound.as_deref())?;
@@ -1240,8 +1241,8 @@ mod tests {
             );
         }
         {
-            use video_edit::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
             use uuid::Uuid;
+            use video_edit::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
             let mut p = Project::new("title only");
             let mid = Uuid::new_v4();
             p.media.push(MediaItem {
@@ -1267,8 +1268,8 @@ mod tests {
             );
         }
         {
-            use video_edit::model::{MediaItem, MediaKind};
             use uuid::Uuid;
+            use video_edit::model::{MediaItem, MediaKind};
             let mut p = one_clip_over("no/such/definitely-not-here-42.mp4");
             p.clips.clear();
             p.media.push(MediaItem {
@@ -1797,8 +1798,8 @@ mod tests {
         secs: f64,
         muted: bool,
     ) -> Project {
-        use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
         use uuid::Uuid;
+        use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
         let mut p = project_over(clip, 3.0, secs);
         let aid = Uuid::new_v4();
         p.media.push(MediaItem {
@@ -1839,8 +1840,8 @@ mod tests {
     /// the subject.
     #[cfg(feature = "gst")]
     fn decoded_audio(path: &std::path::Path) -> Vec<f32> {
-        let pcm =
-            video_edit::audio::decode_pcm(&video_edit::media::engine_source(path)).unwrap_or_else(|| {
+        let pcm = video_edit::audio::decode_pcm(&video_edit::media::engine_source(path))
+            .unwrap_or_else(|| {
                 panic!(
                     "no readable audio stream in {} -- the level cannot be judged",
                     path.display()
@@ -2091,7 +2092,9 @@ mod tests {
             use video_edit::model::TrackKind;
             let silent = project_of("silent", TrackKind::Video);
             let voiced = project_of("voiced", TrackKind::Audio);
-            assert!(!video_edit::audio::has_audio(&silent) && video_edit::audio::has_audio(&voiced));
+            assert!(
+                !video_edit::audio::has_audio(&silent) && video_edit::audio::has_audio(&voiced)
+            );
             assert!(
                 (silent.duration() - voiced.duration()).abs() < 1e-9,
                 "the two projects must be the same length, or the comparison below \
@@ -2290,8 +2293,8 @@ mod tests {
     /// The two kinds give a silent and a voiced project of **identical duration**, so the two
     /// size labels can be compared.
     fn project_of(name: &str, kind: video_edit::model::TrackKind) -> Project {
-        use video_edit::model::{MediaItem, MediaKind, Track};
         use uuid::Uuid;
+        use video_edit::model::{MediaItem, MediaKind, Track};
         let mut p = Project::new(name);
         let mid = Uuid::new_v4();
         p.media.push(MediaItem {
@@ -2348,8 +2351,8 @@ mod tests {
     }
 
     fn one_clip_over(path: &str) -> Project {
-        use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
         use uuid::Uuid;
+        use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
         let mut p = Project::new("relative");
         p.width = 320;
         p.height = 180;
@@ -2387,8 +2390,8 @@ mod tests {
         // not here would now be refused, correctly. This runs the encode and mux end to end over
         // a picture the timeline really holds.
         'case: {
-            use video_edit::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
             use uuid::Uuid;
+            use video_edit::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
             if !generated_clip::media_stack() {
                 break 'case;
             }
@@ -2690,8 +2693,8 @@ mod tests {
 
     #[cfg(feature = "gst")]
     fn project_over(path: &std::path::Path, in_point: f64, len: f64) -> Project {
-        use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
         use uuid::Uuid;
+        use video_edit::model::{MediaItem, MediaKind, Track, TrackKind};
         let mut p = Project::new("Footage");
         p.width = 1920;
         p.height = 1080;

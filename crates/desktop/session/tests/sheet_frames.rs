@@ -19,8 +19,8 @@
 use std::path::Path;
 
 use serde_json::{Value, json};
-use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::Tab;
 

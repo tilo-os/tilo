@@ -551,9 +551,9 @@ fn assert_access_denied<T: std::fmt::Debug>(answer: zbus::Result<T>) {
 #[cfg(target_os = "linux")]
 fn serve_with_this_binary_as_portal_host() {
     use std::sync::Arc;
+    use tilo_device_identity::login::daemon::DeviceActions;
     use tilo_secret_service::app::CallerId;
     use tilo_secret_service::service::{BUS_NAME, BusResolver, Core, Managers, publish};
-    use tilo_device_identity::login::daemon::DeviceActions;
     use tilo_secret_service::store::{DeviceDaemon, Store};
     let device = child_env(CHILD_DEVICE);
     let run = child_env(CHILD_RUN);

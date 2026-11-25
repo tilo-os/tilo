@@ -503,10 +503,7 @@ pub(crate) fn ensure_daemon() -> Result<std::os::unix::net::UnixStream> {
 /// person was founded now.
 pub(crate) fn ensure_daemon_founding(
     founding: &tilo_api::daemon::Founding,
-) -> Result<(
-    std::os::unix::net::UnixStream,
-    Option<serde_json::Value>,
-)> {
+) -> Result<(std::os::unix::net::UnixStream, Option<serde_json::Value>)> {
     tilo_api::daemon::this_computer()
         .and_then(|place| place.reach_native_founding(ANSWERING, founding))
         .map_err(anyhow::Error::msg)

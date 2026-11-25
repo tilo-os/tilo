@@ -106,6 +106,11 @@ impl Workspaces {
     /// the list, the same change as the workspace that founds it elsewhere, so the two merge as
     /// one list.
     ///
+    /// A verb `change` applies names the record's app (`Replica::in_app` with
+    /// [`tilo_workspace_agent::OWNER`]): the record's receipt check reads the action as that
+    /// app's, and a name guessed from its type is no app the record has, so every device would
+    /// refuse the write.
+    ///
     /// # Errors
     /// The genesis could not be made, or as [`Self::author_workspace_document_from`].
     pub async fn author_agents<R>(

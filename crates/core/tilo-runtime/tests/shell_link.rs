@@ -47,7 +47,6 @@ fn offered(provider: &str, app: &str, resource: &str, action: &str) -> Catalogue
                 "What the provider answers",
             )],
             view: None,
-            effects: Vec::new(),
         },
     );
     CataloguePage::from_rows(

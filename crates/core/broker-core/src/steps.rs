@@ -20,13 +20,4 @@ pub trait ContinuationServices: Send + Sync {
         app: &str,
         instance: u64,
     ) -> Result<(), String>;
-    /// One window's app answering a handoff request. `message` is an encoded
-    /// `collab_types::handoff::HandoffReport`.
-    fn handoff(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceId,
-        app: String,
-        instance: u64,
-        message: Vec<u8>,
-    ) -> Result<(), String>;
 }

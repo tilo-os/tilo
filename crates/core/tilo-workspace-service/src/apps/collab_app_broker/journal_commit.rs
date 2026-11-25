@@ -20,7 +20,7 @@ impl AppBrokerState {
         record: &DurableInvocation,
     ) -> Result<(), String> {
         let current = self.current_action_caller(caller)?;
-        let actor = serde_json::to_value(current.broker_actor().member())
+        let actor = serde_json::to_value(current.broker_actor().actor())
             .map_err(|error| error.to_string())?;
         if record.prepared_effect.is_some() && record.intent.get("actor") != Some(&actor) {
             return Err("prepared invocation actor differs from current caller".into());

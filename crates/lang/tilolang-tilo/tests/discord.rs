@@ -694,10 +694,7 @@ fn a_member_reaches_only_what_their_grants_give_them() {
         &ada,
         &person("ada"),
         "complete_link",
-        vec![
-            Value::resource(&account),
-            Value::text(ada_proof.as_str()),
-        ],
+        vec![Value::resource(&account), Value::text(ada_proof.as_str())],
     ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ada links: {other:?}"),
@@ -727,57 +724,89 @@ fn a_member_reaches_only_what_their_grants_give_them() {
     // bridge's too: a member who could map an id would reach past the channel a bridge is
     // confined to, and one who could report a layout would choose what the bridge trusts.
     was_refused(
-        &as_who(&ada, &person("mo"), "map", vec![
-            Value::resource(&account),
-            case(&meta, "MappedKind", "channel"),
-            Value::text("tl:so.tilo.chat:invented"),
-            Value::text("999"),
-            case(&meta, "OriginSide", "discord"),
-        ]),
+        &as_who(
+            &ada,
+            &person("mo"),
+            "map",
+            vec![
+                Value::resource(&account),
+                case(&meta, "MappedKind", "channel"),
+                Value::text("tl:so.tilo.chat:invented"),
+                Value::text("999"),
+                case(&meta, "OriginSide", "discord"),
+            ],
+        ),
         "Only the bridge joins the two sides",
     );
     was_refused(
-        &as_who(&ada, &person("mo"), "observe_layout", vec![
-            Value::resource(&account),
-            Value::text("1"),
-            Value::List(Vec::new()),
-            Value::List(Vec::new()),
-            Value::List(Vec::new()),
-        ]),
+        &as_who(
+            &ada,
+            &person("mo"),
+            "observe_layout",
+            vec![
+                Value::resource(&account),
+                Value::text("1"),
+                Value::List(Vec::new()),
+                Value::List(Vec::new()),
+                Value::List(Vec::new()),
+            ],
+        ),
         "Only the bridge keeps the server's layout",
     );
 
     // A linked member is the moderators' to kick or ban.
-    let kicked = carry_as(&ada, &person("ben"), &account, "kick", json!({
-        "op": "kick",
-        "user": "3001",
-    }));
+    let kicked = carry_as(
+        &ada,
+        &person("ben"),
+        &account,
+        "kick",
+        json!({
+            "op": "kick",
+            "user": "3001",
+        }),
+    );
     was_refused(
         &kicked,
         "Only the workspace's moderators manage Discord members",
     );
-    allowed(&carry_as(&ada, &person("mo"), &account, "kick", json!({
-        "op": "kick",
-        "user": "3001",
-    })));
-    allowed(&carry_as(&ada, &person("mo"), &account, "ban", json!({
-        "op": "ban",
-        "user": "3001",
-    })));
+    allowed(&carry_as(
+        &ada,
+        &person("mo"),
+        &account,
+        "kick",
+        json!({
+            "op": "kick",
+            "user": "3001",
+        }),
+    ));
+    allowed(&carry_as(
+        &ada,
+        &person("mo"),
+        &account,
+        "ban",
+        json!({
+            "op": "ban",
+            "user": "3001",
+        }),
+    ));
 
     // A channel the bridge made there is the moderators' to delete.
-    let deleted = as_who(&ada, &person("ben"), "delete_channel_there", vec![
-        Value::resource(&account),
-        Value::text("457"),
-    ]);
+    let deleted = as_who(
+        &ada,
+        &person("ben"),
+        "delete_channel_there",
+        vec![Value::resource(&account), Value::text("457")],
+    );
     was_refused(
         &deleted,
         "Only the workspace's moderators change the server's channels",
     );
-    allowed(&as_who(&ada, &person("mo"), "delete_channel_there", vec![
-        Value::resource(&account),
-        Value::text("457"),
-    ]));
+    allowed(&as_who(
+        &ada,
+        &person("mo"),
+        "delete_channel_there",
+        vec![Value::resource(&account), Value::text("457")],
+    ));
 
     // A second link, this one Ben's, so a moderator unlinks an account that is not theirs.
     let ben_proof = digest("ben's code");
@@ -786,10 +815,7 @@ fn a_member_reaches_only_what_their_grants_give_them() {
         &ada,
         &person("ben"),
         "complete_link",
-        vec![
-            Value::resource(&account),
-            Value::text(ben_proof.as_str()),
-        ],
+        vec![Value::resource(&account), Value::text(ben_proof.as_str())],
     ) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("ben links: {other:?}"),
@@ -798,20 +824,26 @@ fn a_member_reaches_only_what_their_grants_give_them() {
 
     // A link is its person's to unlink, or a moderator's.
     was_refused(
-        &as_who(&ada, &person("ben"), "unlink", vec![
-            Value::resource(&account),
-            Value::text("3001"),
-        ]),
+        &as_who(
+            &ada,
+            &person("ben"),
+            "unlink",
+            vec![Value::resource(&account), Value::text("3001")],
+        ),
         "Only the workspace's moderators, or the person it is with, unlink a Discord account",
     );
-    allowed(&as_who(&ada, &person("ada"), "unlink", vec![
-        Value::resource(&account),
-        Value::text("3001"),
-    ]));
-    allowed(&as_who(&ada, &person("mo"), "unlink", vec![
-        Value::resource(&account),
-        Value::text("3002"),
-    ]));
+    allowed(&as_who(
+        &ada,
+        &person("ada"),
+        "unlink",
+        vec![Value::resource(&account), Value::text("3001")],
+    ));
+    allowed(&as_who(
+        &ada,
+        &person("mo"),
+        "unlink",
+        vec![Value::resource(&account), Value::text("3002")],
+    ));
 
     // The members' calls were refused and the moderators' went through, each read by the app
     // before the program makes its own call to Discord.
@@ -991,17 +1023,22 @@ fn mirrored() -> (Replica, ResourceRef) {
         Ok(InvokeOutcome::Done(_)) => {}
         other => panic!("{action}: {other:?}"),
     };
-    done(&bridge(), "map", vec![
-        discord.clone(),
-        case(&meta, "MappedKind", "channel"),
-        Value::text("tl:so.tilo.chat:made"),
-        Value::text("457"),
-        case(&meta, "OriginSide", "tilo"),
-    ]);
-    done(&bridge(), "finish_import", vec![
-        discord,
-        Value::List(Vec::new()),
-    ]);
+    done(
+        &bridge(),
+        "map",
+        vec![
+            discord.clone(),
+            case(&meta, "MappedKind", "channel"),
+            Value::text("tl:so.tilo.chat:made"),
+            Value::text("457"),
+            case(&meta, "OriginSide", "tilo"),
+        ],
+    );
+    done(
+        &bridge(),
+        "finish_import",
+        vec![discord, Value::List(Vec::new())],
+    );
     ada.commit();
     (ada, account)
 }
@@ -1201,52 +1238,77 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
         "A bridge of one channel changes nothing else in the server",
     );
     was_refused(
-        &carried_out(&ada, &account, "edit_there", json!({
-            "op": "edit",
-            "channel": "999",
-            "webhook": "555",
-            "message": "9001",
-            "content": "changed elsewhere",
-        })),
+        &carried_out(
+            &ada,
+            &account,
+            "edit_there",
+            json!({
+                "op": "edit",
+                "channel": "999",
+                "webhook": "555",
+                "message": "9001",
+                "content": "changed elsewhere",
+            }),
+        ),
         "This bridge reaches only its one Discord channel",
     );
     was_refused(
-        &carried_out(&ada, &account, "delete_there", json!({
-            "op": "delete",
-            "channel": "999",
-            "webhook": null,
-            "message": "9001",
-        })),
+        &carried_out(
+            &ada,
+            &account,
+            "delete_there",
+            json!({
+                "op": "delete",
+                "channel": "999",
+                "webhook": null,
+                "message": "9001",
+            }),
+        ),
         "This bridge reaches only its one Discord channel",
     );
     for action in ["react_there", "unreact_there"] {
         was_refused(
-            &carried_out(&ada, &account, action, json!({
-                "op": "react",
-                "channel": "999",
-                "message": "9001",
-                "emoji": "wave",
-            })),
+            &carried_out(
+                &ada,
+                &account,
+                action,
+                json!({
+                    "op": "react",
+                    "channel": "999",
+                    "message": "9001",
+                    "emoji": "wave",
+                }),
+            ),
             "This bridge reaches only its one Discord channel",
         );
     }
     was_refused(
-        &carried_out(&ada, &account, "create_webhook", json!({
-            "op": "create-webhook",
-            "channel": "999",
-            "tilo": "tl:so.tilo.chat:elsewhere",
-        })),
+        &carried_out(
+            &ada,
+            &account,
+            "create_webhook",
+            json!({
+                "op": "create-webhook",
+                "channel": "999",
+                "tilo": "tl:so.tilo.chat:elsewhere",
+            }),
+        ),
         "This bridge reaches only its one Discord channel",
     );
     // An overwrite changes the whole server's permissions, which a bridge of one channel never
     // makes.
     was_refused(
-        &carried_out(&ada, &account, "set_overwrite", json!({
-            "op": "set-overwrite",
-            "channel": "999",
-            "target": "700",
-            "target_kind": "role",
-        })),
+        &carried_out(
+            &ada,
+            &account,
+            "set_overwrite",
+            json!({
+                "op": "set-overwrite",
+                "channel": "999",
+                "target": "700",
+                "target_kind": "role",
+            }),
+        ),
         "A bridge of one channel changes nothing else in the server",
     );
 

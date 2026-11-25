@@ -785,7 +785,6 @@ search-field-name = Search
 search-field-filter-name = Filter
 presentation-window-title = Audience presentation
 
-approved-check-reports-disabled = Working
 
 author-bot-chip = Bot
 author-via-chip = via { $service }

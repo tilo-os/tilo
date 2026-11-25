@@ -219,7 +219,7 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
             .unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &owner_key, now())
+            .admit_invited_member(&redemption, &guest_key, now())
             .unwrap()
     );
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
@@ -1365,7 +1365,7 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     tilo_user_identity::sign_device_cert(&mut readded, &SigningKey::from_bytes(&[41; 32])).unwrap();
     assert!(
         peer.governance_mut()
-            .admit_member_device(&readded, &owner_key, later)
+            .admit_member_device(&readded, &readded_key, later)
             .unwrap()
     );
     peer.receive_from_report(origin, next, later)

@@ -665,3 +665,98 @@ type = "gui"
         "the refusal says the manifest is unsigned: {refused}"
     );
 }
+/// A signed package of `app` at `version` whose payload is a tilolang app's: `app.wasm`, the
+/// ids it locks and one imported module.
+fn author_tilolang(app: &str, version: &str) -> Vec<u8> {
+    let identity = SigningIdentity::from_signing_key(SigningKey::from_bytes(&PUBLISHER));
+    let publisher = hex::encode(identity.public_key_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let payload = dir.path().join("payload");
+    std::fs::create_dir_all(payload.join("imports")).unwrap();
+    // A module with nothing in it, and one exported function in the import: what a compile
+    // makes of either is all this test reads.
+    std::fs::write(payload.join("app.wasm"), b"\0asm\x01\0\0\0").unwrap();
+    std::fs::write(
+        payload.join("imports/so.tilo.notes.wasm"),
+        b"\0asm\x01\0\0\0",
+    )
+    .unwrap();
+    std::fs::write(payload.join("app.ids"), "[]").unwrap();
+    let (architecture, isa, _) = native_target();
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        r#"
+[package]
+id = "{app}"
+version = "{version}"
+kind = "app"
+name = "Notes"
+category = "Productivity"
+
+[package.isa]
+{architecture} = "{isa}"
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "app.wasm"
+type = "gui"
+"#
+    ))
+    .unwrap();
+    let packed = tilo_app_package::pack::pack(&payload, &manifest, &identity).unwrap();
+    tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
+}
+
+/// Installing an app compiles the modules it runs, so its first open reads the machine code
+/// instead of compiling it: the handover after the install finds an entry for every part.
+#[test]
+fn an_install_compiles_the_modules_the_app_runs() {
+    const APP: &str = "so.tilo.follower-tilolang";
+    let dir = tempfile::tempdir().unwrap();
+    for sub in ["apps", "config", "cache", "data"] {
+        std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", dir.path().join("apps"))
+        .set("TILO_STORE_CONFIG_DIR", dir.path().join("config"))
+        .set("TILO_STORE_CACHE_DIR", dir.path().join("cache"))
+        // The device's data home: where its compiled modules are kept, and what the launcher
+        // grants the processes that run them read-only.
+        .set("XDG_DATA_HOME", dir.path().join("data"));
+    let root = dir.path().join("apps");
+    let cache = PackageCache::new(
+        &ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+        true,
+        &root,
+        Arc::new(DeviceContent::at(&dir.path().join("content"))),
+    );
+    let tapp = author_tilolang(APP, "1.0.0");
+    let release = release_of(APP, "1.0.0", &tapp);
+    let registries = Registry::start(APP, "1.0.0", &tapp, tapp.clone()).listed();
+
+    cache.fetch_offered(&release, &TrustLists::default(), &registries);
+    let installed = package_store::Catalog::at(&root, None)
+        .find(APP)
+        .unwrap()
+        .expect("the app installed");
+    let modules = super::super::compiled::payload_modules(&installed.payload_root);
+    assert_eq!(modules.len(), 2, "its module and its import");
+    let store = dir.path().join("data").join(super::super::compiled::DIR);
+    for module in &modules {
+        assert!(
+            tilo_wasm_aot::kept_in(&store, module).is_some(),
+            "the install compiled every module the app runs, so its first open reads it"
+        );
+    }
+}

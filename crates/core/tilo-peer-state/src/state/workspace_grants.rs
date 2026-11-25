@@ -274,7 +274,7 @@ mod tests {
         };
         sign_device_cert(&mut cert, &root)?;
         peer.governance_mut()
-            .admit_member_device(&cert, &governor, now)?;
+            .admit_member_device(&cert, &SigningKey::from_bytes(&[9; 32]), now)?;
         let person = hex::encode(root.verifying_key().to_bytes());
         let agent = tilo_action_policy::key_agent_id(&key);
         // The key's call, carried out and signed by another device of the

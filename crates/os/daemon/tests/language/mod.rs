@@ -131,6 +131,77 @@ impl tilo_workspace_service::agents::agent_keys::AgentKeys for Keys {
     }
 }
 
+/// An agent's own key, certified by its person's root for that agent in one workspace, as the
+/// person's device makes it: each call the agent's turn asks is signed with it, so the workspace
+/// reads whose agent asked from the certificate's chain.
+pub(crate) struct CertifiedKeys {
+    cert: DeviceCert,
+    key: ed25519_dalek::SigningKey,
+}
+
+impl CertifiedKeys {
+    /// `agent`'s key in `workspace`, certified by `root`.
+    pub(crate) fn of(root: &ed25519_dalek::SigningKey, workspace: &str, agent: &str) -> Self {
+        let workspace = tilo_server_protocol::WorkspaceId::parse(workspace)
+            .expect("a workspace id")
+            .as_uuid()
+            .into_bytes();
+        let key = ed25519_dalek::SigningKey::from_bytes(&rand::random());
+        let issued = tilo_clock::unix_now_ns();
+        // An agent's grant runs out, as every one a person's device makes does.
+        let day = 24 * 60 * 60 * 1_000_000_000;
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: agent.into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+                tilo_user_identity::AgentScope::agent_in(workspace, agent),
+            ),
+            issued_at_ns: issued,
+            expires_at_ns: Some(issued + day),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, root).expect("the agent's grant signs");
+        Self { cert, key }
+    }
+}
+
+impl tilo_workspace_service::agents::agent_keys::AgentKeys for CertifiedKeys {
+    fn grant(
+        &self,
+        _: tilo_server_protocol::WorkspaceId,
+        _: &str,
+        _: &str,
+        _: [u8; 32],
+    ) -> Result<[u8; 32], String> {
+        Ok(self.cert.device_public_key)
+    }
+
+    fn sign(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        _: &[u8; 32],
+        request: &mut tilo_actions::remote::InvokeRequest,
+    ) -> Result<(), String> {
+        request.signed = None;
+        let signed = tilo_server_protocol::invocation::sign_invocation_now(
+            &workspace.to_string(),
+            request,
+            &self.cert,
+            &self.key,
+            tilo_clock::unix_now_ns(),
+        )
+        .map_err(|error| error.to_string())?;
+        request.signed = Some(Box::new(signed));
+        Ok(())
+    }
+
+    fn made(&self, key: &[u8; 32]) -> Option<(DeviceCert, ed25519_dalek::SigningKey)> {
+        (key == &self.cert.device_public_key).then(|| (self.cert.clone(), self.key.clone()))
+    }
+}
+
 /// A record write the app's program makes for one of its actions, as `by` acts: `fields` are its
 /// text fields and `sets` its list fields' members, `edits` the values its fields hold whole (a
 /// message's rich body among them). The write reaches `workspace`'s store as `app`'s, and an

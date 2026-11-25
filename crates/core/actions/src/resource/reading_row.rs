@@ -100,8 +100,11 @@ impl ReadingRow {
         V: Into<serde_json::Value>,
     {
         self.action = Some(action.into());
-        self.arguments
-            .extend(arguments.into_iter().map(|(name, value)| (name.into(), value.into())));
+        self.arguments.extend(
+            arguments
+                .into_iter()
+                .map(|(name, value)| (name.into(), value.into())),
+        );
         self
     }
 

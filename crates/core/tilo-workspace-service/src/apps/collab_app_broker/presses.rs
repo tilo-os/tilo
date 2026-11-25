@@ -11,11 +11,15 @@
 //! and the app connections the broker admits are that same desktop's. The attestation and the
 //! call it proves travel the shell's and the app's own connections, so a call may arrive first:
 //! [`Presses::take`] waits [`ATTEST_WAIT`] for a serial it does not know yet.
+//!
+//! A press also says where in its window it was ([`Presses::find`]): a question the call it
+//! made raises stands there, whether or not the press proved the call.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use tilo_clock::time::{Duration, Instant};
 
+use tilo_actions::remote::asked::PressPoint;
 use tokio::sync::Notify;
 
 /// How long a press proves a call: mainstream launch latency fits inside it, and an old serial
@@ -30,12 +34,16 @@ const ATTEST_WAIT: Duration = Duration::from_millis(100);
 /// [`MAX_PRESS_AGE`].
 const KEPT: usize = 64;
 
-/// A press of the person's in `window`, issued serial `serial` at `at`.
+/// A press of the person's in `window`, issued serial `serial` at `at`, where in the window it
+/// was `point`.
 #[derive(Clone, Copy, Debug)]
 struct Press {
     window: u64,
     serial: u32,
+    point: Option<PressPoint>,
     at: Instant,
+    /// It proved a call already, and proves no other.
+    used: bool,
 }
 
 /// The person's presses the compositor attested, each proving one call.
@@ -47,13 +55,20 @@ pub(super) struct Presses {
 }
 
 impl Presses {
-    /// The person pressed in `window`, delivered with the input serial `serial`.
-    pub(super) fn note(&self, window: u64, serial: u32, at: Instant) {
+    /// The person pressed in `window` at `point` in it, delivered with the input serial
+    /// `serial`.
+    pub(super) fn note(&self, window: u64, serial: u32, point: Option<PressPoint>, at: Instant) {
         let Ok(mut seen) = self.seen.lock() else {
             return;
         };
         seen.retain(|press| at.saturating_duration_since(press.at) <= MAX_PRESS_AGE);
-        seen.push_back(Press { window, serial, at });
+        seen.push_back(Press {
+            window,
+            serial,
+            point,
+            at,
+            used: false,
+        });
         while seen.len() > KEPT {
             let _ = seen.pop_front();
         }
@@ -67,19 +82,49 @@ impl Presses {
     /// does one older than the window or already taken. A serial not attested yet is waited for
     /// [`ATTEST_WAIT`], because the shell link may still be carrying it.
     pub(super) async fn take(&self, window: Option<u64>, serial: Option<u32>) -> bool {
-        let (Some(window), Some(serial)) = (window, serial) else {
-            return false;
-        };
+        self.wait_for(window, serial, |press| {
+            if press.used {
+                return None;
+            }
+            press.used = true;
+            Some(())
+        })
+        .await
+        .is_some()
+    }
+
+    /// Where in `window` the person's press issued serial `serial` was, while it is kept,
+    /// whether or not it proved a call: `Some(None)` for a press at no point (a key), `None`
+    /// where the compositor attested no such press in that window. Waited for as
+    /// [`Self::take`] waits.
+    pub(super) async fn find(
+        &self,
+        window: Option<u64>,
+        serial: Option<u32>,
+    ) -> Option<Option<PressPoint>> {
+        self.wait_for(window, serial, |press| Some(press.point))
+            .await
+    }
+
+    /// What `answer` makes of the press in `window` issued `serial`, once it is attested, or
+    /// `None` when it answers nothing within [`ATTEST_WAIT`].
+    async fn wait_for<T>(
+        &self,
+        window: Option<u64>,
+        serial: Option<u32>,
+        mut answer: impl FnMut(&mut Press) -> Option<T>,
+    ) -> Option<T> {
+        let (window, serial) = (window?, serial?);
         let deadline = tilo_clock::now() + ATTEST_WAIT;
         loop {
             // The wake is registered before the look, so an attestation that lands between the
             // two is not missed.
             let attested = self.attested.notified();
-            if self.consume(window, serial, tilo_clock::now()) {
-                return true;
+            if let Some(found) = self.look(window, serial, tilo_clock::now(), &mut answer) {
+                return found;
             }
             if tilo_clock::now() >= deadline {
-                return false;
+                return None;
             }
             let _ = tokio::time::timeout(
                 deadline.saturating_duration_since(tilo_clock::now()),
@@ -89,24 +134,30 @@ impl Presses {
         }
     }
 
-    /// Take the press if it is there, without waiting.
-    fn consume(&self, window: u64, serial: u32, now: Instant) -> bool {
+    /// `answer` of the press, if it is there, without waiting: `None` where it is not.
+    fn look<T>(
+        &self,
+        window: u64,
+        serial: u32,
+        now: Instant,
+        answer: &mut impl FnMut(&mut Press) -> Option<T>,
+    ) -> Option<Option<T>> {
         let Ok(mut seen) = self.seen.lock() else {
-            return false;
+            return Some(None);
         };
         seen.retain(|press| now.saturating_duration_since(press.at) <= MAX_PRESS_AGE);
-        let before = seen.len();
-        seen.retain(|press| !(press.window == window && press.serial == serial));
-        seen.len() != before
+        seen.iter_mut()
+            .find(|press| press.window == window && press.serial == serial)
+            .map(answer)
     }
 }
 
 impl super::AppBrokerState {
-    /// The person pressed in `window` on their desktop, as the compositor that saw the input
-    /// attested it over the shell link: `serial` is the input serial it issued to that window
-    /// with the press.
-    pub(crate) fn note_press(&self, window: u64, serial: u32) {
-        self.presses.note(window, serial, tilo_clock::now());
+    /// The person pressed in `window` on their desktop at `point` in it, as the compositor that
+    /// saw the input attested it over the shell link: `serial` is the input serial it issued to
+    /// that window with the press.
+    pub(crate) fn note_press(&self, window: u64, serial: u32, point: Option<PressPoint>) {
+        self.presses.note(window, serial, point, tilo_clock::now());
     }
 
     /// A press older than the window it would prove, for a test that makes one.
@@ -115,6 +166,7 @@ impl super::AppBrokerState {
         self.presses.note(
             window,
             serial,
+            None,
             tilo_clock::now() - MAX_PRESS_AGE - Duration::from_millis(1),
         );
     }
@@ -127,6 +179,20 @@ impl super::AppBrokerState {
         self.presses
             .take(self.window_of_peer(peer_id), serial)
             .await
+    }
+
+    /// The window connection `peer_id` is and where in it the person's press issued `serial`
+    /// was, when the compositor attested that press to that window: where a question the call
+    /// naming it raises stands. `None` when the connection names no window, the call names no
+    /// serial, or the serial was issued to no press in that window.
+    pub(super) async fn pressed_in_window(
+        &self,
+        peer_id: u64,
+        serial: Option<u32>,
+    ) -> Option<(u64, Option<PressPoint>)> {
+        let window = self.window_of_peer(peer_id)?;
+        let point = self.presses.find(Some(window), serial).await?;
+        Some((window, point))
     }
 }
 
@@ -144,7 +210,7 @@ mod tests {
     async fn a_press_proves_one_call_in_its_window_while_it_is_fresh() {
         let presses = Presses::default();
         let start = tilo_clock::now();
-        presses.note(7, 11, at(start, 0));
+        presses.note(7, 11, None, at(start, 0));
         assert!(
             !presses.take(Some(8), Some(11)).await,
             "a press in another window proves nothing"
@@ -168,13 +234,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_press_says_where_it_was_after_it_proved_its_call() {
+        let presses = Presses::default();
+        let point = PressPoint { x: 120, y: 48 };
+        presses.note(7, 11, Some(point), tilo_clock::now());
+        assert_eq!(
+            presses.find(Some(8), Some(11)).await,
+            None,
+            "another window's"
+        );
+        assert!(presses.take(Some(7), Some(11)).await);
+        assert_eq!(
+            presses.find(Some(7), Some(11)).await,
+            Some(Some(point)),
+            "the question its call raises stands where it was"
+        );
+        assert!(!presses.take(Some(7), Some(11)).await, "still one call");
+    }
+
+    #[tokio::test]
     async fn a_press_the_shell_link_still_carries_is_waited_for() {
         let presses = std::sync::Arc::new(Presses::default());
         let behind = std::sync::Arc::clone(&presses);
         let start = tilo_clock::now();
         let noting = tokio::task::spawn_blocking(move || {
             std::thread::sleep(Duration::from_millis(10));
-            behind.note(5, 33, start);
+            behind.note(5, 33, None, start);
         });
         assert!(
             presses.take(Some(5), Some(33)).await,
@@ -188,7 +273,12 @@ mod tests {
     async fn a_press_older_than_the_window_proves_nothing() {
         let presses = Presses::default();
         let start = tilo_clock::now();
-        presses.note(7, 21, start - MAX_PRESS_AGE - Duration::from_millis(1));
+        presses.note(
+            7,
+            21,
+            None,
+            start - MAX_PRESS_AGE - Duration::from_millis(1),
+        );
         assert!(!presses.take(Some(7), Some(21)).await);
     }
 }

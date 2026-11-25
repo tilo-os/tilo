@@ -179,11 +179,7 @@ fn page_action() -> ExportedAction {
 /// workspace's actions through the dispatch as any app does, and puts in `named` the provider the
 /// listing names the window under: what a caller names the window by. The connection stays for as long as
 /// the session serves it, as an open window's does.
-fn browser(
-    app_wire: &Path,
-    (workspace, document): (&str, &str),
-    named: &Named,
-) {
+fn browser(app_wire: &Path, (workspace, document): (&str, &str), named: &Named) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -205,7 +201,8 @@ fn browser(
             cluster_id: workspace.into(),
             document_id: document.into(),
         };
-        let window = crate::common::held::opened(&client, &route.channel_key()).await
+        let window = crate::common::held::opened(&client, &route.channel_key())
+            .await
             .expect("the Browser the session started joins where its window opens");
         window
             .publish_actions(&[page_action()])

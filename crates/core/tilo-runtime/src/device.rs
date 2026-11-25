@@ -26,13 +26,15 @@ mod accounts;
 mod agent_tools;
 #[cfg(test)]
 mod app_listing_tests;
-/// The project checks this device approved: its work, kept as its jobs.
-#[cfg(unix)]
+/// The project checks this device approved: its work, kept as its jobs. A check's commands are
+/// ush's own, which a phone's app carries none of.
+#[cfg(all(unix, not(target_os = "android")))]
 pub(crate) mod approved_checks;
 mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
 mod commits;
+mod compiled;
 mod content;
 mod dispatch;
 #[cfg(target_os = "linux")]
@@ -111,6 +113,7 @@ pub(crate) mod vault_release;
 pub mod wake;
 pub mod wifi;
 mod window_follow;
+pub use window_follow::provide_window_steps;
 mod window_notes;
 pub mod workspaces;
 

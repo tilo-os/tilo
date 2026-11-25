@@ -100,9 +100,23 @@ command-line tools.
 | `versionCode` | `MAJOR × 1 000 000 + MINOR × 1 000 + PATCH` from the version; each part below 1000 |
 | Icon | `icon.png` in the app directory, else a generated coloured disc |
 | Permissions | `POST_NOTIFICATIONS` always (the notification service asks at runtime); `INTERNET` and `ACCESS_NETWORK_STATE` unless `[net] mode = "off"`; the `location`, `camera` and `microphone` portals map to `ACCESS_COARSE_LOCATION` + `ACCESS_FINE_LOCATION`, `CAMERA` and `RECORD_AUDIO`, unless their policy is `deny` |
+| Pushes | only for an app whose `Cargo.toml` sets `[package.metadata.tilo-app] unified-push = true`: the manifest declares `so.tilo.android.TiloPush`, the receiver a UnifiedPush distributor reaches, and the `so.tilo.unified-push` meta-data the activity reads to register with that distributor |
 
 The APK requires API 29 and Vulkan 1.1, targets API 36, and packs the
 toolkit's font catalog into `assets/tilo/fonts`.
+
+## Pushes
+
+An app that sets `unified-push = true` takes pushes from the UnifiedPush distributor its person
+installed. They arrive while its app is closed: the distributor registers the app and hands each
+message to `so.tilo.android.TiloPush`, which loads the app's library and calls
+`Java_so_tilo_android_TiloPush_nativePush`. Rust opens the message with a P-256 key and an auth
+secret the app keeps in its own files (RFC 8291, `aes128gcm`) and answers the notification's tag,
+title and body, which the receiver posts like any other. A message says nothing of what it is
+about: a tap opens the app, whose own reading of what the person was told shows the same
+notification with its buttons. `TiloPush` implements the connector protocol's few broadcasts
+(`REGISTER`, `REGISTRATION`, `MESSAGE`, `UNREGISTERED`) itself, so the APK carries no
+distributor library.
 
 ## Signing
 

@@ -15,14 +15,13 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::Workspaces;
-use super::super::fixtures::admit_view_reader;
 
 /// Another device of the person whose root (`[1; 32]`) certified the
 /// fixture's governor `cert`, admitted to `workspace`.
 pub async fn member_device(
     workspaces: &Workspaces,
     workspace: &str,
-    (key, cert): (&SigningKey, &DeviceCert),
+    cert: &DeviceCert,
     seed: u8,
 ) -> (SigningKey, DeviceCert) {
     let member_key = SigningKey::from_bytes(&[seed; 32]);
@@ -30,7 +29,10 @@ pub async fn member_device(
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(workspaces, workspace, key, &member).await;
+    workspaces
+        .enter(workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
     (member_key, member)
 }
 

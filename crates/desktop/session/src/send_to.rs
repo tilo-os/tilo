@@ -24,6 +24,7 @@ use tilo_desktop_search::Target;
 use tilo_desktop_search::model::InvokeTarget;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer};
+use tilolang_tilo::runtime::blob::FileValue;
 use ui::floating_surface::{Recipient, RecipientKind};
 
 use crate::i18n::t;
@@ -301,7 +302,7 @@ impl Shared {
     /// id is carried as the record it is, and the send goes as one action, for Chat to find whom
     /// it names. A send is settled once Chat answered it: its caller is told whether the message
     /// landed, and a send of the person's own that did not is told them, with why.
-    pub(crate) fn deliver_sends(&self) {
+    pub(crate) fn deliver_sends(&self, content: Option<&crate::record_content::RecordContent>) {
         let waiting = std::mem::take(&mut *self.sends.waiting.borrow_mut());
         for sending in waiting {
             let workspace = sending
@@ -325,7 +326,7 @@ impl Shared {
                 None => self.send_to(
                     (&workspace, number),
                     &sending.to,
-                    &attached,
+                    (&attached, content),
                     &sending.text,
                     sending.asked,
                 ),
@@ -518,7 +519,10 @@ impl Shared {
         &self,
         (workspace, number): (&str, u64),
         to: &[Recipient],
-        attached: &[tilo_reference::Attached],
+        (attached, content): (
+            &[tilo_reference::Attached],
+            Option<&crate::record_content::RecordContent>,
+        ),
         text: &str,
         asked: Option<u64>,
     ) -> Result<(usize, bool), String> {
@@ -530,16 +534,20 @@ impl Shared {
         {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(attached))?;
-                let targets = send_targets(&workspace, &resolved, attached, text)?;
+                let files = self.files_kept(&workspace, attached, content)?;
+                let targets = send_targets(&workspace, &resolved, (attached, &files), text)?;
                 (workspace, targets, true)
             }
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
-            Addressed::Report(destination) => (
-                destination.workspace.clone(),
-                vec![report_target(&destination, attached, text)?],
-                false,
-            ),
+            Addressed::Report(destination) => {
+                let files = self.files_kept(&destination.workspace, attached, content)?;
+                (
+                    destination.workspace.clone(),
+                    vec![report_target(&destination, (attached, &files), text)?],
+                    false,
+                )
+            }
         };
         let sent = targets.len();
         for target in targets {
@@ -582,6 +590,33 @@ impl Shared {
                 .map_err(|error| error.to_string())?;
         }
         Ok((sent, message))
+    }
+
+    /// The files a message carries, kept in `workspace`'s content store where it goes, as the files
+    /// Chat's actions take: the ones the session handed the box ([`crate::carried`]), which leave
+    /// the device only now that the person sent them.
+    ///
+    /// # Errors
+    /// A file is none the session handed a box, or it could not be kept there.
+    fn files_kept(
+        &self,
+        workspace: &str,
+        attached: &[tilo_reference::Attached],
+        content: Option<&crate::record_content::RecordContent>,
+    ) -> Result<Vec<tilolang_tilo::runtime::blob::FileValue>, String> {
+        let keep = |path: &std::path::Path| {
+            content
+                .ok_or_else(|| "this session keeps no content to send a file with".to_owned())?
+                .keep_file_under(
+                    workspace,
+                    tilo_broker_core::services::CONTENT_PUT_SCOPE,
+                    path,
+                )
+        };
+        attached
+            .iter()
+            .filter_map(|file| self.box_files.kept(file, &keep))
+            .collect()
     }
 
     /// Who a message goes to, as the names a box holds: an agent named as a
@@ -766,24 +801,62 @@ fn addressed(
 
 /// The one action a report is: Chat's `report` in the workspace that keeps reports, saying what
 /// the person wrote and referring to what the window picked, as any message does
-/// ([`message_body`]) — nothing else, and no window opening over the one reported.
+/// ([`message_body`]), with the files it carries (`files`, kept there already): its recording, the
+/// first video, which the report's row offers to replay, and the rest beside it. Nothing else, and
+/// no window opening over the one reported.
 ///
 /// # Errors
-/// It carries an image, a video or a file.
+/// A file could not be said as Chat takes it.
 fn report_target(
     destination: &crate::feedback::Destination,
-    attached: &[tilo_reference::Attached],
+    (attached, files): (&[tilo_reference::Attached], &[FileValue]),
     text: &str,
 ) -> Result<Target, String> {
-    Ok(Target::Invoke(Box::new(
-        InvokeTarget::action(
-            CHAT,
-            &destination.workspace,
-            tilo_app_id::chat::CONVERSATIONS,
-            tilo_app_id::chat::REPORT_PROBLEM,
-        )
-        .with_argument("body", message_body(text, attached)?),
-    )))
+    let recording = files
+        .iter()
+        .position(|file| file.media.starts_with("video/"));
+    let mut target = InvokeTarget::action(
+        CHAT,
+        &destination.workspace,
+        tilo_app_id::chat::CONVERSATIONS,
+        tilo_app_id::chat::REPORT_PROBLEM,
+    )
+    .with_argument("body", message_body(text, attached)?);
+    if let Some(at) = recording {
+        target = target.with_argument("recording", file_json(&files[at])?);
+    }
+    let rest: Vec<FileValue> = files
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| Some(*at) != recording)
+        .map(|(_, file)| file.clone())
+        .collect();
+    if !rest.is_empty() {
+        target = target.with_argument("attachments", files_json(&rest)?);
+    }
+    Ok(Target::Invoke(Box::new(target)))
+}
+
+/// `file` as an action's argument takes it, as any caller hands an app's action API a file
+/// ([`to_argument`](tilolang_tilo::runtime::value::to_argument)).
+///
+/// # Errors
+/// The runtime could not say it.
+fn file_json(file: &FileValue) -> Result<Value, String> {
+    use tilolang_tilo::runtime::value::{Value as Tl, to_argument};
+    to_argument(&Tl::File(std::rc::Rc::new(file.clone())))
+}
+
+/// `files` as a `List<File>` argument takes them: an array of the files.
+///
+/// # Errors
+/// The runtime could not say them.
+fn files_json(files: &[FileValue]) -> Result<Value, String> {
+    files
+        .iter()
+        .map(file_json)
+        .collect::<Result<_, _>>()
+        .map(Value::Array)
 }
 
 /// The actions a send is, one for each conversation it goes to: Chat's `write_to` for a person
@@ -791,15 +864,22 @@ fn report_target(
 /// conversation named. Each carries the message as rich text: its words, then a reference to each
 /// thing it carries and the words it quotes ([`message_body`]).
 ///
+/// The files it carries (`files`, kept in the workspace already) go with each as its attachments.
+///
 /// # Errors
-/// What it carries holds a file, which a message refers to only once it is in the workspace.
+/// A file could not be said as Chat takes it.
 fn send_targets(
     workspace: &str,
     to: &[Recipient],
-    attached: &[tilo_reference::Attached],
+    (attached, files): (&[tilo_reference::Attached], &[FileValue]),
     text: &str,
 ) -> Result<Vec<Target>, String> {
     let body = message_body(text, attached)?;
+    let carried = if files.is_empty() {
+        None
+    } else {
+        Some(files_json(files)?)
+    };
     to.iter()
         .map(|recipient| {
             let target = match recipient.kind {
@@ -827,6 +907,10 @@ fn send_targets(
                     return Err(format!("{} is no conversation", recipient.name));
                 }
             };
+            let target = match &carried {
+                Some(files) => target.with_argument("attachments", files.clone()),
+                None => target,
+            };
             Ok(Target::Invoke(Box::new(target)))
         })
         .collect()
@@ -834,15 +918,20 @@ fn send_targets(
 
 /// What a message says, as Chat's rich text takes it: the words, then each thing it carries as a
 /// reference to it and each quote in its own words, referring to where it was quoted from. Plain
-/// words travel as the text they are.
+/// words travel as the text they are. A file is carried as itself, beside the words
+/// ([`Shared::files_kept`]), never referred to in them.
 ///
 /// # Errors
-/// It carries an image, a video or a file.
+/// The runtime could not say the rich text.
 fn message_body(text: &str, attached: &[tilo_reference::Attached]) -> Result<Value, String> {
     use tilo_reference::{Attached, Embed};
     use tilolang_tilo::runtime::rich::RichValue;
     let mut body = RichValue::from_text(text);
-    for carried in attached {
+    let referred: Vec<&Attached> = attached
+        .iter()
+        .filter(|carried| carried.blob().is_none())
+        .collect();
+    for carried in referred.iter().copied() {
         let separator = if body.is_empty() { "" } else { " " };
         match carried {
             Attached::Resource { at, label, .. } => {
@@ -856,16 +945,10 @@ fn message_body(text: &str, attached: &[tilo_reference::Attached]) -> Result<Val
                     body.push_reference(&from.reference.label, &Embed::Resource(from.clone()));
                 }
             }
-            Attached::Image { name, .. }
-            | Attached::Video { name, .. }
-            | Attached::File { name, .. } => {
-                return Err(format!(
-                    "{name} is not in the workspace yet: add it to Files, then send it from there"
-                ));
-            }
+            Attached::Image { .. } | Attached::Video { .. } | Attached::File { .. } => {}
         }
     }
-    if attached.is_empty() {
+    if referred.is_empty() {
         return Ok(Value::String(text.to_owned()));
     }
     tilolang_tilo::runtime::value::to_json(&tilolang_tilo::runtime::value::Value::Rich(body))
@@ -962,7 +1045,7 @@ mod tests {
             let targets = send_targets(
                 "ws",
                 &[ada, helper, general],
-                &[],
+                (&[], &[]),
                 "look",
             )
             .expect("a send builds");
@@ -1009,12 +1092,16 @@ mod tests {
             let rich = body.get("rich").expect("rich text, since it refers to something");
             assert!(rich.to_string().contains("issue 42"), "{rich}");
             assert!(rich.to_string().contains("so.tilo.tasks"), "{rich}");
+            // A file goes as itself beside the words, never as a reference in them.
             let file = Attached::File {
                 name: "notes.pdf".into(),
                 blob: "b".into(),
                 size: 1,
             };
-            assert!(message_body("look", &[file]).is_err(), "a file is refused, saying why");
+            assert_eq!(
+                message_body("look", &[file]).expect("a body"),
+                Value::String("look".into())
+            );
         }
 
         phase a_new_agent_is_named_by_what_it_is_sent_never_the_message;
@@ -1061,7 +1148,7 @@ mod tests {
             };
             let Target::Invoke(target) = report_target(
                 &place,
-                std::slice::from_ref(&carried),
+                (std::slice::from_ref(&carried), &[]),
                 "the button does nothing",
             )
             .expect("a report targets") else {
@@ -1075,6 +1162,40 @@ mod tests {
             assert!(
                 body.contains("the button does nothing") && body.contains("issue 42"),
                 "the words and what the window picked go with the report: {body}"
+            );
+
+            assert!(
+                target.arguments.get("recording").is_none(),
+                "a report the person sent without a recording claims none"
+            );
+
+            // The files a report carries go with it as the files Chat takes: its recording, the
+            // video, which its row replays, and the picture of the window beside it.
+            let recording = FileValue::new("Recording.mp4", "video/mp4", 4096, "ab".repeat(32));
+            let picture = FileValue::new("Screenshot.png", "image/png", 512, "cd".repeat(32));
+            let Target::Invoke(target) = report_target(
+                &place,
+                (std::slice::from_ref(&carried), &[picture.clone(), recording.clone()]),
+                "the button does nothing",
+            )
+            .expect("a report targets") else {
+                panic!("a report invokes Chat");
+            };
+            let said = |file: &FileValue| {
+                tilolang_tilo::runtime::value::to_argument(
+                    &tilolang_tilo::runtime::value::Value::File(std::rc::Rc::new(file.clone())),
+                )
+                .expect("a file is an argument")
+            };
+            assert_eq!(
+                target.arguments["recording"],
+                said(&recording),
+                "the recording is the report's own"
+            );
+            assert_eq!(
+                target.arguments["attachments"],
+                Value::Array(vec![said(&picture)]),
+                "and the picture goes beside it"
             );
 
             // A report goes to the one place it goes, and a computer told nowhere sends none.

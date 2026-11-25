@@ -83,7 +83,8 @@ mod engine {
     /// Proves this engine loads and runs against the runtime it is built with:
     /// the sample diff the app opens first, read back as the app reads it.
     pub fn self_check() -> Result<String, String> {
-        let answer = diffmerge_engine::DiffmergeEngine::new().call("sample", r#"{"kind":"diff"}"#)?;
+        let answer =
+            diffmerge_engine::DiffmergeEngine::new().call("sample", r#"{"kind":"diff"}"#)?;
         if !answer.starts_with('{') {
             return Err(format!("the check's answer is no object: {answer}"));
         }

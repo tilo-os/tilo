@@ -148,7 +148,9 @@ impl TicketedAgentKeys {
                 )
                 .ok()
             })
-            .is_some_and(|cert| workspaces.blocked_keys().revokes(&cert));
+            .is_some_and(|cert| {
+                workspaces.revocations().refuses(&cert) || workspaces.blocked_keys().revokes(&cert)
+            });
         if revoked {
             return;
         }
@@ -265,10 +267,13 @@ impl AgentKeys for TicketedAgentKeys {
             .workspaces
             .upgrade()
             .ok_or("this device's workspaces stopped")?;
+        // The keys here are other people's agents': their roots' revocations reach this device
+        // as the workspace announces them, beside what its own person's devices record holds.
+        let announced = workspaces.revocations();
         let keys = workspaces.blocked_keys();
-        let entry = keys
-            .revocations()
+        let entry = announced
             .iter()
+            .chain(keys.revocations().iter())
             .find(|entry| {
                 entry.user_public_key == *person && entry.revoked_device_public_key == *key
             })
@@ -417,7 +422,9 @@ fn granted(
 fn holds(cert: &DeviceCert, workspaces: &crate::workspaces::Workspaces) -> Result<(), String> {
     tilo_user_identity::verify_device_cert_at(cert, tilo_clock::unix_now_ns())
         .map_err(|error| format!("the certificate of the key does not hold: {error}"))?;
-    if workspaces.blocked_keys().revokes(cert) {
+    // The key's own person's devices record, and the revocations the workspace announces: a
+    // member's root revokes the key it approved for its agent on its own devices.
+    if workspaces.revocations().refuses(cert) || workspaces.blocked_keys().revokes(cert) {
         return Err("the agent's person revoked the key".to_owned());
     }
     Ok(())

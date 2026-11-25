@@ -446,7 +446,7 @@ mod display_name_tests {
             .unwrap();
             assert!(
                 peer.governance_mut()
-                    .admit_invited_member(&redemption, &authority_key, now)
+                    .admit_invited_member(&redemption, &guest_key, now)
                     .unwrap()
             );
             let member = peer
@@ -533,7 +533,7 @@ mod display_name_tests {
                 .unwrap();
                 assert!(
                     peer.governance_mut()
-                        .admit_invited_member(&redemption, &authority_key, now)
+                        .admit_invited_member(&redemption, key, now)
                         .unwrap()
                 );
             };
@@ -653,7 +653,7 @@ mod retention_tests {
             let admitted = redemption(&peer, &authority, 75, &guest, now_ns);
             assert!(
                 peer.governance_mut()
-                    .admit_invited_member(&admitted, &authority, now)
+                    .admit_invited_member(&admitted, &guest.0, now)
                     .unwrap()
             );
             let device = guest.1.device_public_key;
@@ -703,7 +703,7 @@ mod retention_tests {
             for redemption in &redemptions {
                 assert!(
                     peer.governance_mut()
-                        .admit_invited_member(redemption, &authority, now)
+                        .admit_invited_member(redemption, &guest.0, now)
                         .unwrap()
                 );
             }
@@ -751,7 +751,7 @@ mod retention_tests {
             assert!(
                 !peer
                     .governance_mut()
-                    .admit_invited_member(pruned, &authority, now)
+                    .admit_invited_member(pruned, &guest.0, now)
                     .unwrap(),
                 "replaying a pruned redemption is already applied, not a new admission"
             );
@@ -764,7 +764,7 @@ mod retention_tests {
             assert_eq!(replay.join().invite_id(), invite(pruned));
             assert!(
                 peer.governance_mut()
-                    .admit_invited_member(&replay, &authority, now)
+                    .admit_invited_member(&replay, &other.0, now)
                     .unwrap_err()
                     .contains("already redeemed"),
                 "a pruned invitation stays spent for every other device"

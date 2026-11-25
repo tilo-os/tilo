@@ -21,13 +21,13 @@ fn fixture(
         workspace: uuid::Uuid::new_v4().to_string(),
         host: journal.host(),
         owner: InvocationOwner::Local {
-            actor: tilo_actions::MemberId::person("person"),
+            actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("person")),
         },
         invocation: tilo_actions::InvocationId::new(),
     };
     let context = tilo_actions::ActionContext::default();
     let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,
-        "context":context,"actor":{"person":"person"}});
+        "context":context,"actor":{"member":{"person":"person"}}});
     assert!(journal.admit(key.clone(), intent, 1).unwrap());
     let update = InvocationUpdate::Succeeded {
         invocation: key.invocation,
@@ -35,7 +35,7 @@ fn fixture(
     };
     let mut receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         key.invocation,
-        &tilo_actions::MemberId::person("person"),
+        &tilo_actions::MemberId::person("person").into(),
         context,
         tilo_actions::EffectReceiptStatus::Succeeded,
         tilo_clock::unix_now_i64(),

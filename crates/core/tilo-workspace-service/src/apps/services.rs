@@ -88,7 +88,7 @@ pub type WorkspaceMembershipFuture =
 /// `invocation` and has checked the change against what `actor` is offered.
 pub struct ShortcutLibraryRequest {
     pub workspace: String,
-    pub actor: tilo_action_policy::MemberId,
+    pub actor: tilo_action_policy::Actor,
     /// The person an agent `actor` acts for, by their root, hex: what the agent saves is
     /// theirs, signed with the agent's own key. `None` for a person saving for themselves.
     pub acting_for: Option<String>,
@@ -319,7 +319,7 @@ pub struct FileClipboardContext {
     pub(crate) app_id: String,
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
-    pub(crate) owner: tilo_action_policy::MemberId,
+    pub(crate) owner: tilo_action_policy::Actor,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
@@ -331,7 +331,7 @@ impl FileClipboardContext {
     #[must_use]
     pub fn seat_forwarded(
         (peer, window, app_id): (u64, String, String),
-        (workspace, owner): (String, tilo_action_policy::MemberId),
+        (workspace, owner): (String, tilo_action_policy::Actor),
         selected: std::collections::HashMap<u32, std::fs::File>,
     ) -> Self {
         Self {
@@ -370,7 +370,7 @@ impl FileClipboardContext {
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
-    pub fn owner(&self) -> &tilo_action_policy::MemberId {
+    pub fn owner(&self) -> &tilo_action_policy::Actor {
         &self.owner
     }
     /// Recheck the exact caller against live ownership and workspace policy.
@@ -665,8 +665,6 @@ pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
 #[derive(Clone, Default)]
 pub struct ProcessServices {
-    /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
-    pub approved_checks: Option<Arc<dyn crate::apps::collab_app_broker::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the host can carry it.
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
@@ -759,7 +757,6 @@ impl ProcessServices {
     /// The names of these services, in the order the struct declares them: a field added
     /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const NAMES: &[&str] = &[
-        "approved_checks",
         "committed_documents",
         "native_media",
         "audio_output",

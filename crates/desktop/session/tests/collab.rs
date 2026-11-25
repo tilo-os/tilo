@@ -740,37 +740,58 @@ fn ada_here_on_two_devices(sync: &Client) {
     );
 }
 
-/// What the card says of Ada: her own name for its title, the person's root key for its ID, and
-/// each of her devices with how it said it was, in the roster's place rather than beside it.
-fn assert_ada_card(labels: &[String]) {
+/// What the card says of Ada: her name in its head, the person's root key for its ID, and each of
+/// her devices with how it said it was, in who is here's place rather than beside it.
+fn assert_ada_card(session: &Session) {
+    let labels = session.accessible_labels();
     assert!(
-        labels.iter().any(|label| label == "Ada’s profile"),
+        session.shell_says("Ada"),
         "the card is the person's: {labels:?}"
     );
     assert!(
-        labels.iter().any(|label| label == "Person ID"),
+        session.shell_says("Person ID"),
         "the card's ID row: {labels:?}"
     );
     assert!(
-        labels
-            .iter()
-            .any(|label| label == &tilo_session_core::desktop::profile::short_key(&person(0xaa))),
+        session.shell_says(&tilo_session_core::desktop::profile::short_key(&person(
+            0xaa
+        ))),
         "the ID is the person's root key: {labels:?}"
     );
     for (device, presence) in [("Framework 16", "Available"), ("ThinkPad", "Focusing")] {
         assert!(
-            labels.iter().any(|label| label == device),
+            session.shell_says(device),
             "each device as it calls itself: {labels:?}"
         );
         assert!(
-            labels.iter().any(|label| label == presence),
+            session.shell_says(presence),
             "and how it said it was: {labels:?}"
         );
     }
     assert!(
-        !labels.iter().any(|label| label == "People"),
+        !session.shell_says("People"),
         "the card stands in the roster's place: the roster is gone, {labels:?}"
     );
+}
+
+/// The node `label` names, as the screen reader an assistive client is reads it, and the place
+/// of the window the shell exports it in.
+fn a11y_node(session: &Session, label: &str) -> (usize, ui::accesskit::NodeId) {
+    let windows = session.a11y_windows();
+    for (place, _, tree) in &windows {
+        if let Some((node, _)) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+        {
+            return (*place, *node);
+        }
+    }
+    let said: Vec<&str> = windows
+        .iter()
+        .flat_map(|(_, _, tree)| tree.nodes.iter().filter_map(|(_, node)| node.label()))
+        .collect();
+    panic!("no node named {label:?}; the shell says {said:?}")
 }
 
 /// A press on a person's face in the bar opens their card, and Message opens
@@ -786,9 +807,13 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
 #[test]
 fn message_pressed_by_name_leaves_the_roster_too() {
     message_from_the_card(|session, _| {
-        session
-            .press_action("Message", ui::window_targets::TargetAction::Activate)
-            .expect("the card's Message is pressed");
+        // Pressed through the window the shell exports, as a screen reader activates the control
+        // it reads.
+        let (place, message) = a11y_node(session, "Message");
+        assert!(
+            session.a11y_perform(place, message, &ui::a11y::Action::Activate),
+            "the shell took the press its window offers"
+        );
         session.step(REFRESH).expect("a turn of the session");
     });
 }
@@ -815,43 +840,33 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     // Another person, at two of their devices, in the same workspace: their face stands in the bar,
     // under their name and never their machine's.
     ada_here_on_two_devices(&sync);
-    // The pointer comes up to the bar, as the person's does to press them: the bar draws who is
-    // here, and their face stands under it.
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
-        .expect("the pointer");
-    until(&mut session, "their face is in the bar", |session| {
-        control(session, &["Ada"]).is_some()
+    // The bar draws who is here, their face under their name and never their machine's.
+    wait_for(&mut session, "their face is in the bar", |session| {
+        session.shell_control("Ada").map(|_| ())
     });
     // Who is here stands open, listing the people here.
     press_faces(&mut session);
-    let labels = session.accessible_labels();
+    until(&mut session, "the roster lists who is here", |session| {
+        session.shell_says("People")
+    });
     assert!(
-        labels.iter().any(|label| label == "People"),
-        "the roster lists who is here: {labels:?}"
-    );
-    assert!(
-        control(&session, &["Framework 16"]).is_none(),
+        session.shell_control("Framework 16").is_none(),
         "the face names the person, never their machine: {:?}",
-        session.controls()
+        session.accessible_labels()
     );
 
     // A press on their face opens their card.
-    let face = control(&session, &["Ada"]).expect("the face the person has here");
-    press(&mut session, face);
-    until(&mut session, "the card opens", |session| {
-        control(session, &["profile-message", "Message"]).is_some()
+    press_named(&mut session, "Ada");
+    let message = wait_for(&mut session, "the card opens", |session| {
+        session.shell_control("Message")
     });
-    let message = control(&session, &["profile-message", "Message"]);
     assert!(
-        message.is_some(),
+        session.shell_control("Message").is_some(),
         "the card offers Message: {:?}",
-        session.controls()
+        session.accessible_labels()
     );
-    assert_ada_card(&session.accessible_labels());
+    assert_ada_card(&session);
     shot(&mut session, "people-card-message");
-    let message = message.expect("the card's Message");
 
     // Message hands Chat the conversation with them: the app's own `open-direct-conversation` on
     // the row their two root keys name.
@@ -882,14 +897,14 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     // conversation, where the keyboard goes.
     session.step(REFRESH).expect("a turn of the session");
     assert!(
-        control(&session, &["profile-message", "Message"]).is_none(),
+        session.shell_control("Message").is_none(),
         "the card closed: {:?}",
-        session.controls()
+        session.accessible_labels()
     );
-    let labels = session.accessible_labels();
     assert!(
-        !labels.iter().any(|label| label == "People"),
-        "the roster left with the card: {labels:?}"
+        !session.shell_says("People"),
+        "the roster left with the card: {:?}",
+        session.accessible_labels()
     );
 }
 
@@ -906,35 +921,34 @@ fn a_persons_card_offers_everyone_here() {
     let sync = Rc::new(Client::untethered(device(0xf0), mine));
     let mut session = session_over(&sync, None);
     ada_here_on_two_devices(&sync);
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
-        .expect("the pointer");
-    until(&mut session, "their face is in the bar", |session| {
-        control(session, &["Ada"]).is_some()
+    wait_for(&mut session, "their face is in the bar", |session| {
+        session.shell_control("Ada").map(|_| ())
     });
     press_faces(&mut session);
-    let face = control(&session, &["Ada"]).expect("the face the person has here");
-    press(&mut session, face);
-    until(&mut session, "the card opens", |session| {
-        control(session, &["profile-everyone-here", "Everyone here"]).is_some()
+    press_named(&mut session, "Ada");
+    wait_for(&mut session, "the card offers everyone here", |session| {
+        session.shell_control("Back to everyone")
     });
-    let everyone = control(&session, &["profile-everyone-here", "Everyone here"])
-        .expect("the card offers everyone here");
-    press(&mut session, everyone);
+    assert!(
+        session.shell_control("Back to everyone").is_some(),
+        "the card offers everyone here: {:?}",
+        session.accessible_labels()
+    );
+    press_named(&mut session, "Back to everyone");
     until(
         &mut session,
         "the roster stands in the card's place",
-        |session| control(session, &["People"]).is_some(),
-    );
-    let labels = session.accessible_labels();
-    assert!(
-        !labels.iter().any(|label| label == "Ada’s profile"),
-        "the card gave way to the roster: {labels:?}"
+        |session| session.shell_says("People"),
     );
     assert!(
-        labels.iter().any(|label| label == "Ada"),
-        "she is a row of everyone here: {labels:?}"
+        !session.shell_says("Who is here"),
+        "the card gave way to the roster: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.shell_says("Ada"),
+        "she is a row of everyone here: {:?}",
+        session.accessible_labels()
     );
 }
 
@@ -962,6 +976,8 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
     let mut session = Session::headless(
         Options {
             sync: Some(sync),
+            // The person at this device: the name they go by, never the account.
+            person: "Quinten".to_owned(),
             presentation,
             ..Options::default()
         },
@@ -972,35 +988,21 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
-    // The pointer comes up to the bar, as the person's does to press it.
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
-        .expect("the pointer");
-    for _ in 0..30 {
-        session.step(Duration::from_millis(16)).expect("step");
-    }
-    let mut avatar = None;
-    let mut named = None;
-    until(&mut session, "the bar shows whose it is", |session| {
-        let found = session
-            .controls()
+    // The bar draws whose it is: the name they gave, not the account they happen to log in with,
+    // and one face drawn in one colour.
+    let named = wait_for(&mut session, "the bar shows whose it is", |session| {
+        session
+            .accessible_labels()
             .into_iter()
-            .find(|control| control.name.ends_with("(you): your profile"));
-        named = found.as_ref().map(|control| control.name.clone());
-        avatar = found.map(|control| control.rect);
-        avatar.is_some()
+            .find(|label| label.ends_with(": open your card"))
     });
-    // The bar's face and the card's are one: the name they gave, not the account they happen to log
-    // in with, and one initial drawn in one colour.
     assert_eq!(
-        named.as_deref(),
-        Some("Quinten (you): your profile"),
+        named, "Quinten: open your card",
         "the bar names the person as they gave themselves"
     );
-    press(&mut session, avatar.expect("the bar's own avatar"));
+    press_named(&mut session, &named);
     until(&mut session, "your card opens", |session| {
-        control(session, &["profile-name", "Your name"]).is_some()
+        session.shell_control("Your name").is_some()
     });
     let labels = session.accessible_labels();
     for said in [
@@ -1030,9 +1032,9 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
     shot(&mut session, capture);
 
     assert!(
-        control(&session, &["profile-card", "Your profile"]).is_some(),
+        session.shell_says("Who is here"),
         "one card, the same surface another person's opens in: {:?}",
-        session.controls()
+        session.accessible_labels()
     );
 }
 
@@ -1550,6 +1552,7 @@ fn said_by_the_shell(session: &Session) -> Vec<String> {
                 .into_iter()
                 .flatten()
                 .map(str::to_owned)
+                .collect::<Vec<_>>()
         })
         .collect()
 }

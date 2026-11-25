@@ -64,7 +64,7 @@ tilo-workspace-emoji = { version = "0.1.0", path = "../../core/tilo-workspace-em
 
 [dev-dependencies]
 # The system's mention notices, read from a workspace holding tilolang rich text.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 # The fake broker a workspace's committed read is served from in the tests.
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }

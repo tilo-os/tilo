@@ -1496,6 +1496,64 @@ impl DirectSync {
         Ok(())
     }
 
+    /// Room for one content frame on the link to `asker`, waited for: what an
+    /// answer to `asker` is sent in ([`Self::send_content_in`]). Taken before
+    /// the answer is read, it lets the link decide how many answers are read at
+    /// once: as many as it has room for, so a fast link has more read ahead
+    /// and a slow one fewer. `None` when no link to `asker` carries content: an
+    /// answer would go nowhere, and the asker asks again on its next link.
+    pub async fn content_room(&self, asker: [u8; 32]) -> Option<ContentRoom> {
+        let link = self
+            .0
+            .content_links
+            .lock_recover()
+            .iter()
+            .find(|link| link.remote == asker)
+            .cloned()?;
+        let room = Arc::clone(&link.room).acquire_owned().await.ok()?;
+        Some(ContentRoom { link, room })
+    }
+
+    /// [`Self::send_content`] in `room`, taken on the link to its asker
+    /// ([`Self::content_room`]); a link the frame goes to besides is waited
+    /// for as `send_content` waits.
+    ///
+    /// # Errors
+    ///
+    /// `message` is no content frame.
+    pub async fn send_content_in(
+        &self,
+        room: ContentRoom,
+        message: NeighbourMsg,
+    ) -> Result<(), String> {
+        if !content_frame(&message) {
+            return Err(format!("{} is no content frame", message.kind()));
+        }
+        let authored = Authored {
+            from: self.device(),
+            message,
+            published: true,
+        };
+        let targets = self.content_targets(&authored, None);
+        if targets.is_empty() {
+            self.hold_content(authored, None);
+            return Ok(());
+        }
+        let mut room = Some(room);
+        for link in targets {
+            match room.take() {
+                Some(reserved) if Arc::ptr_eq(&reserved.link.room, &link.room) => {
+                    let _ = link.queue.send((authored.clone(), Some(reserved.room)));
+                }
+                other => {
+                    room = other;
+                    link.queue(authored.clone()).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Changes each time one of this device's links starts carrying content:
     /// an asker asks again then for what it is still gathering, since what a
     /// link that ended carried of its asks and their answers ended with it.
@@ -4410,6 +4468,12 @@ struct ContentLink {
     remote: [u8; 32],
     queue: tokio::sync::mpsc::UnboundedSender<Queued>,
     room: Arc<tokio::sync::Semaphore>,
+}
+
+/// Room for one content frame on one link ([`DirectSync::content_room`]).
+pub struct ContentRoom {
+    link: ContentLink,
+    room: tokio::sync::OwnedSemaphorePermit,
 }
 
 /// A content frame waiting for a link's stream, with the room it takes in the

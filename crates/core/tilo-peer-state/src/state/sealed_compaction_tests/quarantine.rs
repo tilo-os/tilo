@@ -247,7 +247,13 @@ fn refuses_writes(
     // Nothing written here while the record is set aside could be kept across a restart: a
     // local write to it is refused at once, and says why.
     let mut aside = Author(author.0.clone());
-    let early = write(restored, &f.other, &f.keys(), &aside.edit("value", "3"), now);
+    let early = write(
+        restored,
+        &f.other,
+        &f.keys(),
+        &aside.edit("value", "3"),
+        now,
+    );
     let refused = restored
         .admit_new_local_document(APP, RECORD, envelope_of(&early), now)
         .unwrap_err();
@@ -287,5 +293,8 @@ fn brings_it_back(
     let reopened = f.restore(&restored.durable().unwrap()).unwrap();
     assert!(reopened.quarantined().is_empty());
     assert_eq!(held(&reopened), kept);
-    assert_eq!(reopened.publication().sealed_history(APP, OTHER), other_kept);
+    assert_eq!(
+        reopened.publication().sealed_history(APP, OTHER),
+        other_kept
+    );
 }

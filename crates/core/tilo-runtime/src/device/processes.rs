@@ -317,7 +317,7 @@ pub struct Processes {
     /// The device's one wasm compiler: the cache of modules compiled ahead of time for this
     /// device, under the person's data directory. `None` when it cannot be made, and each
     /// module then runs on the interpreter in the process that gets it.
-    compiler: OnceLock<Option<tilo_wasm_aot::Cache>>,
+    compiler: OnceLock<Option<Arc<tilo_wasm_aot::Cache>>>,
 }
 
 impl Processes {
@@ -370,21 +370,8 @@ impl Processes {
     /// handed to a process.
     fn compiler(&self) -> Option<&tilo_wasm_aot::Cache> {
         self.compiler
-            .get_or_init(|| {
-                let dir = self.data_home.join("tilolang-compiled");
-                match tilo_wasm_aot::Cache::at(dir) {
-                    Ok(cache) => Some(cache),
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            "this device compiles no tilolang module: every module runs on the \
-                             interpreter in its process"
-                        );
-                        None
-                    }
-                }
-            })
-            .as_ref()
+            .get_or_init(|| super::compiled::compiler_in(&self.data_home))
+            .as_deref()
     }
 
     /// Fill in the machine code the process `module` runs: each part compiled here, for this

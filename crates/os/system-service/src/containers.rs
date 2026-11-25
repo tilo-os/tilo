@@ -17,8 +17,8 @@ use tilo_system_resources::containers::{
     Named, PortMapping, Volume,
 };
 
-use crate::i18n::name;
 use crate::device::ContainerChange;
+use crate::i18n::name;
 
 const PROBE_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,10 +37,11 @@ pub struct ContainersReading;
 /// The `containers` resource reading `containers`.
 #[must_use]
 pub fn resource(containers: &Containers) -> ResourceSpec {
-    let mut resource = offer::<ContainerAction>(tilo_resource::typed_resource::<ContainersReading>(
-        CONTAINERS,
-        name("so.tilo.system.containers", "Containers"),
-    ));
+    let mut resource =
+        offer::<ContainerAction>(tilo_resource::typed_resource::<ContainersReading>(
+            CONTAINERS,
+            name("so.tilo.system.containers", "Containers"),
+        ));
     if !containers.serving {
         for action in [
             "start",
@@ -484,10 +485,8 @@ fn list_volumes() -> Vec<Volume> {
     let mut volumes: Vec<Volume> = entries
         .into_iter()
         .map(|entry| Volume {
-            in_use_by: u32::try_from(
-                usage.iter().filter(|name| **name == entry.name).count(),
-            )
-            .unwrap_or(u32::MAX),
+            in_use_by: u32::try_from(usage.iter().filter(|name| **name == entry.name).count())
+                .unwrap_or(u32::MAX),
             name: entry.name,
             driver: if entry.driver.is_empty() {
                 "local".to_owned()
@@ -578,7 +577,10 @@ fn inspect_all(ids: &[String]) -> Vec<Inspected> {
     entries
         .iter()
         .filter_map(|root| {
-            let id = root.get("Id").and_then(serde_json::Value::as_str)?.to_owned();
+            let id = root
+                .get("Id")
+                .and_then(serde_json::Value::as_str)?
+                .to_owned();
             let mounts = root
                 .get("Mounts")
                 .and_then(serde_json::Value::as_array)

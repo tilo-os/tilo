@@ -6,7 +6,10 @@
 //! and keeps the invocation's record; the provider only carries the call out. Most providers need
 //! nothing beyond the call. A provider whose call makes calls of its own (an agent session's
 //! programs) makes them through [`Admitted::through`], so its session admits each in turn; one
-//! whose contract says it may be cancelled stops when [`Admitted::stop`] is set.
+//! whose contract says it may be cancelled stops when [`Admitted::stop`] is set. A call an app
+//! makes as the work of an invocation it was delivered names that invocation
+//! ([`Admitted::serving`]), as the connection the call arrived on was delivered it, and a call
+//! that runs a while says how far it got ([`Admitted::progress`]).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -16,10 +19,16 @@ use super::{
     InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
 use crate::api::{ActionDescriptor, PlacedAction};
-use crate::{ActionAddress, ActionFailure, ActionOutput, InvocationId};
+use crate::{
+    ActionAddress, ActionContract, ActionFailure, ActionOutput, InvocationId, OperationKind,
+    ResourceSemanticIdentity,
+};
 
 /// How a call a registered provider carried out ended: its output, or why it failed.
 pub type Outcome = Result<ActionOutput, Box<ActionFailure>>;
+
+/// Says how far a call got, for whoever follows it: a phase, and how much of how much is done.
+pub type ReportsProgress = Arc<dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync>;
 
 /// What the dispatch knows of a call it admitted for a provider registered on the device.
 #[derive(Clone)]
@@ -30,6 +39,12 @@ pub struct Admitted {
     /// Set when the caller cancels a call whose contract says it may be
     /// ([`crate::ExecutionMode::cancellable`]): the provider stops, and the call ends cancelled.
     pub stop: Arc<AtomicBool>,
+    /// The invocation the call is the work of, when an app makes it for one it was delivered
+    /// on the connection the call arrived on: filled by the dispatch from that connection, never
+    /// from the request.
+    pub serving: Option<Arc<dyn Serving>>,
+    /// How far the call got, for whoever follows it: a phase, and how much of how much is done.
+    pub progress: ReportsProgress,
 }
 
 impl Default for Admitted {
@@ -37,8 +52,45 @@ impl Default for Admitted {
         Self {
             through: None,
             stop: Arc::new(AtomicBool::new(false)),
+            serving: None,
+            progress: Arc::new(|_, _, _| {}),
         }
     }
+}
+
+/// An invocation the dispatch delivered to an app's connection and still runs, as a call that
+/// connection makes for it reaches a provider: the app, record and resource it was asked of and
+/// what it was asked, all as the dispatch delivered it.
+pub trait Serving: Send + Sync {
+    /// Its id.
+    fn invocation(&self) -> InvocationId;
+    /// The app it was delivered to, by package id.
+    fn app(&self) -> &str;
+    /// The workspace of its record.
+    fn workspace(&self) -> &str;
+    /// The record whose resource it is an action of.
+    fn record(&self) -> &str;
+    /// The resource and action it was asked of.
+    fn address(&self) -> &ActionAddress;
+    /// What the action declared it is.
+    fn kind(&self) -> OperationKind;
+    /// The contract the action was published with.
+    fn contract(&self) -> &ActionContract;
+    /// What it was asked with, as delivered.
+    fn argument(&self) -> Option<&str>;
+    /// The identity the resource was published with.
+    ///
+    /// # Errors
+    ///
+    /// The resource was published with none.
+    fn resource_identity(&self) -> Result<&ResourceSemanticIdentity, String>;
+    /// Whether it still runs as delivered: its caller still may, its app still holds it, the
+    /// resource is still published as it was, and nobody cancelled it.
+    ///
+    /// # Errors
+    ///
+    /// What no longer holds.
+    fn recheck(&self) -> Result<(), String>;
 }
 
 /// A provider that only the device's dispatch calls, once it admitted the call: what it offers,

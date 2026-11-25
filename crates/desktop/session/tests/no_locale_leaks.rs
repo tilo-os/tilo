@@ -93,15 +93,15 @@ fn windows() -> Vec<Window> {
         Window {
             name: "another device's window",
             source: catalogue!("/../device-surfaces/locales/en-US.ftl").into(),
-            german: Some((
-                "de-DE",
-                catalogue!("/../device-surfaces/locales/de-DE.ftl"),
-            )),
+            german: Some(("de-DE", catalogue!("/../device-surfaces/locales/de-DE.ftl"))),
         },
         Window {
             name: "Tasks",
             source: package_source("tasks").into(),
-            german: Some(("de-DE", catalogue!("/../../../apps/tl/tasks/locales/de-DE.ftl"))),
+            german: Some((
+                "de-DE",
+                catalogue!("/../../../apps/tl/tasks/locales/de-DE.ftl"),
+            )),
         },
         Window {
             name: "Settings",

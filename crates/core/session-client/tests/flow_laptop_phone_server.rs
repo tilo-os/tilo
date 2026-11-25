@@ -351,8 +351,7 @@ async fn flow_phone_joins_like_any_other_device() {
     };
     let runtime = tokio::runtime::Handle::current();
     let workspaces = f.host.server.workspaces().unwrap().clone();
-    let laptop =
-        block_in_place(|| phone::Issuing::start(&runtime, &f.root, entry, workspaces));
+    let laptop = block_in_place(|| phone::Issuing::start(&runtime, &f.root, entry, workspaces));
     let mut device = block_in_place(|| tilo_runtime::in_process::Device::start(&phone::profile()))
         .expect("the phone's daemon starts");
     let before = block_in_place(|| phone::shown(&device));

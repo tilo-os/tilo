@@ -144,8 +144,7 @@ async fn lounge_on(
         workspaces.bound_link_readers(capacity);
     }
     let created = workspaces.create("Lounge").await.unwrap();
-    let (member_key, member_cert) =
-        member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
+    let (member_key, member_cert) = member_device(&workspaces, &created.workspace, &cert, 3).await;
     workspaces
         .author_workspace_document(&created.workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
@@ -920,7 +919,7 @@ async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
-    let (member_key, _) = member_device(&workspaces, &created.workspace, (&key, &cert), 3).await;
+    let (member_key, _) = member_device(&workspaces, &created.workspace, &cert, 3).await;
 
     let host_link = workspaces
         .direct()
@@ -1036,7 +1035,7 @@ impl Peer {
         let (key, _) = member_device(
             &lounge.workspaces,
             &lounge.workspace,
-            (&lounge.governor_key, &lounge.governor),
+            &lounge.governor,
             seed,
         )
         .await;
@@ -1451,7 +1450,7 @@ async fn a_device_linking_later_holds_every_part_written_before_the_link_kept_it
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
-    let (member_key, member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, member_cert) = member_device(&workspaces, &workspace, &cert, 3).await;
     workspaces
         .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
@@ -1564,7 +1563,7 @@ async fn a_page_reads_a_part_only_the_link_kept() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
-    let (member_key, _member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, _member_cert) = member_device(&workspaces, &workspace, &cert, 3).await;
     workspaces
         .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
@@ -1574,7 +1573,7 @@ async fn a_page_reads_a_part_only_the_link_kept() {
     let member =
         SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
     // A desktop's part behind the chain's head, kept by the link alone.
-    let (device_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 5).await;
+    let (device_key, _) = member_device(&workspaces, &workspace, &cert, 5).await;
     let older = neighbour_wire::document_part(RESOURCE, 0);
     let device = SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), device_key)
         .await
@@ -1624,7 +1623,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
     let (workspace, workspace_id) = (created.workspace, created.workspace_id);
-    let (member_key, _member_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (member_key, _member_cert) = member_device(&workspaces, &workspace, &cert, 3).await;
     workspaces
         .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
             doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())

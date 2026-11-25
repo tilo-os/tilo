@@ -1,10 +1,24 @@
 //! Native project checks selected by ID. Commands and execution bounds are host-only.
+//!
+//! An app's `run-approved-check` action runs one by calling the device's [`RUN`] on [`RESOURCE`]
+//! of [`PROVIDER`] as that action's work, naming only the check's id ([`ARGUMENT`]). The device
+//! reads which app, record and resource the check is for from the invocation its dispatch
+//! delivered to the app, never from the call.
 use serde::{Deserialize, Serialize};
 
-pub const MAX_REQUEST_BYTES: usize = 1024;
 pub const MAX_RECEIPT_BYTES: usize = 16384;
 pub const MAX_PREVIEW_BYTES: usize = 2048;
+/// The app action whose work an approved check is.
 pub const ACTION_ID: &str = "run-approved-check";
+/// The device's provider that runs approved checks.
+pub const PROVIDER: &str = "tilo.approved-checks";
+/// The resource its action is on.
+pub const RESOURCE: &str = "checks";
+/// Run the approved check `{check_id}` as the work of the app's `run-approved-check`: answers
+/// the [`Receipt`] of what the device observed.
+pub const RUN: &str = "run";
+/// The argument naming the check.
+pub const ARGUMENT: &str = "check_id";
 
 fn identifier(value: &str) -> bool {
     !value.is_empty()
@@ -26,39 +40,11 @@ fn invocation(value: &str) -> bool {
         && value != "00000000-0000-0000-0000-000000000000"
 }
 
-/// Inert correlation only; the broker must recover actual target ownership.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Request {
-    pub version: u8,
-    pub invocation: String,
-    pub check_id: String,
+/// Whether `value` is a check's id: what the device's setting names it by, never a command.
+#[must_use]
+pub fn is_check_id(value: &str) -> bool {
+    identifier(value)
 }
-impl Request {
-    /// Encode bounded correlation data, never execution authority.
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
-        if self.version != 1 || !invocation(&self.invocation) || !identifier(&self.check_id) {
-            return Err("invalid approved-check request".into());
-        }
-        let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        if bytes.len() > MAX_REQUEST_BYTES {
-            return Err("approved-check request too large".into());
-        }
-        Ok(bytes)
-    }
-    /// Decode the closed request vocabulary.
-    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_REQUEST_BYTES {
-            return Err("approved-check request too large".into());
-        }
-        let request: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        request.encode()?;
-        Ok(request)
-    }
-}
-
-/// Maximum encoded informational report, independent of execution output bounds.
-pub const MAX_REPORT_BYTES: usize = 2048;
 
 /// Closed reasons for disabling informational observation, never execution outcomes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -85,52 +71,6 @@ pub enum ReportObservation {
     Disabled {
         reason: EndpointRefusal,
     },
-}
-
-/// Inert observation bound to the original check invocation by the broker.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Report {
-    pub invocation: String,
-    pub check_id: String,
-    pub sequence: u64,
-    pub observation: ReportObservation,
-}
-impl Report {
-    /// Encode a bounded informational observation.
-    pub fn encode(&self) -> Result<Vec<u8>, String> {
-        if !invocation(&self.invocation) || !identifier(&self.check_id) || self.sequence == 0 {
-            return Err("invalid approved-check report correlation".into());
-        }
-        if let ReportObservation::Reported {
-            phase,
-            completed,
-            total,
-        } = &self.observation
-            && (phase.trim().is_empty()
-                || phase.len() > 512
-                || phase.chars().count() > 128
-                || phase.chars().any(char::is_control)
-                || matches!((completed, total), (Some(done), Some(limit)) if done > limit))
-        {
-            return Err("invalid approved-check reported phase".into());
-        }
-        let bytes = serde_json::to_vec(self).map_err(|error| error.to_string())?;
-        if bytes.len() > MAX_REPORT_BYTES {
-            return Err("approved-check report too large".into());
-        }
-        Ok(bytes)
-    }
-
-    /// Decode the closed informational vocabulary.
-    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() > MAX_REPORT_BYTES {
-            return Err("approved-check report too large".into());
-        }
-        let report: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        report.encode()?;
-        Ok(report)
-    }
 }
 
 /// Canonical resource identity resolved by the admitted project host.
@@ -243,131 +183,6 @@ impl Receipt {
     }
 }
 
-#[cfg(feature = "client")]
-impl crate::RecordHandle {
-    /// Execute one host-approved ID for this target's actual accepted action.
-    pub async fn approved_check(&self, request: &Request) -> Result<Receipt, crate::NotAvailable> {
-        let encoded = request.encode().map_err(crate::NotAvailable::Refused)?;
-        let reply = self.approved_check_command(encoded).await?;
-        let receipt = Receipt::decode(&reply).map_err(crate::NotAvailable::Refused)?;
-        if receipt.invocation != request.invocation || receipt.check_id != request.check_id {
-            return Err(crate::NotAvailable::Refused(
-                "approved-check response correlation changed".into(),
-            ));
-        }
-        Ok(receipt)
-    }
-}
-
-/// One result of a check's reported progress.
-#[cfg(feature = "client")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ReportedProgressUpdate {
-    Report(Report),
-    Receipt(Box<Receipt>),
-}
-
-/// A check's reported progress, then its receipt; this does not own an
-/// execution job.
-#[cfg(feature = "client")]
-pub struct ApprovedCheckReportedProgressStream {
-    feed: Option<crate::client::Feed>,
-    request: Request,
-    sequence: u64,
-    terminal: bool,
-    disabled: bool,
-}
-
-#[cfg(feature = "client")]
-fn report_error(error: impl Into<String>) -> crate::NotAvailable {
-    crate::NotAvailable::Refused(error.into())
-}
-
-#[cfg(feature = "client")]
-impl ApprovedCheckReportedProgressStream {
-    pub(crate) const fn new(feed: crate::client::Feed, request: Request) -> Self {
-        Self {
-            feed: Some(feed),
-            request,
-            sequence: 0,
-            terminal: false,
-            disabled: false,
-        }
-    }
-
-    /// Pull one bounded observation or the unchanged terminal receipt.
-    pub async fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
-        if self.terminal {
-            return Err(report_error("approved-check report endpoint is terminal"));
-        }
-        let progress = match &self.feed {
-            Some(feed) => match feed.event().await {
-                Ok(crate::wire::Event::ApprovedCheck(progress)) => Ok(progress),
-                Ok(other) => Err(report_error(format!(
-                    "the collaboration host delivered {other:?}"
-                ))),
-                Err(error) => Err(error),
-            },
-            None => Err(report_error("approved-check report endpoint is closed")),
-        };
-        self.accept(progress)
-    }
-
-    fn accept(
-        &mut self,
-        progress: Result<crate::wire::CheckProgress, crate::NotAvailable>,
-    ) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
-        let result = progress.and_then(|progress| self.check(progress));
-        if !matches!(result, Ok(ReportedProgressUpdate::Report(_))) {
-            self.terminal = true;
-            self.feed = None;
-        }
-        result
-    }
-
-    fn check(
-        &mut self,
-        progress: crate::wire::CheckProgress,
-    ) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
-        use crate::wire::CheckProgress;
-        let report = match progress {
-            CheckProgress::Failed(error) => {
-                if error.len() > MAX_REPORT_BYTES {
-                    return Err(report_error("approved-check report refusal too large"));
-                }
-                return Err(report_error(error));
-            }
-            CheckProgress::Receipt(receipt) => {
-                let receipt = Receipt::decode(&receipt).map_err(report_error)?;
-                if receipt.invocation != self.request.invocation
-                    || receipt.check_id != self.request.check_id
-                {
-                    return Err(report_error("approved-check response correlation changed"));
-                }
-                return Ok(ReportedProgressUpdate::Receipt(Box::new(receipt)));
-            }
-            CheckProgress::Report(report) => report,
-        };
-        let report = Report::decode(&report).map_err(report_error)?;
-        if report.invocation != self.request.invocation
-            || report.check_id != self.request.check_id
-            || report.sequence <= self.sequence
-        {
-            return Err(report_error(
-                "approved-check report correlation or sequence changed",
-            ));
-        }
-        if self.disabled {
-            return Err(report_error(
-                "approved-check reporting endpoint is disabled",
-            ));
-        }
-        self.disabled = matches!(report.observation, ReportObservation::Disabled { .. });
-        self.sequence = report.sequence;
-        Ok(ReportedProgressUpdate::Report(report))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,94 +224,15 @@ mod tests {
         }
     }
 
-    fn report(sequence: u64) -> Report {
-        Report {
-            invocation: ID.into(),
-            check_id: "regression".into(),
-            sequence,
-            observation: ReportObservation::Reported {
-                phase: "Routing".into(),
-                completed: Some(4),
-                total: Some(10),
-            },
-        }
-    }
-
     tilo_test_env::scenario! {
         fn approved_check_messages_are_closed_and_bounded;
 
-        phase approved_check_report_closed_vocabulary_and_bounds;
+        phase approved_check_ids_name_a_check_never_a_command;
         {
-            let value = report(1);
-            assert_eq!(Report::decode(&value.encode().unwrap()).unwrap(), value);
-            for phase in ["", " ", "line\nbreak", &"é".repeat(129)] {
-                let mut changed = value.clone();
-                changed.observation = ReportObservation::Reported {
-                    phase: phase.into(),
-                    completed: None,
-                    total: None,
-                };
-                assert!(changed.encode().is_err());
-            }
-            assert!(report(0).encode().is_err());
-            let mut bad = serde_json::to_value(&value).unwrap();
-            bad["authority"] = serde_json::json!(true);
-            assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
-            let mut bad = serde_json::to_value(&value).unwrap();
-            bad["observation"]["argv"] = serde_json::json!(["anything"]);
-            assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
-            bad["observation"] =
-                serde_json::json!({"kind":"reported", "phase":"Routing", "completed":11, "total":10});
-            assert!(Report::decode(&serde_json::to_vec(&bad).unwrap()).is_err());
-            assert!(Report::decode(&vec![b' '; MAX_REPORT_BYTES + 1]).is_err());
-            let disabled = Report {
-                observation: ReportObservation::Disabled {
-                    reason: EndpointRefusal::Backpressure,
-                },
-                ..value
-            };
-            assert_eq!(
-                Report::decode(&disabled.encode().unwrap()).unwrap(),
-                disabled
-            );
-        }
-
-        phase approved_check_request_refuses_execution_inputs_and_ambiguous_identities;
-        {
-            let request = Request {
-                version: 1,
-                invocation: ID.into(),
-                check_id: "regression".into(),
-            };
-            let bytes = request.encode().unwrap();
-            assert_eq!(Request::decode(&bytes).unwrap(), request);
-            for extra in [
-                "command",
-                "argv",
-                "environment",
-                "checkout",
-                "host",
-                "certificate",
-            ] {
-                let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                value[extra] = serde_json::json!("caller-supplied");
-                assert!(Request::decode(&serde_json::to_vec(&value).unwrap()).is_err());
-            }
-            let duplicate = format!(
-                r#"{{"version":1,"invocation":"{ID}","check_id":"regression","check_id":"other"}}"#
-            );
-            assert!(Request::decode(duplicate.as_bytes()).is_err());
+            assert!(is_check_id("regression"));
             for check_id in ["../regression", "regression;id", "-option", "", "run test"] {
-                assert!(
-                    Request {
-                        check_id: check_id.into(),
-                        ..request.clone()
-                    }
-                    .encode()
-                    .is_err()
-                );
+                assert!(!is_check_id(check_id), "{check_id}");
             }
-            assert!(Request::decode(&vec![b' '; MAX_REQUEST_BYTES + 1]).is_err());
         }
 
         phase approved_check_receipt_carries_a_bounded_supervision_failure_beside_empty_streams;
@@ -540,136 +276,6 @@ mod tests {
                 assert!(value.encode().is_err());
                 assert!(Receipt::decode(&serde_json::to_vec(&value).unwrap()).is_err());
             }
-        }
-    }
-
-    #[cfg(feature = "client")]
-    use crate::wire::CheckProgress;
-
-    /// A stream fed `frames` in order, then nothing.
-    #[cfg(feature = "client")]
-    struct Frames {
-        stream: ApprovedCheckReportedProgressStream,
-        frames: std::collections::VecDeque<CheckProgress>,
-    }
-
-    #[cfg(feature = "client")]
-    impl Frames {
-        fn read(&mut self) -> Result<ReportedProgressUpdate, crate::NotAvailable> {
-            if self.stream.terminal {
-                return Err(report_error("approved-check report endpoint is terminal"));
-            }
-            let next = self
-                .frames
-                .pop_front()
-                .ok_or_else(|| report_error("unexpected extra read"));
-            self.stream.accept(next)
-        }
-    }
-
-    #[cfg(feature = "client")]
-    fn wire_reports(frames: Vec<CheckProgress>) -> Frames {
-        Frames {
-            stream: ApprovedCheckReportedProgressStream {
-                feed: None,
-                request: Request {
-                    version: 1,
-                    invocation: ID.into(),
-                    check_id: "regression".into(),
-                },
-                sequence: 0,
-                terminal: false,
-                disabled: false,
-            },
-            frames: frames.into(),
-        }
-    }
-
-    tilo_test_env::scenario! {
-        #[cfg(feature = "client")]
-        fn approved_check_report_streams;
-
-        phase approved_check_report_stream_keeps_terminal_receipt_separate_and_final;
-        {
-            let observed = report(1);
-            let terminal = receipt();
-            let mut stream = wire_reports(vec![
-                CheckProgress::Report(observed.encode().unwrap()),
-                CheckProgress::Receipt(terminal.encode().unwrap()),
-                CheckProgress::Report(report(2).encode().unwrap()),
-            ]);
-            assert_eq!(
-                stream.read().unwrap(),
-                ReportedProgressUpdate::Report(observed)
-            );
-            assert_eq!(
-                stream.read().unwrap(),
-                ReportedProgressUpdate::Receipt(Box::new(terminal))
-            );
-            assert!(
-                stream.read().is_err(),
-                "late observation cannot replace receipt"
-            );
-        }
-
-        phase approved_check_disabled_report_endpoint_accepts_only_terminal_receipt;
-        {
-            let disabled = Report {
-                observation: ReportObservation::Disabled {
-                    reason: EndpointRefusal::InvalidReport,
-                },
-                ..report(1)
-            };
-            let mut stream = wire_reports(vec![
-                CheckProgress::Report(disabled.encode().unwrap()),
-                CheckProgress::Receipt(receipt().encode().unwrap()),
-            ]);
-            assert_eq!(
-                stream.read().unwrap(),
-                ReportedProgressUpdate::Report(disabled.clone())
-            );
-            assert_eq!(
-                stream.read().unwrap(),
-                ReportedProgressUpdate::Receipt(Box::new(receipt()))
-            );
-            let mut stream = wire_reports(vec![
-                CheckProgress::Report(disabled.encode().unwrap()),
-                CheckProgress::Report(report(2).encode().unwrap()),
-            ]);
-            assert!(matches!(
-                stream.read().unwrap(),
-                ReportedProgressUpdate::Report(_)
-            ));
-            assert!(
-                stream.read().is_err(),
-                "disabled observation endpoint cannot restart"
-            );
-        }
-
-        phase approved_check_report_stream_refuses_empty_foreign_stale_and_oversized;
-        {
-            let mut foreign = report(1);
-            foreign.invocation = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
-            for frame in [
-                CheckProgress::Report(Vec::new()),
-                CheckProgress::Receipt(Vec::new()),
-                CheckProgress::Report(foreign.encode().unwrap()),
-                CheckProgress::Report(vec![b' '; MAX_REPORT_BYTES + 1]),
-                CheckProgress::Failed("x".repeat(MAX_REPORT_BYTES + 1)),
-            ] {
-                let mut stream = wire_reports(vec![frame]);
-                assert!(stream.read().is_err());
-                assert!(stream.read().is_err(), "refusal freezes endpoint");
-            }
-            let mut stream = wire_reports(vec![
-                CheckProgress::Report(report(3).encode().unwrap()),
-                CheckProgress::Report(report(3).encode().unwrap()),
-            ]);
-            assert!(matches!(
-                stream.read().unwrap(),
-                ReportedProgressUpdate::Report(_)
-            ));
-            assert!(stream.read().is_err());
         }
     }
 

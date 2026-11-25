@@ -57,9 +57,7 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
         Mark::Size(points) => ("size", MarkVal::Int(i64::from(*points))),
         Mark::Font(family) => (
             "font",
-            MarkVal::Str(
-                ui::rich_edit::rich_doc::family_name(*family).to_owned(),
-            ),
+            MarkVal::Str(ui::rich_edit::rich_doc::family_name(*family).to_owned()),
         ),
         Mark::Color(rgb) => ("color", MarkVal::Str(ui::rich_edit::rich_doc::hex_of(*rgb))),
         Mark::Highlight(rgb) => (

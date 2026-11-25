@@ -410,7 +410,11 @@ impl<'a> Lexer<'a> {
         }
         let span = self.span(start, self.pos);
         let text = self.slice(start + if doc { 3 } else { 2 }, self.pos);
-        let text = text.strip_prefix(' ').unwrap_or(text).trim_end().to_string();
+        let text = text
+            .strip_prefix(' ')
+            .unwrap_or(text)
+            .trim_end()
+            .to_string();
         self.comments.push(Comment {
             span,
             text: text.clone(),

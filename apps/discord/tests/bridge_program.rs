@@ -980,9 +980,9 @@ fn chat_record() -> Opened {
         "send",
         vec![
             TlValue::resource(&general),
-            TlValue::Rich(
-                tilolang_workspace::runtime::rich::RichValue::from_text("hello"),
-            ),
+            TlValue::Rich(tilolang_workspace::runtime::rich::RichValue::from_text(
+                "hello",
+            )),
             TlValue::Opt(None),
         ],
     );

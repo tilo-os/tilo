@@ -111,7 +111,11 @@ impl Presence {
     }
 
     async fn enter(&self) -> Result<Session, String> {
-        let device = self.home.get().await.ok_or_else(|| NOT_LOGGED_IN.to_owned())?;
+        let device = self
+            .home
+            .get()
+            .await
+            .ok_or_else(|| NOT_LOGGED_IN.to_owned())?;
         let lent = Some(self.own.lent());
         let entered = tokio::time::timeout(ENTERING, enter::connect(&self.key, &device, lent))
             .await

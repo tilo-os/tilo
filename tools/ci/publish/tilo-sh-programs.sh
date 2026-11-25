@@ -3,8 +3,9 @@
 # Cargo.toml's `lounge-check` (the release's code and opt-level without the whole-program
 # link): the server and the Discord worker as the Lounge image carries them (feature `agents`),
 # then the API server and the program it starts a task's tilolang programs in (found beside
-# it), the fake Discord, the fake model providers, the tilo command and its daemon. Two cargo
-# builds, as the images build them: built in one, Cargo would turn on every feature any of
+# it), the fake Discord, the fake model providers, the tilo command and its daemon, and the
+# launcher the daemon starts every app through (found beside it). Two cargo builds, as the
+# images build them: built in one, Cargo would turn on every feature any of
 # these programs asks of a shared crate for all of them, and the server would link the
 # desktop's GStreamer, input and graphics libraries that the daemon needs and the Lounge image
 # does not carry, so it would not start on a machine without them. The mail stand-in is an
@@ -16,16 +17,17 @@ set -euo pipefail
 out=${1:?usage: tilo-sh-programs.sh OUT}
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
-bins=(tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process)
+bins=(tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process
+  tilo-launcher)
 rm -rf "$out"
 mkdir -p "$out"
 server_bins=(tilo-runtime discord-worker)
 cargo build --locked --profile lounge-check --features tilo-daemon/agents \
   -p tilo-daemon -p discord-worker "${server_bins[@]/#/--bin=}"
-other_bins=(tilo-api fake-discord fake-model-providers tilo tilolang-process)
+other_bins=(tilo-api fake-discord fake-model-providers tilo tilolang-process tilo-launcher)
 cargo build --locked --profile lounge-check \
   -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
-  "${other_bins[@]/#/--bin=}"
+  -p launcher "${other_bins[@]/#/--bin=}"
 cargo build --locked --profile lounge-check -p tilo-account-probe --example mail_stand_in
 for bin in "${bins[@]}"; do cp "$target/lounge-check/$bin" "$out/"; done
 # The stand-in mail server is an example, since it makes a certificate with the

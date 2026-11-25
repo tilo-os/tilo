@@ -71,7 +71,6 @@ pub(crate) fn row(
             input: InputSpec::None,
             params,
             view: None,
-            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,

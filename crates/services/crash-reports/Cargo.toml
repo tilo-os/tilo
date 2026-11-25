@@ -22,7 +22,7 @@ tilo-service = { path = "../../desktop/service" }
 # A report is a resource of a declared type.
 tilo-resource = { path = "../../core/tilo-resource" }
 # A report's time reads in the person's own date style.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 serde_json.workspace = true
 tracing.workspace = true
 # A kept stop is known by the digest of its log, so reading the same ones at

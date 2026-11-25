@@ -996,7 +996,7 @@ mod workspace_tests {
                 id,
                 WorkspaceEffectReceipt::recorded(
                     invocation,
-                    &MemberId::person("owner"),
+                    &MemberId::person("owner").into(),
                     ActionContext::default(),
                     EffectReceiptStatus::Succeeded,
                     42,
@@ -1015,7 +1015,7 @@ mod workspace_tests {
                 id,
                 WorkspaceEffectReceipt::redacted(
                     invocation,
-                    &MemberId::person("owner"),
+                    &MemberId::person("owner").into(),
                     ActionContext::default(),
                     EffectReceiptStatus::Succeeded,
                     43,

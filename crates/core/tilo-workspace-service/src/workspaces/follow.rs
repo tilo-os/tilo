@@ -699,6 +699,8 @@ impl Workspaces {
         let name = workspace.workspace().to_owned();
         let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = link.clone();
+        let intake = self.content_intake(&name);
+        let asks = self.content_asks(&name, &link);
         // Subscribed, where the replica stands, before the task runs:
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
@@ -730,54 +732,31 @@ impl Workspaces {
                         | NeighbourMsg::DocumentContentLacks { .. }
                         | NeighbourMsg::DocumentContentRefused { .. }
                 );
-                let Ok(body) = postcard::to_allocvec(&frame.message) else {
-                    continue;
-                };
-                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
-                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
-                }
                 // What a member answers the host with answers a request the
                 // host made, and is the host's to keep: a device that keeps
                 // its workspace's files reads the pieces here
-                // ([`Self::content_for_host`]).
+                // ([`Self::content_for_host`]). Asks and answers are no record
+                // writes: they go to the content's own intake, as they came,
+                // never through the governor's copy.
                 if answering {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    let body = body.clone();
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_for_host(&name, author, &body);
-                    });
-                    continue;
-                }
-                if !asking {
-                    continue;
-                }
-                // A mounted workspace's file bytes are read from its Files daemon, whose answer
-                // comes in on a socket this runtime serves: read on the runtime's own thread, the
-                // read would wait out every ask for an answer that cannot arrive.
-                let answers = {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_answer(&name, &author, &body)
-                    })
-                    .await
-                };
-                let Ok(answers) = answers else {
-                    continue;
-                };
-                for answer in answers {
-                    match NeighbourMsg::decode(&answer) {
-                        Ok(message) => {
-                            // Waits while the asker's link is full: the asks
-                            // behind this one wait with it, and so does the
-                            // asker.
-                            let _ = link.send_content(message).await;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "a content answer did not encode");
-                        }
+                    // The intake's thread is gone only with the host.
+                    if intake.send((frame.author, frame.message)).await.is_err() {
+                        return;
                     }
+                    continue;
+                }
+                let Ok(body) = postcard::to_allocvec(&frame.message) else {
+                    continue;
+                };
+                if asking {
+                    // The answering is gone only with the host.
+                    if asks.send((frame.author, body)).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                if let Err(error) = workspaces.absorb(&name, frame.author, &body).await {
+                    tracing::warn!(%name, %error, "the host did not keep what its link admitted");
                 }
             }
         });

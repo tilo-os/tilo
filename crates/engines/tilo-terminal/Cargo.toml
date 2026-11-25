@@ -35,7 +35,7 @@ runtime-portal = { version = "0.1.0", package = "tilo-runtime-portal", path = ".
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native-editor"] }
 # The toolkit's `ui.Terminal` reads a session through the traits it defines: the grid it draws
 # and the raw keys it takes. The engine fills them here, so the widget links no engine.
-ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 anyhow.workspace = true
 workspace-hack = { version = "0.1" }
 

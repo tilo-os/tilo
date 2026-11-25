@@ -69,6 +69,28 @@ impl Puts {
         tree.change(acting, change).await
     }
 
+    /// What `read` answers of `workspace`'s tree as this device holds it now, without asking the
+    /// workspace for its records first: for a caller that only needs to know whether the tree
+    /// moved, as a file provider watching a folder does. A remote change is here once the sync
+    /// took it, which it does as the change arrives.
+    ///
+    /// # Errors
+    /// This device does not hold the workspace, or its tree does not open.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the read runs on the thread that asks for it, through the host's block_on"
+    )]
+    pub async fn state(
+        &self,
+        workspace: WorkspaceId,
+        read: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        let tree = self.held_tree(workspace).await?;
+        tree.read_now(read)
+    }
+
     /// What `read` answers of `workspace`'s tree, as the workspace has it now.
     ///
     /// # Errors

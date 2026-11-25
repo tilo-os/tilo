@@ -154,6 +154,7 @@ pub(crate) fn asked_facts(
     action: &PublishedAction,
     policy: &tilo_actions::ConfirmationPolicy,
     argument: Option<&str>,
+    effects: &[tilo_actions::remote::asked::DeclaredEffect],
 ) -> AskedFacts {
     let facts = AskedFacts::by(
         caller
@@ -167,6 +168,7 @@ pub(crate) fn asked_facts(
         action.descriptor(tilo_actions::ExecutionLocus::default()),
         &tilo_actions::remote::InvokeArgument::from_slot(argument),
     );
+    facts.effects = effects.to_vec();
     shown_on_ask(action, argument, &mut facts);
     if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = policy {
         facts.takes.push(phrase_take(phrase));
@@ -206,7 +208,17 @@ impl AppBrokerState {
         if !asks && !store && matches!(policy, tilo_actions::ConfirmationPolicy::None) {
             return Ok(false);
         }
-        let facts = || asked_facts(inputs.caller, action, &policy, inputs.argument);
+        let target = tilo_actions::remote::RemoteActionTarget {
+            provider: inputs.request.map_or_else(
+                || surface.app_id.clone(),
+                |request| request.target.provider.clone(),
+            ),
+            address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+        };
+        let effects = inputs.caller.map_or_else(Vec::new, |caller| {
+            self.worded_effects(caller, &tilo_actions::remote::declared_effects(&target))
+        });
+        let facts = || asked_facts(inputs.caller, action, &policy, inputs.argument, &effects);
         // A token minted for this very call answers for it where nobody's approve came back.
         if let Some(token) = inputs.token
             && inputs
@@ -281,7 +293,7 @@ impl AppBrokerState {
             || grant.resource != action.resource
             || grant.action != action.action
             || grant.argument_digest != argument_digest(inputs.argument)
-            || grant.actor != *inputs.actor.member();
+            || grant.actor != *inputs.actor.actor();
         if mismatched {
             return Err(
                 "the confirmation token is expired or does not match this invocation".into(),

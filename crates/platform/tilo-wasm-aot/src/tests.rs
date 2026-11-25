@@ -117,3 +117,56 @@ fn a_damaged_entry_is_compiled_again() {
     assert_eq!(cache.ensure(&wasm).unwrap(), entry);
     assert_eq!(std::fs::read(&path).unwrap(), entry);
 }
+
+/// A module of about the size an app's is: many small exported functions, which is what a
+/// compiled program is made of.
+#[cfg(feature = "compile")]
+fn app_sized_module() -> Vec<u8> {
+    let mut text = String::from("(module (memory (export \"memory\") 16)");
+    for index in 0..1_200 {
+        use std::fmt::Write as _;
+        let _ = write!(
+            text,
+            "(func (export \"f{index}\") (param i32) (result i32) \
+             (i32.add (local.get 0) (i32.const {index})))"
+        );
+    }
+    text.push(')');
+    wat::parse_str(text).unwrap()
+}
+
+/// The first open after an install: what the daemon's open path pays for a module the install
+/// compiled (a cache read) beside one it did not (a compile).
+///
+/// The install compiles the modules of the package it installs, so an app already on the device
+/// opens without compiling anything: the daemon's handover finds its entry and reads it. Before
+/// that hook, the first open compiled every part on the handover that opened it.
+#[cfg(feature = "compile")]
+#[test]
+fn an_install_writes_what_the_next_open_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = Cache::at(dir.path()).unwrap();
+    let wasm = app_sized_module();
+
+    // Before: the module the install did not compile is compiled on the open that first runs it.
+    let began = std::time::Instant::now();
+    let entry = cache.ensure(&wasm).unwrap();
+    let uncompiled = began.elapsed();
+
+    // After: the install wrote the entry, and the open reads it.
+    let began = std::time::Instant::now();
+    let read = cache.ensure(&wasm).unwrap();
+    let cached = began.elapsed();
+    assert_eq!(read, entry);
+
+    let began = std::time::Instant::now();
+    let kept = kept_in(dir.path(), &wasm).expect("the install's entry is in the store");
+    let lookup = began.elapsed();
+    assert_eq!(kept, entry);
+
+    println!(
+        "\nfirst open after install, {}-byte module: compiled on the open {uncompiled:?}, \
+         cache read {cached:?}, read-only lookup {lookup:?}\n",
+        wasm.len()
+    );
+}

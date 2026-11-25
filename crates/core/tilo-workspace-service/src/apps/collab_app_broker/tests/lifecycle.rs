@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
         assert!(state.is_stopped());
         assert!(facade.invocation_host().is_err());
         assert!(facade.surfaces().is_empty());
-        assert!(facade.statuses(&tilo_actions::MemberId::person("owner")).is_empty());
+        assert!(facade.statuses(&tilo_actions::MemberId::person("owner").into()).is_empty());
         let reopened = InvocationJournal::open(&config.journal_root)
             .expect("stopped broker releases the invocation-journal writer");
         drop(reopened);

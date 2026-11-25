@@ -280,7 +280,7 @@ mod tests {
         sign_revocation_entry,
     };
 
-    use super::super::fixtures::{admit_view_reader, governor, test_host};
+    use super::super::fixtures::{governor, test_host};
 
     fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
         let mut entry = RevocationEntry {
@@ -393,10 +393,14 @@ mod tests {
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[1; 32]);
         let mut laptop = cert.clone();
-        laptop.device_public_key = SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes();
+        let laptop_key = SigningKey::from_bytes(&[3; 32]);
+        laptop.device_public_key = laptop_key.verifying_key().to_bytes();
         laptop.capabilities = DeviceCapabilities::member();
         sign_device_cert(&mut laptop, &ada).unwrap();
-        admit_view_reader(workspaces, &created.workspace, &key, &laptop).await;
+        workspaces
+            .enter(&created.workspace, (&laptop, &laptop_key))
+            .await
+            .expect("Ada's laptop lists itself");
         let workspace = workspaces.workspace(&created.workspace).await.unwrap();
 
         let epoch = crate::authority_epoch::current();
@@ -466,10 +470,14 @@ mod tests {
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[1; 32]);
         let mut laptop = cert.clone();
-        laptop.device_public_key = SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes();
+        let laptop_key = SigningKey::from_bytes(&[3; 32]);
+        laptop.device_public_key = laptop_key.verifying_key().to_bytes();
         laptop.capabilities = DeviceCapabilities::member();
         sign_device_cert(&mut laptop, &ada).unwrap();
-        admit_view_reader(workspaces, &created.workspace, &key, &laptop).await;
+        workspaces
+            .enter(&created.workspace, (&laptop, &laptop_key))
+            .await
+            .expect("Ada's laptop lists itself");
 
         let epoch = crate::authority_epoch::current();
         let stranger = SigningKey::from_bytes(&[9; 32]);
@@ -521,10 +529,14 @@ mod tests {
         let created = workspaces.create("Plans").await.unwrap();
         let ada = SigningKey::from_bytes(&[1; 32]);
         let mut laptop = cert.clone();
-        laptop.device_public_key = SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes();
+        let laptop_key = SigningKey::from_bytes(&[3; 32]);
+        laptop.device_public_key = laptop_key.verifying_key().to_bytes();
         laptop.capabilities = DeviceCapabilities::member();
         sign_device_cert(&mut laptop, &ada).unwrap();
-        admit_view_reader(workspaces, &created.workspace, &key, &laptop).await;
+        workspaces
+            .enter(&created.workspace, (&laptop, &laptop_key))
+            .await
+            .expect("Ada's laptop lists itself");
 
         let mut revoked = (0..2000)
             .map(|n| revocation(&ada, made_up_key(n)))

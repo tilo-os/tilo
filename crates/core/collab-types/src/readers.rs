@@ -135,10 +135,16 @@ impl Readers {
         match self {
             Self::EveryMember => EVERY_MEMBER.to_owned(),
             Self::People(named) => people(named),
-            Self::Role { role, people: named } if named.is_empty() => {
+            Self::Role {
+                role,
+                people: named,
+            } if named.is_empty() => {
                 format!("{ROLE_READERS}{}", role.key())
             }
-            Self::Role { role, people: named } => {
+            Self::Role {
+                role,
+                people: named,
+            } => {
                 format!("{ROLE_READERS}{},{}", role.key(), people(named))
             }
         }
@@ -275,9 +281,18 @@ mod tests {
         assert_ne!(reader_group(workspace, &held), Some(workspace));
         let named = Readers::parse(&held).and_then(|set| set.named()).unwrap();
         assert!(named.includes(&ada, None), "its people read it");
-        assert!(named.includes(&bob, Some(Role::Moderator)), "so does a moderator");
-        assert!(named.includes(&bob, Some(Role::Owner)), "and the owner, whose role includes it");
-        assert!(!named.includes(&bob, Some(Role::Editor)), "an editor does not");
+        assert!(
+            named.includes(&bob, Some(Role::Moderator)),
+            "so does a moderator"
+        );
+        assert!(
+            named.includes(&bob, Some(Role::Owner)),
+            "and the owner, whose role includes it"
+        );
+        assert!(
+            !named.includes(&bob, Some(Role::Editor)),
+            "an editor does not"
+        );
         assert!(!named.includes(&bob, None), "nor does one who is no member");
 
         let id = workspace.to_string();

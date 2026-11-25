@@ -709,7 +709,7 @@ impl std::fmt::Debug for VaultAt<'_> {
 impl<'a> VaultAt<'a> {
     /// The same vault, each write it makes keeping `call`, the call it is made for: the person
     /// whose device signed it is the one the write names, and the step it takes is one the
-    /// called action declares ([`tilo_actions::ActionDescriptor::effects`]).
+    /// called action declares ([`tilo_actions::ActionContract::effects`]).
     #[must_use]
     pub(crate) fn serving(self, call: &'a InvokeRequest) -> Self {
         match self {

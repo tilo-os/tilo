@@ -157,7 +157,7 @@ async fn only_admitted_execution_and_validated_terminal_emit_activity() {
     assert_eq!(accepted.invocation, request.invocation);
     assert_eq!(
         accepted.actor,
-        tilo_actions::MemberId::person("a1".repeat(32))
+        tilo_actions::Actor::from(tilo_actions::MemberId::person("a1".repeat(32)))
     );
     assert_eq!(accepted.peer_id, 7);
     assert_eq!(accepted.route.document_id, "record-a");

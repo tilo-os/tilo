@@ -96,7 +96,10 @@ impl Columns {
         }
     }
 
-    #[allow(clippy::arithmetic_side_effects, reason = "a header position stays inside the sheet's columns")]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a header position stays inside the sheet's columns"
+    )]
     fn column(&self, key: &str) -> Result<u32, String> {
         self.0
             .iter()
@@ -193,9 +196,15 @@ fn cell_input(value: &Value) -> Result<Option<(String, Option<CellFormat>)>, Str
 }
 
 /// The Excel serial of an exact ISO date `YYYY-MM-DD`, optionally followed by a time.
-#[allow(clippy::arithmetic_side_effects, reason = "hours, minutes and seconds stay below one day")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "hours, minutes and seconds stay below one day"
+)]
 fn iso_date_serial(text: &str) -> Option<f64> {
-    #[allow(clippy::arithmetic_side_effects, reason = "the milliseconds of a day are below 86_400")]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the milliseconds of a day are below 86_400"
+    )]
     fn digits(part: Option<&str>) -> Option<u32> {
         let part = part?;
         if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
@@ -392,7 +401,10 @@ pub fn set_records(sheet: &Sheet, request: &RecordsRequest<'_>) -> Result<Writes
 ///
 /// # Errors
 /// `matching` empty, names no header, or fits more than one row.
-#[allow(clippy::arithmetic_side_effects, reason = "row numbers stay inside the sheet's u32 range")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "row numbers stay inside the sheet's u32 range"
+)]
 pub fn upsert(
     sheet: &Sheet,
     matching: &serde_json::Map<String, Value>,
@@ -465,7 +477,10 @@ pub fn upsert(
 }
 
 /// The sheet row each record goes to when rows are identified by the header `key`.
-#[allow(clippy::arithmetic_side_effects, reason = "row numbers stay inside the sheet's u32 range")]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "row numbers stay inside the sheet's u32 range"
+)]
 fn keyed_rows(
     sheet: &Sheet,
     columns: &Columns,
@@ -546,4 +561,3 @@ fn stale_row(sheet: &Sheet, columns: &Columns, first: u32, records: &[Value]) ->
     }
     None
 }
-

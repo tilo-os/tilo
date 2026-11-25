@@ -509,8 +509,11 @@ impl ActionContext {
     /// The context a label read as an entry or a stamp names; a continuation and a framework
     /// change name none of their own.
     fn of_label((label, stamp): (crate::stamp::Label, crate::stamp::Stamp)) -> Option<Self> {
-        matches!(label, crate::stamp::Label::Entry | crate::stamp::Label::Stamp)
-            .then(|| stamp.action_context())
+        matches!(
+            label,
+            crate::stamp::Label::Entry | crate::stamp::Label::Stamp
+        )
+        .then(|| stamp.action_context())
     }
 
     /// This entry, written as the continuation of `first` (its writer's

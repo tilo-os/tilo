@@ -122,13 +122,18 @@ pub enum InputSpec {
 
 impl ActionDescriptor {
     /// What the action writes besides its own resource, as a reader is told it: `None` for an
-    /// action that declares nothing else ([`Self::effects`]).
+    /// action that declares nothing else ([`ActionContract::effects`]).
     #[must_use]
     pub fn writes(&self) -> Option<String> {
-        if self.effects.is_empty() {
+        if self.contract.effects.is_empty() {
             return None;
         }
-        let steps: Vec<String> = self.effects.iter().map(ToString::to_string).collect();
+        let steps: Vec<String> = self
+            .contract
+            .effects
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         Some(format!("Writes: {}.", steps.join(", ")))
     }
 
@@ -284,16 +289,12 @@ pub struct ActionDescriptor {
     /// unrelated local view operations carry `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<ResourceViewDescriptor>,
-    /// The records this action writes beside its own resource, each as the app, kind and verb
-    /// of the step it takes there ([`ActionEffect`]). What a caller reads to know what the action
-    /// changes, and what a device reading such a record checks to admit a step the call itself
-    /// does not name: never from the call, always from this declaration.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effects: Vec<ActionEffect>,
 }
 
 /// One step an action takes on a record other than the resource it is declared on: the app
-/// whose record it writes, the record's kind, and the verb it runs there.
+/// whose record it writes, the record's kind, and the verb it runs there. A step that is an
+/// action a device's provider offers names that provider as its app and the resource it
+/// offers the action on as its kind.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ActionEffect {
     pub app: String,
@@ -682,7 +683,6 @@ fn describe(resource: &ResourceSpec, action: &ActionSpec) -> ActionDescriptor {
         input: InputSpec::of(action.input()),
         params: action.params().to_vec(),
         view,
-        effects: Vec::new(),
     }
 }
 

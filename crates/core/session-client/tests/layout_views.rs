@@ -18,9 +18,7 @@ use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use crate::support::{
-    commit_change, enrol, enter_page, start_workspace_host_relaying, wait_for,
-};
+use crate::support::{commit_change, enrol, enter_page, start_workspace_host_relaying, wait_for};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))

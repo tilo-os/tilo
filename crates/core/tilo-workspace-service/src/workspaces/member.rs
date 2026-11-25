@@ -533,6 +533,9 @@ impl Workspaces {
     /// saves is signed by the device this service signs its own writes as
     /// ([`Self::signing_device`]), so its triggers fire for that person as one they saved.
     ///
+    /// The save is this device's own settings change wherever the workspace is held: a member
+    /// copy's is sent to the device serving the workspace, which arms the trigger there too.
+    ///
     /// # Errors
     /// The shortcut could not be signed, or the workspace did not take the change.
     pub async fn change_own_shortcuts(
@@ -549,7 +552,7 @@ impl Workspaces {
                 device.signer.as_ref(),
             )?;
         }
-        self.commit_own_membership(
+        self.commit_own_change(
             workspace,
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
                 tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
@@ -557,8 +560,6 @@ impl Workspaces {
             None,
         )
         .await
-        .map(drop)
-        .map_err(|error| error.to_string())
     }
 
     /// The device a member copy acts as, when this service serves one.
@@ -2209,8 +2210,9 @@ impl Workspaces {
     fn follow_member(&self, workspace: &str, link: &DirectSync) -> tokio::task::AbortHandle {
         let name = workspace.to_owned();
         let workspaces = self.downgrade();
+        let intake = self.content_intake(&name);
+        let asks = self.content_asks(workspace, link);
         let mut reader = link.reader();
-        let link = link.clone();
         tokio::spawn(async move {
             while let Some(frame) = reader.recv().await {
                 let Some(workspaces) = workspaces.upgrade() else {
@@ -2223,6 +2225,15 @@ impl Workspaces {
                         | NeighbourMsg::DocumentContentRefused { .. }
                 );
                 let asking = matches!(frame.message, NeighbourMsg::DocumentContentWant { .. });
+                // Answers go to the content's own intake as they came: they are
+                // no write of the copy.
+                if answering {
+                    // The intake's thread is gone only with the host.
+                    if intake.send((frame.author, frame.message)).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
@@ -2262,44 +2273,12 @@ impl Workspaces {
                 {
                     workspaces.wrote(&name, app_id, document_id);
                 }
-                if answering {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    let body = body.clone();
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_for_host(&name, author, &body);
-                    });
-                    continue;
-                }
                 if !asking {
                     continue;
                 }
-                // A mounted workspace's file bytes are read from its Files daemon, whose answer
-                // comes in on a socket this runtime serves: read on the runtime's own thread, the
-                // read would wait out every ask for an answer that cannot arrive.
-                let answers = {
-                    let (workspaces, name, author) =
-                        (workspaces.clone(), name.clone(), frame.author);
-                    tokio::task::spawn_blocking(move || {
-                        workspaces.content_answer(&name, &author, &body)
-                    })
-                    .await
-                };
-                let Ok(answers) = answers else {
-                    continue;
-                };
-                for answer in answers {
-                    let Ok(message) = tilo_failure::ignored!(
-                        "a content answer this device made itself does not decode",
-                        NeighbourMsg::decode(&answer)
-                    ) else {
-                        continue;
-                    };
-                    // Waits while the link to the serving device is full: the
-                    // asks behind this one wait with it.
-                    if let Err(error) = link.send_content(message).await {
-                        tracing::debug!(%name, %error, "a member's content answer did not reach the serving device");
-                    }
+                // The answering is gone only with the member copy's host.
+                if asks.send((frame.author, body)).await.is_err() {
+                    return;
                 }
             }
         })

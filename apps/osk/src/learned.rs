@@ -53,7 +53,9 @@ pub fn counts(
                 context.clone(),
                 words
                     .iter()
-                    .map(|(word, count)| (word.clone(), u32::try_from(count.get()).unwrap_or(u32::MAX)))
+                    .map(|(word, count)| {
+                        (word.clone(), u32::try_from(count.get()).unwrap_or(u32::MAX))
+                    })
                     .collect(),
             )
         })

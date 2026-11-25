@@ -161,12 +161,7 @@ fn job_ops() -> &'static [JobOp] {
 }
 
 /// One stream: this engine runs none.
-fn stream(
-    _device: &Device,
-    _op: &str,
-    _input: &str,
-    _frames: &Frames,
-) -> Result<String, String> {
+fn stream(_device: &Device, _op: &str, _input: &str, _frames: &Frames) -> Result<String, String> {
     Err("this engine runs no streams".to_owned())
 }
 
@@ -194,7 +189,10 @@ pub fn self_check() -> Result<String, String> {
     if tilo_git::is_repo(dir.path()) {
         return Err("the check's new folder reads as a repository".to_owned());
     }
-    let refusal = tilo_git::run("load", &serde_json::json!({ "path": dir.path() }).to_string());
+    let refusal = tilo_git::run(
+        "load",
+        &serde_json::json!({ "path": dir.path() }).to_string(),
+    );
     Ok(format!(
         "read an empty folder as no repository ({})",
         refusal.err().unwrap_or_else(|| "no refusal".to_owned())

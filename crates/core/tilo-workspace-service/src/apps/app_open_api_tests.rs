@@ -153,7 +153,7 @@ async fn an_app_opens_an_app_only_for_the_persons_press_in_it() {
 
             // The compositor issued a serial to another window of the desktop: it proves nothing
             // for this app's own window.
-            rig.state.note_press(WINDOW + 1, 1);
+            rig.state.note_press(WINDOW + 1, 1, None);
             let elsewhere = app_asks_pressed(
                 &app,
                 open_app_request(&workspace, "so.tilo.chat", None),
@@ -166,7 +166,7 @@ async fn an_app_opens_an_app_only_for_the_persons_press_in_it() {
             );
 
             // The person's press in this app's window, which the call names, opens one app.
-            rig.state.note_press(WINDOW, 2);
+            rig.state.note_press(WINDOW, 2, None);
             let pressed = app_asks_pressed(
                 &app,
                 open_app_request(&workspace, "so.tilo.chat", None),
@@ -231,7 +231,7 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
 
             // The child call the pressed invocation makes runs as the person: it opens what the
             // app itself may not, because the press named is one the person made in its window.
-            rig.state.note_press(WINDOW, 7);
+            rig.state.note_press(WINDOW, 7, None);
             let pressed = app_asks_pressed(
                 &app,
                 open_app_request(&workspace, "so.tilo.chat", Some(own)),
@@ -312,7 +312,7 @@ async fn an_approve_an_app_sends_on_its_own_connection_is_refused() {
             let app = rig.worker.handle.clone();
 
             // Pressed, so the open would go on: only the approve it carries refuses it.
-            rig.state.note_press(WINDOW, 7);
+            rig.state.note_press(WINDOW, 7, None);
             let mut forged = open_app_request(&workspace, "so.tilo.chat", None);
             forged.confirmation = Some(tilo_actions::remote::Confirmation::Asked(
                 tilo_actions::remote::asked::Approval::new(

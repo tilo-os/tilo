@@ -21,7 +21,15 @@ import {
   recordOf,
 } from "./models.ts";
 import { Invocation } from "./invocation.ts";
-import { ProtocolError } from "./errors.ts";
+import { ProtocolError, Refused } from "./errors.ts";
+import type {
+  CallAsk,
+  CallFrame,
+  CallReport,
+  CallTaken,
+  CarriedCall,
+  Transport,
+} from "./transport.ts";
 import { resourceProxy, type Resource, type Surface } from "./resource.ts";
 
 const INVOCATION_PREFIX = "sdk:";
@@ -374,6 +382,103 @@ export class Vault {
   }
 }
 
+/** Why a lane call is refused where the connection carries none. */
+const NO_CALL_LANE =
+  "a call is carried only by an app this computer's daemon started, over the connection it was " +
+  "handed";
+
+/**
+ * The call lane of an app's held connection: how a bridge app carries one call of the outside
+ * service it reaches into one of the workspace's calls.
+ *
+ * The app says which outside call it carries into which workspace call (`carry`), who is in it
+ * and where the app stands there (`report`), and hands over each Opus frame its people say
+ * (`heard`). The device joins the workspace's call as the app, which the workspace's grants
+ * decide, shows each outside person as a participant of their own, and gives back what the
+ * workspace's people say (`said`) and where it wants the app in the outside call (`asked`): in
+ * it while anyone is on either side, out of it once nobody is. The device seals and opens the
+ * call's media; no key reaches the app. Only an app the daemon started carries a lane; any
+ * other connection's calls throw `Refused`.
+ */
+export class CallLane {
+  readonly workspace: Workspace;
+  #transport: Transport | null = null;
+  #frames: CallFrame[] = [];
+  #asked: CallAsk | null = null;
+
+  constructor(workspace: Workspace) {
+    this.workspace = workspace;
+  }
+
+  async #lane(): Promise<Transport> {
+    if (this.#transport === null) {
+      this.#transport = (await this.workspace.endpoint()).transport;
+    }
+    return this.#transport;
+  }
+
+  /**
+   * Carry the outside call `pair.outside` into the workspace call `pair.tilo`, or let go of the
+   * one carried (`null`), which leaves the workspace's call. The first carry joins the call as
+   * the app; a workspace that grants the app no call throws `Refused` with why.
+   */
+  async carry(pair: CarriedCall | null): Promise<void> {
+    const lane = await this.#lane();
+    if (lane.carryCall === undefined) {
+      throw new Refused("not_permitted", NO_CALL_LANE);
+    }
+    await lane.carryCall(pair);
+  }
+
+  /** Say who is in the outside calls, by the names and pictures the service shows, and where
+   * the app stands in them. */
+  async report(report: CallReport): Promise<void> {
+    const lane = await this.#lane();
+    if (lane.reportCall === undefined) {
+      throw new Refused("not_permitted", NO_CALL_LANE);
+    }
+    await lane.reportCall(report);
+  }
+
+  /** Hand the workspace's call one 20 ms Opus frame an outside person said. */
+  async heard(frame: CallFrame): Promise<void> {
+    const lane = this.#transport ?? (await this.#lane());
+    if (lane.hearCall === undefined) {
+      throw new Refused("not_permitted", NO_CALL_LANE);
+    }
+    lane.hearCall(frame);
+  }
+
+  /** The frames the workspace's people said since the last time, oldest first. */
+  async said(): Promise<CallFrame[]> {
+    await this.#take();
+    const frames = this.#frames;
+    this.#frames = [];
+    return frames;
+  }
+
+  /** Where the device last asked the app to be in the outside call, once: `null` when it asked
+   * nothing new since. */
+  async asked(): Promise<CallAsk | null> {
+    await this.#take();
+    const asked = this.#asked;
+    this.#asked = null;
+    return asked;
+  }
+
+  async #take(): Promise<void> {
+    const lane = await this.#lane();
+    if (lane.takeCall === undefined) {
+      throw new Refused("not_permitted", NO_CALL_LANE);
+    }
+    const taken: CallTaken = await lane.takeCall();
+    this.#frames.push(...taken.frames);
+    if (taken.asked !== null) {
+      this.#asked = taken.asked;
+    }
+  }
+}
+
 function invocationId(title: string): string {
   const slug = title
     .toLowerCase()
@@ -394,6 +499,8 @@ export class Workspace {
   readonly keys: WorkspaceKeys;
   readonly members: Members;
   readonly vault: Vault;
+  /** The call lane of an app's held connection ([`CallLane`]). */
+  readonly callLane: CallLane;
   #info: WorkspaceInfo | null = null;
 
   constructor(client: Tilo, ref: string | null) {
@@ -403,6 +510,7 @@ export class Workspace {
     this.keys = new WorkspaceKeys(this);
     this.members = new Members(this);
     this.vault = new Vault(this);
+    this.callLane = new CallLane(this);
   }
 
   toString(): string {

@@ -643,14 +643,23 @@ async fn agent_caller(
     workspace: WorkspaceId,
     agent: &Agent,
     person: [u8; 32],
+    owner: [u8; 32],
 ) -> Result<Caller, String> {
     let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
         .ok()
         .and_then(|its| its.root())
         .ok_or("the agent belongs to no person")?;
     let key = roster.grant_for(workspace, agent)?;
+    // A device that is not the agent's person's hands its session to the agent: the change is
+    // the agent's, acting with its person's preset, and the device carried it out.
+    let handed = root != owner;
+    let caller = if handed {
+        Caller::handed_agent(agent.id.0.clone(), root, key, owner)
+    } else {
+        Caller::delegated_agent(agent.id.0.clone(), root, key)
+    };
     // The agent carries the bound its record keeps, which the device's broker holds it to.
-    Ok(Caller::delegated_agent(agent.id.0.clone(), root, key)
+    Ok(caller
         .in_workspace(workspace.to_string())
         .named(&agent.name)
         .on_roster(agent.created_at, person))
@@ -707,7 +716,15 @@ impl crate::work::AgentEngine for EngineKeys {
             if !agent.is_active() {
                 return false;
             }
-            agent_caller(&self.roster, id, agent, [0; 32]).await.is_ok()
+            agent_caller(
+                &self.roster,
+                id,
+                agent,
+                [0; 32],
+                workspaces.device_cert().user_public_key,
+            )
+            .await
+            .is_ok()
         })
     }
 
@@ -951,7 +968,14 @@ impl ServerAgents {
     ) -> Result<Caller, String> {
         // A sub-agent acts under the approval of the agent that heads its line.
         if agent.sub.is_none() {
-            return agent_caller(&self.roster, workspace, agent, person).await;
+            return agent_caller(
+                &self.roster,
+                workspace,
+                agent,
+                person,
+                self.workspaces.device_cert().user_public_key,
+            )
+            .await;
         }
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
@@ -961,9 +985,15 @@ impl ServerAgents {
         // A line whose head is gone ends at the sub-agent itself, which holds no approval:
         // nothing is done in its name then.
         let approved = roster.root_of(agent);
-        Ok(agent_caller(&self.roster, workspace, approved, person)
-            .await?
-            .working_under(agent.id.0.clone(), &agent.name))
+        Ok(agent_caller(
+            &self.roster,
+            workspace,
+            approved,
+            person,
+            self.workspaces.device_cert().user_public_key,
+        )
+        .await?
+        .working_under(agent.id.0.clone(), &agent.name))
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1644,7 +1674,7 @@ pub async fn count_spend(
                 let mut counting =
                     tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                         .as_author(&keeper)
-                        .in_app(AGENTS_OWNER, "Assistant");
+                        .in_app(AGENTS_OWNER, "Workspace");
                 let applied = counting
                     .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
                         tilo_workspace_agent::workspace_agents::RecordAgentSpend {

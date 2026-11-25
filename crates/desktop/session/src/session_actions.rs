@@ -214,7 +214,6 @@ fn line_descriptor() -> ActionDescriptor {
         input: tilo_actions::InputSpec::None,
         params: LINE_PARAMS.to_vec(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -283,7 +282,7 @@ impl tilo_actions::remote::Admits for SessionActions {
             .map(|turn| tilo_session_core::layout::turn_key(&turn.conversation, &turn.message))
             .unwrap_or_default();
         self.steps.invoke_step(
-            actor.member().clone().into(),
+            actor.actor().clone(),
             request.target.address.clone(),
             argument,
             beside,
@@ -319,7 +318,7 @@ impl SessionActions {
         if actor.is_agent() {
             return Err("a line runs as the person at this device, never as an agent".into());
         }
-        let Some(person) = actor.member().person_id() else {
+        let Some(person) = actor.actor().person_id() else {
             return Err("a line runs as the person at this device".into());
         };
         let argument = request.argument.to_slot();

@@ -51,7 +51,6 @@ fn area_holds(files: &FileArea, key: &[u8; 32]) -> bool {
         || files.find_chunk(key).is_some()
 }
 
-
 #[cfg(feature = "filesystem")]
 impl Default for BlobDocumentLookupLimits {
     fn default() -> Self {
@@ -1648,7 +1647,6 @@ fn file_backed_chunk(files: &FileArea, hash: Hash) -> Option<Bytes> {
         .ok()?;
     (blake3::hash(&bytes).as_bytes() == hash.as_bytes()).then(|| Bytes::from(bytes))
 }
-
 
 #[cfg(test)]
 mod cache_tests;

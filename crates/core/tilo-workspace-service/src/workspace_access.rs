@@ -582,11 +582,17 @@ pub(crate) fn decide_in(
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
-    // The operator's handshake policy gates who connects to this host: a person it no longer
-    // trusts is refused here whatever a workspace's list says, as an expired or revoked
-    // certificate, a blocked key, an agent outside its delegation and a stopped environment are.
     if let Err(reason) = trust.actor(peer, workspace.workspace_id(), now_ns) {
-        return Decision::Deny(reason);
+        // The operator's handshake policy gates who connects to this host. A workspace's own
+        // signed member list admits its members and names its holders, as its entry does: a
+        // device of a person it holds, or a holder of another person's it names, reaches the
+        // workspace on that rule, even where the operator's policy would not admit it. Every
+        // other refusal (an expired or revoked certificate, a blocked key, an agent outside its
+        // delegation, a stopped environment) still denies: in particular a block is never read
+        // as the policy's refusal and bypassed.
+        if reason != DenyReason::NotTrusted || !person_device(&peer.cert) {
+            return Decision::Deny(reason);
+        }
     }
     match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
         Some(crate::environment::Environment::Placed(scope)) => {

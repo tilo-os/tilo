@@ -412,6 +412,11 @@ fn rows_permitted(
     let writer = (actor.as_str(), &authority, &cx);
     for row in rows {
         if let Some(action) = row.action() {
+            // A person records the cuts of their own devices' removals: that is their own list
+            // of devices, which they keep without the workspace's administration.
+            if *row == GovernanceRow::Removals && own_device_cuts((at, after), before, &actor) {
+                continue;
+            }
             held.check_action(&authority, action, &cx, false)
                 .map_err(|refusal| {
                     MembershipRefusal::Refused(format!(
@@ -443,6 +448,30 @@ fn rows_permitted(
         }
     }
     Ok(())
+}
+
+/// Whether the cuts `after` adds to `at` are of devices the workspace certifies for `actor`: a
+/// person records the removal of their own devices, and takes no one else's.
+fn own_device_cuts(
+    (at, after): (&AutoCommit, &AutoCommit),
+    before: &WorkspaceGovernance,
+    actor: &str,
+) -> bool {
+    let (Ok(held), Ok(written)) = (
+        crate::removals::recorded(at),
+        crate::removals::recorded(after),
+    ) else {
+        return false;
+    };
+    let added: Vec<&[u8; 32]> = written.difference(&held).collect();
+    !added.is_empty()
+        && added.iter().all(|device| {
+            before
+                .identities
+                .get(&hex::encode(device))
+                .and_then(|bytes| crate::workspace::identity_row(bytes).ok())
+                .is_some_and(|row| hex::encode(row.device_cert.user_public_key) == actor)
+        })
 }
 
 /// The name a receiver's refusal gives `row`.

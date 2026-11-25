@@ -597,9 +597,7 @@ pub enum TargetName {
 
 // The profile types and their codec live in `install-profile-model`, which the
 // standalone media tools take without the document stack this app keeps.
-pub use install_profile_model::media::{
-    DEFAULT_HOSTNAME, Filesystem, InstallProfile, UserAccount,
-};
+pub use install_profile_model::media::{DEFAULT_HOSTNAME, Filesystem, InstallProfile, UserAccount};
 
 // ---------------------------------------------------------------------------
 // Progress / job state.

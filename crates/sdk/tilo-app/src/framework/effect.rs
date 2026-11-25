@@ -46,33 +46,6 @@ use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 
-fn attach_approved_check_reporter(
-    checked: ui_core::invocation_scope::ApprovedCheckReportedWork,
-    progress: Progress,
-) -> ui_core::invocation_scope::ApprovedCheckFuture {
-    checked(Box::new(move |observation| {
-        progress.with_effect(|| {
-            match observation {
-                ui_core::invocation_scope::ApprovedCheckReportObservation::Reported {
-                    phase,
-                    completed,
-                    total,
-                } => {
-                    progress.report(phase, completed, total);
-                }
-                ui_core::invocation_scope::ApprovedCheckReportObservation::Disabled { .. } => {
-                    progress.report(
-                        ui_core::i18n::widget_text("approved-check-reports-disabled"),
-                        None,
-                        None,
-                    );
-                }
-            }
-            Ok(())
-        })
-    }))
-}
-
 /// A file the person chose with the host's chooser
 /// ([`EffectCx::choose_file`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -784,58 +757,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 .ok_or("external moderation requires a dispatched invocation")?,
             operation,
         )
-    }
-
-    /// Run an approved project check through this effect's admitted host channel.
-    /// Commands, source paths and resource bounds are chosen by the project host.
-    /// Pass the returned future to the existing effect job with [`Self::spawn`].
-    pub fn approved_check(
-        &self,
-        check_id: &str,
-    ) -> Result<ui_core::invocation_scope::ApprovedCheckFuture, String> {
-        let target = self
-            .inv
-            .target
-            .as_ref()
-            .ok_or("approved checks require an exact dispatched record target")?;
-        if target.route().app_id != self.env.dispatch.app_id() {
-            return Err("approved check dispatch app changed".into());
-        }
-        target.approved_check(
-            self.inv
-                .invocation
-                .ok_or("approved checks require a dispatched invocation")?,
-            check_id,
-        )
-    }
-
-    /// Attach approved-check reports to this action's existing job progress.
-    /// The app remains the sole publisher of invocation-update sequences.
-    pub fn approved_check_reported(
-        &self,
-        check_id: &str,
-    ) -> Result<
-        impl FnOnce(Progress) -> ui_core::invocation_scope::ApprovedCheckFuture
-        + Send
-        + 'static
-        + use<R, H>,
-        String,
-    > {
-        let target = self
-            .inv
-            .target
-            .as_ref()
-            .ok_or("approved checks require an exact dispatched record target")?;
-        if target.route().app_id != self.env.dispatch.app_id() {
-            return Err("approved check dispatch app changed".into());
-        }
-        let checked = target.approved_check_reported(
-            self.inv
-                .invocation
-                .ok_or("approved checks require a dispatched invocation")?,
-            check_id,
-        )?;
-        Ok(move |progress: Progress| attach_approved_check_reporter(checked, progress))
     }
 
     /// Wakes the app from another thread, to draw what a worker changed.

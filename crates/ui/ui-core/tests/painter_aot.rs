@@ -119,24 +119,26 @@ fn a_changed_theme_module_reaches_the_frame_on_the_daemon_s_compiled_code() {
         interpreted.push(took);
     }
 
-    // The daemon compiles the changed module ahead of time, on its own thread of work.
+    // The daemon compiles the changed module ahead of time, on its own thread of work, into the
+    // store a session reads read-only.
     let dir = tempfile::tempdir().unwrap();
     let cache = tilo_wasm_aot::Cache::at(dir.path()).unwrap();
     let began = Instant::now();
-    let entry = cache.ensure(&changed).unwrap();
+    let _entry = cache.ensure(&changed).unwrap();
     let daemon_took = began.elapsed();
 
-    // After: the session deserializes what the daemon compiled and paints the same frame.
+    // After: the session reads the artifact from the device's store, as a process granted the
+    // read-only mount does, deserializes it and paints the same frame.
     let mut compiled = Vec::new();
     let mut first_compiled = Duration::ZERO;
     for round in 0..7 {
         let module = changed.clone();
-        let artifact = entry.clone();
+        let store = dir.path().to_owned();
         let began = Instant::now();
         let theme = theme_bundle::load_with(
             &doc,
             move |_| Ok(Some(module.clone())),
-            move |_| Some(artifact.clone()),
+            |_, bytes| tilo_theme_painter_wasm::compiled_in(&store, bytes),
         )
         .unwrap();
         let scene = frame(&theme);
@@ -163,4 +165,47 @@ fn a_changed_theme_module_reaches_the_frame_on_the_daemon_s_compiled_code() {
          theme module change -> frame: compiled first {first_compiled:?}, median \
          {compiled_median:?} (daemon compile {daemon_took:?}, outside the session)\n"
     );
+}
+
+/// A theme bundle on disk: `theme_bundle::load_from` reads its document and the module of each
+/// set it names, and draws a set on the machine code the device's daemon compiled for it when
+/// the store it grants read-only holds one. Nothing compiled, and every browser, runs the set
+/// on the interpreter.
+#[test]
+fn a_bundle_on_disk_draws_on_the_store_the_daemon_compiled() {
+    use tilo_ui::tokens::SurfaceRole;
+    const SET: &str = "test.bundle-disk";
+    let bundle = tempfile::tempdir().unwrap();
+    let document = BAUHAUS.replace("\"bauhaus\"", &format!("{SET:?}"));
+    std::fs::write(bundle.path().join(theme_bundle::DOCUMENT), &document).unwrap();
+    let bytes = triangle_module(0.0);
+    std::fs::write(bundle.path().join(format!("{SET}.wasm")), &bytes).unwrap();
+
+    // Nothing compiled the set: it runs on the interpreter.
+    let store = tempfile::tempdir().unwrap();
+    let theme = theme_bundle::load_from(bundle.path(), Some(store.path())).unwrap();
+    assert_eq!(theme.finish(SurfaceRole::Control).painter(), SET);
+    assert!(
+        !frame(&theme).encoding().is_empty(),
+        "the frame drew nothing"
+    );
+
+    // The daemon compiled it into the store the launcher grants read-only: the same bundle now
+    // starts the set on that machine code.
+    tilo_wasm_aot::Cache::at(store.path())
+        .unwrap()
+        .ensure(&bytes)
+        .unwrap();
+    let theme = theme_bundle::load_from(bundle.path(), Some(store.path())).unwrap();
+    assert_eq!(theme.finish(SurfaceRole::Control).painter(), SET);
+    assert!(
+        !frame(&theme).encoding().is_empty(),
+        "the frame drew nothing"
+    );
+
+    // A directory with no document is refused with what it read.
+    assert!(matches!(
+        theme_bundle::load_from(store.path(), None),
+        Err(theme_bundle::BundleError::Read(_))
+    ));
 }

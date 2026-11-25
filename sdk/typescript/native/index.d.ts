@@ -48,6 +48,24 @@ export interface Daemon {
    * `{answer: {}}`, or the refusal.
    */
   find(workspace: string | null, app: string, purpose: string): Promise<CallAnswer>;
+  /**
+   * Carry the outside call `pair` names into the workspace call it names, or let go of the one
+   * carried (`null`), on an app's connection: `{answer: {}}`, or the refusal.
+   */
+  carryCall(pair: { outside: string; tilo: string } | null): Promise<CallAnswer>;
+  /** Say who is in the outside calls and where the app stands in them: `{answer: {}}`, or the
+   * refusal. */
+  reportCall(report: object): Promise<CallAnswer>;
+  /** Hand the workspace's call one Opus frame `speaker` said: `null`, or `{refused}`. */
+  hearCall(speaker: string, opus: Uint8Array): { refused: Refusal } | null;
+  /**
+   * The frames the workspace's call said since the last time, and where the device asks the app
+   * to be, when that is new. Throws the refusal's body, as JSON, on a connection that is no app's.
+   */
+  saidCall(): {
+    frames: { speaker: string; opus: Buffer }[];
+    asked?: { call?: string | null; status?: string | null } | null;
+  };
 }
 
 /**

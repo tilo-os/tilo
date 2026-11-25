@@ -392,7 +392,9 @@ app keeps a secret of its own with `vault#keep`: the item is tagged with the
 placed app that kept it and a purpose, that app keeps and is released it without
 an ask, and any other app needs an ask or a grant. A tilolang app's placed
 process keeps and releases only what it kept, and its Rust host uses the value
-for it, in a connection or a signature; no tilolang operation returns it. A
+for it, in a connection or a signature; no tilolang operation returns it. A key that is one
+device's identity to an outside service is no vault item: the daemon derives it from
+the device's own key for the placed app and a purpose, and keeps no copy. A
 process several apps share never receives a secret. The process's egress, fixed
 at its launch, is the network its package was granted, which may name every host
 under a domain when the person is shown that domain as such, and a new grant
@@ -1042,7 +1044,11 @@ workspace vault, despite their names.
   Which servers keep a workspace is recorded in that workspace, the own one
   included: a server keeping the person's own workspace reads that there. Only
   the person's own devices, their own servers included, hold its keys; a server
-  of anyone else stores its sealed frames and writes nothing. The device that writes a record
+  of anyone else stores its sealed frames and writes nothing. Starting a server's
+  keeping for the owner is a membership change in the workspace's operation log that
+  only the owner signs, unless the server's person already administers; it makes that
+  person an administrator for as long as the keeping lasts, and any administrator may
+  end it. The device that writes a record
   pushes the blobs it references to the workspace's hosts with the record, sealed
   like it, and the hosts keep them: no host walks a record for references, and no
   blob address is listed outside the sealed frame. The push never holds up the
@@ -1201,7 +1207,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   app, under the grants that name it; it is never read as an empty person. An undo is
   a write like any other: it carries the invocation it serves, and a call may declare
   it as an effect naming the records it takes changes back from, so an agent under
-  its own key undoes what its grants let it, as a person would. A project
+  its own key undoes what its grants let it, as a person would. A call made inside
+  another is covered by the outer call's consent only when the outer one declares it;
+  otherwise it is decided as if its caller made it directly, under the same grants and
+  rules, asking only where such a direct call would. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds

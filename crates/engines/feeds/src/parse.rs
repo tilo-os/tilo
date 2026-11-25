@@ -21,7 +21,10 @@ const SUMMARY_CHARS: usize = 240;
 pub fn feed(bytes: &[u8], url: &str) -> Result<Found, Failure> {
     let parsed = feed_rs::parser::parse(Cursor::new(bytes))
         .map_err(|e| Failure::not_a_feed(format!("parse: {e}")))?;
-    let title = parsed.title.map(|t| t.content.trim().to_owned()).unwrap_or_default();
+    let title = parsed
+        .title
+        .map(|t| t.content.trim().to_owned())
+        .unwrap_or_default();
     let articles = parsed
         .entries
         .iter()
@@ -132,7 +135,11 @@ pub fn plain(html: &str) -> String {
         .map(|block| block.text)
         .collect::<Vec<_>>()
         .join(" ");
-    text.chars().take(SUMMARY_CHARS).collect::<String>().trim().to_owned()
+    text.chars()
+        .take(SUMMARY_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 /// A capsule's Gemtext as Markdown.

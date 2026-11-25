@@ -146,6 +146,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "EncryptionScheme::DocumentContentKey.retention" = "#1 ContentRetention"
 "EncryptionScheme::MlsApplication" = "#0 unit"
 "Entering" = "struct"
+"Entering.admission" = "#4 Vec<Vec<u8>>"
 "Entering.name" = "#1 String"
 "Entering.request_id" = "#2 [u8; 32]"
 "Entering.through" = "#3 Through"

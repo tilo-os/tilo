@@ -745,3 +745,67 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A report's box opens carrying what the session made of what happened, a recording and a
+/// picture, each a chip after what the window picked: the person takes one off before sending, and
+/// what is left goes with the report as the files they are.
+#[test]
+fn a_reports_box_carries_its_files_as_chips_the_person_may_take_off() {
+    use tilo_reference::Attached;
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let _ = crate::shared_selection::take_send_to();
+    crate::shared_selection::set_send_host_available(true);
+    let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
+    let recording = Attached::Video {
+        name: "Recording.mp4".into(),
+        blob: "ab".repeat(32),
+        w: 0,
+        h: 0,
+        size: 4096,
+    };
+    let picture = Attached::Image {
+        name: "Screenshot.png".into(),
+        blob: "cd".repeat(32),
+        w: 640,
+        h: 480,
+    };
+    let mut send_to = SendToBox::new();
+    send_to.set_viewport(Some(viewport));
+    send_to.set_about(Some(SharedSelection::of_text("Send message")));
+    send_to.open(None, std::slice::from_ref(&destination));
+    send_to.carry(&[recording.clone(), picture]);
+    send_to.place(Rect::new(40.0, 120.0, 212.0, 320.0), Some(viewport));
+
+    let chips: Vec<String> = send_to.subjects().iter().map(subject_label).collect();
+    assert_eq!(chips, ["Send message", "Recording.mp4", "Screenshot.png"]);
+    assert_eq!(
+        send_to.layout.subjects.len(),
+        3,
+        "each stands as a chip of its own"
+    );
+    // The picture is taken off its chip, as a screen reader takes it off.
+    assert!(send_to.perform_semantic_action("send-to:subject:2", &crate::a11y::Action::Activate));
+    type_text(&mut send_to, "The send button does nothing");
+    send_to.send();
+    let requests = crate::shared_selection::take_send_to();
+    assert_eq!(requests.len(), 1, "one report");
+    let carried: Vec<_> = requests[0]
+        .about
+        .iter()
+        .filter_map(|about| about.to_attached(Some("so.tilo.notes"), None))
+        .collect();
+    assert_eq!(
+        carried.len(),
+        2,
+        "what the window picked, and the recording"
+    );
+    assert_eq!(
+        carried[1], recording,
+        "the recording goes as the file it is"
+    );
+
+    // A box the person opens is no report's: it carries nothing it was not given.
+    let mut plain = SendToBox::new();
+    plain.open(None, &[]);
+    assert!(plain.subjects().is_empty());
+}

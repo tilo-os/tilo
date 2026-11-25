@@ -6,7 +6,6 @@
 //! (`strong`, `em`), the way a document stores them, so a deck written here reads as text
 //! anywhere.
 
-
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::assigning_clones,
@@ -380,8 +379,16 @@ impl Element {
             y,
             w,
             h,
-            fill: if line { "none".to_owned() } else { "accent".to_owned() },
-            stroke: if line { "accent".to_owned() } else { "none".to_owned() },
+            fill: if line {
+                "none".to_owned()
+            } else {
+                "accent".to_owned()
+            },
+            stroke: if line {
+                "accent".to_owned()
+            } else {
+                "none".to_owned()
+            },
             stroke_width: if line { 6.0 } else { 0.0 },
             font_size: 32.0,
             radius: if kind == ElementKind::Rect { 16.0 } else { 0.0 },
@@ -531,13 +538,7 @@ pub fn runs_of(block: &Block) -> Vec<(&str, bool, bool)> {
         .filter_map(|pair| {
             let [start, end] = pair else { return None };
             let text = block.text.get(*start..*end)?;
-            (!text.is_empty()).then(|| {
-                (
-                    text,
-                    styled("strong", *start),
-                    styled("em", *start),
-                )
-            })
+            (!text.is_empty()).then(|| (text, styled("strong", *start), styled("em", *start)))
         })
         .collect()
 }
@@ -739,7 +740,14 @@ mod tests {
         let mut built = Block::paragraph("plain ");
         push_run(&mut built, "bo", true, false);
         push_run(&mut built, "ld", true, true);
-        assert_eq!(runs_of(&built), vec![("plain ", false, false), ("bo", true, false), ("ld", true, true)]);
+        assert_eq!(
+            runs_of(&built),
+            vec![
+                ("plain ", false, false),
+                ("bo", true, false),
+                ("ld", true, true)
+            ]
+        );
         assert_eq!(plain_text_of(&[built.clone()]), "plain bold");
         assert_eq!(paragraphs_of("a\nb", true, false)[1].text, "b");
     }

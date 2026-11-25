@@ -120,7 +120,10 @@ fn a_workspace_founded_again_keeps_the_tasks_the_hosted_one_holds() {
         2,
         "the restored computer reads the hosted tasks"
     );
-    assert_eq!(read(&restored, &ferry, "title"), Value::text("Book the ferry"));
+    assert_eq!(
+        read(&restored, &ferry, "title"),
+        Value::text("Book the ferry")
+    );
     for task in &before {
         assert!(
             items(&site).iter().any(|held| target(held) == target(task)),
@@ -131,8 +134,15 @@ fn a_workspace_founded_again_keeps_the_tasks_the_hosted_one_holds() {
     // The host carries on: what its people write next lands beside every task before it.
     let tickets = call(&site, "new_task", create(&root, "Buy the tickets"));
     site.commit();
-    assert_eq!(items(&site).len(), 3, "the host made the task beside the others");
-    assert_eq!(read(&site, &tickets, "title"), Value::text("Buy the tickets"));
+    assert_eq!(
+        items(&site).len(),
+        3,
+        "the host made the task beside the others"
+    );
+    assert_eq!(
+        read(&site, &tickets, "title"),
+        Value::text("Buy the tickets")
+    );
     let mut view = site.view(APP);
     go_to(&mut view, "Inbox");
     assert_eq!(

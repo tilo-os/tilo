@@ -147,7 +147,9 @@ fn row(
         model.to_owned(),
         examples
             .iter()
-            .map(|(text, accepted, note, at)| ((*text).to_owned(), *accepted, (*note).to_owned(), *at))
+            .map(|(text, accepted, note, at)| {
+                ((*text).to_owned(), *accepted, (*note).to_owned(), *at)
+            })
             .collect(),
     )
 }
@@ -171,8 +173,18 @@ fn expected(documents: &[(String, AutoCommit)]) -> Vec<Row> {
                 "Anthropic/claude-research",
             ],
             &[
-                ("It was a week of things.", false, "Too vague", 1_700_000_200_000),
-                ("Revenue rose 4 %, churn fell.", true, "Exactly this", 1_700_000_400_000),
+                (
+                    "It was a week of things.",
+                    false,
+                    "Too vague",
+                    1_700_000_200_000,
+                ),
+                (
+                    "Revenue rose 4 %, churn fell.",
+                    true,
+                    "Exactly this",
+                    1_700_000_400_000,
+                ),
             ],
         ),
         row(
@@ -184,7 +196,12 @@ fn expected(documents: &[(String, AutoCommit)]) -> Vec<Row> {
                 "",
                 "",
             ],
-            &[("Context: the move. Decision: Tuesday.", true, "", 1_700_000_500_000)],
+            &[(
+                "Context: the move. Decision: Tuesday.",
+                true,
+                "",
+                1_700_000_500_000,
+            )],
         ),
     ]
 }
@@ -201,7 +218,11 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
         listed(&ada, &all, "skills").is_empty(),
         "nothing is carried before the migration runs"
     );
-    assert_eq!(ada.host.migrate(), 1, "one migration carries what the native app kept");
+    assert_eq!(
+        ada.host.migrate(),
+        1,
+        "one migration carries what the native app kept"
+    );
     assert_eq!(ada.commit(), 1, "as one change");
     assert_eq!(
         carried(&ada, &all),
@@ -218,7 +239,11 @@ fn a_native_workspace_skills_document_is_carried_over_once_as_one_change() {
         0,
         "another device opening the same document later finds it done"
     );
-    assert_eq!(carried(&grace, &all), expected(&documents), "and nothing twice");
+    assert_eq!(
+        carried(&grace, &all),
+        expected(&documents),
+        "and nothing twice"
+    );
 
     let after: Vec<Vec<automerge::ChangeHash>> = documents
         .iter()

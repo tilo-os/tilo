@@ -745,6 +745,7 @@ impl AppBrokerState {
                 launchable: launchable::LaunchableCatalogue::new(),
                 workspace_opens: workspace_open::WorkspaceOpens::default(),
                 window_instances: Mutex::new(HashMap::new()),
+                saves: Mutex::new(HashMap::new()),
                 presses: presses::Presses::default(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
@@ -755,9 +756,9 @@ impl AppBrokerState {
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 pending_invocations: Mutex::new(HashMap::new()),
-                approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLog::default()),
+                child_calls: Mutex::default(),
                 ended_invocations: crate::apps::automation::BrokerInvocations::default(),
                 app_action_access: RwLock::new(
                     services
@@ -933,7 +934,7 @@ impl AppBrokerState {
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &MemberId,
+        actor: &tilo_action_policy::Actor,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.record_completion(

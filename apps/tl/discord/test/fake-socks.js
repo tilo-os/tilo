@@ -19,6 +19,8 @@ function portBytes(port) {
 /// The proxy's relay and control sockets, its requests, and what it carried.
 export async function fakeProxy() {
   const relay = createSocket("udp4");
+  // A datagram to a client that already left is refused, as on any relay: nothing to carry.
+  relay.on("error", () => {});
   await new Promise((resolve) => relay.bind(0, "127.0.0.1", resolve));
   const requests = [];
   const carried = [];

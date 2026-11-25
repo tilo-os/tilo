@@ -3,7 +3,7 @@
 //! A call goes out in the workspace its caller names ([`Caller::workspace`]), which the other end
 //! answers it in where it serves more than one.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::frame_line_in;
 use crate::outcome::InvocationId;
+use crate::remote::call::{BridgedCall, CallAudio, CallReport, CallStatus};
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer, ContentPutStep,
@@ -67,7 +68,16 @@ struct Waiting {
     cancels: HashMap<InvocationId, Vec<Asked>>,
     /// How far each invocation was seen to get, for a wait that asks past it.
     seen: HashMap<InvocationId, UpdateMark>,
+    /// The frames the workspace's call said that the app has not taken yet, the newest
+    /// [`MAX_SAID`] of them: live audio is never queued past that.
+    said: VecDeque<CallAudio>,
+    /// The device's latest word on the outside call, until the app takes it.
+    asked: Option<CallStatus>,
 }
+
+/// How many of the workspace's frames wait for an app that has not taken them: a second of a
+/// call's voice. Older ones are dropped, never played late.
+const MAX_SAID: usize = 50;
 
 /// What a request's answer is found by.
 #[derive(Clone, Copy)]
@@ -363,7 +373,20 @@ fn read_answers(mut read: impl BufRead, shared: &std::sync::Weak<Shared>) {
 fn answered(shared: &Shared, message: RemoteActionMessage) {
     let mut waiting = shared.waiting.lock_recover();
     let asked = match &message {
+        RemoteActionMessage::CallSaid(frame) => {
+            if waiting.said.len() >= MAX_SAID {
+                waiting.said.pop_front();
+            }
+            waiting.said.push_back(frame.clone());
+            None
+        }
+        RemoteActionMessage::CallStatus(status) => {
+            waiting.asked = Some(status.clone());
+            None
+        }
         RemoteActionMessage::CatalogueResponse { correlation, .. }
+        | RemoteActionMessage::CallCarryResponse { correlation, .. }
+        | RemoteActionMessage::CallReportResponse { correlation, .. }
         | RemoteActionMessage::ResourceReading { correlation, .. }
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
@@ -551,6 +574,75 @@ impl LineClient {
             }),
             other => Err(unexpected_step(&other)),
         }
+    }
+}
+
+/// The call lane an app's connection carries ([`crate::remote::call`]): the app says which outside
+/// call it carries into which workspace call, who is in it, and what its people say; the device
+/// hands back what the workspace's call says and where it wants the app. A connection that is no
+/// app's, or one whose app the workspace grants no call, is refused with the reason.
+impl LineClient {
+    /// Carry `pair` from now on, or let go of the call carried (`None`).
+    ///
+    /// # Errors
+    /// The device refused it (the app may not carry that call, or none at all), or stopped
+    /// answering.
+    pub fn carry_call(&self, pair: Option<BridgedCall>) -> Answered<()> {
+        let correlation = self.correlation();
+        match self.asked(
+            Key::Correlation(correlation),
+            RemoteActionMessage::CallCarryRequest { correlation, pair },
+        )? {
+            RemoteActionMessage::CallCarryResponse { result, .. } => result,
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Say who is in the outside calls and where the app stands in them.
+    ///
+    /// # Errors
+    /// The report is not one an app may make, the connection carries no call lane, or the other
+    /// end stopped answering.
+    pub fn report_call(&self, report: CallReport) -> Answered<()> {
+        let correlation = self.correlation();
+        match self.asked(
+            Key::Correlation(correlation),
+            RemoteActionMessage::CallReport {
+                correlation,
+                report,
+            },
+        )? {
+            RemoteActionMessage::CallReportResponse { result, .. } => result,
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Hand the workspace's call one frame an outside person said. Nothing answers it: a frame
+    /// the call does not take is dropped there, as live audio is.
+    ///
+    /// # Errors
+    /// The connection closed.
+    pub fn hear_call(&self, frame: CallAudio) -> Answered<()> {
+        let line = frame_line_in(RemoteActionMessage::CallHeard(frame), None);
+        let mut writer = self.0.writer.lock_recover();
+        writeln!(writer, "{line}")
+            .and_then(|()| writer.flush())
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: format!("the connection closed: {error}"),
+            })
+    }
+
+    /// The frames the workspace's call said since the last time, oldest first.
+    #[must_use]
+    pub fn said_call(&self) -> Vec<CallAudio> {
+        self.0.waiting.lock_recover().said.drain(..).collect()
+    }
+
+    /// Where the device last asked the app to be in the outside call, and the line to show its
+    /// people there, once: `None` when it asked nothing new since.
+    #[must_use]
+    pub fn asked_call(&self) -> Option<CallStatus> {
+        self.0.waiting.lock_recover().asked.take()
     }
 }
 

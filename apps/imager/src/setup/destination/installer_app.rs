@@ -3212,9 +3212,11 @@ impl InstallerApp {
             ));
         } else {
             children.push(Box::new(
-                Text::new(&crate::setup::strings::t("installer-recovery-key-write-note"))
-                    .with_role(TextRole::Caption)
-                    .with_color(theme.text_dim),
+                Text::new(&crate::setup::strings::t(
+                    "installer-recovery-key-write-note",
+                ))
+                .with_role(TextRole::Caption)
+                .with_color(theme.text_dim),
             ));
         }
         children.push(Box::new(

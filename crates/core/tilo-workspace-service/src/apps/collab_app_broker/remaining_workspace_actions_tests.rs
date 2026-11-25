@@ -399,7 +399,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(*service.0.lock().unwrap(), vec![(request.invocation, true)]);
         let owner = super::super::InvocationOwner::Local {
-            actor: tilo_actions::MemberId::person("owner"),
+            actor: tilo_actions::Actor::from(tilo_actions::MemberId::person("owner")),
         };
         let guard = state.journal.lock().unwrap();
         let journal = guard.as_ref().unwrap().as_ref().unwrap();
@@ -440,7 +440,7 @@ tilo_test_env::scenario! {
         let actor = BrokerActor::for_caller(&caller);
         // Even a permission-bearing actor is not the caller's original certificate.
         let mut workspace = workspace;
-        workspace.policy.set_owner(actor.member().person_id().unwrap());
+        workspace.policy.set_owner(actor.actor().person_id().unwrap());
         assert!(
             state
                 .start_remaining_workspace_action(
@@ -485,7 +485,6 @@ impl WorkspaceGovernanceServices for Governance {
             input: tilo_actions::InputSpec::None,
             params: Vec::new(),
             view: None,
-            effects: Vec::new(),
         }]
     }
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {

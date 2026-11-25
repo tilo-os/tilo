@@ -394,4 +394,52 @@ tilo_test_env::scenario! {
             }
         }
     }
+
+    // A question a press raised stands where the press was: its main answer under the point, so
+    // the next press at the same spot takes it, and inside the window however near its edge the
+    // press was.
+    phase a_popover_aimed_at_a_press_stands_its_main_answer_under_it;
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::light();
+        let mut tr = TextRenderer::new();
+        let answers = || {
+            crate::widget::Column::new()
+                .push(Box::new(crate::widget::Text::new("Share “Release planning” with Mia?")))
+                .push(Box::new(
+                    crate::widget::Row::new()
+                        .push(Box::new(crate::widget::Button::new("decline", "Don't allow")))
+                        .push(Box::new(
+                            crate::widget::Button::new("share", "Share")
+                                .role(crate::widget::ButtonRole::Primary),
+                        )),
+                ))
+        };
+        let press = Point::new(420.0, 260.0);
+        let mut p = Popover::with_content(answers())
+            .with_viewport(WINDOW)
+            .open(true);
+        p.set_aim(Some(press));
+        p.place(&mut tr, &theme);
+        let main = primary_button(p.content()).expect("the panel's main answer");
+        assert!(
+            (main.center() - press).hypot() < 1.0,
+            "the main answer {main:?} stands under the press {press:?}"
+        );
+        assert!(WINDOW.contains_rect(p.rect()), "{:?}", p.rect());
+
+        let corner = Point::new(796.0, 596.0);
+        p.set_aim(Some(corner));
+        p.place(&mut tr, &theme);
+        let main = primary_button(p.content()).expect("the panel's main answer");
+        assert!(
+            WINDOW.contains_rect(p.rect()),
+            "in the window by its corner: {:?}",
+            p.rect()
+        );
+        assert!(
+            (main.center() - corner).hypot() < (p.rect().size().to_vec2()).hypot(),
+            "as near the press as the window lets it: {main:?}"
+        );
+    }
 }

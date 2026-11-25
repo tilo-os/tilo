@@ -357,7 +357,9 @@ impl JoinedChannel {
         .serving(self.state.delivered_to(self.peer_id))
         .opened_for(self.opened_for());
         if let Some(record) = record {
-            context = context.on_record(record).of_kind(self.resource_type.clone());
+            context = context
+                .on_record(record)
+                .of_kind(self.resource_type.clone());
         }
         if matches!(
             command,
@@ -913,8 +915,6 @@ pub(super) struct NativeContextReadGuard {
     pub(super) state: Arc<AppBrokerState>,
     pub(super) route: CrdtRoute,
     pub(super) identity: AdmittedJoinIdentity,
-    /// Native private views retain their original document's current Read ownership.
-    pub(super) document: Option<NativeDocumentReadContext>,
 }
 
 impl NativeContextReadGuard {
@@ -934,20 +934,6 @@ impl NativeContextReadGuard {
             guard
                 .state
                 .revalidate_admission(&guard.route, &guard.identity)?;
-            if let Some(context) = &guard.document {
-                context.revalidate().map_err(BrokerError::failed)?;
-                guard
-                    .state
-                    .services
-                    .committed_documents
-                    .as_ref()
-                    .ok_or_else(|| {
-                        BrokerError::failed("native private document owner ended".into())
-                    })?
-                    .authorize(context)
-                    .map_err(BrokerError::failed)?;
-                context.revalidate().map_err(BrokerError::failed)?;
-            }
         }
         Ok(())
     }

@@ -355,7 +355,7 @@ impl Session {
         // shell was read over it — go to Chat now: a message never waits for the next wake of the
         // loop, nor for the frame that wake draws.
         self.shared.deliver_hands();
-        self.shared.deliver_sends();
+        self.shared.deliver_sends(Some(self.content.as_ref()));
         // What search and the session's steps read of what the session publishes is read once the
         // frame is out: a key's turn draws what it opens before anything is read, and the reading
         // never delays a frame. A session that keeps drawing is still read, every tenth of a second.
@@ -391,17 +391,21 @@ impl Session {
     }
 
     /// The person's own presses, as the compositor delivered them, go to the device's daemon over
-    /// its shell link, each under the tab of the window it reached: what a call an app's window
-    /// makes names to run as the person ([`tilo_compositor::presses`]).
+    /// its shell link, each under the tab of the window it reached and at the point in it where it
+    /// was: what a call an app's window makes names to run as the person, and where a question it
+    /// raises stands ([`tilo_compositor::presses`]).
     #[cfg(target_os = "linux")]
     fn deliver_person_presses(&self) {
-        for (window, serial) in self.compositor.person_presses().take() {
-            let Some(tab) = self.shared.desktop.tab_of(window) else {
+        for press in self.compositor.person_presses().take() {
+            let Some(tab) = self.shared.desktop.tab_of(press.window) else {
                 // A press in something that is no window of the layout (a layer, the lock screen):
                 // nothing an app's call names.
                 continue;
             };
-            self.shared.daemon.press(tab, serial);
+            let at = press
+                .at
+                .map(|(x, y)| tilo_actions::remote::asked::PressPoint { x, y });
+            self.shared.daemon.press(tab, press.serial, at);
         }
     }
 
@@ -752,7 +756,7 @@ impl Session {
         // What was handed to an agent, and what was sent since the last look, by a box, an agent
         // or a script.
         self.shared.deliver_hands();
-        self.shared.deliver_sends();
+        self.shared.deliver_sends(Some(self.content.as_ref()));
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();

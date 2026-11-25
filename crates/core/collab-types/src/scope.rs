@@ -128,6 +128,9 @@ mod tests {
             assert_eq!(Scope::parse(WORKSPACE, &scope.id()), Some(scope.clone()));
         }
         assert_eq!(Scope::parse(WORKSPACE, "device/ab"), None);
-        assert_eq!(Scope::parse(WORKSPACE, &format!("device/{}", "AB".repeat(32))), None);
+        assert_eq!(
+            Scope::parse(WORKSPACE, &format!("device/{}", "AB".repeat(32))),
+            None
+        );
     }
 }

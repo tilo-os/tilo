@@ -987,7 +987,8 @@ impl Platform for HostPlatform {
     }
 
     /// A check the project's host approved, for the invocation the broker is serving on this
-    /// thread, on the route the instance joined: the same queue a Rust app's check goes through.
+    /// thread, as the device's work for that invocation, through the one dispatch; its record is
+    /// the device's, as every job's is.
     fn approved_check(&self, app: &str, check_id: &str) -> Result<String, String> {
         let served = SERVING.with(|served| served.borrow().clone());
         let invocation = served
@@ -1831,8 +1832,7 @@ fn open_instance(
     // A check goes out on the route the instance joined, the one its invocations arrive on; an
     // instance with no broker runs none.
     let checks = Rc::new(crate::approved_checks::Checks::new(
-        (!connection.is_local()).then(|| connection.route().channel_id()),
-        Arc::clone(wake),
+        (!connection.is_local()).then(|| connection.shared_manager()),
     ));
     let platform = HostPlatform {
         bundle: Arc::clone(bundle),
@@ -3104,6 +3104,11 @@ impl Hosted {
                     Some(crate::page_prompts::Answered::Said) => return true,
                     None => {}
                 }
+                // A check's call is the checks' to follow; its end answers the invocation it
+                // is the work of.
+                if self.checks.heard(&message) {
+                    return true;
+                }
                 return self.answered(&message);
             }
             CollabEvent::InvocationCancellation { id } => {
@@ -3784,18 +3789,12 @@ impl Hosted {
     }
 
     /// Answer the shell's handoff step `request`: a checkpoint writes the document's on-disk copy
-    /// and is done; an owner view is presentation the instance has no window of its own for, and
-    /// wants no answer.
+    /// and is done.
     fn handoff(&self, request: &collaboration::handoff::HandoffRequest) {
         use collaboration::handoff::{HandoffReport, HandoffRequest};
-        let report = match request {
-            // Every write is in the store as it is made: nothing waits to be kept.
-            HandoffRequest::Checkpoint { token } => HandoffReport::Done {
-                token: *token,
-                heads: Vec::new(),
-            },
-            HandoffRequest::OwnerView { .. } => return,
-        };
+        // Every write is in the store as it is made: nothing waits to be kept.
+        let HandoffRequest::Checkpoint { token } = request;
+        let report = HandoffReport::Done { token: *token };
         if let Err(error) = self
             .connection
             .manager()

@@ -23,10 +23,10 @@
     )
 )]
 
-#[cfg(feature = "book")]
-pub mod book;
 #[cfg(feature = "markdown")]
 pub mod blocks;
+#[cfg(feature = "book")]
+pub mod book;
 #[cfg(feature = "markdown")]
 pub mod convert;
 pub mod format;

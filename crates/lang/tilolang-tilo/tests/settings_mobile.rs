@@ -77,8 +77,7 @@ impl Pane {
             &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
         )
         .expect("its ids parse");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
-            .expect("the platform's packages read");
+        let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
         let host = Host::new(me(), || None).expect("a host");
         // The device's own resources are the platform's packages this package names, loaded
         // here as a window's process loads them: what a read of `device.network` answers from.

@@ -27,7 +27,7 @@ use tilo_user_identity::{
 use super::super::tests::{caller, settled};
 use super::telling_tests::{ASSISTANT, Setup, agent_of, nobody};
 use crate::workspaces::push_addresses::{
-    self, AddressList, LIST, Listed, MAX_ADDRESSES, PushEnvironment, REGISTER, UNREGISTER,
+    self, AddressList, LIST, Listed, MAX_ADDRESSES, PushEnvironment, PushKind, REGISTER, UNREGISTER,
 };
 use crate::workspaces::tests::guest_device;
 
@@ -47,7 +47,7 @@ fn key(n: u8) -> Value {
 
 /// What a device hands over, with the made-up token and key `n`.
 fn registration(n: u8) -> Value {
-    json!({"token": token(n), "environment": "production", "topic": APP, "key": key(n)})
+    json!({"kind": "apns", "token": token(n), "environment": "production", "topic": APP, "key": key(n)})
 }
 
 /// A device of the person whose root is `root`, as that root certifies
@@ -121,7 +121,7 @@ fn tokens(setup: &Setup, root: &[u8; 32]) -> Vec<String> {
         .workspaces
         .push_addresses(root)
         .into_iter()
-        .map(|address| address.token)
+        .map(|address| address.token.clone())
         .collect()
 }
 
@@ -147,9 +147,10 @@ async fn a_device_hands_over_its_own_address_and_its_person_reads_back_no_addres
     let own = kept.addresses.first().unwrap();
     assert_eq!(own.device, named(&phone));
     assert!(own.this_device);
+    assert_eq!(own.kind, PushKind::Apns);
     assert_eq!(
         (own.environment, own.topic.as_str()),
-        (PushEnvironment::Production, APP)
+        (Some(PushEnvironment::Production), APP)
     );
     // What sends a push reads the whole of it.
     assert_eq!(tokens(&setup, &ada), [token(1)]);
@@ -186,7 +187,7 @@ async fn a_device_hands_over_its_own_address_and_its_person_reads_back_no_addres
 
     // What is no token, no app's name or no key is refused, and so is an
     // environment the push service does not have. Nothing of it is kept.
-    let with = |token: &str, topic: &str, key: Value, environment: &str| json!({"token": token, "environment": environment, "topic": topic, "key": key});
+    let with = |token: &str, topic: &str, key: Value, environment: &str| json!({"kind": "apns", "token": token, "environment": environment, "topic": topic, "key": key});
     let short_key = json!({"p256dh": "04", "auth": "05"});
     for bad in [
         with("../../3/device/x", APP, key(5), "production"),
@@ -371,7 +372,7 @@ async fn a_few_addresses_are_kept_and_what_a_push_showed_is_taken_back_once() {
     // The first is taken back from both devices, once.
     let ids = ["thing-1".to_owned(), "thing-0".to_owned()];
     let mut taken: Vec<(String, Vec<String>)> = workspaces
-        .push_taken_back(&ada, &ids)
+        .push_taken_back(&ada, &ids, PushKind::Apns)
         .into_iter()
         .map(|(address, ids)| (address.token, ids))
         .collect();
@@ -383,9 +384,73 @@ async fn a_few_addresses_are_kept_and_what_a_push_showed_is_taken_back_once() {
             (token(9), vec!["thing-1".to_owned()])
         ]
     );
-    assert!(workspaces.push_taken_back(&ada, &ids).is_empty());
+    assert!(
+        workspaces
+            .push_taken_back(&ada, &ids, PushKind::Apns)
+            .is_empty()
+    );
     // The second is still remembered, on the one device that showed it.
-    let taken = workspaces.push_taken_back(&ada, &["thing-2".to_owned()]);
+    let taken = workspaces.push_taken_back(&ada, &["thing-2".to_owned()], PushKind::Apns);
     assert_eq!(taken.len(), 1);
     assert_eq!(taken.first().unwrap().0.token, token(9));
+}
+
+/// A device hands over the web push endpoint it subscribed with, in place of Apple's token: the
+/// same record and the same action keep it, its person reads back the kind and never the
+/// endpoint, and what reaches it is the endpoint. One that is no `https` address, or that names
+/// another device, is refused, and nothing of it is kept.
+#[tokio::test]
+async fn a_web_push_address_is_an_https_endpoint_of_the_asking_device() {
+    let setup = Setup::new().await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let ada = root.verifying_key().to_bytes();
+    let phone = device_of(&root, "Pixel");
+    let endpoint = "https://push.example/endpoint/abc";
+    let web = |endpoint: &str| json!({"kind": "web-push", "endpoint": endpoint, "key": key(1)});
+
+    let answer = person(&setup, &phone, REGISTER, web(endpoint)).await;
+    let said = answer.to_string();
+    assert!(
+        !said.contains(endpoint),
+        "the person reads no address: {said}"
+    );
+    let listed = listed(&setup, &phone).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        (listed[0].kind, listed[0].device.as_str()),
+        (PushKind::WebPush, named(&phone).as_str())
+    );
+    assert!(listed[0].this_device);
+    // What sends a push reads the endpoint, and a push's showing is remembered by it.
+    let kept = setup.workspaces.push_addresses(&ada);
+    assert_eq!(kept[0].kind, PushKind::WebPush);
+    assert_eq!(kept[0].reached_as(), endpoint);
+    assert!(kept[0].token.is_empty());
+    setup
+        .workspaces
+        .push_shown(&ada, &[endpoint.to_owned()], "thing-1");
+    let taken = setup
+        .workspaces
+        .push_taken_back(&ada, &["thing-1".to_owned()], PushKind::WebPush);
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].0.reached_as(), endpoint);
+
+    // One that is no `https` address names no push service; one naming another device names
+    // what an address never names.
+    let kept_before = setup.workspaces.push_addresses(&ada).len();
+    for refused in [
+        web("http://push.example/endpoint/abc"),
+        web("push.example/endpoint/abc"),
+        web(""),
+        json!({"kind": "web-push", "endpoint": endpoint, "key": key(1),
+               "device": named(&phone)}),
+        json!({"kind": "web-push", "endpoint": endpoint}),
+    ] {
+        let answer = ask(&setup, &phone, &caller(&phone), REGISTER, refused).await;
+        assert!(answer.is_err(), "an address not one was kept: {answer:?}");
+    }
+    assert_eq!(setup.workspaces.push_addresses(&ada).len(), kept_before);
+    // A device's own endpoint is forgotten with its key, and when the push service says so.
+    setup.workspaces.forget_push_address(&ada, endpoint, None);
+    assert!(setup.workspaces.push_addresses(&ada).is_empty());
 }

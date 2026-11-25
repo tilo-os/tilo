@@ -806,17 +806,21 @@ async fn page_text(
     workspace: &str,
     (item, kind): (&ItemId, vault_items::ItemKind),
     site: &Place,
-    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
+    (by, asker, request): (&str, &tilo_action_policy::Acting, &InvokeRequest),
 ) -> Result<PageText, String> {
     workspaces
-        .changing_vault(workspace, (Some(asker), Some(asked)), |items| match kind {
-            vault_items::ItemKind::CodeGenerator => {
-                items.code_at(item, site, by).map(PageText::Code)
-            }
-            kind => items
-                .use_as(item, kind, std::slice::from_ref(site), by)
-                .map(PageText::Item),
-        })
+        .changing_vault(
+            workspace,
+            (Some(asker), Some(request)),
+            |items| match kind {
+                vault_items::ItemKind::CodeGenerator => {
+                    items.code_at(item, site, by).map(PageText::Code)
+                }
+                kind => items
+                    .use_as(item, kind, std::slice::from_ref(site), by)
+                    .map(PageText::Item),
+            },
+        )
         .await
 }
 

@@ -1239,11 +1239,6 @@ fn broker_services(
         settings.register(&providers);
     }
     BrokerServices {
-        // No approved-check runner is installed with this session: a check a
-        // project's app asks for has nothing to run it.
-        approved_checks: BrokerService::unserved(
-            "no project's approved check runs here: this session installs no check service",
-        ),
         // No device daemon keeps a hosted session's workspaces for it to read.
         committed_documents: BrokerService::unserved(
             "a session in a workspace's VM runs no device daemon to read records at",
@@ -1308,10 +1303,9 @@ fn broker_services(
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
         keyboard_shortcuts: BrokerService::served(crate::keyboard_shortcuts::servable()),
-        // The continuation channel a window's app speaks on: its checkpoint
-        // and handoff reports are taken by the session that runs it rather
-        // than refused. What a window shows is read from the broker's record
-        // subscriptions instead ([`crate::continuations`]).
+        // The continuation channel a window's app speaks on: its continuation reports are
+        // taken by the session that runs it rather than refused. What a window shows is read
+        // from the broker's record subscriptions instead ([`crate::continuations`]).
         continuations: BrokerService::served(window_notes),
         // What an app publishes of its own content goes to the device's daemon on the app's own
         // connection there: the daemon keeps the device's one index.

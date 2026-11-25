@@ -35,7 +35,6 @@ use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME,
 use tilo_compositor::{Compositor, InputEvent, Selection};
 
 use crate::hosted::ClipboardCopy;
-use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use ui::dnd::CopiedFiles;
 

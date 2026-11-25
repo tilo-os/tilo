@@ -23,7 +23,7 @@ fn change(change: serde_json::Value) -> ShortcutChange {
 fn saving(workspace: &str, actor: &MemberId, change: ShortcutChange) -> ShortcutLibraryRequest {
     ShortcutLibraryRequest {
         workspace: workspace.to_owned(),
-        actor: actor.clone(),
+        actor: actor.clone().into(),
         acting_for: None,
         change,
         context: tilo_actions::ActionContext::default(),

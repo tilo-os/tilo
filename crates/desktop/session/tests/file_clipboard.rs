@@ -22,8 +22,8 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use runtime_collab::RecordHandle;
 use runtime_collab::CollabClient;
+use runtime_collab::RecordHandle;
 use runtime_collab::file_clipboard::{
     Command, Conflict, ObjectIdentity, Offer, Reply, SelectedDescriptor,
 };
@@ -117,7 +117,8 @@ struct Files {
 impl Files {
     async fn join(socket: &Path) -> Self {
         let client = connect(socket);
-        let mine = opened(&client, &channel()).await
+        let mine = opened(&client, &channel())
+            .await
             .expect("the app the session launched joins the workspace's channel");
         let invocations = mine
             .subscribe_stable_invocations()
@@ -545,12 +546,7 @@ fn files_copies_and_cuts_through_the_session_and_pastes_into_another_folder() {
     let (notes, received) = std::sync::mpsc::channel();
     let (checked, check) = std::sync::mpsc::channel();
     let app = std::thread::spawn(move || {
-        files_calls(
-            &socket,
-            &folders,
-            &notes,
-            &check,
-        );
+        files_calls(&socket, &folders, &notes, &check);
     });
     let proof = until_the_app_is_done(&mut session, &received, &checked);
     if let Err(panic) = app.join() {

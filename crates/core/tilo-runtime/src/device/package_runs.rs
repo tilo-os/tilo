@@ -29,8 +29,7 @@ pub fn runs_in_process(app: &str) -> bool {
         .ok()
         .flatten()
         .and_then(|installed| {
-            let manifest =
-                launcher::manifest::read_manifest(&installed.manifest_path).ok()?;
+            let manifest = launcher::manifest::read_manifest(&installed.manifest_path).ok()?;
             launcher::manifest::code_runtime(&manifest, &installed.payload_root).map(|_| ())
         })
         .is_some()
@@ -48,6 +47,11 @@ pub struct TaskPackage {
 /// program names an app by what its package declares (its actions, its roots), which only the
 /// package itself holds: a program is compiled against its declarations, not against the surface
 /// it publishes.
+///
+/// The package's modules are the device's compiled ones: the daemon compiled them with it
+/// ([`super::packages`]) and the task's host reads them from the store it is granted read-only
+/// ([`tilo_wasm_aot`]), as an app's own window does. A module the daemon did not compile runs on
+/// the interpreter there.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn task_packages() -> Vec<TaskPackage> {
@@ -198,10 +202,7 @@ pub fn verified_payload(app: &str) -> Result<std::path::PathBuf, String> {
             if runtime_bundle::carried_builds().is_empty() {
                 "does not have it".to_owned()
             } else {
-                format!(
-                    "carries {}",
-                    runtime_bundle::carried_builds().join(", ")
-                )
+                format!("carries {}", runtime_bundle::carried_builds().join(", "))
             }
         ));
     }

@@ -7,10 +7,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_actions::{ActionAddress, ApiError};
-use tilo_session_core::desktop::osd::{
-    Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind,
-};
+use tilo_actions::ApiError;
+use tilo_session_core::desktop::osd::{Device, DeviceGlyph, Hint, Level, Osd, OsdKind};
 use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::super_tap::Ask;
 use tilo_session_core::surface::{KeyClaim, ShellSurface, SurfaceKey, SurfaceLayer};

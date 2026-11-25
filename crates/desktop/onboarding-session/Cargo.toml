@@ -18,7 +18,7 @@ taffy.workspace = true
 tilo-actions = { path = "../../core/actions" }
 # Adding this computer with a code calls this computer's daemon, as `tilo login` does.
 tilo-api = { path = "../../core/tilo-api" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 vello.workspace = true
 winit.workspace = true
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }

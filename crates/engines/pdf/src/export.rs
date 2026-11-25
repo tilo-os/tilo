@@ -260,7 +260,9 @@ pub fn save(sources: &[&[u8]], request: &SaveRequest) -> Result<Vec<u8>, Error> 
         return Err(Error::Unreadable("no file was given to save".to_owned()));
     };
     if request.pages.len() > crate::MAX_PAGES || imports.len() >= MAX_IMPORT_PAGES {
-        return Err(Error::Unreadable("a copy holds fewer pages than that".to_owned()));
+        return Err(Error::Unreadable(
+            "a copy holds fewer pages than that".to_owned(),
+        ));
     }
     let document = Document::open(own)?;
     let imported = imports

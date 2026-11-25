@@ -73,7 +73,11 @@ fn a_members_device_is_refused_what_is_the_computers_own() {
         let (grace, _) = host.other_person("Grace", &workspace).await;
         for (resource, action, arguments) in [
             ("devices", "issue", json!({})),
-            ("settings", "set", json!({"name": "keymap", "value": "dvorak"})),
+            (
+                "settings",
+                "set",
+                json!({"name": "keymap", "value": "dvorak"}),
+            ),
         ] {
             let asked = grace
                 .call(

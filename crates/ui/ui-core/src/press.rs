@@ -63,7 +63,7 @@ mod tests {
         forget();
         note_event(
             &WindowEvent::MouseInput {
-                device_id: unsafe { winit::event::DeviceId::dummy() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -76,7 +76,7 @@ mod tests {
         );
         note_event(
             &WindowEvent::MouseInput {
-                device_id: unsafe { winit::event::DeviceId::dummy() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },

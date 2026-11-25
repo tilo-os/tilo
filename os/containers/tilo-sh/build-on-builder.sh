@@ -57,15 +57,16 @@ build_programs() {
   cargo build --locked --profile lounge-local --features tilo-daemon/agents \
     -p tilo-daemon -p discord-worker --bin tilo-runtime --bin discord-worker || return
   cargo build --locked --profile lounge-local \
-    -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
-    --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process || return
+    -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process -p launcher \
+    --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process \
+    --bin tilo-launcher || return
   # An example is built with its package's dev-dependencies, and Cargo turns their features on
   # for every package in the same build: built beside the server, it would build the server with
   # its test-only features (fixture fonts its app workers cannot load). It is built on its own.
   cargo build --locked --profile lounge-local -p tilo-account-probe --example mail_stand_in || return
   local dir=$CARGO_TARGET_DIR/$stage/programs program
   mkdir -p "$dir" "$dir/examples"
-  for program in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
+  for program in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process tilo-launcher; do
     cmp -s "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/$program" && continue
     cp --reflink=auto "$CARGO_TARGET_DIR/lounge-local/$program" "$dir/.$program.next"
     mv -f "$dir/.$program.next" "$dir/$program"

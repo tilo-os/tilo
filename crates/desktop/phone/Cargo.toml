@@ -14,6 +14,12 @@ path = "src/lib.rs"
 # its bundle into `assets/tilo/apps`.
 [package.metadata.tilo-app]
 tilolang = ["../../../apps/tl/notes", "../../../apps/tl/chat"]
+# The APK serves the person's workspace files to Android's own picker: its manifest carries the
+# documents provider whose native side this library exports.
+workspace-files = true
+# Pushes reach the phone while its app is closed, through a UnifiedPush distributor: the APK's
+# manifest declares the connector's receiver, and its Rust opens every push with the device's key.
+unified-push = true
 
 [features]
 # A thin build links the toolkit dynamically, so `tilolang dev` reloads the app in place.
@@ -31,6 +37,8 @@ tilolang-tilo = { path = "../../../crates/lang/tilolang-tilo" }
 tilo-app-window = { path = "../../../crates/sdk/tilo-app-window" }
 tilo-render-protocol = { path = "../../../crates/ui/tilo-render-protocol" }
 tilo-paths = { path = "../../../crates/platform/tilo-paths" }
+# The type of a file the workspace holds, by its name, as a file picker shows it.
+tilo-mime = { path = "../../../crates/platform/tilo-mime" }
 # The platform a window with no session stands on: the packages it loads, its words and clock.
 tilolang-window = { path = "../../../crates/lang/tilolang-window" }
 # An app the person opens runs in tilolang-process's in-process window.
@@ -40,11 +48,29 @@ tilolang-process = { path = "../../../crates/lang/tilolang-process", features = 
 tilo-app-package = { path = "../../../crates/core/tilo-app-package" }
 anyhow.workspace = true
 uuid.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
+# What a person is told, as every Tilo surface names it: the log's records and the words a
+# notification shows.
+tilo-actions = { path = "../../../crates/core/actions" }
+# What the phone shows the person was told through, and the notifier its notification links are.
+tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services" }
+# The phone's own push key and the `aes128gcm` a push is opened with, which RFC 8291 encrypts
+# with a P-256 agreement, HKDF-SHA256 and AES-128-GCM.
+p256 = { version = "0.14", features = ["ecdh"] }
+ring = "0.17.14"
+hex.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android's documents API reaches the phone's device through the app's own Java classes, and the
+# push receiver hands a push over decrypted (`Java_so_tilo_android_TiloPush_nativePush`).
+jni = "0.21.1"
 
 [dev-dependencies]
+# The Android receiver's JNI entry is type-checked by the unit tests.
+jni = "0.21.1"
 tempfile.workspace = true
 # The phone's places, set as its launch sets them and put back after the test.
 tilo-test-env = { path = "../../../tools/test-env" }
@@ -55,7 +81,14 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 # The person's server the phone signs in to, and the `keep_app_file` that hands it a package
 # without a device's session.
 test-server = { path = "../../../tools/test-server" }
-tilo-workspace-service = { path = "../../../crates/core/tilo-workspace-service", features = ["test-support"] }
+tilo-workspace-service = { path = "../../../crates/core/tilo-workspace-service", features = ["files", "test-support", "agents"] }
+# The host's WebPush sender, which reaches a push service on this machine in tests, and the
+# teller that hands it what waits for a person with nothing of theirs looking.
+tilo-server = { path = "../../../crates/core/tilo-server", features = ["web", "test-support", "agents"] }
+# A push service on this machine, which the sender is told to trust.
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 tilo-server-protocol = { path = "../../../crates/core/tilo-server-protocol" }
 tilo-user-identity = { path = "../../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../../crates/platform/tilo-clock" }

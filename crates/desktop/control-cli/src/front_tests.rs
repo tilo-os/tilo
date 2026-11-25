@@ -45,7 +45,6 @@ fn row(
             input: InputSpec::None,
             params,
             view: None,
-            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,
@@ -577,11 +576,17 @@ fn a_call_that_asks_first_is_confirmed_at_tilos_own_prompt() {
         ActionAddress::new("7d1c", tilo_actions::remote::asked::RESOLVE)
     );
     assert_eq!(args(&resolved[0])["resolution"], "approve");
-    assert!(resolved[0].confirmation.is_none(), "the CLI writes no approve itself");
+    assert!(
+        resolved[0].confirmation.is_none(),
+        "the CLI writes no approve itself"
+    );
 
     std::fs::remove_file(&yes.path).expect("the socket goes");
     let no = AskingDesktop::serve(dir.path());
     let declined = no.call(&mut |_| Some(false));
     assert!(declined.is_err(), "{declined:?}");
-    assert_eq!(args(&no.resolved.lock().unwrap()[0])["resolution"], "decline");
+    assert_eq!(
+        args(&no.resolved.lock().unwrap()[0])["resolution"],
+        "decline"
+    );
 }

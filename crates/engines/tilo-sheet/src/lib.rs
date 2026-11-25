@@ -337,7 +337,11 @@ pub fn import(
             .into_iter()
             .map(|table| {
                 let cells = csv::parse_separated(&table.csv, '\t');
-                Ok(sheet_of(table.name, cells, std::collections::HashMap::new()))
+                Ok(sheet_of(
+                    table.name,
+                    cells,
+                    std::collections::HashMap::new(),
+                ))
             })
             .collect();
     }

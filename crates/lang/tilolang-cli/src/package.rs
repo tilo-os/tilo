@@ -1616,20 +1616,6 @@ fn digest(manifest: &str, bundle: &Bundle, files: &[(PathBuf, PathBuf)]) -> Resu
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub(crate) fn write_tapp(
-    path: &Path,
-    packed: &tilo_app_package::pack::Packed,
-) -> Result<(), String> {
-    tilo_app_package::tapp::write_file(
-        path,
-        &packed.meta,
-        Some(packed as &dyn tilo_app_package::BlobSource),
-        tilo_app_package::tapp::WriteOptions::replace(),
-    )
-    .map(|_| ())
-    .map_err(|error| format!("{}: {error}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

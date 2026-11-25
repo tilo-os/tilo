@@ -27,8 +27,7 @@ impl Input {
     #[must_use]
     pub fn at(typed_at: Option<std::time::Instant>, now: std::time::Instant) -> Self {
         Self {
-            typing: typed_at
-                .is_some_and(|at| now.saturating_duration_since(at) < TYPING_PAUSE),
+            typing: typed_at.is_some_and(|at| now.saturating_duration_since(at) < TYPING_PAUSE),
         }
     }
 
@@ -63,8 +62,14 @@ mod tests {
         let typed = Instant::now();
         let later = |ms| typed + Duration::from_millis(ms);
         assert!(!Input::at(None, typed).typing, "nothing typed yet");
-        assert!(Input::at(Some(typed), later(2_900)).typing, "within the pause");
-        assert!(!Input::at(Some(typed), later(3_000)).typing, "the pause came");
+        assert!(
+            Input::at(Some(typed), later(2_900)).typing,
+            "within the pause"
+        );
+        assert!(
+            !Input::at(Some(typed), later(3_000)).typing,
+            "the pause came"
+        );
         assert_eq!(
             Input::pause_in(Some(typed), later(1_000)),
             Some(Duration::from_secs(2)),

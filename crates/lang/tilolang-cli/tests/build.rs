@@ -730,18 +730,9 @@ fn a_locked_build_refuses_an_out_of_date_ids_lock_and_writes_nothing() {
     );
 }
 
-/// A package that carries a program (`app.toml`): its payload holds the program's files beside the
-/// module, and its manifest's entrypoint runs the program with its runtime's interpreter, as the
-/// app's held connection, while the tilolang runtime the app's actions and views run on still
-/// installs with it. The SDK's native addon is the runtime package's, never a package's own copy.
-#[test]
-fn a_package_that_carries_a_program_ships_it_beside_its_module() {
-    use tilo_app_package::manifest::{EntrypointType, NetMode};
-
-    let scratch = tempfile::tempdir().unwrap();
-    let source = scratch.path().join("tl");
-    let dir = source.join("counter");
-    copy_package(&packages().join("counter"), &dir);
+/// `dir` as a package that carries a program: bun runs its `main.js` as the app's held
+/// connection, over a module of its own and a dependency it vendors.
+fn a_program_package(dir: &Path) {
     std::fs::write(
         dir.join("app.toml"),
         r#"[package]
@@ -776,6 +767,21 @@ hosts = ["gateway.example", "*.example.media"]
     )
     .unwrap();
     std::fs::write(dir.join("node_modules/vendored.js"), "export {}\n").unwrap();
+}
+
+/// A package that carries a program (`app.toml`): its payload holds the program's files beside the
+/// module, and its manifest's entrypoint runs the program with its runtime's interpreter, as the
+/// app's held connection, while the tilolang runtime the app's actions and views run on still
+/// installs with it. The SDK's native addon is the runtime package's, never a package's own copy.
+#[test]
+fn a_package_that_carries_a_program_ships_it_beside_its_module() {
+    use tilo_app_package::manifest::{EntrypointType, NetMode};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    let dir = source.join("counter");
+    copy_package(&packages().join("counter"), &dir);
+    a_program_package(&dir);
 
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {

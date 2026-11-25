@@ -86,8 +86,10 @@ fn attr(tag: &BytesStart<'_>, key: &[u8]) -> Option<String> {
         .find(|attribute| attribute.key.as_ref() == key)
         .map(|attribute| {
             let written = String::from_utf8_lossy(&attribute.value);
-            quick_xml::escape::unescape(&written)
-                .map_or_else(|_| written.clone().into_owned(), std::borrow::Cow::into_owned)
+            quick_xml::escape::unescape(&written).map_or_else(
+                |_| written.clone().into_owned(),
+                std::borrow::Cow::into_owned,
+            )
         })
 }
 

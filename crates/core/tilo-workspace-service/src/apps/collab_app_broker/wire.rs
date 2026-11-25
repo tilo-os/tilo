@@ -17,9 +17,9 @@ use std::cell::Cell;
 use std::rc::Weak;
 
 use runtime_collab::wire::{
-    Answer as Answered, Ask, Call, Changes, CheckProgress, ContextUpdate, Event, FRAMING, Handle,
-    HostFrame, InvocationCall, LiveActivityCall, Operation, Publication, Read, Record, Reply,
-    Report, Service, SettingsCall, Topic,
+    Answer as Answered, Ask, Call, Changes, ContextUpdate, Event, FRAMING, Handle, HostFrame,
+    InvocationCall, LiveActivityCall, Operation, Publication, Read, Record, Reply, Report, Service,
+    SettingsCall, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -296,9 +296,6 @@ impl ChannelSession {
                     .map(|reply| -> Answering {
                         Box::pin(async move { reply.await.map_err(Refusal::refusal) })
                     }),
-                Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
-                    .and_then(|request| approved_checks::context(&channel, request))
-                    .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
                 Service::RemoteAction => {
                     let reply = channel.remote_action_dispatch(body);
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
@@ -371,8 +368,7 @@ impl JoinedChannel {
     }
 
     /// The route's context from now on, starting with its current
-    /// roster. A native private window's context also follows the
-    /// continuation it shows.
+    /// roster.
     pub(super) fn context_feed(&self) -> Result<Feed<ContextUpdate>, BrokerError> {
         let route = self.resource_route();
         self.state
@@ -381,31 +377,13 @@ impl JoinedChannel {
             .state
             .native_roster_for_subscriber(&route, &self.verified_identity)
             .map_err(BrokerError::failed)?;
-        let instance = self
-            .native_private_window_instance()
-            .map_err(BrokerError::failed)?;
-        let document = match instance {
-            Some(_) => Some(self.document_read_context().map_err(BrokerError::failed)?),
-            None => None,
-        };
         let rx = self
             .state
             .subscribe_context(&self.channel_id, self.connection_id, native.clone());
-        if let Some(instance) = instance {
-            let alias = CrdtRoute::record(
-                &route.app_id,
-                &route.cluster_id,
-                format!("continuation:{instance}"),
-            )
-            .channel_key();
-            self.state
-                .alias_private_context(&self.channel_id, &alias, self.connection_id);
-        }
         let native_guard = native.map(|native| NativeContextReadGuard {
             state: self.state.clone(),
             route,
             identity: native.admitted,
-            document,
         });
         Ok(Feed::new(rx).with_native_guard(native_guard))
     }
@@ -455,8 +433,7 @@ impl JoinedChannel {
             }),
             Report::ClearContinuation => continuations("continuation clearing unsupported")
                 .and_then(|service| service.clear(workspace, &app_id, instance)),
-            Report::Handoff(message) => continuations("handoff unsupported")
-                .and_then(|service| service.handoff(workspace, app_id, instance, message)),
+            Report::Handoff(message) => self.state.answered_save(&route, &message),
             Report::SearchIndex(delta) => {
                 if delta.len() > crate::apps::services::MAX_SEARCH_INDEX_DELTA_BYTES {
                     return Err(BrokerError::failed(
@@ -530,7 +507,7 @@ impl JoinedChannel {
         )
         .with_app(&surface.app_id, &surface.app_id)
         .with_described(tilo_actions::Described::new(what));
-        let actor = current.broker_actor().member().clone();
+        let actor = current.broker_actor().actor().clone();
         if self.state.durable_owner_required
             || self
                 .state
@@ -683,6 +660,10 @@ impl JoinedChannel {
         let viewed = self.opened_for().filter(|_| current.agent_id.is_none());
         let person = viewed.unwrap_or_else(|| current.caller(&route.cluster_id));
         let press = request.press;
+        // A step the action of an invocation delivered to this very connection declares is that
+        // invocation's: its provider is told which one, as it was delivered, never as the call
+        // says.
+        let serving = self.serving(&request.message);
         let state = Arc::clone(&self.state);
         let peer_id = self.peer_id;
         // The reminder waits for the person's press's attestation when the shell link still
@@ -694,7 +675,13 @@ impl JoinedChannel {
             // of an application, else as the person whose press it follows.
             // Anything else, including what continues an invocation the app made
             // of itself, is the app's own API's to decide.
-            let (decided, continued_origin) = if current.agent_id.is_none() {
+            let (decided, continued_origin) = if let Some(made_as) =
+                state.child_call(peer_id, &request.message)
+            {
+                // A call this connection made inside an invocation delivered to it is followed
+                // and cancelled as the caller it was made as.
+                (Some(Ok(made_as)), None)
+            } else if current.agent_id.is_none() {
                 match state
                     .app_request_caller(peer_id, &route.app_id, &person, &request.message, press)
                     .await
@@ -707,9 +694,20 @@ impl JoinedChannel {
                 (state.continued_caller(peer_id, &request.message), None)
             };
             let caller = match decided {
-                Some(Ok(caller)) => caller,
+                Some(Ok(caller)) => {
+                    if let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) =
+                        &request.message
+                        && invoke.on_behalf_of.is_some()
+                    {
+                        state.made_child_call(peer_id, invoke.invocation, &caller);
+                    }
+                    caller
+                }
                 Some(Err(refused)) => return Ok(*refused),
                 None if current.agent_id.is_some() => person.clone(),
+                // A declared step of an invocation the app made of itself (a press in its window)
+                // is the person's who pressed.
+                None if serving.is_some() => person.clone(),
                 None => match state.app_api(&person, &route.app_id, &request.message) {
                     Ok(caller) => caller,
                     Err(refusal) => return Ok(*refusal),
@@ -732,9 +730,11 @@ impl JoinedChannel {
                 ));
             }
             // An application reaching for another app's action it holds no grant for waits for the
-            // person using it, or is refused.
+            // person using it, or is refused. A step the action of an invocation delivered to it
+            // declares is not asked again: the yes that invocation was given covers it.
             if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
                 (caller.acting().app(), &request.message)
+                && serving.is_none()
                 && let Err(refused) = state.app_action_consent(&person, app_id, invoke)
             {
                 return match refusal(&request.message, refused) {
@@ -756,6 +756,7 @@ impl JoinedChannel {
             let provider = action_provider::ConnectionActionProvider {
                 state: Arc::clone(&state),
                 own_peer: peer_id,
+                serving,
                 origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
                     route,
                     time: original_time,
@@ -779,11 +780,40 @@ impl JoinedChannel {
             .ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))?;
             Ok(match asking {
                 Some((provider, caller, invoke)) => {
-                    state.keep_app_ask((&provider, &app_id), &caller, &invoke, answer)
+                    // A call the person's press in this connection's window made asks there.
+                    let pressed = if super::app_asks::waits_for_yes(&answer) {
+                        state.pressed_in_window(peer_id, press).await
+                    } else {
+                        None
+                    };
+                    state.keep_app_ask((&provider, &app_id), &caller, &invoke, pressed, answer)
                 }
                 None => answer,
             })
         }))
+    }
+
+    /// The invocation `message` is a declared step of: one delivered to this very connection
+    /// that still runs, whose action, as the app published it, declares the call's action among
+    /// its effects ([`tilo_actions::ActionContract::declares`]). `None` for any other call, which
+    /// is decided as every call is.
+    fn serving(
+        &self,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Arc<dyn tilo_actions::remote::Serving>> {
+        let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = message else {
+            return None;
+        };
+        let parent = invoke.on_behalf_of?;
+        let served = tilo_failure::ignored!(
+            "a call naming no live invocation delivered here is no step of one: it is decided \
+             as any call, and refused there when it continues nothing",
+            super::published_invocation::OriginalInvocation::served(self, parent)
+        )
+        .ok()?;
+        tilo_actions::remote::Serving::contract(&*served)
+            .declares(&invoke.target.provider, &invoke.target.address)
+            .then_some(served as Arc<dyn tilo_actions::remote::Serving>)
     }
 
     /// Start handing this app the invocations of its published actions,
@@ -1851,19 +1881,6 @@ impl WireConnection {
                             });
                         })
                     }
-                    Topic::ApprovedCheck(request) => {
-                        let progress = runtime_collab::approved_checks::Request::decode(&request)
-                            .and_then(|request| {
-                                super::approved_checks::context(&session.channel, request)
-                            })
-                            .and_then(super::approved_checks::reported_progress)?;
-                        tokio::task::spawn_local(pump_pulled(
-                            progress,
-                            id,
-                            frames,
-                            Event::ApprovedCheck,
-                        ))
-                    }
                     Topic::Content => {
                         let feed = session.subscribe_content().map_err(failed)?;
                         tokio::task::spawn_local(pump(
@@ -2053,13 +2070,6 @@ impl Pulled for InvocationStreamServer {
     type Item = runtime_collab::wire::Invocation;
     async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await?.on_wire()
-    }
-}
-
-impl Pulled for super::approved_checks::ReportedProgress {
-    type Item = CheckProgress;
-    async fn pull(&self) -> Result<Self::Item, BrokerError> {
-        self.next().await.map_err(BrokerError::failed)
     }
 }
 

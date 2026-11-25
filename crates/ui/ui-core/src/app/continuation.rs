@@ -324,10 +324,6 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
-        self.apply_pending_owner_view();
-        if self.continuation.owner_view.following {
-            return;
-        }
         if !self.collaboration.manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
@@ -355,34 +351,6 @@ impl App {
                 None => metadata,
             })
         };
-        if self.continuation.owner_view.awaiting_claim
-            && self
-                .continuation
-                .owner_view
-                .last_claim_at
-                .is_none_or(|last| {
-                    crate::time::now().duration_since(last)
-                        >= crate::time::Duration::from_millis(500)
-                })
-            && let Some(metadata) = metadata.as_ref()
-        {
-            let token = self
-                .continuation
-                .owner_view
-                .last_stamp
-                .as_ref()
-                .map_or(1, |(counter, _)| counter.saturating_add(1));
-            let sent = self.report_handoff(
-                &crate::collaboration::handoff::HandoffReport::OwnerTakeover {
-                    token,
-                    schema: metadata.schema_version,
-                    metadata: metadata.bytes.clone(),
-                },
-            );
-            if sent {
-                self.continuation.owner_view.last_claim_at = Some(crate::time::now());
-            }
-        }
         if self.continuation.publication_initialized && metadata == self.continuation.last_published
         {
             return;
@@ -449,99 +417,5 @@ impl App {
             }
             self.invalidate_widget_resource_cache();
         }
-    }
-}
-
-impl App {
-    pub(super) fn apply_owner_view(&mut self, view: crate::collaboration::owner_view::OwnerView) {
-        let Some(route) = self.private_continuity_route() else {
-            return;
-        };
-        if !view.valid()
-            || route.app_id != view.app
-            || route.cluster_id.to_string() != view.workspace
-            || self.continuation.private_instance != Some(view.instance)
-        {
-            return;
-        }
-        if view.generation <= self.continuation.owner_view.last_generation {
-            return;
-        }
-        let stamp = (view.counter, view.source);
-        if self
-            .continuation
-            .owner_view
-            .last_stamp
-            .as_ref()
-            .is_some_and(|last| *last > stamp)
-        {
-            return;
-        }
-        if self.continuation.owner_view.awaiting_claim
-            && !view.local_claim
-            && view.projection.is_some()
-        {
-            return;
-        }
-        self.continuation.owner_view.last_generation = view.generation;
-        self.continuation.owner_view.last_stamp = Some(stamp);
-        self.continuation.owner_view.awaiting_claim = false;
-        // Cancellation stops movement but keeps publication muted until a
-        // local interaction explicitly claims this view. Otherwise a quiet
-        // disconnected replica would elect itself from the followed caret.
-        self.continuation.owner_view.following = !view.local_claim;
-        self.continuation.owner_view.pending = if view.local_claim {
-            None
-        } else {
-            view.projection
-                .map(|projection| crate::collaboration::ContinuationMetadata {
-                    schema_version: projection.schema_version,
-                    bytes: projection.bytes,
-                })
-        };
-        self.apply_pending_owner_view();
-    }
-
-    fn apply_pending_owner_view(&mut self) {
-        // A body may become ready after another Hello or reconnect. Recheck
-        // the original route observation before applying any deferred position.
-        if self.private_continuity_route().is_none()
-            || self.accessibility.focus_trap_active
-            || self.withholds_captures()
-        {
-            self.continuation.owner_view.pending = None;
-            return;
-        }
-        let Some(metadata) = self.continuation.owner_view.pending.as_ref() else {
-            return;
-        };
-        let accepted = crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
-            &mut *self.root_widget,
-        )
-        .is_some_and(|continuable| {
-            continuable.restore_live_continuation_metadata(
-                metadata,
-                &self.state.doc,
-                &self.state.root,
-            )
-        });
-        if accepted {
-            self.continuation.owner_view.pending = None;
-            self.invalidate_widget_resource_cache();
-        }
-    }
-
-    /// A local accepted input or semantic action is an explicit takeover.
-    /// The host's acknowledgement fences remote frames queued before it.
-    pub(super) fn take_over_owner_view(&mut self) {
-        if !self.continuation.owner_view.following {
-            return;
-        }
-        self.continuation.owner_view.pending = None;
-        self.continuation.owner_view.following = false;
-        self.continuation.owner_view.awaiting_claim = true;
-        // Keep the prior publication until replacement or cancellation is
-        // queued. Protected focus must still be able to clear that position.
-        self.continuation.owner_view.last_claim_at = None;
     }
 }

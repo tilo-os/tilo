@@ -582,6 +582,93 @@ impl Calls {
             .map_err(|refused| refused.json())
     }
 
+    /// The call lane of this app's connection ([`LineClient::carry_call`]): an app the daemon
+    /// started carries one outside service's call into a workspace call on it. Any other
+    /// connection carries none, and its calls are refused with why.
+    fn lane(&self) -> Result<&Arc<LineClient>, Value> {
+        match &self.at {
+            At::Daemon { line, .. } if self.app => Ok(line),
+            _ => Err(ApiError::new(
+                "not_permitted",
+                "a call is carried only by an app this computer's daemon started, over the \
+                 connection it was handed",
+            )
+            .json()),
+        }
+    }
+
+    /// Carry the outside call `pair` names into the workspace call it names, or let go of the
+    /// one carried (`None`): `{}`, or the refusal's body. The first carry joins the call as the
+    /// app, which the workspace's grants decide.
+    ///
+    /// # Errors
+    /// The device refused it, or this is no app's connection: the refusal's body.
+    pub async fn carry_call(&self, pair: Value) -> Result<Value, Value> {
+        let line = Arc::clone(self.lane()?);
+        let pair: Option<tilo_actions::remote::call::BridgedCall> = serde_json::from_value(pair)
+            .map_err(|error| {
+                ApiError::new(
+                    "invalid_request",
+                    format!("a carried call is {{outside, tilo}} or null: {error}"),
+                )
+                .json()
+            })?;
+        tokio::task::spawn_blocking(move || line.carry_call(pair))
+            .await
+            .map_err(|error| ApiError::new("unavailable", error.to_string()).json())?
+            .map(|()| Value::Object(serde_json::Map::new()))
+            .map_err(|error| lane_refusal(&error))
+    }
+
+    /// Say who is in the outside calls and where the app stands in them: `{}`, or the refusal's
+    /// body.
+    ///
+    /// # Errors
+    /// The report is not one an app may make, or this is no app's connection.
+    pub async fn report_call(&self, report: Value) -> Result<Value, Value> {
+        let line = Arc::clone(self.lane()?);
+        let report: tilo_actions::remote::call::CallReport = serde_json::from_value(report)
+            .map_err(|error| {
+                ApiError::new(
+                    "invalid_request",
+                    format!("a call report is {{calls, link, status}}: {error}"),
+                )
+                .json()
+            })?;
+        tokio::task::spawn_blocking(move || line.report_call(report))
+            .await
+            .map_err(|error| ApiError::new("unavailable", error.to_string()).json())?
+            .map(|()| Value::Object(serde_json::Map::new()))
+            .map_err(|error| lane_refusal(&error))
+    }
+
+    /// Hand the workspace's call one frame an outside person said.
+    ///
+    /// # Errors
+    /// This is no app's connection, or it closed.
+    pub fn hear_call(&self, speaker: String, opus: Vec<u8>) -> Result<(), Value> {
+        self.lane()?
+            .hear_call(tilo_actions::remote::call::CallAudio { speaker, opus })
+            .map_err(|error| lane_refusal(&error))
+    }
+
+    /// The frames the workspace's call said since the last time, and where the device last
+    /// asked the app to be, if that is new.
+    ///
+    /// # Errors
+    /// This is no app's connection.
+    pub fn said_call(&self) -> Result<CallSaid, Value> {
+        let line = self.lane()?;
+        Ok(CallSaid {
+            frames: line
+                .said_call()
+                .into_iter()
+                .map(|frame| (frame.speaker, frame.opus))
+                .collect(),
+            asked: line.asked_call().map(|asked| (asked.call, asked.status)),
+        })
+    }
+
     async fn answered(
         &self,
         workspace: Option<&str>,
@@ -1382,6 +1469,25 @@ async fn founded(provider: &Provider) -> Result<Value> {
 
 /// `target` invoked with `arguments` as `caller` over `provider`, waited for until it settles:
 /// what it completed with, or its refusal as the API answers one.
+/// What a carried call said since an app last looked ([`Calls::said_call`]).
+pub struct CallSaid {
+    /// Each frame a workspace participant said, by their account here, and its Opus bytes.
+    pub frames: Vec<(String, Vec<u8>)>,
+    /// Where the device last asked the app to be in the outside call (none: in no call), and the
+    /// line its people are shown there about who is on the workspace's side, when that is new.
+    pub asked: Option<(Option<String>, Option<String>)>,
+}
+
+/// The body a refused call of the lane answers, as the SDKs raise their typed errors from.
+fn lane_refusal(error: &tilo_actions::remote::ActionCallError) -> Value {
+    match error {
+        tilo_actions::remote::ActionCallError::Refused { reason } => {
+            ApiError::new("not_permitted", reason.clone()).json()
+        }
+        other => ApiError::new(other.code(), other.to_string()).json(),
+    }
+}
+
 async fn settled(
     provider: &Provider,
     caller: tilo_actions::remote::Caller,

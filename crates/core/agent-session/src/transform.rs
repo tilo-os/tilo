@@ -403,7 +403,6 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
             input: InputSpec::None,
             params: params_of(action),
             view: None,
-            effects: Vec::new(),
         })
         .collect()
 }

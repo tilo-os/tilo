@@ -10,6 +10,12 @@ interpreter. Nothing is compiled in the process
 adds wasmtime's Cranelift and Winch to compare engines on your own machine; no shipped runtime
 is built with it.
 
+The daemon compiles a package's modules when it installs it — the tilolang module and its
+imports, a task program's apps among them, and the painter modules of a theme bundle beside its
+document — before the install is announced, so an app already on the device opens without
+compiling anything. A theme's painter set reads its machine code from the same store through the
+read-only mount (`ui::theme_bundle::load_from`).
+
 The measurements below were taken before the daemon compiled modules and before the process
 lost its compiler: they describe the tiers as they were, not the two paths now. wasmtime is the
 runtime's `wasmtime` feature, on by default; a build without it runs wasmi alone.

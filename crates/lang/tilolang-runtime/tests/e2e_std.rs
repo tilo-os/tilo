@@ -308,7 +308,12 @@ view all(n: Notes) {
             .find(|child| {
                 child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
             })
-            .unwrap_or_else(|| panic!("the window has a bar for the page's header:\n{}", dump(tree)));
+            .unwrap_or_else(|| {
+                panic!(
+                    "the window has a bar for the page's header:\n{}",
+                    dump(tree)
+                )
+            });
         assert!(
             of_kind(bar, "ui.Text")
                 .into_iter()

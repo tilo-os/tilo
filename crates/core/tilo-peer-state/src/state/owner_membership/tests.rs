@@ -80,7 +80,7 @@ fn member_with_a_further_device(
     let key = SigningKey::from_bytes(&[7; 32]);
     let further = certified(&root, &key, "second desktop");
     peer.governance_mut()
-        .admit_member_device(&further, &editor_key, now)
+        .admit_member_device(&further, &key, now)
         .unwrap();
     (editor, editor_key, further, key)
 }
@@ -143,15 +143,11 @@ tilo_test_env::scenario! {
     {
         let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
         let (editor, _) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
-        let editor_key = SigningKey::from_bytes(&[6; 32]);
-        let stranger = certified(
-            &SigningKey::from_bytes(&[9; 32]),
-            &SigningKey::from_bytes(&[10; 32]),
-            "stranger",
-        );
+        let stranger_key = SigningKey::from_bytes(&[10; 32]);
+        let stranger = certified(&SigningKey::from_bytes(&[9; 32]), &stranger_key, "stranger");
         let refused = peer
             .governance_mut()
-            .admit_member_device(&stranger, &editor_key, now)
+            .admit_member_device(&stranger, &stranger_key, now)
             .unwrap_err();
         assert!(
             refused.contains("not a member"),
@@ -293,7 +289,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         peer.governance_mut()
-            .admit_invited_member(&redemption, &host_key, now)
+            .admit_invited_member(&redemption, &key, now)
             .unwrap();
         for role in [Role::Viewer, Role::Commenter, Role::Editor] {
             peer.governance_mut()

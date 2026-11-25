@@ -592,8 +592,7 @@ fn dragged(
     queue
         .take()
         .into_iter()
-        .filter(|fired| fired.event == "moved")
-        .next_back()
+        .rfind(|fired| fired.event == "moved")
         .map(|fired| match fired.value {
             Some(crate::component::Value::List(mut parts)) => match parts.remove(1) {
                 crate::component::Value::List(mut at) => match at.remove(0) {

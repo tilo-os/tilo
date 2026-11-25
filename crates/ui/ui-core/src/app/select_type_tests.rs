@@ -73,6 +73,7 @@ fn a_report_asked_of_a_window_opens_the_box_about_what_it_picked() {
         app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
             to: vec![destination.clone()],
             pointing: false,
+            carried: Vec::new(),
         }])
     );
     assert!(app.window_box.is_open(), "the box was asked for");
@@ -144,7 +145,7 @@ fn the_window_paints_no_caret_under_the_box_that_has_the_keys() {
         carets.get().expect("the window drew its widgets")
     };
     assert!(draw(&mut app), "the window has the keys: a caret");
-    app.open_send_box(None, None, None, &[]);
+    app.open_send_box(None, None, None, &[], &[]);
     assert!(!draw(&mut app), "the box has the keys: its caret only");
     app.window_box.close();
     assert!(draw(&mut app), "the keys came back, and so did the caret");

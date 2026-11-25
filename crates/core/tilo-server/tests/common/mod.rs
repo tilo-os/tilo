@@ -932,8 +932,7 @@ impl Linked {
         let sync = if listed {
             sync
         } else {
-            sync.placed(device.cert.clone())
-                .map_err(Refusal::Other)?
+            sync.placed(device.cert.clone()).map_err(Refusal::Other)?
         };
         let link = dialer.link(Purpose::Records).await.map_err(refused)?;
         link.prove_member(&device.cert, &device.sk, &host_cert)

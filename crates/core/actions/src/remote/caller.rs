@@ -230,10 +230,11 @@ impl Caller {
     /// An application on a connection the provider admitted itself, by the
     /// package id that admission established. It acts as the person whose
     /// session runs it ([`Self::acting_for`]), in that app; with nobody
-    /// behind it, it holds nothing.
+    /// behind it, it acts by itself, with only the grants that name it.
     #[must_use]
     pub fn local_app(app_id: impl Into<String>) -> Self {
-        Self::admitted(Acting::person("").in_app(app_id.into()), None)
+        let app: String = app_id.into();
+        Self::admitted(Acting::by_app(app.clone()).in_app(app), None)
     }
 
     /// A remote agent device whose certificate the transport verified to
@@ -248,6 +249,24 @@ impl Caller {
     ) -> Self {
         Self::admitted(
             Acting::agent(agent_id.into()).acting_for(Acting::person(hex::encode(user_public_key))),
+            Some((user_public_key, device_public_key)),
+        )
+    }
+
+    /// An agent a device handed its session to: `user_public_key`'s root certified the key
+    /// `device_public_key` for `agent_id`, which is the device of `owner`, not the agent's
+    /// person's. The change names the agent acting for its person, and `owner`'s device as the
+    /// one that ran it.
+    #[must_use]
+    pub fn handed_agent(
+        agent_id: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+        owner: [u8; 32],
+    ) -> Self {
+        Self::admitted(
+            Acting::handed_agent(agent_id.into(), hex::encode(user_public_key))
+                .agent_of(hex::encode(owner)),
             Some((user_public_key, device_public_key)),
         )
     }

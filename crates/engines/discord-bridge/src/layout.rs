@@ -10,9 +10,9 @@
 //! simply run again. A channel whose category has no Discord counterpart yet waits for
 //! the next run, which the category's creation triggers.
 
+use crate::guild::Id;
 use discord_wire::op::{ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp};
 use serde::{Deserialize, Serialize};
-use crate::guild::Id;
 
 use crate::guild::{DChannel, Guild, MappedKind, Mapping, Origin, Ownership};
 use crate::slug;
@@ -252,9 +252,10 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, workspace: &WorkspaceChat) 
 fn queued(guild: &Guild, tilo: &str) -> bool {
     guild.outbox.entries().any(|(_, entry)| {
         entry.settled.is_none()
-            && entry.op.get("apply-channel").is_some_and(|op| {
-                op.get("tilo").and_then(serde_json::Value::as_str) == Some(tilo)
-            })
+            && entry
+                .op
+                .get("apply-channel")
+                .is_some_and(|op| op.get("tilo").and_then(serde_json::Value::as_str) == Some(tilo))
     })
 }
 

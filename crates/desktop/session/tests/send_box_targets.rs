@@ -4,9 +4,9 @@
 
 #![cfg(target_os = "linux")]
 
+use tilo_session::platform::surfaces::{AppProcess, Placement};
 use tilo_session_core::surface::ShellSurface as _;
 use tilo_session_core::surfaces::Published as _;
-use tilo_session::platform::surfaces::{AppProcess, Placement};
 
 /// A session-hosted app window with no menu of its own, drawn on the desktop: the window carries
 /// the send-to box itself.
@@ -52,7 +52,7 @@ fn the_box_a_send_key_opens_publishes_its_controls() {
     );
 
     host.app_mut()
-        .open_send_box(None, None, Some("Ship the launch notes"), &[]);
+        .open_send_box(None, None, Some("Ship the launch notes"), &[], &[]);
     for _ in 0..4 {
         host.prepare_frame();
     }
@@ -88,6 +88,7 @@ fn send_is_pressed_through_the_published_control() {
         None,
         Some("Ship the launch notes"),
         std::slice::from_ref(&adalovelace),
+        &[],
     );
     for _ in 0..4 {
         host.prepare_frame();

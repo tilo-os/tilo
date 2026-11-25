@@ -509,5 +509,4 @@ mod tests {
         non_string.profile.insert("hostname".into(), 42.into());
         assert!(Handoff::parse(&serde_json::to_vec(&non_string).unwrap()).is_err());
     }
-
 }

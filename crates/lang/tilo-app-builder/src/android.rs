@@ -879,12 +879,21 @@ pub struct AndroidMetadata {
     pub version_code: u32,
     /// Android permissions the manifest's sandbox grants map to.
     pub permissions: Vec<&'static str>,
+    /// Whether pushes and the taps on them reach this app, through a `UnifiedPush` distributor the
+    /// person installed: the app's manifest declares the connector's receiver then, and nothing
+    /// of it is in an app that does not.
+    pub unified_push: bool,
 }
 
 impl AndroidMetadata {
-    pub fn from_manifest(package: &str, manifest: &tilo_app_package::Manifest) -> Result<Self> {
+    pub fn from_manifest(
+        package: &str,
+        manifest: &tilo_app_package::Manifest,
+        unified_push: bool,
+    ) -> Result<Self> {
         let id = &manifest.package.id;
         Ok(Self {
+            unified_push,
             package: package.to_owned(),
             application_id: application_id(id)?,
             label: manifest
@@ -1007,9 +1016,17 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// The `AndroidManifest.xml` of an APK whose activity loads `lib<lib_name>.so`.
+/// The `AndroidManifest.xml` of an APK whose activity loads `lib<lib_name>.so`. `workspace_files`
+/// declares the app's documents provider, which serves the person's workspace files to Android's
+/// own pickers: only the app whose library answers it (`workspace-files` in its
+/// `[package.metadata.tilo-app]`) carries the entry.
 #[must_use]
-pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool) -> String {
+pub fn android_manifest(
+    app: &AndroidMetadata,
+    lib_name: &str,
+    debuggable: bool,
+    workspace_files: bool,
+) -> String {
     let id = xml_escape(&app.application_id);
     let permissions = app
         .permissions
@@ -1021,6 +1038,59 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
             );
             text
         });
+    let documents = if workspace_files {
+        format!(
+            r#"
+        <!-- The person's workspaces as roots of the system file picker: the Files app and every
+             app's file chooser browse the workspace's folders and open and save its files.
+             MANAGE_DOCUMENTS keeps it to the system, which is what replaces the picker. -->
+        <provider
+            android:name="so.tilo.android.TiloWorkspaceFiles"
+            android:authorities="{id}.tilo.workspace"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+"#
+        )
+    } else {
+        String::new()
+    };
+    // An app that takes pushes from a UnifiedPush distributor the person installed registers with
+    // it as the connector protocol says, and receives what it carries here.
+    // A push's distributor is another app: naming its registration action is what lets this one
+    // see it.
+    let queries = if app.unified_push {
+        r#"
+        <intent>
+            <action android:name="org.unifiedpush.android.connector.REGISTER" />
+        </intent>"#
+    } else {
+        ""
+    };
+    let push = if app.unified_push {
+        r#"
+        <!-- Pushes reach this app through the UnifiedPush distributor its person installed, and
+             each one is shown as a notification by Tilo's Rust. -->
+        <meta-data android:name="so.tilo.unified-push" android:value="true" />
+        <receiver
+            android:name="so.tilo.android.TiloPush"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+                <action android:name="org.unifiedpush.android.distributor.DISTRIBUTOR" />
+            </intent-filter>
+        </receiver>
+"#
+    } else {
+        ""
+    };
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -1039,7 +1109,7 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
     <queries>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
-        </intent>
+        </intent>{queries}
     </queries>
 
     <application
@@ -1077,12 +1147,15 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
             android:authorities="{id}.tilo.files"
             android:exported="false"
             android:grantUriPermissions="true" />
-    </application>
+{documents}{push}    </application>
 </manifest>
 "#,
         code = app.version_code,
         name = xml_escape(&app.version_name),
         label = xml_escape(&app.label),
+        push = push,
+        queries = queries,
+        documents = documents,
     )
 }
 
@@ -1473,7 +1546,8 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
         .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
-    let metadata = AndroidMetadata::from_manifest(&spec.cargo_package, &manifest)?;
+    let metadata =
+        AndroidMetadata::from_manifest(&spec.cargo_package, &manifest, spec.unified_push)?;
     check_library_entry(&app_dir)?;
     super::validate_profile_name(&request.profile)?;
 
@@ -1622,7 +1696,12 @@ fn stage_apk(
     let manifest_path = stage.join("AndroidManifest.xml");
     std::fs::write(
         &manifest_path,
-        android_manifest(metadata, &lib_name, debuggable),
+        android_manifest(
+            metadata,
+            &lib_name,
+            debuggable,
+            serves_workspace_files(app_dir),
+        ),
     )?;
     set_epoch(stage)?;
 
@@ -1680,6 +1759,24 @@ fn copy_standalone_fonts(source: &Path, destination: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `[package.metadata.tilo-app]` declares `workspace-files`, which the APK's manifest
+/// then carries the app's documents provider for: the library exports what serves it.
+fn serves_workspace_files(app_dir: &Path) -> bool {
+    let manifest_path = app_dir.join("Cargo.toml");
+    std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|manifest| {
+            manifest
+                .get("package")
+                .and_then(|package| package.get("metadata"))
+                .and_then(|metadata| metadata.get("tilo-app"))
+                .and_then(|app| app.get("workspace-files"))
+                .and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// The directories `[package.metadata.tilo-app]` names in `tilolang`, resolved against `app_dir`:
@@ -1822,9 +1919,11 @@ fn write_signed_manifest(
     }
     // The publisher key this machine signs with, when it has one: the manifest is its build's,
     // and the daemon reads the runtime it names only from it.
-    let identity = app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
-        .map(|key| tilo_app_package::pack::SigningIdentity::from_seed(&key.to_bytes()))
-        .unwrap_or_else(tilo_app_package::pack::SigningIdentity::generate);
+    let identity =
+        app_registry::publisher::key::discover(&app_registry::publisher::key::machine_store())?
+            .map_or_else(tilo_app_package::pack::SigningIdentity::generate, |key| {
+                tilo_app_package::pack::SigningIdentity::from_seed(&key.to_bytes())
+            });
     manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
     manifest
         .sign(&identity)
@@ -2881,7 +2980,8 @@ type = "gui"
         phase metadata_comes_from_the_manifest;
         {
             let metadata =
-                AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
+                AndroidMetadata::from_manifest("field-notes", &manifest("off", ""), false)
+                    .expect("metadata");
             assert_eq!(metadata.application_id, "so.example.field_notes");
             assert_eq!(metadata.label, "Field Notes");
             assert_eq!(metadata.version_name, "1.2.3");
@@ -2934,17 +3034,33 @@ type = "gui"
         phase the_manifest_names_the_library_and_escapes_text;
         {
             let mut metadata =
-                AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
+                AndroidMetadata::from_manifest("field-notes", &manifest("off", ""), false)
+                    .expect("metadata");
             metadata.label = "Notes & <Things>".to_owned();
-            let xml = android_manifest(&metadata, "field_notes", false);
+            let xml = android_manifest(&metadata, "field_notes", false, true);
             assert!(xml.contains(r#"package="so.example.field_notes""#));
             assert!(xml.contains(r#"android:versionCode="1002003""#));
             assert!(xml.contains(r#"android:label="Notes &amp; &lt;Things&gt;""#));
             assert!(xml.contains(r#"android:value="field_notes""#));
             assert!(xml.contains(r#"android:debuggable="false""#));
             assert!(xml.contains(r#"android:authorities="so.example.field_notes.tilo.files""#));
+            // The app's own documents provider only where its library serves the workspace files.
+            assert!(xml.contains(r#"android:authorities="so.example.field_notes.tilo.workspace""#));
+            assert!(xml.contains("android.content.action.DOCUMENTS_PROVIDER"));
+            let without = android_manifest(&metadata, "field_notes", false, false);
+            assert!(!without.contains("TiloWorkspaceFiles"));
+            assert!(!without.contains("DOCUMENTS_PROVIDER"));
             assert!(xml.contains("android.permission.POST_NOTIFICATIONS"));
             assert!(!xml.contains("android.permission.INTERNET"));
+            // No push reaches an app that did not declare it, and an app that did takes its
+            // distributor's messages and taps.
+            assert!(!xml.contains("so.tilo.android.TiloPush"));
+            let mut pushing = metadata.clone();
+            pushing.unified_push = true;
+            let xml = android_manifest(&pushing, "field_notes", false, false);
+            assert!(xml.contains(r#"android:name="so.tilo.android.TiloPush""#));
+            assert!(xml.contains("org.unifiedpush.android.connector.MESSAGE"));
+            assert!(xml.contains(r#"android:name="so.tilo.unified-push" android:value="true""#));
         }
 
         phase the_default_icon_is_a_disc_in_the_ids_colour;

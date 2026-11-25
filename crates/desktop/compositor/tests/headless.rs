@@ -60,6 +60,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use smithay::utils::{Logical, Point, Rectangle};
+use tilo_compositor::presses::PersonPress;
 use tilo_compositor::{
     Compositor, GestureEvent, IconArtwork, InputEvent, KeyboardLayout, LayoutPoint, LayoutRect,
     OutputConfig, PadAction, Shadow, StackPolicy, Switch, TabletEvent, TabletPadEvent, TabletPhase,
@@ -317,7 +318,13 @@ tilo_test_env::scenario! {
     {
         let mut compositor = headless(Box::new(StackPolicy));
         let _client = mapped_client(&mut compositor, "pressed", (200, 100), [0, 255, 0, 255]);
-        let window = compositor.windows()[0].0.id;
+        let (window, (left, top, _, _)) = {
+            let (info, rect) = &compositor.windows()[0];
+            (info.id, *rect)
+        };
+        // Where in the window the pointer and the finger press: what a question the call raises
+        // stands at.
+        let inside = Some((320 - left, 240 - top));
         compositor
             .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
             .unwrap();
@@ -338,8 +345,12 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(
             compositor.person_presses().take(),
-            [(window, pressed)],
-            "the press, and not its release"
+            [PersonPress {
+                window,
+                serial: pressed,
+                at: inside,
+            }],
+            "the press where it was, and not its release"
         );
 
         compositor
@@ -357,7 +368,15 @@ tilo_test_env::scenario! {
                 pressed: false,
             })
             .unwrap();
-        assert_eq!(compositor.person_presses().take(), [(window, typed)]);
+        assert_eq!(
+            compositor.person_presses().take(),
+            [PersonPress {
+                window,
+                serial: typed,
+                at: None,
+            }],
+            "a key is a press at no point"
+        );
 
         // A finger the person puts on the window is a press too; lifting it is not.
         compositor
@@ -374,7 +393,10 @@ tilo_test_env::scenario! {
             1,
             "the touch counts as one press: {touched:?}"
         );
-        assert_eq!(touched.first().map(|press| press.0), Some(window));
+        assert_eq!(
+            touched.first().map(|press| (press.window, press.at)),
+            Some((window, inside))
+        );
 
         // Another device's input through the shared seat is never the person's own press.
         compositor

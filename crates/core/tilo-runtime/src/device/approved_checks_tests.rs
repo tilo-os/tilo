@@ -434,3 +434,196 @@ fn only_the_devices_person_writes_the_checks_setting() {
         "a member the person granted nothing may not set the checks"
     );
 }
+
+/// The invocation an app was delivered, as the dispatch hands it to the device's checks.
+struct Delivered {
+    workspace: String,
+    address: tilo_actions::ActionAddress,
+    argument: Option<String>,
+    contract: ActionContract,
+    identity: ResourceSemanticIdentity,
+}
+
+impl Serving for Delivered {
+    fn invocation(&self) -> tilo_actions::InvocationId {
+        tilo_actions::InvocationId(
+            uuid::Uuid::parse_str("0f8fad5b-d9cb-469f-a165-70867728950e").unwrap(),
+        )
+    }
+    fn app(&self) -> &str {
+        APP
+    }
+    fn workspace(&self) -> &str {
+        &self.workspace
+    }
+    fn record(&self) -> &str {
+        RECORD
+    }
+    fn address(&self) -> &tilo_actions::ActionAddress {
+        &self.address
+    }
+    fn kind(&self) -> OperationKind {
+        OperationKind::Effect
+    }
+    fn contract(&self) -> &ActionContract {
+        &self.contract
+    }
+    fn argument(&self) -> Option<&str> {
+        self.argument.as_deref()
+    }
+    fn resource_identity(&self) -> Result<&ResourceSemanticIdentity, String> {
+        Ok(&self.identity)
+    }
+    fn recheck(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The app's `run-approved-check` invocation of `asked`, as delivered.
+fn delivered(workspace: &str, action: &str, asked: &str) -> Delivered {
+    Delivered {
+        workspace: workspace.to_owned(),
+        address: tilo_actions::ActionAddress::new(RESOURCE, action),
+        argument: Some(format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "check_id": asked })
+        )),
+        contract: ActionContract {
+            kind: ActionKind::Undoable,
+            execution: ExecutionMode::Background { cancellable: true },
+            ..ActionContract::default()
+        },
+        identity: identity(),
+    }
+}
+
+/// The app's call to run `check_id` as that invocation's work.
+fn run_call(check_id: &str) -> InvokeRequest {
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: runtime_collab::approved_checks::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                runtime_collab::approved_checks::RESOURCE,
+                runtime_collab::approved_checks::RUN,
+            ),
+        },
+        argument: InvokeArgument::Json(
+            serde_json::json!({ "check_id": check_id })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+fn admitted(serving: Option<Delivered>, heard: &Arc<Mutex<Vec<String>>>) -> Admitted {
+    let heard = Arc::clone(heard);
+    Admitted {
+        serving: serving.map(|serving| Arc::new(serving) as Arc<dyn Serving>),
+        progress: Arc::new(move |phase, completed, total| {
+            heard
+                .lock()
+                .unwrap()
+                .push(format!("{phase} {completed:?}/{total:?}"));
+        }),
+        ..Admitted::default()
+    }
+}
+
+#[test]
+fn the_devices_check_runs_as_the_delivered_invocations_work_and_answers_its_receipt() {
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
+    let checks = NativeChecks::over(
+        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
+        Arc::new(Placed {
+            taken: Mutex::default(),
+            refusal: None,
+        }),
+        jobs(),
+    );
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let action = runtime_collab::approved_checks::ACTION_ID;
+    let ran = Admits::start(
+        &checks,
+        &Caller::local_system(),
+        &run_call("unit"),
+        &admitted(Some(delivered(&workspace, action, "unit")), &heard),
+    )
+    .expect("the check starts")
+    .wait_timeout(tilo_test_env::hang_bound())
+    .unwrap_or_else(|_| panic!("the check ends"))
+    .expect("the check answers")
+    .expect("the check ran");
+    let receipt: Receipt = serde_json::from_value(ran.value.expect("a receipt")).unwrap();
+    assert_eq!(receipt.check_id, "unit");
+    assert_eq!(receipt.binding.app_id, APP);
+    assert_eq!(receipt.invocation, "0f8fad5b-d9cb-469f-a165-70867728950e");
+    assert_eq!(
+        heard.lock().unwrap().as_slice(),
+        ["tests Some(1)/Some(2)"],
+        "how far it got reached whoever follows the call"
+    );
+}
+
+#[test]
+fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
+    let placement = Arc::new(Placed {
+        taken: Mutex::default(),
+        refusal: None,
+    });
+    let checks = NativeChecks::over(
+        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
+        Arc::clone(&placement) as Arc<dyn Placement>,
+        jobs(),
+    );
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let action = runtime_collab::approved_checks::ACTION_ID;
+    for (why, call, serving) in [
+        ("no invocation it is the work of", run_call("unit"), None),
+        (
+            "another action's work",
+            run_call("unit"),
+            Some(delivered(&workspace, "push", "unit")),
+        ),
+        (
+            "a check other than the one asked",
+            run_call("deploy"),
+            Some(delivered(&workspace, action, "unit")),
+        ),
+        (
+            "a command instead of a check",
+            run_call("unit; rm -rf ~"),
+            Some(delivered(&workspace, action, "unit; rm -rf ~")),
+        ),
+    ] {
+        let Err(refused) = Admits::start(
+            &checks,
+            &Caller::local_system(),
+            &call,
+            &admitted(serving, &heard),
+        ) else {
+            panic!("{why} is refused");
+        };
+        assert!(
+            refused.contains("approved check"),
+            "{why} is refused legibly: {refused}"
+        );
+    }
+    assert!(
+        placement.taken.lock().unwrap().is_empty(),
+        "nothing refused takes a turn"
+    );
+    assert!(heard.lock().unwrap().is_empty(), "nothing refused reports");
+}

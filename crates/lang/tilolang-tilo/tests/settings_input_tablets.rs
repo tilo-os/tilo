@@ -30,8 +30,7 @@ fn settings() -> (Host, tilolang::Compiled) {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
     )
     .expect("its ids parse");
-    let metas =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
     let host = Host::new(

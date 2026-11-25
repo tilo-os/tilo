@@ -79,9 +79,10 @@ pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 /// Say which of an account's services the person uses ([`SetServices`]),
 /// answering the accounts as [`MailAccounts`].
 pub const SET_SERVICES: &str = "set-services";
-/// Read the logins the workspace's vault keeps that belong to mail servers, as
-/// a [`MailSignIns`]: their names, sign-in names and servers, never their
-/// secrets. What a person picks from when they add an account from Passwords.
+/// Read the logins the workspace's vault keeps, as a [`MailSignIns`]: their names, sign-in
+/// names and the places each belongs to, never their secrets. An app picks from them the ones
+/// its own places name, as Mail's does for its `imap` and `smtp` servers; an item's secret
+/// comes only from `vault#release`.
 pub const SIGN_INS: &str = "sign-ins";
 /// Say whether a cloud-storage account's files stay in sync or are copied into
 /// the workspace once ([`SetFilesMode`]), answering the accounts as
@@ -561,8 +562,8 @@ impl SetServices {
     }
 }
 
-/// One login of the workspace's vault that belongs to a mail server, as
-/// [`SIGN_INS`] lists it: where it signs in, never what it signs in with.
+/// One login of the workspace's vault, as [`SIGN_INS`] lists it: where it belongs, never what
+/// it signs in with.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSignIn {
@@ -572,13 +573,12 @@ pub struct MailSignIn {
     pub title: String,
     /// The name it signs in with.
     pub username: String,
-    /// The servers it belongs to, each `imap://<host>:<port>` or
-    /// `smtp://<host>:<port>`.
+    /// The places it belongs to, each as the vault keeps one: `imap://<host>:<port>`,
+    /// `smtp://<host>:<port>`, `https://<host>` and the like.
     pub places: Vec<String>,
 }
 
-/// Every login of the workspace's vault that belongs to a mail server
-/// ([`SIGN_INS`]).
+/// Every login of the workspace's vault ([`SIGN_INS`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MailSignIns {

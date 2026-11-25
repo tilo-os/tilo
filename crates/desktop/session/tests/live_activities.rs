@@ -21,8 +21,7 @@ use serde_json::json;
 use tilo_actions::remote::{CatalogueQuery, CatalogueRow, RemoteActionMessage, RemoteActionTarget};
 
 use crate::common::people::{
-    Device, Site, seed_the_apps, target, two_devices_of_one_person_with_apps,
-    waited,
+    Device, Site, seed_the_apps, target, two_devices_of_one_person_with_apps, waited,
 };
 
 /// The live rows, as the session publishes them.
@@ -141,8 +140,7 @@ fn play_on(site: &Site, device: &Device, seen_on: &[&Device]) -> (String, String
     let (start, title) = video_action(device, "play", None);
     let played = device.act_confirming(&start, &json!({}));
     assert!(
-        played.get("err").is_none()
-            && !played["update"].to_string().contains("Failed"),
+        played.get("err").is_none() && !played["update"].to_string().contains("Failed"),
         "{} plays {title}: {played}",
         device.label
     );

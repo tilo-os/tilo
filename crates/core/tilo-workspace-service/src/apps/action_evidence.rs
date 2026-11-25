@@ -727,7 +727,7 @@ mod tests {
             );
             assert!(
                 serde_json::from_value::<VerifiedActor>(
-                    serde_json::json!({"Local":{"actor":{"person":"person"}}})
+                    serde_json::json!({"Local":{"actor":{"member":{"person":"person"}}}})
                 )
                 .is_err()
             );

@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use crate::engine::Engine;
-use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_action_policy::PolicyEdit;
+use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 

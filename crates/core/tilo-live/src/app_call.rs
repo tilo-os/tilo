@@ -8,7 +8,8 @@
 //! person on the other side as a bridged participant of their own: a member of
 //! the call, shown by their name there, marked as reached through its service
 //! ([`crate::presence::BridgedMember`]). What the workspace's participants
-//! say is handed to the worker frame by frame, and what the outside call says
+//! say is handed to the worker as one stream, a frame every 20 ms, mixed when
+//! several speak at once ([`crate::mix`]), and what the outside call says
 //! is published on the bridge's own audio track, one voice at a time: a speaker
 //! holds the track while they talk, and the next takes it when they pause
 //! ([`FLOOR`]). Nothing the outside call said goes back to it.
@@ -26,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use crate::live::Track;
 use crate::live_session::Heard;
+use crate::mix::Mixer;
 use crate::presence::{BridgedMember, Call, LiveCall};
 use crate::speaker::Speaker;
 use crate::voice::{FRAME_SAMPLES, SAMPLE_RATE, VoiceObject};
@@ -281,9 +283,9 @@ impl ConnectorCall {
     /// naming the bridged participant it is theirs, while they hold its voice
     /// and the call lets them speak.
     fn carry_in(&mut self, frame: OutsideAudio) {
-        if self.carried.is_none() {
+        let Some(pair) = self.carried.clone() else {
             return;
-        }
+        };
         if !self.in_tilo || !self.heard_from.contains(&frame.speaker) {
             return;
         }
@@ -295,6 +297,16 @@ impl ConnectorCall {
             return;
         };
         let who = member.publisher(self.device);
+        // The session holds the call's rule by device; a carried person is denied as the
+        // stand-in they are here, which is no device of this call.
+        if !self
+            .speaker
+            .session()
+            .may(&pair.tilo, &member.person(self.device))
+            .publish
+        {
+            return;
+        }
         // The session holds the call's rule: what it lets through is what is heard.
         let Some(object) = self
             .voice
@@ -515,7 +527,9 @@ impl AppLane {
         let Some(pair) = pair else {
             if let Some((carried, _)) = running.take() {
                 carried.abort();
-                // The app left: the device is in its call no longer, and nothing of it is said.
+                // The app left: the device is in its call no longer, and neither is anyone it
+                // carried.
+                setup.speaker.set_bridged(Vec::new());
                 (setup.join)(None).map_err(|reason| ActionCallError::Refused { reason })?;
             }
             let _ = self.calls.send(CallsReport::default());
@@ -661,6 +675,7 @@ impl Drop for AppLane {
         let carried = lock(&self.carried).take();
         if let (Some((carried, _)), Ok(setup)) = (carried, &self.granted) {
             carried.abort();
+            setup.speaker.set_bridged(Vec::new());
             let _ = (setup.join)(None);
         }
     }
@@ -679,12 +694,44 @@ async fn says_status(
     }
 }
 
-/// What the workspace's call said, written to the app frame by frame.
+/// The speaker a frame of several of the workspace's people speaking at once names: it is
+/// theirs together, mixed into one.
+pub const MIXED: &str = "mixed";
+
+/// How often the app is handed the workspace's next frame: one Opus frame's length.
+const SAID_EVERY: Duration = Duration::from_millis(20);
+
+/// What the workspace's call said, written to the app as one stream, a frame every 20 ms: one
+/// speaker's frames untouched and named as theirs, several speaking at once mixed into one frame
+/// named [`MIXED`], so the outside call hears each of them instead of their frames interleaved.
+/// Nothing ticks while nobody speaks.
 async fn said_audio(out: Out, mut speaks: mpsc::UnboundedReceiver<(String, Vec<u8>)>) {
-    while let Some((speaker, opus)) = speaks.recv().await {
-        out(frame_line(RemoteActionMessage::CallSaid(
-            tilo_actions::remote::call::CallAudio { speaker, opus },
-        )));
+    let mut mixer = Mixer::default();
+    loop {
+        if !mixer.active() {
+            let Some((speaker, opus)) = speaks.recv().await else {
+                return;
+            };
+            mixer.push(&speaker, opus);
+        }
+        let mut every = tokio::time::interval(SAID_EVERY);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        while mixer.active() {
+            tokio::select! {
+                spoken = speaks.recv() => {
+                    let Some((speaker, opus)) = spoken else { return };
+                    mixer.push(&speaker, opus);
+                }
+                _ = every.tick() => {
+                    if let Some((speaker, opus)) = mixer.tick_said() {
+                        let speaker = speaker.unwrap_or_else(|| MIXED.to_owned());
+                        out(frame_line(RemoteActionMessage::CallSaid(
+                            tilo_actions::remote::call::CallAudio { speaker, opus },
+                        )));
+                    }
+                }
+            }
+        }
     }
 }
 

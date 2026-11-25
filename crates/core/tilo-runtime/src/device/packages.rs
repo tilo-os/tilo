@@ -488,7 +488,29 @@ fn device_content(root: &Path) -> PathBuf {
 
 impl Writer {
     /// Make `change` to the cache, to its end.
+    ///
+    /// A change that installs leaves the package in the store; the modules it runs are compiled
+    /// here, by the device's one compiler, so the app's first open finds the machine code it
+    /// runs on instead of compiling it then.
     fn apply(&self, change: package_actions::Change) -> Result<package_actions::Report, String> {
+        // What was installed before the change, so what the change installs is compiled; a
+        // reading that failed is no reason to compile everything.
+        let before = if Self::installs(&change) {
+            self.installed().ok()
+        } else {
+            None
+        };
+        let applied = self.make(change);
+        if let Some(before) = before
+            && applied.is_ok()
+        {
+            self.compile_installed(&before);
+        }
+        applied
+    }
+
+    /// Make `change` to the cache.
+    fn make(&self, change: package_actions::Change) -> Result<package_actions::Report, String> {
         let store = package_store::PackageStore::at(&self.root);
         let catalog =
             package_store::Catalog::at(&self.root, package_store::SystemStore::from_env());
@@ -503,6 +525,88 @@ impl Writer {
             change,
             &package_actions::Entry::Device(&files),
         )
+    }
+
+    /// Whether `change` leaves a package installed, and so brings modules this device runs.
+    fn installs(change: &package_actions::Change) -> bool {
+        use package_actions::Change;
+        match change {
+            Change::Install { dry_run, .. } | Change::Update { dry_run, .. } => !dry_run,
+            Change::InstallDev { .. }
+            | Change::InstallRuntime { .. }
+            | Change::FetchRuntime { .. } => true,
+            Change::Uninstall { .. }
+            | Change::SetPinned { .. }
+            | Change::Opened { .. }
+            | Change::Collect { .. }
+            | Change::AddImage { .. }
+            | Change::RemoveImage { .. }
+            | Change::FetchImage { .. }
+            | Change::RemoveRuntime { .. }
+            | Change::PinRuntime { .. }
+            | Change::AddAttestor { .. }
+            | Change::RemoveAttestor { .. }
+            | Change::Revoke { .. }
+            | Change::Verify { .. }
+            | Change::FlatpakRemoteAdd { .. }
+            | Change::FlatpakFlathub
+            | Change::FlatpakRemoteSetEnabled { .. }
+            | Change::FlatpakRemoteRemove { .. } => false,
+        }
+    }
+
+    /// What is installed in the cache now, by app and the package root it was installed from.
+    fn installed(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        let catalog =
+            package_store::Catalog::at(&self.root, package_store::SystemStore::from_env());
+        Ok(catalog
+            .list()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|package| format!("{}:{}", package.id, package.package_id_hex))
+            .collect())
+    }
+
+    /// Compile the modules of every package installed since `before`: the machine code the
+    /// device runs them as, on the one compiler, so a process deserializes it instead of
+    /// compiling anything itself, and the app opens without a compile.
+    fn compile_installed(&self, before: &std::collections::BTreeSet<String>) {
+        let Some(compiler) = super::compiled::compiler() else {
+            return;
+        };
+        let catalog =
+            package_store::Catalog::at(&self.root, package_store::SystemStore::from_env());
+        let Ok(packages) = catalog.list() else {
+            return;
+        };
+        for package in packages {
+            if before.contains(&format!("{}:{}", package.id, package.package_id_hex)) {
+                continue;
+            }
+            let modules = super::compiled::payload_modules(&package.payload_root);
+            if modules.is_empty() {
+                continue;
+            }
+            let parts: Vec<&[u8]> = modules.iter().map(Vec::as_slice).collect();
+            let began = std::time::Instant::now();
+            let entries = compiler.ensure_all(&parts);
+            for (index, entry) in entries.iter().enumerate() {
+                if let Err(error) = entry {
+                    tracing::warn!(
+                        app = %package.id,
+                        module = index,
+                        %error,
+                        "an installed module is not compiled for this device: it runs interpreted"
+                    );
+                }
+            }
+            tracing::debug!(
+                app = %package.id,
+                modules = parts.len(),
+                took_us = began.elapsed().as_micros(),
+                "an installed package's modules are compiled for this device"
+            );
+        }
     }
 
     /// Where the device keeps the bytes `source` names.

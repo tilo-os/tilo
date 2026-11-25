@@ -11,9 +11,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use tilo_keyboard_engine::{GeometricSwipeModel, KeyAction, KeyboardLayout};
 use serde::Deserialize;
 use serde_json::json;
+use tilo_keyboard_engine::{GeometricSwipeModel, KeyAction, KeyboardLayout};
 use vello::kurbo::{Point, Rect};
 
 #[derive(Deserialize)]

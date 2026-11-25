@@ -77,7 +77,7 @@ impl AppBrokerState {
             let node = app_node(&workspace, app_id);
             tracing::warn!(
                 %app_id,
-                caller = %policy.member(),
+                caller = %policy.actor(),
                 owner = workspace.policy.owner().unwrap_or("none"),
                 direct = policy.direct(),
                 answer = ?policy.answer_in(&workspace, &node, tilo_action_policy::ActionKind::Undoable, now),

@@ -504,7 +504,9 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
         session.step(Duration::from_millis(1)).expect("step");
         session
     };
-    let records = kept.device_records().expect("the session keeps the device's records");
+    let records = kept
+        .device_records()
+        .expect("the session keeps the device's records");
     // A session keeps the layout as it ends.
     drop(kept);
 

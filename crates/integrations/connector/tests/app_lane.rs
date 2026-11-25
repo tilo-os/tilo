@@ -5,6 +5,7 @@
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
     reason = "in a test these are the assertion, not a hazard"
@@ -13,22 +14,23 @@
 //! An app's call lane on the connection it holds: the frames a bridge program speaks carry a
 //! person from an outside service into a workspace call as a participant of their own, the
 //! workspace's frames go back out, and a lane the workspace did not grant is refused with the
-//! reason. The app here is a test process speaking the same frames a bun program does.
+//! reason. The app here speaks through the line wire's client, the one a bun program's SDK
+//! reaches the device's daemon with.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use collab_types::presence::CallPresence;
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_actions::remote::call::{
-    BridgedCall, CallAudio, CallLink as SaidLink, CallReport as SaidReport,
+    BridgedCall, CallAudio, CallLink as SaidLink, CallReport as SaidReport, CallStatus,
+    OutsideCall, OutsidePerson,
 };
-use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage, TestProvider, frame_line};
-use tilo_live::app_call::{AppLane, CallSetup};
+use tilo_actions::remote::{ActionCallError, LineClient, RemoteActionFrame, TestProvider};
+use tilo_live::app_call::{AppLane, CallSetup, MIXED};
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::presence::{Board, Call, Own};
@@ -43,6 +45,9 @@ const CALL: &str = "voice-tl";
 const OUTSIDE: &str = "458";
 const BRIDGE: [u8; 32] = [7; 32];
 const GRACE: [u8; 32] = [9; 32];
+const ADA: [u8; 32] = [11; 32];
+/// The BLAKE3 hex of the picture the app kept for its outside person.
+const AVATAR: &str = "4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a4f8a";
 
 fn keys() -> ContentKeys {
     let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
@@ -74,7 +79,7 @@ fn setup(relay: &Relay, keys: ContentKeys) -> CallSetup {
             scope: Scope::workspace(WORKSPACE.to_owned()),
             device: BRIDGE,
             keys: keys.clone().into(),
-            roster: Roster::new([GRACE, BRIDGE]),
+            roster: Roster::new([GRACE, ADA, BRIDGE]),
             publish: true,
             presence: true,
         },
@@ -119,89 +124,10 @@ fn setup(relay: &Relay, keys: ContentKeys) -> CallSetup {
     }
 }
 
-/// The app's side of the connection: frames out, and every line the device writes in.
-struct App {
-    writer: Mutex<UnixStream>,
-    lines: Arc<Mutex<Vec<serde_json::Value>>>,
-    next: AtomicU64,
-}
-
-impl App {
-    fn of(stream: UnixStream) -> Self {
-        let reader = BufReader::new(stream.try_clone().unwrap());
-        let lines: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
-        let held = Arc::clone(&lines);
-        std::thread::spawn(move || {
-            for line in reader.lines() {
-                let Ok(line) = line else { return };
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                    held.lock().unwrap().push(value);
-                }
-            }
-        });
-        Self {
-            writer: Mutex::new(stream),
-            lines,
-            next: AtomicU64::new(1),
-        }
-    }
-
-    /// Ask `message`, answering with its correlation, and wait for the answer.
-    fn ask(&self, build: impl FnOnce(u64) -> RemoteActionMessage) -> serde_json::Value {
-        let correlation = self.next.fetch_add(1, Ordering::Relaxed);
-        self.send(build(correlation));
-        self.until(|line| {
-            line.get("message")
-                .and_then(|m| {
-                    m.get("CallCarryResponse")
-                        .or_else(|| m.get("CallReportResponse"))
-                })
-                .and_then(|answer| answer.get("correlation"))
-                .and_then(serde_json::Value::as_u64)
-                == Some(correlation)
-        })
-    }
-
-    fn send(&self, message: RemoteActionMessage) {
-        let line = frame_line(message);
-        let mut writer = self.writer.lock().unwrap();
-        writeln!(writer, "{line}").unwrap();
-        writer.flush().unwrap();
-    }
-
-    /// Wait for a line this app's connection was written, past the ones already read.
-    fn until(&self, mut found: impl FnMut(&serde_json::Value) -> bool) -> serde_json::Value {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut seen = 0;
-        loop {
-            {
-                let lines = self.lines.lock().unwrap();
-                while seen < lines.len() {
-                    if found(&lines[seen]) {
-                        return lines[seen].clone();
-                    }
-                    seen += 1;
-                }
-            }
-            assert!(std::time::Instant::now() < deadline, "no such line arrived");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    /// Whether any line this app read is the device's push of `said`.
-    fn said(&self, opus: &[u8]) -> bool {
-        self.lines.lock().unwrap().iter().any(|line| {
-            line.pointer("/message/CallSaid/opus")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|bytes| {
-                    bytes
-                        .iter()
-                        .filter_map(serde_json::Value::as_u64)
-                        .map(|b| u8::try_from(b).unwrap_or_default())
-                        .eq(opus.iter().copied())
-                })
-        })
-    }
+/// The app's side of the connection: the line wire's one client, as the SDKs a bridge program
+/// is written against reach the device with it.
+fn app(stream: UnixStream) -> LineClient {
+    LineClient::over(stream.try_clone().unwrap(), stream).unwrap()
 }
 
 /// Serve one app connection over `stream` with a lane and a plain action provider beside it.
@@ -255,12 +181,19 @@ struct Member {
 }
 
 impl Member {
-    fn new(relay: &Relay, keys: &ContentKeys, roster: &Roster) -> Self {
+    /// `device` in the call, shown as `label`.
+    fn new(
+        relay: &Relay,
+        keys: &ContentKeys,
+        roster: &Roster,
+        device: [u8; 32],
+        label: &str,
+    ) -> Self {
         let live = LiveSession::local(
             relay,
             &Join {
                 scope: Scope::workspace(WORKSPACE),
-                device: GRACE,
+                device,
                 keys: keys.clone().into(),
                 roster: roster.clone(),
                 publish: true,
@@ -270,9 +203,9 @@ impl Member {
         .unwrap();
         live.set_calls(BTreeMap::new(), BTreeMap::new());
         live.set_call_keys(CALL, 0, keys.clone());
-        let mut board = Board::new(WORKSPACE, GRACE);
+        let mut board = Board::new(WORKSPACE, device);
         board.say(&Own {
-            label: "Grace".into(),
+            label: label.into(),
             device: "laptop".into(),
             call: Some(Call {
                 call: CallPresence {
@@ -393,7 +326,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     let _entered = runtime.enter();
     let relay = local_relay();
     let keys = keys();
-    let roster = Roster::new([GRACE, BRIDGE]);
+    let roster = Roster::new([GRACE, ADA, BRIDGE]);
     let (server, client) = UnixStream::pair().unwrap();
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
     let out: tilo_live::app_call::Out = {
@@ -408,74 +341,72 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     assert!(lane.granted().is_ok());
     serve(server, lane, written);
 
-    let app = App::of(client);
-    let mut grace = Member::new(&relay, &keys, &roster);
+    let app = app(client);
+    let mut grace = Member::new(&relay, &keys, &roster, GRACE, "Grace");
 
-    // The app asks for the pair, and says who is in its outside call.
-    let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
-        correlation,
-        pair: Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: CALL.into(),
-        }),
-    });
-    assert!(
-        answer
-            .pointer("/message/CallCarryResponse/result/Ok")
-            .is_some(),
-        "the pair was carried: {answer}"
-    );
-    let answer = app.ask(|correlation| RemoteActionMessage::CallReport {
-        correlation,
-        report: SaidReport {
-            calls: vec![tilo_actions::remote::call::OutsideCall {
-                call: OUTSIDE.into(),
-                people: vec![tilo_actions::remote::call::OutsidePerson {
-                    account: "7001".into(),
-                    name: "Dana".into(),
-                    muted: false,
-                    deafened: true,
-                    ..Default::default()
-                }],
+    // The app asks for the pair, and says who is in its outside call: Dana, by her name and the
+    // picture it kept in the workspace's content.
+    app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: CALL.into(),
+    }))
+    .expect("the pair was carried");
+    let dana = |muted: bool| SaidReport {
+        calls: vec![OutsideCall {
+            call: OUTSIDE.into(),
+            people: vec![OutsidePerson {
+                account: "7001".into(),
+                name: "Dana".into(),
+                avatar_url: Some("https://cdn.discordapp.com/avatars/7001/9f3.png".into()),
+                avatar: Some(AVATAR.into()),
+                muted,
+                deafened: false,
             }],
-            link: SaidLink::Joined {
-                call: OUTSIDE.into(),
-            },
-            status: String::new(),
+        }],
+        link: SaidLink::Joined {
+            call: OUTSIDE.into(),
         },
+        status: String::new(),
+    };
+    app.report_call(dana(false)).expect("the report was taken");
+
+    // Dana and Grace are each in their call: the device asks the app into the outside call,
+    // saying who is here once it sees Grace.
+    let asked = until(&mut grace, "the app asked into the outside call", |_| {
+        app.asked_call()
+            .filter(|asked| asked.status.as_deref() == Some("On Tilo: Grace"))
     });
-    assert!(
-        answer
-            .pointer("/message/CallReportResponse/result/Ok")
-            .is_some(),
-        "the report was taken: {answer}"
+    assert_eq!(
+        asked,
+        CallStatus {
+            call: Some(OUTSIDE.into()),
+            status: Some("On Tilo: Grace".into()),
+        }
     );
 
-    // Dana is a participant of the Tilo call of her own, by the name her service shows,
-    // deafened as her own service says.
-    let dana = until(&mut grace, "Dana is a bridged participant", |grace| {
+    // Dana is a participant of the Tilo call of her own, by the name and picture her service
+    // shows.
+    let shown = until(&mut grace, "Dana is a bridged participant", |grace| {
         grace
             .callers()
             .into_iter()
             .find(|caller| caller.bridged.is_some())
     });
-    assert_eq!(
-        dana.bridged
-            .as_ref()
-            .map(|bridged| bridged.account.as_str()),
-        Some("7001")
-    );
-    assert_eq!(dana.label, "Dana");
-    assert!(dana.deafened, "her service says her ear is off too");
+    let bridged = shown.bridged.as_ref().unwrap();
+    assert_eq!(bridged.account, "7001");
+    assert_eq!(bridged.avatar.as_deref(), Some(AVATAR));
+    assert_eq!(shown.label, "Dana");
+    assert!(!shown.muted);
 
     // What she says reaches the call, named as her own voice. Her service sends a frame every
     // 20 ms; the call asks for the bridge's voice a moment after it joins, and the frames before
     // that have nobody to go to.
     let heard = until(&mut grace, "Dana is heard", |grace| {
-        app.send(RemoteActionMessage::CallHeard(CallAudio {
+        app.hear_call(CallAudio {
             speaker: "7001".into(),
             opus: vec![1, 2, 3],
-        }));
+        })
+        .unwrap();
         grace
             .voices
             .iter()
@@ -485,28 +416,48 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     let dana_key = collab_types::presence::stand_in(BRIDGE, "discord:7001");
     assert_eq!(heard.0, Some(dana_key), "the voice is Dana's own");
 
-    // What Grace says comes back to the app as one frame, untouched.
+    // What Grace says comes back to the app untouched, as hers: the device waits for her second
+    // frame before playing the first, so a late frame is waited for, not a gap.
     grace.speak(&[7, 8, 9]);
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !app.said(&[7, 8, 9]) {
+    grace.speak(&[7, 8, 9]);
+    let said = until(&mut grace, "the workspace's frame reached the app", |_| {
+        app.said_call()
+            .into_iter()
+            .find(|frame| frame.opus == [7, 8, 9])
+    });
+    assert_eq!(said.speaker, hex::encode(GRACE));
+
+    // Dana mutes herself there: the call shows her muted, and nothing she sends is carried.
+    app.report_call(dana(true)).expect("the report was taken");
+    until(&mut grace, "Dana is shown muted", |grace| {
+        grace
+            .callers()
+            .into_iter()
+            .find(|caller| caller.bridged.is_some() && caller.muted)
+    });
+    for _ in 0..10 {
+        app.hear_call(CallAudio {
+            speaker: "7001".into(),
+            opus: vec![4, 4],
+        })
+        .unwrap();
         grace.pump();
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the workspace's frame reached the app"
-        );
         std::thread::sleep(Duration::from_millis(20));
     }
-
-    // Letting go ends the bridge's place in the call.
-    let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
-        correlation,
-        pair: None,
-    });
     assert!(
-        answer
-            .pointer("/message/CallCarryResponse/result/Ok")
-            .is_some()
+        !grace.voices.iter().any(|(_, opus)| opus == &[4, 4]),
+        "a muted person is not heard"
     );
+
+    // Letting go ends the bridge's place in the call, and the people it carried leave it.
+    app.carry_call(None).expect("the call was let go");
+    until(&mut grace, "the bridged participants left", |grace| {
+        (!grace
+            .callers()
+            .iter()
+            .any(|caller| caller.bridged.is_some() || caller.bridge.is_some()))
+        .then_some(())
+    });
 }
 
 #[test]
@@ -524,35 +475,28 @@ fn an_app_without_the_grant_is_refused_its_call() {
     );
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
     serve(server, lane, written);
-    let app = App::of(client);
-    let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
-        correlation,
-        pair: Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: CALL.into(),
-        }),
-    });
-    let refusal = answer
-        .pointer("/message/CallCarryResponse/result/Err")
-        .expect("the call was refused");
+    let app = app(client);
+    let refused = app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: CALL.into(),
+    }));
     assert_eq!(
-        refusal["Refused"]["reason"],
-        "this workspace grants the bridge no call"
+        refused,
+        Err(ActionCallError::Refused {
+            reason: "this workspace grants the bridge no call".into()
+        })
     );
     // A spoken frame is not a request: nothing is answered, and nothing is carried.
-    app.send(RemoteActionMessage::CallHeard(CallAudio {
+    app.hear_call(CallAudio {
         speaker: "7001".into(),
         opus: vec![1],
-    }));
-    let answer = app.ask(|correlation| RemoteActionMessage::CallReport {
-        correlation,
-        report: SaidReport::default(),
-    });
+    })
+    .unwrap();
+    app.report_call(SaidReport::default())
+        .expect("a report is still taken");
     assert!(
-        answer
-            .pointer("/message/CallReportResponse/result/Ok")
-            .is_some(),
-        "a report is still taken: {answer}"
+        app.said_call().is_empty(),
+        "nothing of a call reaches the app"
     );
 }
 
@@ -566,46 +510,47 @@ fn a_pair_for_another_call_than_the_one_admitted_is_refused() {
     let lane = AppLane::new(Ok(setup(&relay, keys)), Arc::new(|_| {}));
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
     serve(server, lane, written);
-    let app = App::of(client);
+    let app = app(client);
     // The app's first carry joins its call: that is the call it was admitted to.
-    let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
-        correlation,
-        pair: Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: CALL.into(),
-        }),
-    });
+    app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: CALL.into(),
+    }))
+    .expect("the first pair was carried");
+    let refused = app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: "another-call".into(),
+    }));
+    let Err(ActionCallError::Refused { reason }) = refused else {
+        panic!("the call was refused: {refused:?}");
+    };
     assert!(
-        answer
-            .pointer("/message/CallCarryResponse/result/Ok")
-            .is_some(),
-        "the first pair was carried: {answer}"
-    );
-    let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
-        correlation,
-        pair: Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: "another-call".into(),
-        }),
-    });
-    let refusal = answer
-        .pointer("/message/CallCarryResponse/result/Err")
-        .expect("the call was refused");
-    assert!(
-        refusal["Refused"]["reason"]
-            .as_str()
-            .is_some_and(|why| why.contains(CALL) && why.contains("another-call")),
-        "the refusal names both calls: {refusal}"
+        reason.contains(CALL) && reason.contains("another-call"),
+        "the refusal names both calls: {reason}"
     );
 }
 
+/// A 20 ms Opus frame of a `hz` tone, the `frame`th of it, as a microphone says it.
+fn tone(hz: f32, frame: usize) -> Vec<u8> {
+    let mut encoder =
+        opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+    let samples = FRAME_SAMPLES as usize;
+    let pcm: Vec<i16> = (0..samples)
+        .map(|i| {
+            let t = (frame * samples + i) as f32 / 48_000.0;
+            (f32::sin(t * hz * std::f32::consts::TAU) * 8000.0) as i16
+        })
+        .collect();
+    encoder.encode_vec(&pcm, 1275).unwrap()
+}
+
 #[test]
-fn the_app_is_never_handed_a_key() {
+fn two_people_speaking_at_once_reach_the_app_as_one_mixed_stream() {
     let runtime = runtime();
     let _entered = runtime.enter();
     let relay = local_relay();
     let keys = keys();
-    let roster = Roster::new([GRACE, BRIDGE]);
+    let roster = Roster::new([GRACE, ADA, BRIDGE]);
     let (server, client) = UnixStream::pair().unwrap();
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
     let out: tilo_live::app_call::Out = {
@@ -618,72 +563,78 @@ fn the_app_is_never_handed_a_key() {
     };
     let lane = AppLane::new(Ok(setup(&relay, keys.clone())), out);
     serve(server, lane, written);
-
-    let app = App::of(client);
-    let mut grace = Member::new(&relay, &keys, &roster);
-    app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
-        correlation,
-        pair: Some(BridgedCall {
-            outside: OUTSIDE.into(),
-            tilo: CALL.into(),
-        }),
-    });
-    app.ask(|correlation| RemoteActionMessage::CallReport {
-        correlation,
-        report: SaidReport {
-            calls: vec![tilo_actions::remote::call::OutsideCall {
-                call: OUTSIDE.into(),
-                people: vec![tilo_actions::remote::call::OutsidePerson {
-                    account: "7001".into(),
-                    name: "Dana".into(),
-                    ..Default::default()
-                }],
-            }],
-            link: SaidLink::Joined {
-                call: OUTSIDE.into(),
-            },
-            status: String::new(),
+    let app = app(client);
+    let mut grace = Member::new(&relay, &keys, &roster, GRACE, "Grace");
+    let mut ada = Member::new(&relay, &keys, &roster, ADA, "Ada");
+    app.carry_call(Some(BridgedCall {
+        outside: OUTSIDE.into(),
+        tilo: CALL.into(),
+    }))
+    .expect("the pair was carried");
+    app.report_call(SaidReport {
+        calls: vec![OutsideCall {
+            call: OUTSIDE.into(),
+            people: Vec::new(),
+        }],
+        link: SaidLink::Joined {
+            call: OUTSIDE.into(),
         },
-    });
-    // A frame the workspace says reaches the app opened: the frame itself, never a key.
-    grace.pump();
-    grace.speak(&[7, 8, 9]);
+        status: String::new(),
+    })
+    .expect("the report was taken");
+
+    // Both are in the call once the device says so to the app.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !app.said(&[7, 8, 9]) {
+    loop {
         grace.pump();
+        ada.pump();
+        let status = app
+            .asked_call()
+            .and_then(|asked| asked.status)
+            .unwrap_or_default();
+        if status.contains("Grace") && status.contains("Ada") {
+            break;
+        }
         assert!(
             std::time::Instant::now() < deadline,
-            "the frame reached the app"
+            "the device never saw both in the call"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    // Everything the app was ever handed is one of the call lane's own answers or words: no
-    // key, epoch or sealed body is among them.
-    for line in app.lines.lock().unwrap().iter() {
-        let message = line
-            .get("message")
-            .and_then(serde_json::Value::as_object)
-            .expect("every line is one action-wire message");
-        let kind = message.keys().next().expect("a message names its kind");
-        assert!(
-            matches!(
-                kind.as_str(),
-                "CallCarryResponse" | "CallReportResponse" | "CallStatus" | "CallSaid"
-            ),
-            "the app is handed only call words, not {kind}"
-        );
-        let text = serde_json::to_string(line).unwrap();
-        for forbidden in [
-            "\"key\"",
-            "\"keys\"",
-            "\"sealed\"",
-            "\"epoch\"",
-            "\"secret\"",
-        ] {
-            assert!(
-                !text.contains(forbidden),
-                "the app is handed no key material, found {forbidden} in {text}"
-            );
+
+    // Grace and Ada talk at once: the app is handed one stream that is both of them, a frame
+    // every 20 ms, never their frames one after the other.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut said = Vec::new();
+    let mut frame = 0;
+    let mixed = loop {
+        grace.speak(&tone(440.0, frame));
+        ada.speak(&tone(660.0, frame));
+        frame += 1;
+        grace.pump();
+        ada.pump();
+        said.extend(app.said_call());
+        if let Some(mixed) = said.iter().find(|said| said.speaker == MIXED) {
+            break mixed.clone();
         }
-    }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no mixed frame reached the app; it was handed {:?}",
+            said.iter().map(|said| &said.speaker).collect::<Vec<_>>()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        said.iter().all(|said| said.speaker == MIXED
+            || said.speaker == hex::encode(GRACE)
+            || said.speaker == hex::encode(ADA)),
+        "every frame is one of theirs or both"
+    );
+    let mut decoder = opus::Decoder::new(48_000, opus::Channels::Stereo).unwrap();
+    let mut pcm = vec![0_i16; FRAME_SAMPLES as usize * 2];
+    assert_eq!(
+        decoder.decode(&mixed.opus, &mut pcm, false).unwrap(),
+        FRAME_SAMPLES as usize,
+        "the mix is one 20 ms frame"
+    );
 }

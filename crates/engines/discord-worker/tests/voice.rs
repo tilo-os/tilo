@@ -21,9 +21,9 @@ use std::time::Duration;
 use collab_types::presence::CallPresence;
 use fake_discord::{CHANNEL_VOICE, CONNECT_AND_SPEAK, FakeDiscord, Heard, TOKEN, User, tone};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
-use tilo_connector::call_bridge::{BridgedCall, CallsReport, ConnectorCall, Lane, OutsideAudio};
 use tilo_connector::framing::{read_frame_async, write_frame_async};
 use tilo_connector::protocol::{Bytes, CallLink, FromWorker, OutsideCall, ToWorker};
+use tilo_live::app_call::{BridgedCall, CallsReport, ConnectorCall, Lane, OutsideAudio};
 use tilo_live::calls::CallRule;
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
@@ -31,6 +31,7 @@ use tilo_live::presence::{Board, Call, Own};
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
+use tilo_live::speaker::Speaker;
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -747,6 +748,44 @@ fn local_relay() -> Relay {
     Relay::new(Arc::new(Nobody))
 }
 
+/// The bridge's device's word in the workspace: the live session its daemon would hold, held to
+/// `rules` and to the media keys of the generation [`TILO_CALL`] names, and the speaker that says
+/// the device's presence and carries the call's voice there.
+fn bridge_speaker(
+    relay: &Relay,
+    device: [u8; 32],
+    keys: &ContentKeys,
+    roster: &Roster,
+    rules: BTreeMap<String, CallRule>,
+) -> Arc<Speaker> {
+    let live = Arc::new(
+        LiveSession::local(
+            relay,
+            &Join {
+                scope: Scope::workspace(BRIDGE_WORKSPACE),
+                device,
+                keys: keys.clone().into(),
+                roster: roster.clone(),
+                publish: true,
+                presence: true,
+            },
+        )
+        .unwrap(),
+    );
+    live.set_calls(rules, BTreeMap::new());
+    live.set_call_keys(TILO_CALL, 0, keys.clone());
+    Speaker::start(
+        &live,
+        BRIDGE_WORKSPACE,
+        device,
+        Own {
+            label: "Bridge".into(),
+            device: "home-server".into(),
+            ..Own::default()
+        },
+    )
+}
+
 /// Poll `check` until it answers, pumping `grace` and doing `each` every turn.
 async fn until<T>(
     grace: &mut Member,
@@ -791,18 +830,10 @@ async fn an_outside_call_is_carried_into_the_tilo_call_as_a_bridged_person() {
     let roster = Roster::new([grace_device, bridge_device]);
 
     let mut bridge = ConnectorCall::new(
-        relay.clone(),
-        BRIDGE_WORKSPACE,
-        bridge_device,
-        "home-server",
-        Some("aa".repeat(32)),
+        bridge_speaker(&relay, bridge_device, &keys, &roster, BTreeMap::new()),
         "discord",
         host.lane(),
     );
-    bridge.set_roster(roster.clone());
-    bridge.set_keys(keys.clone());
-    bridge.set_calls(BTreeMap::new(), BTreeMap::new());
-    bridge.set_call_keys(TILO_CALL, 0, keys.clone());
     bridge.carry(Some(BridgedCall {
         outside: CHANNEL_VOICE.to_owned(),
         tilo: TILO_CALL.to_owned(),
@@ -1017,17 +1048,6 @@ async fn a_bridged_person_the_call_denies_is_not_carried() {
     let grace_device = [9; 32];
     let bridge_device = [7; 32];
     let roster = Roster::new([grace_device, bridge_device]);
-    let mut bridge = ConnectorCall::new(
-        relay.clone(),
-        BRIDGE_WORKSPACE,
-        bridge_device,
-        "home-server",
-        Some("aa".repeat(32)),
-        "discord",
-        host.lane(),
-    );
-    bridge.set_roster(roster.clone());
-    bridge.set_keys(keys.clone());
     let dana_key = collab_types::presence::stand_in(bridge_device, "discord:7001");
     let mut rule = CallRule::default();
     rule.denied.insert(
@@ -1038,8 +1058,11 @@ async fn a_bridged_person_the_call_denies_is_not_carried() {
         },
     );
     let rules = BTreeMap::from([(TILO_CALL.to_owned(), rule)]);
-    bridge.set_calls(rules.clone(), BTreeMap::new());
-    bridge.set_call_keys(TILO_CALL, 0, keys.clone());
+    let mut bridge = ConnectorCall::new(
+        bridge_speaker(&relay, bridge_device, &keys, &roster, rules.clone()),
+        "discord",
+        host.lane(),
+    );
     bridge.carry(Some(BridgedCall {
         outside: CHANNEL_VOICE.to_owned(),
         tilo: TILO_CALL.to_owned(),

@@ -18,9 +18,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_broker_core::services::{
-    ContentStoreServices, DocumentChangeServices, KeyboardShortcutServices,
-    LocalPersonServices, OwnDeviceActions, SearchIndexServices, WorkspaceGovernanceServices,
-    WorkspaceNodeActions,
+    ContentStoreServices, DocumentChangeServices, KeyboardShortcutServices, LocalPersonServices,
+    OwnDeviceActions, SearchIndexServices, WorkspaceGovernanceServices, WorkspaceNodeActions,
 };
 use tilo_broker_core::steps::ContinuationServices;
 use tilo_workspace_keys::KeyProvider;
@@ -106,7 +105,6 @@ macro_rules! broker_services {
 }
 
 broker_services! {
-    approved_checks: Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>,
     committed_documents: Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
     native_media: Arc<dyn tilo_workspace_service::apps::services::NativeMediaServices>,
     audio_output: Arc<dyn AudioOutputServices>,

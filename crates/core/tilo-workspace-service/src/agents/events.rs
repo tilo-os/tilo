@@ -680,7 +680,7 @@ impl Asker {
         if actor.is_app() {
             return None;
         }
-        if let Some(agent) = actor.member().agent_id() {
+        if let Some(agent) = actor.actor().agent_id() {
             return Some(Self {
                 person: actor.acting_for()?.to_owned(),
                 agent: Some(agent.to_owned()),
@@ -779,7 +779,7 @@ impl WorkspaceEvents {
         self.library
             .store(ShortcutLibraryRequest {
                 workspace: workspace.to_owned(),
-                actor: asker.by(),
+                actor: asker.by().into(),
                 acting_for: asker.agent.as_ref().map(|_| asker.person.clone()),
                 change,
                 context: tilo_actions::ActionContext::for_resource(
@@ -1265,7 +1265,6 @@ fn descriptor(offered: Offered) -> ActionDescriptor {
         input: InputSpec::None,
         params: offered.params,
         view: None,
-        effects: Vec::new(),
     }
 }
 

@@ -579,9 +579,10 @@ impl Hydrator {
         // current-thread runtime, or a thread that entered one, would stop every task that
         // runtime drives, and tokio's own refusal names no caller. Refuse first, in words that
         // name the mistake.
-        let in_current_thread_runtime = tokio::runtime::Handle::try_current().is_ok_and(|current| {
-            current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
-        });
+        let in_current_thread_runtime =
+            tokio::runtime::Handle::try_current().is_ok_and(|current| {
+                current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
+            });
         assert!(
             !in_current_thread_runtime && !tilo_rt::in_async_context(),
             "Hydrator::block_on was called from a task of a current-thread runtime, or a thread \
@@ -1115,9 +1116,10 @@ mod tests {
         let (told, heard) = std::sync::mpsc::channel();
         tilo_rt::app().spawn(async move {
             let hydrator = Hydrator::new(store);
-            let mistake =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hydrator.block_on(async {})))
-                    .expect_err("waiting on a task of the runtime is refused");
+            let mistake = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                hydrator.block_on(async {})
+            }))
+            .expect_err("waiting on a task of the runtime is refused");
             let said = mistake
                 .downcast_ref::<String>()
                 .cloned()

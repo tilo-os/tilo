@@ -129,7 +129,7 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
     if target.provider == PROVIDER || in_workspace_tree {
         return effects(&target.address.action);
     }
-    described_use(target).map_or_else(Vec::new, |action| action.effects)
+    described_use(target).map_or_else(Vec::new, |action| action.contract.effects)
 }
 
 /// The kind of resource a reference is the address of: what a parameter that
@@ -761,6 +761,13 @@ fn use_row(
     let mut contract = crate::ActionContract {
         // It signs in somewhere outside the workspace.
         kind: crate::ActionKind::Outside,
+        // A use of another app's writes the use down in the vault; the vault's own actions say
+        // what each writes.
+        effects: if provider == PROVIDER {
+            effects(action)
+        } else {
+            vec![vault_step(KEEP_USES)]
+        },
         ..crate::ActionContract::default()
     };
     // It takes an item's address, which a person never picks from a list.
@@ -785,13 +792,6 @@ fn use_row(
             input: crate::InputSpec::None,
             params,
             view: None,
-            // A use of another app's writes the use down in the vault; the vault's own
-            // actions say what each writes.
-            effects: if provider == PROVIDER {
-                effects(action)
-            } else {
-                vec![vault_step(KEEP_USES)]
-            },
         },
     )
 }

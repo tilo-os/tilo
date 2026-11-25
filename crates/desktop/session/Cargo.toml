@@ -20,6 +20,14 @@ name = "tilo-surface-probe"
 path = "tests/bin/surface_probe.rs"
 test = false
 
+# A window's app the window-move tests start through the session's launcher: it connects to the
+# device's daemon as an app does, and answers the save a move asks of it as the test says. Never
+# installed.
+[[bin]]
+name = "tilo-window-probe"
+path = "tests/bin/window_probe.rs"
+test = false
+
 # The session's integration tests: one binary, its files included as modules by
 # `tests/it.rs` (a file per binary linked the whole crate once each).
 [[test]]
@@ -164,7 +172,7 @@ tilo-live = { path = "../../core/tilo-live", features = ["live_session", "relay"
 
 zeroize.workspace = true
 jiff.workspace = true
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
 # The sheets the desktop shows over everything: the offers an action

@@ -193,21 +193,14 @@ fn theme_pair(name: &str) -> Result<[(&'static str, ui::Theme); 2], String> {
 }
 
 /// The theme of the bundle directory `dir`: its [`ui::theme_bundle::DOCUMENT`] and a `<set>.wasm`
-/// beside it for each set the document names.
+/// beside it for each set the document names, each drawn on the machine code the device's daemon
+/// compiled for it when this computer has one, read from the store it keeps them in.
 fn load_theme_bundle(dir: &Path) -> Result<ui::Theme, ui::theme_bundle::BundleError> {
-    let document = std::fs::read_to_string(dir.join(ui::theme_bundle::DOCUMENT))
-        .map_err(|e| ui::theme_bundle::BundleError::Read(format!("{}: {e}", dir.display())))?;
-    ui::theme_bundle::load(&document, |set| {
-        let path = dir.join(format!("{set}.wasm"));
-        match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(ui::theme_bundle::BundleError::Read(format!(
-                "{}: {e}",
-                path.display()
-            ))),
-        }
-    })
+    let compiled = std::env::var_os(runtime_portal::process_link::COMPILED_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| tilo_paths::data_dir().map(|data| data.join("tilolang-compiled")));
+    ui::theme_bundle::load_from(dir, compiled.as_deref())
 }
 
 /// The part of a shot's file name that says which theme family it is in: the name, or a bundle

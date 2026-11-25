@@ -697,12 +697,16 @@ impl Opened {
                 .source_invocation
                 .map(|invocation| invocation.0.to_string()),
         );
+        // The change keeps the call its caller signed, as a change made for a caller must:
+        // every holder checks that caller asked for it, and with which key.
+        store.serve_signed(context.signed.clone());
         let encoded = self.writing(run, || {
             Ok(self.host.carrying_out(&invoker.acting.by, || {
                 tilo_actions::api::encode_json(&resources, address, arguments)
             }))
         });
         store.serve(None);
+        store.serve_signed(None);
         let encoded = encoded.map_err(ApiError::Failed)??;
         if encoded.type_id == tilo_resource::read::TYPE {
             let args = if encoded.payload.is_empty() {

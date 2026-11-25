@@ -897,11 +897,7 @@ impl SpeakerGroupCore {
     /// Whether this device may admit a playlist for `group` right now: the leader writes the
     /// group with this device as a member, and either this device is that leader or its consent
     /// covers the member as published.
-    fn consent_covers(
-        state: &SpeakerState,
-        local: &DeviceId,
-        group: SpeakerGroupId,
-    ) -> bool {
+    fn consent_covers(state: &SpeakerState, local: &DeviceId, group: SpeakerGroupId) -> bool {
         let Some(published) = state.group(group) else {
             return false;
         };

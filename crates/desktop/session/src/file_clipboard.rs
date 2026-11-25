@@ -506,7 +506,11 @@ impl FileClipboardServices for NativeFileClipboard {
 
 impl NativeFileClipboard {
     /// [`FileClipboardServices::command`], on this thread.
-    fn command_now(&self, context: &FileClipboardContext, command: Command) -> Result<Reply, String> {
+    fn command_now(
+        &self,
+        context: &FileClipboardContext,
+        command: Command,
+    ) -> Result<Reply, String> {
         if !command.valid() {
             return Err("invalid clipboard command".into());
         }

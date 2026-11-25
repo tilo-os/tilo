@@ -32,7 +32,6 @@ fn row(id: &str, label: &str) -> RosterRow {
         joined: None,
         joined_line: None,
         call: None,
-        join: None,
     }
 }
 
@@ -271,7 +270,7 @@ tilo_test_env::scenario! {
                 // In the row: the column between its face and Follow, as the row is painted.
                 let probe = ListRowFace::new("Claude Code")
                     .leading_column(FACE)
-                    .trailing_width(overlay.row_trailing(&rows[0], false, &theme));
+                    .trailing_width(overlay.row_trailing(&rows[0], &theme));
                 let start = probe.text_column(place.rect, &mut text, &theme);
                 let end = probe
                     .trailing_rect(place.rect, &mut text, &theme)

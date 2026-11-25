@@ -389,7 +389,7 @@ impl Workspaces {
     /// reference with its name, sign-in name and servers, never its secret
     /// (`SIGN_INS`): what a person picks from to add an account without typing its
     /// password again.
-    pub(super) async fn mail_sign_ins(&self, workspace: &str) -> Result<MailSignIns, String> {
+    pub(super) async fn vault_sign_ins(&self, workspace: &str) -> Result<MailSignIns, String> {
         let Some(opened) = self.read_made_vault(workspace).await? else {
             return Ok(MailSignIns::default());
         };
@@ -398,20 +398,12 @@ impl Workspaces {
             .iter()
             .filter(|(entry, _)| entry.kind == accounts::SecretItemKind::Login)
             .filter_map(|(entry, _)| {
-                let places: Vec<String> = entry
-                    .origins
-                    .iter()
-                    .filter(|place| place.starts_with("imap://") || place.starts_with("smtp://"))
-                    .cloned()
-                    .collect();
-                let signs_in = places.iter().any(|place| place.starts_with("imap://"))
-                    && places.iter().any(|place| place.starts_with("smtp://"));
                 let id = tilo_actions::remote::person_vault::ItemRef::from_id(&entry.id.0)?;
-                signs_in.then(|| MailSignIn {
+                Some(MailSignIn {
                     id: id.to_string(),
                     title: entry.title.clone(),
                     username: entry.username.clone(),
-                    places,
+                    places: entry.origins.iter().cloned().collect(),
                 })
             })
             .collect();
@@ -699,7 +691,7 @@ impl Workspaces {
                 }
                 answer(&kept)
             }
-            person_accounts::SIGN_INS => answer(&self.mail_sign_ins(workspace).await),
+            person_accounts::SIGN_INS => answer(&self.vault_sign_ins(workspace).await),
             person_accounts::SET_FILES_MODE => {
                 let saying: SetFilesMode =
                     argument(request, "an account and the files mode it takes")?;

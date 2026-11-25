@@ -55,6 +55,7 @@ impl AppBrokerState {
                 state: Arc::clone(self),
                 own_peer: self.next_peer_id(),
                 origin,
+                serving: None,
             },
             caller: caller.clone(),
             workspace,

@@ -377,7 +377,9 @@ pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeS
         (policy.hourly, |secs| bucket(secs / 3_600)),
         (policy.daily, |secs| bucket(secs / 86_400)),
         // 1970-01-01 was a Thursday: shifting by three days starts each week on a Monday.
-        (policy.weekly, |secs| bucket((secs / 86_400).saturating_add(3) / 7)),
+        (policy.weekly, |secs| {
+            bucket((secs / 86_400).saturating_add(3) / 7)
+        }),
         (policy.monthly, |secs| month_of(secs / 86_400)),
     ];
     for (count, period) in periods {

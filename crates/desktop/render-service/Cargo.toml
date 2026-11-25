@@ -10,7 +10,7 @@ description = "A workspace's render service: the one process that draws toolkit 
 
 [dependencies]
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["dmabuf-import"], default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["dmabuf-import", "model"], default-features = false }
 vello.workspace = true
 pollster.workspace = true
 serde.workspace = true

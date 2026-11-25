@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use crate::common::publisher;
 use tilo_actions::ResourceSpec;
-use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 
 /// A session on the headless backend, taking no part in the peer network.
 fn session() -> Session {

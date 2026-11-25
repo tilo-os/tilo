@@ -744,13 +744,13 @@ fn unkept(pred: &Pred<String>) -> Option<&'static str> {
         Pred::And(all) | Pred::Or(all) => all.iter().find_map(unkept),
         Pred::Cmp(op, Operand::Field(_), Operand::Lit(lit)) => (matches!(lit, Lit::Variant(_))
             && !matches!(op, CmpOp::Eq | CmpOp::Ne))
-            .then_some("it orders the cases of an enum; compare a case with `==` or `!=`"),
+        .then_some("it orders the cases of an enum; compare a case with `==` or `!=`"),
         Pred::Cmp(_, Operand::Lit(_), Operand::Field(_)) => {
             Some("it names the value first; write the field first, as in `state == .playing`")
         }
-        Pred::Cmp(..) => Some(
-            "it compares a field with another field or a count; compare a field with a value",
-        ),
+        Pred::Cmp(..) => {
+            Some("it compares a field with another field or a count; compare a field with a value")
+        }
     }
 }
 
@@ -1041,6 +1041,7 @@ impl Lower<'_> {
                     | Ty::Time
                     | Ty::Identifier
                     | Ty::Record(_)
+                    | Ty::Enum(_)
             )
         {
             let mut captured = self.captured.borrow_mut();

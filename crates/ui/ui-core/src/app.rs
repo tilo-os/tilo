@@ -1697,7 +1697,6 @@ impl App {
             },
             params: action.params().to_vec(),
             view: tilo_actions::ResourceViewDescriptor::declared_for(resource, &action.id),
-            effects: Vec::new(),
         }
     }
 }
@@ -1748,18 +1747,6 @@ impl App {
         if self.continuation.last_private_route.as_ref() != Some(&observation)
             || self.continuation.private_instance != Some(instance)
         {
-            if self
-                .continuation
-                .last_private_route
-                .as_ref()
-                .is_some_and(|last| last.route() != observation.route())
-                || self.continuation.private_instance != Some(instance)
-            {
-                self.continuation.owner_view = Default::default();
-            } else {
-                self.continuation.owner_view.pending = None;
-                self.continuation.owner_view.last_generation = 0;
-            }
             self.continuation.last_published = None;
             self.continuation.publication_initialized = false;
             self.continuation.last_private_route = Some(observation.clone());

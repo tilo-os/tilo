@@ -264,7 +264,7 @@ impl crate::workspaces::Workspaces {
                 let mut row = verb.row(super::GOVERNANCE, &resource, "Vault");
                 row.parent_resource.clone_from(&root);
                 if let Some(descriptor) = row.action.as_mut() {
-                    descriptor.effects = person_vault::effects(action);
+                    descriptor.contract.effects = person_vault::effects(action);
                 }
                 rows.push(row);
             }

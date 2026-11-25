@@ -97,6 +97,9 @@ pub(super) struct ConnectionActionProvider {
     /// The connection's revalidated admission: an application's own effect,
     /// directed back to it, runs under this original caller's ownership.
     pub(super) origin: super::published_invocation::InvocationCaller,
+    /// The invocation delivered to this connection that the request is the work of, as it was
+    /// delivered: what a provider registered on this device is told the call serves.
+    pub(super) serving: Option<Arc<dyn tilo_actions::remote::Serving>>,
 }
 
 impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
@@ -119,11 +122,10 @@ impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A channel connection carries no launcher-authenticated scope, so a
         // content launch by hash is refused rather than widened.
-        self.state.action_invoke_with_origin(
+        self.state.action_invoke_serving(
             caller,
             Some(self.own_peer),
-            None,
-            Some(&self.origin),
+            (Some(&self.origin), self.serving.clone()),
             &request,
         )
     }
@@ -398,7 +400,6 @@ pub(super) fn app_open_descriptor(
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -477,7 +478,6 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -666,12 +666,11 @@ impl AppBrokerState {
     ) -> Result<Caller, Box<tilo_actions::remote::RemoteActionMessage>> {
         use tilo_actions::remote::{RemoteActionMessage, refuse};
         let access = self.app_action_access(app_id);
-        let owner = person
-            .acting_for_person()
-            .or_else(|| person.acting().person_id())
-            .unwrap_or_default()
-            .to_owned();
-        let mut as_app = Caller::local_app(app_id).acting_for(owner);
+        // With no person behind the connection, the app acts by itself.
+        let mut as_app = Caller::local_app(app_id);
+        if let Some(owner) = person.acting_for_person().or(person.acting().person_id()) {
+            as_app = as_app.acting_for(owner.to_owned());
+        }
         if let Some(workspace) = person.workspace() {
             as_app = as_app.in_workspace(workspace);
         }
@@ -1893,11 +1892,40 @@ impl AppBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.action_invoke_admitted(caller, own_peer, launch, (origin, None), request)
+    }
+
+    /// [`Self::action_invoke_with_origin`] for an app connection's request that is the work of
+    /// `serving`, an invocation delivered to that connection.
+    pub(super) fn action_invoke_serving(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.action_invoke_admitted(caller, own_peer, None, (origin, serving), request)
+    }
+
+    fn action_invoke_admitted(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A call an app makes for an invocation it runs carries that invocation as its proof
         // wherever it goes from here.
         let request = &self.with_served_proof(caller, request.clone());
         let (state, asking, asked) = (Arc::clone(self), caller.clone(), request.clone());
-        self.invoke_admitted(caller, own_peer, launch, origin, request)
+        self.invoke_admitted(caller, own_peer, launch, (origin, serving), request)
             .map(move |answer| match answer {
                 Err(error) => Err(state.with_asked_facts(&asking, &asked, error)),
                 Ok(mut receipt) => {
@@ -1915,7 +1943,10 @@ impl AppBrokerState {
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
-        origin: Option<&super::published_invocation::InvocationCaller>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
@@ -2010,7 +2041,7 @@ impl AppBrokerState {
         if !answered_where_published
             && let Some(registered) = self.registered(&request.target.provider)
         {
-            return self.invoke_registered(caller, origin, &registered, request);
+            return self.invoke_registered(caller, origin, serving, &registered, request);
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));
@@ -2061,7 +2092,7 @@ impl AppBrokerState {
         }) {
             let mut request = request.clone();
             request.target.provider = registered.provider.to_string();
-            return self.invoke_registered(caller, origin, &registered, &request);
+            return self.invoke_registered(caller, origin, None, &registered, &request);
         }
         self.invoke_launchable(caller, origin, request)
     }
@@ -2205,6 +2236,15 @@ impl AppBrokerState {
         // The launcher keeps the workspace past the read: only this
         // workspace's authority is copied, once every check on the same sample passed.
         let workspace_id = workspace;
+        // What the offered action writes beside its record, read before the workspace is
+        // borrowed: wording it asks the catalogue, which reads the same authority.
+        let effects = offered.as_ref().map_or_else(Vec::new, |action| {
+            let target = tilo_actions::remote::RemoteActionTarget {
+                provider: request.target.provider.clone(),
+                address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+            };
+            self.worded_effects(caller, &tilo_actions::remote::declared_effects(&target))
+        });
         let workspace = self
             .decide_for(caller, &workspace_id, |workspace, policy, now| {
                 // A live application target is a route to an existing action,
@@ -2248,6 +2288,7 @@ impl AppBrokerState {
                             action,
                             &policy,
                             argument.as_deref(),
+                            &effects,
                         )));
                     }
                 }
@@ -2414,7 +2455,7 @@ impl AppBrokerState {
                     .is_some_and(|app| app.as_str() == route.app_id),
                 _ => false,
             };
-            if !own_app && expected.member() != actual.member() {
+            if !own_app && expected.actor() != actual.actor() {
                 return Err(ActionCallError::NotPermitted);
             }
         }
@@ -2453,7 +2494,7 @@ impl AppBrokerState {
                 }
                 tracing::warn!(
                     %app_id,
-                    caller = %policy.member(),
+                    caller = %policy.actor(),
                     owner = workspace.policy.owner().unwrap_or("none"),
                     "an app's launch was refused: the workspace does not let the caller open it"
                 );
@@ -2522,7 +2563,7 @@ impl AppBrokerState {
             return LaunchPlace::Focus;
         }
         self.launchable
-            .view_of(workspace, BrokerActor::for_caller(caller).member())
+            .view_of(workspace, BrokerActor::for_caller(caller).actor())
             .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id })
     }
 
@@ -2804,7 +2845,7 @@ impl AppBrokerState {
         )
         .map(|staged| {
             self.launchable
-                .note_view(&workspace, actor.member(), &app_id);
+                .note_view(&workspace, actor.actor(), &app_id);
             Started::Staged(staged)
         })
         .map_err(super::Refusal::into_call_error)
@@ -2917,7 +2958,7 @@ impl AppBrokerState {
             tilo_action_policy::Answer::Deny => {
                 tracing::warn!(
                     app,
-                    caller = %policy.member(),
+                    caller = %policy.actor(),
                     owner = workspace.policy.owner().unwrap_or("none"),
                     action = %descriptor.address.action,
                     "an action was refused: the workspace does not grant it to the caller"
@@ -3264,7 +3305,7 @@ impl AppBrokerState {
             return Pending::ready(Ok(()));
         }
         answered_when_durable(
-            self.request_cancellation(job, BrokerActor::for_caller(caller).member())
+            self.request_cancellation(job, BrokerActor::for_caller(caller).actor())
                 .map_err(|reason| ActionCallError::NotCancellable { reason }),
         )
     }
@@ -3575,7 +3616,7 @@ mod app_close_tests {
                 workspace,
                 host: journal.host(),
                 owner: super::super::InvocationOwner::Local {
-                    actor: tilo_actions::MemberId::person(hex::encode([31; 32])),
+                    actor: tilo_actions::Actor::from(tilo_actions::MemberId::person(hex::encode([31; 32]))),
                 },
                 invocation: request.invocation,
             };

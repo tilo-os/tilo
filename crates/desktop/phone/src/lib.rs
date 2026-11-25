@@ -14,8 +14,19 @@
 )]
 
 pub mod bundles;
+// The receiver's call into Rust is Android's; it is compiled on the host too by the unit
+// tests, which type-check it without a device.
+#[cfg(any(target_os = "android", test))]
+mod push_jni;
+pub mod telling;
+pub mod unified_push;
 pub mod view;
 pub mod worker;
+/// The person's workspace files as the phone's file provider shows them.
+pub mod workspace_files;
+
+#[cfg(target_os = "android")]
+mod android;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -41,7 +52,8 @@ fn worker() -> Result<&'static worker::Worker, String> {
         .get_or_init(|| {
             declare_carried_runtimes();
             let wake = ui::wake::WakeHandle::new();
-            worker::Worker::start(&profile(), move || wake.wake()).map_err(|e| format!("{e:#}"))
+            worker::Worker::start(&profile(), notifier(), move || wake.wake())
+                .map_err(|e| format!("{e:#}"))
         })
         .as_ref()
         .map_err(Clone::clone)
@@ -87,6 +99,32 @@ fn signed_manifest() -> Option<tilo_app_package::Manifest> {
 fn signed_manifest() -> Option<tilo_app_package::Manifest> {
     None
 }
+
+/// The phone's device as a file provider reaches it: the same worker the view asks, started here
+/// when Android calls a provider before any window of the app opened in this process. A person
+/// signs in in the app, and the provider's roots are theirs as soon as the view's are.
+///
+/// # Errors
+/// The daemon did not start.
+pub fn files() -> Result<worker::Files, String> {
+    worker().map(worker::Worker::files)
+}
+
+/// What the phone shows a notification through: the system's, on Android; elsewhere the
+/// platform's own, which is this computer's for a developer running the phone app on it.
+fn notifier() -> std::sync::Arc<dyn tilo_process_services::notify::Notifier> {
+    #[cfg(target_os = "android")]
+    {
+        tilo_process_services::native::android::services(Some(TILO_PHONE)).notifications
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        tilo_process_services::notify::system(Some(TILO_PHONE))
+    }
+}
+
+/// The phone app's package id, as the platform knows it.
+const TILO_PHONE: &str = "so.tilo.phone";
 
 /// The apps the phone opens: those the APK carries; elsewhere (a test, a developer's computer)
 /// those under `TILO_PHONE_APPS`.

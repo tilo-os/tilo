@@ -67,7 +67,8 @@ async fn a_resource_the_service_holds_reads_from_it() {
         heads,
         body,
     } = reads
-        .capture(&reading, None, MAXIMUM).await
+        .capture(&reading, None, MAXIMUM)
+        .await
         .expect("the resource reads")
     else {
         panic!("the service holds the resource whole");
@@ -97,7 +98,10 @@ async fn a_resource_the_service_holds_reads_from_it() {
         reads.capture(&reading, Some(revision), MAXIMUM).await.unwrap(),
         NativeDocumentRead::Unchanged(stood) if stood == revision
     ));
-    assert_eq!(reads.unchanged(&reading, Some(revision)).await, Ok(Some(true)));
+    assert_eq!(
+        reads.unchanged(&reading, Some(revision)).await,
+        Ok(Some(true))
+    );
     assert_eq!(
         reads.unchanged(&reading, None).await,
         Ok(Some(false)),
@@ -137,7 +141,8 @@ async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
     assert!(!reads.holds_resource(&workspace, APP, "another-note"));
     assert!(matches!(
         reads
-            .capture(&context(&workspace, "another-note", cert), None, MAXIMUM).await
+            .capture(&context(&workspace, "another-note", cert), None, MAXIMUM)
+            .await
             .unwrap(),
         NativeDocumentRead::Absent
     ));

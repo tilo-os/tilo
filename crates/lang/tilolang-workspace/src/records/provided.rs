@@ -116,7 +116,13 @@ impl BuiltInRecords {
         };
         let invoker =
             ActionInvoker::admitted(caller.acting()).named(caller.agent_name().map(str::to_owned));
-        let context: ActionContext = request.context.clone().unwrap_or_default();
+        // The invocation the caller signed travels into what the action writes, as it does
+        // through the broker: a change made for a caller keeps the call that asked for it.
+        let mut context: ActionContext = request.context.clone().unwrap_or_default();
+        if let Some(signed) = tilo_actions::remote::SignedCall::of(request) {
+            context.signed = Some(Box::new(signed));
+            context.source_invocation = Some(request.invocation);
+        }
         let (records, caller) = (self.clone(), caller.clone());
         let (done, outcome) = pending();
         self.runtime.spawn(async move {

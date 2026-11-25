@@ -929,6 +929,16 @@ impl CaptureStudio {
         self.replay = Some(0);
     }
 
+    /// Write what the replay buffer holds to `path` for a report to carry, when it runs: the
+    /// last moments before the person reported a problem. Nothing when no buffer runs.
+    pub(crate) fn clip_for_report(
+        &self,
+        path: PathBuf,
+    ) -> Option<std::sync::mpsc::Receiver<Result<usize, String>>> {
+        self.feeding.as_ref()?;
+        Some(self.io.save_replay(path))
+    }
+
     fn save_replay(&mut self) {
         if self.feeding.is_none() {
             return;

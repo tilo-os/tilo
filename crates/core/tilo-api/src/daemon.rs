@@ -510,4 +510,3 @@ pub fn unreachable_answer(request: &serde_json::Value, problem: &str) -> Option<
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
-

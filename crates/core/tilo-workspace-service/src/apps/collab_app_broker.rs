@@ -48,17 +48,15 @@ use join_identity::*;
 )]
 use lifecycle::*;
 pub(crate) use lifecycle::{BrokerWiring, spawn_configured};
-mod approved_checks;
-mod external_moderation;
-mod local_document_action;
-mod subscriptions;
-mod surface_publication;
-pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
+mod external_moderation;
+mod local_document_action;
 mod observed_launch;
 mod presses;
+mod subscriptions;
+mod surface_publication;
 pub use observed_launch::AppOpen;
 mod offload_api;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
@@ -161,11 +159,12 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 
+use collab_types::handoff::HandoffReport;
 use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
-use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, roles};
+use tilo_action_policy::{ActionKind, Answer, TreePath, roles};
 #[cfg(test)]
 use tilo_desktop_model::Layout;
 
@@ -225,7 +224,7 @@ struct PendingInvocation {
     update: tilo_actions::InvocationUpdate,
     prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
-    actor: MemberId,
+    actor: tilo_action_policy::Actor,
     cancellable: bool,
     retryable_on_disconnect: bool,
     execution: tilo_actions::ExecutionMode,
@@ -413,6 +412,11 @@ pub struct AppBrokerState {
     /// The window instance the shell launched each connected app for, by
     /// peer id: which tab's window the records it holds are shown in.
     window_instances: Mutex<HashMap<u64, u64>>,
+    /// The saves the shell asked of windows' apps that have not answered, by the window's route
+    /// (its channel key) and the request's number: the connection asked, and where its answer
+    /// goes. The connection's going away drops what it was asked, which the asker hears as no
+    /// answer ([`Self::ask_save`]).
+    saves: Mutex<HashMap<(String, u64), (u64, tilo_actions::remote::Completer<HandoffReport>)>>,
     /// The person's own presses, as the compositor attested them over the shell link: what a
     /// call an app's window makes proves it runs as the person
     /// ([`presses::Presses`]).
@@ -427,11 +431,13 @@ pub struct AppBrokerState {
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
-    approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLog<u64>>,
+    /// The calls each app connection made inside an invocation delivered to it, by connection
+    /// and call: whose they are, so the connection follows and cancels them as that caller.
+    child_calls: Mutex<HashMap<(u64, tilo_actions::InvocationId), tilo_actions::remote::Caller>>,
     /// Shortcut runs the API finished, until history records them.
     ended_invocations: crate::apps::automation::BrokerInvocations,
     /// What each application declared it may do on the action api under
@@ -636,7 +642,7 @@ impl AppBrokerState {
             .filter(|pending| pending.peer_id == peer_id)
             .map(|pending| {
                 let actor = pending.context.invoker.as_ref().map_or_else(
-                    || tilo_actions::Actor::Member(pending.actor.clone()),
+                    || pending.actor.clone(),
                     |invoker| invoker.acting.by.clone(),
                 );
                 (pending.update.invocation(), actor)

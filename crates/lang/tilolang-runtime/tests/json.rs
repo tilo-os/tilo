@@ -443,7 +443,11 @@ action explore(f: Feed) uses web {
         let w = world(FEED);
         w.call("encode_scalars");
         assert_eq!(w.text("summary"), "7", "an Int is a number");
-        assert_eq!(w.text("payload"), "true", "a Bool is true or false, not 1 or 0");
+        assert_eq!(
+            w.text("payload"),
+            "true",
+            "a Bool is true or false, not 1 or 0"
+        );
         assert_eq!(w.text("status"), "1.5", "a Float keeps its fraction");
     }
 

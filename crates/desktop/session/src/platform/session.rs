@@ -1090,7 +1090,6 @@ impl Session {
             ),
             crate::people::Given {
                 scale: options.scale,
-                device_person: options.person.clone(),
                 notes: {
                     let notes = std::sync::Arc::clone(&notes);
                     Rc::new(move || notes.windows())
@@ -1819,6 +1818,7 @@ impl Session {
             inputs,
             asks,
             box_ask: Cell::default(),
+            box_files: crate::carried::Carried::default(),
             feedback,
             intents,
             overlays,
@@ -1875,7 +1875,7 @@ impl Session {
             notices: notices.clone(),
             moves: crate::window_move::Moves::new(
                 crate::notifications::RoleNotices::of(&notifications),
-                std::sync::Arc::clone(&notes),
+                options.wake.handle(),
             ),
             branches: crate::workspace_branch::Branches::default(),
             activities,

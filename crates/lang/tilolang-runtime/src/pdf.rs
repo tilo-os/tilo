@@ -181,7 +181,9 @@ impl Core {
                 let width = a.long(2)?;
                 match self.pdf.borrow().picture(&bytes, page, width) {
                     Ok(png) => {
-                        let file = self.keep_bytes("page.png", "image/png", &png).or_else(trap)?;
+                        let file = self
+                            .keep_bytes("page.png", "image/png", &png)
+                            .or_else(trap)?;
                         self.result(Ok(Value::file(file)))
                     }
                     Err(why) => self.result(Err(why)),

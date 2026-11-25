@@ -338,14 +338,21 @@ fn an_agents_card_says_what_it_is_at_and_offers_what_can_be_asked_of_it() {
     never_shows(&session, "Message", "a conversation is never an agent's");
 
     // A press on Stop asks its card, which this device does not serve: the ask is taken, and the
-    // card stays open to show what came of it.
+    // card and who is here leave with it, as the person was taken to what they chose.
     press(&mut session, "Stop");
     assert!(
         session.shell_refusals().is_empty(),
         "the ask is not refused by the reading: {:?}",
         session.shell_refusals()
     );
-    shows(&mut session, "Stop");
+    wait_for(&mut session, "the card to leave", |session| {
+        session.shell_control("Stop").is_none().then_some(())
+    });
+    assert!(
+        !session.shell_says("Who is here"),
+        "who is here left with the card: {:?}",
+        session.accessible_labels()
+    );
 
     // What the card never offers is refused where a script asks it anyway: the verbs are the
     // resource's, and one it does not name is no ask at all.

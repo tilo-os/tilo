@@ -18,7 +18,7 @@ async fn a_rename_another_device_writes_is_what_the_hosts_lists_name() {
     let server = test_holder(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    let (writer, _salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let (writer, _salt) = admitted_member(&workspaces, &workspace, &cert, 3).await;
     let writer_key = SigningKey::from_bytes(&[3; 32]);
     let workspace_id = workspaces
         .workspace(&workspace)

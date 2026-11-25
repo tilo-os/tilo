@@ -88,43 +88,24 @@ impl Tiering {
         bytes: &[u8],
         dir: &std::path::Path,
     ) -> Option<wasmtime::Module> {
-        let prefix = format!("{hash}-");
-        for entry in std::fs::read_dir(dir).ok()? {
-            let path = entry.ok()?.path();
-            let name = path.file_name()?.to_str()?;
-            if !name.starts_with(&prefix)
-                || path
-                    .extension()
-                    .is_none_or(|extension| extension != "cwasm")
-            {
-                continue;
+        let entry = tilo_wasm_aot::kept_in(dir, bytes)?;
+        let Ok(serialized) = tilo_wasm_aot::open_for(&entry, bytes) else {
+            return None;
+        };
+        match self.compiler.backend.deserialize(serialized) {
+            Ok(module) => {
+                self.compiler.keep(hash.clone(), module.clone());
+                Some(module)
             }
-            let Ok(entry) = std::fs::read(&path) else {
-                continue;
-            };
-            let Ok(serialized) = tilo_wasm_aot::open_for(&entry, bytes) else {
+            Err(error) => {
                 tracing::warn!(
-                    path = %path.display(),
-                    "a compiled module is not the one this module's daemon made: it runs \
+                    %error,
+                    "a compiled module in the device's store is for another build: it runs \
                      interpreted"
                 );
-                continue;
-            };
-            match self.compiler.backend.deserialize(serialized) {
-                Ok(module) => {
-                    self.compiler.keep(hash.clone(), module.clone());
-                    return Some(module);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        %error,
-                        "a compiled module is for another build: it runs interpreted"
-                    );
-                }
+                None
             }
         }
-        None
     }
 
     /// The compiled modules could not be instantiated together: the module runs on the

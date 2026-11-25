@@ -127,8 +127,7 @@ fn fill_synced(reading: &mut Storage) {
         match client.cache_policy() {
             Ok(policy) => reading.cache_policy = Some(self::policy(policy)),
             Err(error) => {
-                reading.sync_error =
-                    Some(unread("How this device keeps workspace files", &error));
+                reading.sync_error = Some(unread("How this device keeps workspace files", &error));
             }
         }
         match client.snapshot() {
@@ -138,8 +137,7 @@ fn fill_synced(reading: &mut Storage) {
                 reading.reclaimable_bytes = bytes;
             }
             Err(error) => {
-                reading.sync_error =
-                    Some(unread("The synced files this device holds", &error));
+                reading.sync_error = Some(unread("The synced files this device holds", &error));
             }
         }
     }
@@ -292,10 +290,9 @@ fn change_policy(change: impl FnOnce(&mut SocketPolicy)) -> Result<(), String> {
         .cache_policy()
         .map_err(|error| unread("How this device keeps workspace files", &error))?;
     change(&mut policy);
-    client
-        .set_cache_policy(policy)
-        .map(drop)
-        .map_err(|error| format!("How this device keeps workspace files cannot be changed: {error}"))
+    client.set_cache_policy(policy).map(drop).map_err(|error| {
+        format!("How this device keeps workspace files cannot be changed: {error}")
+    })
 }
 
 /// Fetch predicted workspace files ahead of their open, or only when they are opened.

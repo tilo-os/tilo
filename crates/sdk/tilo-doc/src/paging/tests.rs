@@ -259,7 +259,10 @@ fn ten_thousand_pages_of_a_fixed_text() {
         blocks = blocks.saturating_add(1);
     }
     let elapsed = started.elapsed();
-    assert!(pages >= 10_000, "the book is ten thousand pages long: {pages}");
+    assert!(
+        pages >= 10_000,
+        "the book is ten thousand pages long: {pages}"
+    );
     assert!(blocks > 1_000, "a book's paragraphs: {blocks}");
     assert!(
         elapsed < Duration::from_secs(10),

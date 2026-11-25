@@ -2,17 +2,27 @@
 //
 // This program is the call's outside half: Discord's voice gateway speaks to it, and what it
 // hears is handed to the workspace as the person who said it, by their own name there. What the
-// workspace's people say comes back as one Opus stream, the speaker the workspace's call lets
-// through at a time, and is sent untouched: nothing is decoded, mixed or re-encoded here.
+// workspace's people say comes back as one Opus stream, mixed by the device when several speak at
+// once, and is sent untouched: nothing is decoded, mixed or re-encoded here.
 //
 // The workspace half is one lane, opened by the daemon for this app's own connection
-// (`TILO_SVC_NATIVE_FD`): `carry` says which call is bridged, `report` says who is in the outside
-// call and where this side stands, `heard` hands over each outside frame and `said` takes the
-// workspace's frames. The daemon holds the call's rule and its media keys, so this app never sees
-// either, and a lane it is not granted is refused there.
+// (`TILO_SVC_NATIVE_FD`, the SDK's `callLane`): `carry` says which call is bridged, `report` says
+// who is in the outside call and where this side stands, `heard` hands over each outside frame,
+// `said` takes the workspace's frames and `asked` says where the daemon wants the bot: in the
+// Discord call while anyone is on either side, showing who is on the workspace's side as the
+// channel's status, and out of it once nobody is. The daemon holds the call's rule and its media
+// keys, so this app never sees either, and a lane it is not granted is refused there.
 
 import { SELF, callPeople, voicePairs } from "./plan.js";
 import { keepAvatar } from "./avatars.js";
+import {
+  CHANGE_NICKNAME,
+  SET_VOICE_CHANNEL_STATUS,
+  andList,
+  inChannel,
+  missingToSpeak,
+} from "./permissions.js";
+import { nickname, voiceStatus } from "./rest.js";
 
 /// How often the workspace's frames are taken: one Opus frame.
 const PUMP_MS = 20;
@@ -31,15 +41,19 @@ export function startCalls({
   makeVoice,
   fetch = globalThis.fetch,
   content = (bytes) => calls.content?.(bytes) ?? null,
+  webCall = (request) => calls.webCall(request),
   log = () => {},
   onState = () => {},
 }) {
-  return new Carried({ calls, lane, gateway, makeVoice, fetch, content, log, onState });
+  return new Carried({ calls, lane, gateway, makeVoice, fetch, content, webCall, log, onState });
 }
 
 export class Carried {
-  constructor({ calls, lane, gateway, makeVoice, fetch, content, log, onState }) {
+  constructor({ calls, lane, gateway, makeVoice, fetch, content, webCall, log, onState }) {
     this.calls = calls;
+    /// Discord's REST through the workspace's vault, which adds the bot's token: answers
+    /// `{status}`.
+    this.webCall = webCall;
     this.lane = lane;
     this.gateway = gateway;
     this.makeVoice = makeVoice;
@@ -101,10 +115,11 @@ export class Carried {
     if (event?.state) {
       const state = event.state;
       if (state.user && state.user === (this.gateway.user?.id ?? "")) {
-        // The bot left the call: Discord moved it out, or the person ended it there.
+        // The bot left the call: Discord moved it out, or the person ended it there. A call the
+        // bridge left itself, because nobody was on either side, is still carried.
         if (!state.channel) {
           for (const carried of this.carried.values()) {
-            if (carried.guild === state.guild) {
+            if (carried.guild === state.guild && carried.opened && !carried.leaving) {
               this.#ended(carried.pair.discord, "Discord ended the call");
             }
           }
@@ -118,7 +133,7 @@ export class Carried {
     const server = event;
     if (!server?.guild) return;
     const carried = this.carried.get(server.guild);
-    if (!carried || carried.opened) return;
+    if (!carried || carried.opened || !carried.wanted) return;
     if (!server.channel || !server.endpoint || !server.token) return;
     this.#open(carried, server);
   }
@@ -128,30 +143,168 @@ export class Carried {
   #everySecond() {
     if (this.closed) return;
     for (const carried of this.carried.values()) {
-      if (carried.opened) this.#reportState(carried.guild, carried.pair.discord);
+      if (carried.ended) continue;
+      // A call the bot lacked a permission for is joined once someone gives it.
+      if (carried.lacking && carried.asked !== null && this.#missing(carried).length === 0) {
+        carried.lacking = false;
+        this.#join(carried, carried.asked);
+        continue;
+      }
+      this.#reportState(carried.guild, carried.pair.discord);
     }
   }
 
+  /// Carry `pair` into the workspace's call, and say who is in its Discord call: the daemon asks
+  /// the bot in once anyone is on either side.
   async #carry(pair) {
     const guild = this.account.guild_id;
-    const voice = { guild, pair, opened: false, voice: null, problem: "" };
+    const voice = {
+      guild,
+      pair,
+      opened: false,
+      voice: null,
+      problem: "",
+      wanted: false,
+      shown: "",
+      /// Where the line about the workspace's side is shown: the channel's "status", the bot's
+      /// "nickname", or nowhere ("").
+      shownAs: "",
+      showing: Promise.resolve(),
+      asked: null,
+      lacking: false,
+    };
     this.carried.set(pair.discord, voice);
     try {
       await this.lane.carry({ outside: pair.discord, tilo: pair.tilo });
     } catch (error) {
       voice.problem = `${error?.message ?? error}`;
+      voice.refused = true;
       await this.#reportProblem(voice.problem);
-      await this.#reportState(guild, pair.discord);
+    }
+    await this.#reportState(guild, pair.discord);
+  }
+
+  /// Where the daemon wants the bot: in the Discord call `asked.call`, showing `asked.status`
+  /// there, or in none.
+  async #asked(asked) {
+    for (const carried of this.carried.values()) {
+      if (carried.ended || carried.refused) continue;
+      if (asked.call === carried.pair.discord) {
+        carried.asked = asked.status ?? "";
+        await this.#join(carried, carried.asked);
+      } else {
+        carried.asked = null;
+        carried.lacking = false;
+        if (carried.wanted) await this.#leave(carried);
+      }
+    }
+  }
+
+  /// Move the bot into `carried`'s Discord call, or keep it there, showing `status`.
+  async #join(carried, status) {
+    if (carried.wanted) {
+      this.#show(carried, status);
       return;
     }
-    try {
-      const server = await this.gateway.joinVoice(guild, pair.discord);
-      await this.#open(voice, server);
-    } catch (error) {
-      voice.problem = `${error?.message ?? error}`;
-      await this.#reportProblem(voice.problem);
-      await this.#reportState(guild, pair.discord);
+    // What the bot may not do there is said as Discord names it, before Discord refuses it.
+    const missing = this.#missing(carried);
+    if (missing.length > 0) {
+      carried.lacking = true;
+      carried.problem =
+        `The bot lacks ${andList(missing)} in this voice channel. ` +
+        `Give it ${missing.length === 1 ? "that permission" : "those permissions"} in Discord.`;
+      await this.#reportProblem(carried.problem);
+      await this.#reportState(carried.guild, carried.pair.discord);
+      return;
     }
+    this.#show(carried, status);
+    carried.wanted = true;
+    carried.leaving = false;
+    carried.failed = false;
+    carried.problem = "";
+    await this.#reportState(carried.guild, carried.pair.discord);
+    try {
+      const server = await this.gateway.joinVoice(carried.guild, carried.pair.discord);
+      if (carried.wanted) await this.#open(carried, server);
+    } catch (error) {
+      if (!carried.wanted) return;
+      carried.failed = true;
+      carried.problem = `${error?.message ?? error}`;
+      await this.#reportProblem(carried.problem);
+      await this.#reportState(carried.guild, carried.pair.discord);
+    }
+  }
+
+  /// Move the bot out of `carried`'s Discord call: nobody is on either side. The pair stays
+  /// carried, so the next person on either side brings it back.
+  async #leave(carried) {
+    carried.wanted = false;
+    carried.leaving = true;
+    carried.voice?.close();
+    carried.voice = null;
+    carried.opened = false;
+    carried.failed = false;
+    carried.problem = "";
+    try {
+      this.gateway.leaveVoice(carried.guild);
+    } catch {}
+    this.#show(carried, "");
+    await this.#reportState(carried.guild, carried.pair.discord);
+  }
+
+  /// What the bot lacks to join `carried`'s channel and speak there, by Discord's names: nothing
+  /// before the gateway described the server, when Discord's own answer says it instead.
+  #missing(carried) {
+    const standing = this.gateway.standing?.(carried.guild);
+    return standing ? missingToSpeak(standing, carried.pair.discord) : [];
+  }
+
+  /// Show `text`, who is on the workspace's side, where Discord's people see it: as the voice
+  /// channel's status when the bot may set it, else as the bot's nickname in the server. Empty
+  /// clears it wherever it is shown. One show at a time, in the order asked.
+  #show(carried, text) {
+    if (carried.shown === text) return;
+    carried.shown = text;
+    carried.showing = carried.showing.then(() => this.#showNow(carried, text)).catch((error) =>
+      this.log(`the call's line did not reach Discord: ${error?.message ?? error}`),
+    );
+  }
+
+  async #showNow(carried, text) {
+    const rest = { tokenItem: this.account?.token_item ?? "", origin: this.account?.api_origin };
+    const channel = carried.pair.discord;
+    const guild = carried.guild;
+    const standing = this.gateway.standing?.(guild);
+    const have = standing ? inChannel(standing, channel) : null;
+    const may = (bit) => have === null || (have & bit) !== 0n;
+    const took = async (request) => {
+      try {
+        const answer = await this.webCall(request);
+        const status = Number(answer?.status ?? 0);
+        return status >= 200 && status < 300;
+      } catch {
+        return false;
+      }
+    };
+    if (!text) {
+      if (carried.shownAs === "status") await took(voiceStatus(rest, channel, ""));
+      if (carried.shownAs === "nickname") await took(nickname(rest, guild, ""));
+      carried.shownAs = "";
+      return;
+    }
+    if (may(SET_VOICE_CHANNEL_STATUS) && (await took(voiceStatus(rest, channel, text)))) {
+      if (carried.shownAs === "nickname") await took(nickname(rest, guild, ""));
+      carried.shownAs = "status";
+      return;
+    }
+    if (may(CHANGE_NICKNAME) && (await took(nickname(rest, guild, text)))) {
+      carried.shownAs = "nickname";
+      return;
+    }
+    this.log(
+      "the bot may set neither the voice channel's status nor its nickname, so Discord does not " +
+        "see who is on the workspace's side",
+    );
   }
 
   async #open(carried, server) {
@@ -190,10 +343,17 @@ export class Carried {
     }
   }
 
-  /// One outside frame's worth: hand over what the workspace said to Discord, and say again who
-  /// is in the call if that moved.
+  /// One outside frame's worth: hand over what the workspace said to Discord, and go where the
+  /// daemon asks the bot to be.
   async #take() {
-    if (this.closed) return;
+    if (this.closed || this.taking) return;
+    this.taking = true;
+    try {
+      const asked = await this.lane.asked?.();
+      if (asked) await this.#asked(asked);
+    } catch (error) {
+      this.log(`the workspace's call did not say where the bot is wanted: ${error?.message ?? error}`);
+    }
     try {
       const said = await this.lane.said();
       for (const frame of said ?? []) {
@@ -204,6 +364,8 @@ export class Carried {
       }
     } catch (error) {
       this.log(`the workspace's voice did not reach Discord: ${error?.message ?? error}`);
+    } finally {
+      this.taking = false;
     }
   }
 
@@ -231,7 +393,9 @@ export class Carried {
       ? { link: "joined", call: channel }
       : carried.problem
         ? { link: "refused", call: channel, reason: carried.problem }
-        : { link: "joining", call: channel };
+        : carried.wanted
+          ? { link: "joining", call: channel }
+          : { link: "idle" };
     try {
       await this.lane.report({ calls: [{ call: channel, people }], link });
     } catch (error) {
@@ -265,6 +429,7 @@ export class Carried {
     const carried = this.carried.get(channel);
     if (!carried || carried.ended) return;
     carried.ended = true;
+    carried.wanted = false;
     carried.voice?.close();
     carried.voice = null;
     carried.opened = false;

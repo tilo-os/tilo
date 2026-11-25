@@ -716,7 +716,6 @@ impl AccessibilityRuntime {
 
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
-    pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
     /// Distinguish a queued clear from an unknown prior projection.
     pub(super) publication_initialized: bool,
@@ -737,7 +736,6 @@ pub(super) struct ContinuationRuntime {
 impl ContinuationRuntime {
     pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
         Self {
-            owner_view: Default::default(),
             last_published: None,
             publication_initialized: false,
             pending_restore,

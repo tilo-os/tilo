@@ -297,10 +297,9 @@ fn chat_moves(moves: Vec<order::ChatMove>) -> Vec<Value> {
     moves
         .into_iter()
         .filter_map(|moved| {
-            let category = moved
-                .category
-                .as_deref()
-                .map_or(Value::Null, |category| tilo::reference(CATEGORY_KIND, category));
+            let category = moved.category.as_deref().map_or(Value::Null, |category| {
+                tilo::reference(CATEGORY_KIND, category)
+            });
             let mut value = serde_json::to_value(moved).ok()?;
             value
                 .as_object_mut()?
@@ -661,11 +660,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
 /// Record what Discord reported first; once the resource holds it, reconcile.
 fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChanged) {
     let mut observed = read.guild.clone();
-    observed.observe(
-        layout.bot_user.clone(),
-        &layout.channels,
-        &layout.roles,
-    );
+    observed.observe(layout.bot_user.clone(), &layout.channels, &layout.roles);
     observed.observe_emojis(&layout.emojis);
     let adopted = read.guild.ownership == Ownership::Adopted;
     let workspace = read.chat.workspace();
@@ -673,8 +668,9 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         reconcile(plan, read, false);
         // Back after a while: what moved in Discord meanwhile shows in Chat.
         if adopted && layout.connected {
-            plan.chat_moves
-                .extend(chat_moves(order::to_chat(read.guild, read.guild, &workspace)));
+            plan.chat_moves.extend(chat_moves(order::to_chat(
+                read.guild, read.guild, &workspace,
+            )));
         }
         // On every start too: the workspace's emoji made while the bridge
         // was away, or that the server had no workspace or permission for.
@@ -694,8 +690,9 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         if adopted
             && (layout.connected || order::moved_in_discord(read.guild, &observed, &workspace))
         {
-            plan.chat_moves
-                .extend(chat_moves(order::to_chat(&observed, read.guild, &workspace)));
+            plan.chat_moves.extend(chat_moves(order::to_chat(
+                &observed, read.guild, &workspace,
+            )));
         }
     }
 }

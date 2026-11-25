@@ -1391,7 +1391,11 @@ impl App {
                         );
                     }
                 }
-                FloatingSurfaceHostMessage::ShareSelection { to, pointing } => {
+                FloatingSurfaceHostMessage::ShareSelection {
+                    to,
+                    pointing,
+                    carried,
+                } => {
                     // The shell asks this window to send from its keyboard,
                     // with no menu to carry a box: it opens alone, about what
                     // the window has picked, to whom the shell named — the
@@ -1406,8 +1410,11 @@ impl App {
                             .clone()
                             .or_else(|| self.window.title.clone())
                             .unwrap_or_default();
-                        self.report_pointing =
-                            Some(crate::app::report_point::Pointing::new(to.clone(), window));
+                        self.report_pointing = Some(crate::app::report_point::Pointing::new(
+                            to.clone(),
+                            carried.clone(),
+                            window,
+                        ));
                         self.layout.layout_dirty = true;
                         continue;
                     }
@@ -1417,7 +1424,7 @@ impl App {
                     let bounds = about
                         .as_ref()
                         .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
-                    self.open_send_box(about, bounds, None, to);
+                    self.open_send_box(about, bounds, None, to, carried);
                 }
                 // What the shell says of windows shared live reaches the
                 // app's next sync, where it reads them

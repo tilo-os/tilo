@@ -54,7 +54,6 @@ fn row(provider: &str, app: &str, resource: &str, action: &str) -> CatalogueRow 
             input: tilo_actions::InputSpec::None,
             params: Vec::new(),
             view: None,
-            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,

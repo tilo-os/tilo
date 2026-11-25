@@ -8,6 +8,15 @@
 //! and no device of theirs is looking, every browser they subscribed is
 //! pushed a short message. Its service worker shows it, and a click opens
 //! Tilo, where it waits.
+//!
+//! The same sender reaches an app of the person's that is closed, where its
+//! system takes web push instead of the system's own service: a phone
+//! whose UnifiedPush distributor gave it an endpoint hands that endpoint to
+//! this host with a key of its own (`workspaces::push_addresses`), and is
+//! pushed the title, the body and the buttons of what it is told, encrypted
+//! for that key alone. Nothing in that push says where the thing is, nor a
+//! workspace or an id: the endpoint, the push service and anything between
+//! see only an encrypted body.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +29,11 @@ use ring::rand::SystemRandom;
 use ring::signature::KeyPair as _;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
+
+#[cfg(feature = "agents")]
+use crate::workspaces::push_addresses::PushKind;
+#[cfg(feature = "agents")]
+use tilo_actions::remote::person_telling::Told;
 
 /// The file this host's application server key is kept in, under its state.
 const KEY_FILE: &str = "web-push-key.pk8";
@@ -47,6 +61,14 @@ pub struct WebPush {
     path: PathBuf,
     kept: std::sync::Arc<Mutex<Kept>>,
     client: tilo_net::Client,
+    /// Where a person's closed apps are reached: their devices' web push
+    /// addresses, which this host keeps. None where this sender pushes to
+    /// browsers only.
+    #[cfg(feature = "agents")]
+    workspaces: Option<crate::workspaces::Workspaces>,
+    /// Whether it may reach a push service on this machine: tests do, and
+    /// nothing else.
+    here: bool,
 }
 
 /// Where a browser takes pushes, as its `PushManager` subscribed
@@ -139,26 +161,57 @@ impl WebPush {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
             Err(_) => Kept::default(),
         };
-        let client = tilo_net::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .redirects(tilo_net::Redirects::None)
-            // A browser names the address: only the public internet is
-            // dialled, judged at the connection's own lookup, and no proxy
-            // of this server's environment is taken, which would resolve
-            // the name behind that lookup.
-            .direct()
-            .lookup(tilo_net::address::public_only(
-                tilo_net::address::system_lookup(),
-            ))
-            .build()
-            .context("the push client")?;
+        let client = client()?;
         Ok(Self {
             key: std::sync::Arc::new(key),
             contact: contact.to_owned(),
             path,
             kept: std::sync::Arc::new(Mutex::new(kept)),
             client,
+            #[cfg(feature = "agents")]
+            workspaces: None,
+            here: false,
         })
+    }
+
+    /// This sender, reaching the closed apps of `workspaces`' people too: a
+    /// device of theirs that handed over a web push address is pushed what
+    /// it is told, through the same key, the same encryption and the same
+    /// client as a browser is.
+    #[cfg(feature = "agents")]
+    #[must_use]
+    pub fn telling(mut self, workspaces: crate::workspaces::Workspaces) -> Self {
+        self.workspaces = Some(workspaces);
+        self
+    }
+
+    /// A sender that may post to a push service on this machine, which only a test stands up:
+    /// nothing else reaches an address of its own network. `trusted` is the DER of the certificate
+    /// that push service answers with, the only one trusted.
+    ///
+    /// # Errors
+    ///
+    /// The key or subscriptions could not be read or made, or the certificate is not one.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reaching_here(state: &Path, contact: &str, trusted: &[u8]) -> anyhow::Result<Self> {
+        use anyhow::Context as _;
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(trusted.to_vec()))
+            .context("the test push service's certificate")?;
+        let tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let mut push = Self::open(state, contact)?;
+        push.client = tilo_net::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .redirects(tilo_net::Redirects::None)
+            .direct()
+            .tls(tls)
+            .build()
+            .context("the test push client")?;
+        push.here = true;
+        Ok(push)
     }
 
     /// This host's application server key, as a browser subscribes with it:
@@ -237,17 +290,28 @@ impl WebPush {
     }
 
     async fn push(&self, browser: &PushSubscription, plain: &[u8]) -> Result<(), Pushed> {
-        if public_endpoint(&browser.endpoint).is_err() {
+        self.post(&browser.endpoint, browser, plain).await
+    }
+
+    /// Post `plain`, encrypted for the key and auth secret of the device at
+    /// `endpoint`, to that endpoint, signed as this host.
+    async fn post(
+        &self,
+        endpoint: &str,
+        key: &PushSubscription,
+        plain: &[u8],
+    ) -> Result<(), Pushed> {
+        if !self.here && public_endpoint(endpoint).is_err() {
             // Kept before an address was judged: never posted to, forgotten.
             return Err(Pushed::Gone);
         }
-        let body = encrypt(browser, plain).map_err(|()| Pushed::Failed("encrypt".into()))?;
+        let body = encrypt(key, plain).map_err(|()| Pushed::Failed("encrypt".into()))?;
         let authorization = self
-            .vapid(&browser.endpoint)
+            .vapid(endpoint)
             .ok_or_else(|| Pushed::Failed("sign".into()))?;
         let response = self
             .client
-            .post(&browser.endpoint)
+            .post(endpoint)
             .header("authorization", authorization)
             .header("content-encoding", "aes128gcm")
             .header("content-type", "application/octet-stream")
@@ -287,6 +351,24 @@ impl WebPush {
             URL_SAFE_NO_PAD.encode(self.public_key())
         ))
     }
+}
+
+/// The client a push is posted with. A browser names the address: only the
+/// public internet is dialled, judged at the connection's own lookup, and
+/// no proxy of this server's environment is taken, which would resolve the
+/// name behind that lookup. A test's sender builds its own
+/// (`WebPush::reaching_here`).
+fn client() -> anyhow::Result<tilo_net::Client> {
+    use anyhow::Context as _;
+    tilo_net::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirects(tilo_net::Redirects::None)
+        .direct()
+        .lookup(tilo_net::address::public_only(
+            tilo_net::address::system_lookup(),
+        ))
+        .build()
+        .context("the push client")
 }
 
 /// Whether `endpoint` is an address this server posts a push to: one of the
@@ -356,6 +438,22 @@ pub(crate) fn encrypt(browser: &PushSubscription, plain: &[u8]) -> Result<Vec<u8
     Ok(body)
 }
 
+/// `plain` encrypted for the device whose P-256 key and auth secret these are, as the sender
+/// encrypts a push: what a receiver's test opens, without a push service between.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn encrypt_for_device(p256dh: &[u8], auth: &[u8], plain: &[u8]) -> Vec<u8> {
+    encrypt(
+        &PushSubscription {
+            endpoint: String::new(),
+            p256dh: p256dh.to_vec(),
+            auth: auth.to_vec(),
+        },
+        plain,
+    )
+    .unwrap_or_default()
+}
+
 fn expand(prk: &ring::hkdf::Prk, info: &[u8], len: usize) -> Result<Vec<u8>, ()> {
     struct Len(usize);
     impl ring::hkdf::KeyType for Len {
@@ -370,9 +468,161 @@ fn expand(prk: &ring::hkdf::Prk, info: &[u8], len: usize) -> Result<Vec<u8>, ()>
     Ok(out)
 }
 
+/// One thing told, as the app of a person's that is closed shows it: its
+/// title, its body and its buttons, and the name only that device knows it
+/// by, which a raised telling and a telling taken back are shown under. It
+/// is encrypted for the device, so the push service reads none of it; and
+/// it holds no id, no workspace, no route and no button target or
+/// arguments, so nothing of where the thing is leaves the host.
+#[cfg(feature = "agents")]
+#[derive(Serialize)]
+struct ToldPush<'a> {
+    /// [`TOLD_PUSH_KIND`]: a thing waits.
+    kind: &'static str,
+    /// The name this device knows the thing by
+    /// ([`tilo_actions::remote::person_telling::known_as`]).
+    tag: &'a str,
+    title: &'a str,
+    body: &'a str,
+    important: bool,
+    /// How often it was raised, one the first time.
+    raised: u32,
+    actions: Vec<ToldButton<'a>>,
+}
+
+/// One button of a thing, as the app shows it: never what it invokes.
+#[cfg(feature = "agents")]
+#[derive(Serialize)]
+struct ToldButton<'a> {
+    id: &'a str,
+    label: &'a str,
+    main: bool,
+}
+
+/// A thing a push showed waits no more: a push that shows nothing, naming
+/// the thing as this device knows it.
+#[cfg(feature = "agents")]
+#[derive(Serialize)]
+struct ToldGone<'a> {
+    kind: &'static str,
+    tag: &'a str,
+    gone: bool,
+}
+
+/// What a push says a thing is, so the app tells a telling from a telling
+/// taken back.
+#[cfg(feature = "agents")]
+const TOLD_PUSH_KIND: &str = "told";
+
+#[cfg(feature = "agents")]
+impl WebPush {
+    /// Push the thing `told`, as `title` and `body` say it, to every closed
+    /// app of `person`'s that handed over a web push address. An address
+    /// its push service says is gone is forgotten. Answers how many took
+    /// it.
+    async fn tell_apps(&self, person: &[u8; 32], told: &Told, title: &str, body: &str) -> usize {
+        let Some(workspaces) = &self.workspaces else {
+            return 0;
+        };
+        let mut took: Vec<String> = Vec::new();
+        for address in workspaces
+            .push_addresses(person)
+            .into_iter()
+            .filter(|address| address.kind == PushKind::WebPush)
+        {
+            let Ok((p256dh, auth)) = address.subscription_key() else {
+                continue;
+            };
+            let tag = tilo_actions::remote::person_telling::known_as(&auth, &told.id);
+            let said = |actions: Vec<ToldButton<'_>>, body: &str| {
+                serde_json::to_vec(&ToldPush {
+                    kind: TOLD_PUSH_KIND,
+                    tag: &tag,
+                    title,
+                    body,
+                    important: told.mark.important,
+                    raised: told.insists.map_or(1, |insists| insists.raised),
+                    actions,
+                })
+                .ok()
+            };
+            let buttons = || {
+                told.actions
+                    .iter()
+                    .map(|action| ToldButton {
+                        id: &action.id,
+                        label: &action.label,
+                        main: action.main,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let Some(plain) = said(buttons(), body)
+                .filter(|plain| plain.len() <= MAX_MESSAGE)
+                .or_else(|| {
+                    // Too long with its buttons and its words: the app offers to open it.
+                    said(Vec::new(), "Open Tilo to see it.")
+                        .filter(|plain| plain.len() <= MAX_MESSAGE)
+                })
+            else {
+                continue;
+            };
+            let key = PushSubscription {
+                endpoint: address.endpoint.clone(),
+                p256dh,
+                auth,
+            };
+            match self.post(&address.endpoint, &key, &plain).await {
+                Ok(()) => took.push(address.reached_as().to_owned()),
+                Err(Pushed::Gone) => {
+                    workspaces.forget_push_address(person, address.reached_as(), None);
+                }
+                Err(Pushed::Failed(reason)) => {
+                    tracing::debug!(%reason, "a push to a person's closed app failed");
+                }
+            }
+        }
+        workspaces.push_shown(person, &took, &told.id);
+        took.len()
+    }
+
+    /// The things `ids` wait for `person` no more: every closed app a push
+    /// showed one on is pushed a message that shows nothing and names the
+    /// thing as gone, once.
+    async fn gone_apps(&self, person: &[u8; 32], ids: &[String]) {
+        let Some(workspaces) = &self.workspaces else {
+            return;
+        };
+        for (address, shown) in workspaces.push_taken_back(person, ids, PushKind::WebPush) {
+            let Ok((p256dh, auth)) = address.subscription_key() else {
+                continue;
+            };
+            let key = PushSubscription {
+                endpoint: address.endpoint.clone(),
+                p256dh,
+                auth: auth.clone(),
+            };
+            for id in shown {
+                let tag = tilo_actions::remote::person_telling::known_as(&auth, &id);
+                let Ok(plain) = serde_json::to_vec(&ToldGone {
+                    kind: TOLD_PUSH_KIND,
+                    tag: &tag,
+                    gone: true,
+                }) else {
+                    continue;
+                };
+                if let Err(Pushed::Gone) = self.post(&address.endpoint, &key, &plain).await {
+                    workspaces.forget_push_address(person, address.reached_as(), None);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// What a person's assistant told them, pushed to the browsers they
-/// subscribed. A push message is encrypted for the browser it goes to, so
-/// the push service between reads none of it.
+/// subscribed and the closed apps of theirs that take web push. A push
+/// message is encrypted for the device it goes to, so the push service
+/// between reads none of it.
 #[cfg(feature = "agents")]
 impl tilo_workspace_service::agents::telling::Outside for WebPush {
     fn name(&self) -> &'static str {
@@ -389,7 +639,7 @@ impl tilo_workspace_service::agents::telling::Outside for WebPush {
             let (title, body) = tilo_workspace_service::agents::telling::words_outside(&told);
             // One notification a thing: telling it again takes its place.
             let tag = format!("tilo-told-{}", told.id);
-            let delivered = push
+            let browsers = push
                 .notify(
                     &person,
                     &Message {
@@ -400,8 +650,18 @@ impl tilo_workspace_service::agents::telling::Outside for WebPush {
                     },
                 )
                 .await;
-            u32::try_from(delivered).unwrap_or(u32::MAX)
+            let apps = push.tell_apps(&person, &told, &title, &body).await;
+            u32::try_from(browsers.saturating_add(apps)).unwrap_or(u32::MAX)
         })
+    }
+
+    fn taken_back(
+        &self,
+        person: [u8; 32],
+        ids: Vec<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let push = self.clone();
+        Box::pin(async move { push.gone_apps(&person, &ids).await })
     }
 }
 

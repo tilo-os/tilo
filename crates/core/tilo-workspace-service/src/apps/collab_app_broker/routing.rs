@@ -10,8 +10,6 @@ pub(super) struct ContextSub {
     /// Authenticated native membership projection and the exact admission it
     /// came from. Incremental label/presence frames never replace it.
     pub(super) native: Option<NativeContext>,
-    /// Shares the original receiver; membership refresh belongs to its document row.
-    pub(super) private_alias: bool,
     /// The apps installed here, by what each is called, this receiver was last told: it is sent
     /// the context again when one is installed, removed, or renamed.
     pub(super) apps: Vec<collab_types::history::NamedApp>,
@@ -150,10 +148,6 @@ impl AppBrokerState {
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_ref())
             }
-            CollabEvent::Handoff { request } => {
-                let handoff = ContextUpdate::Handoff(request.encode());
-                subscriptions::context_frame(channels, except, &handoff)
-            }
             CollabEvent::ResourcesArrived { records } => subscriptions::context_frame(
                 channels,
                 except,
@@ -182,9 +176,11 @@ impl AppBrokerState {
             | CollabEvent::RetiredNearbyTransferChanged
             | CollabEvent::DocumentContent { .. }
             | CollabEvent::DocumentContentState { .. }
-            | CollabEvent::RemoteAction { .. } => {
-                // Invocation delivery and cooperative cancellation are
-                // point-to-point and never enter route fanout.
+            | CollabEvent::RemoteAction { .. }
+            | CollabEvent::Handoff { .. } => {
+                // Invocation delivery, cooperative cancellation and the save a
+                // window is asked ([`Self::ask_save`]) are point-to-point and
+                // never enter route fanout.
                 false
             }
         };
@@ -194,6 +190,81 @@ impl AppBrokerState {
             self.windows_changed();
         }
     }
+
+    /// Ask the window `route` names to make everything it shows durable, as request `token`; its
+    /// app's answer settles `answer` ([`Self::answered_save`]). When no connection shows that
+    /// window, `answer` is dropped at once, and when the connection asked goes away before it
+    /// answers, then: its waiter hears no answer either way.
+    pub fn ask_save(
+        &self,
+        route: &CrdtRoute,
+        token: u64,
+        answer: tilo_actions::remote::Completer<HandoffReport>,
+    ) {
+        let key = route.channel_key();
+        let frame = ContextUpdate::Handoff(
+            collab_types::handoff::HandoffRequest::Checkpoint { token }.encode(),
+        );
+        // Noted before the frame goes out, so an answer racing it finds what it answers.
+        let mut saves = self
+            .saves
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let asked = self.channels.lock().ok().and_then(|mut channels| {
+            let subscribers = channels.get_mut(&key)?;
+            subscribers.context.retain(|sub| !sub.tx.is_closed());
+            subscribers
+                .context
+                .iter()
+                .rev()
+                .find(|sub| sub.tx.send(frame.clone()).is_ok())
+                .map(|sub| sub.peer_id)
+        });
+        let unanswered = match asked {
+            Some(peer) => saves.insert((key, token), (peer, answer)),
+            None => Some((0, answer)),
+        };
+        drop(saves);
+        drop(unanswered);
+    }
+
+    /// The app of the window `route` names answered a save it was asked
+    /// ([`Self::ask_save`]): `message` is its encoded [`HandoffReport`].
+    pub(super) fn answered_save(&self, route: &CrdtRoute, message: &[u8]) -> Result<(), String> {
+        let report = HandoffReport::decode(message)
+            .ok_or_else(|| "a window's answer to a save does not decode".to_owned())?;
+        let token = report.token();
+        let asked = self
+            .saves
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(route.channel_key(), token));
+        let (_, answer) =
+            asked.ok_or_else(|| format!("this window was asked no save numbered {token}"))?;
+        answer.complete(report);
+        Ok(())
+    }
+
+    /// The saves the connection whose route holds are `holds` was asked and did not answer:
+    /// their waiters hear no answer now.
+    pub(super) fn drop_saves_of(&self, holds: &[u64]) {
+        let dropped: Vec<_> = {
+            let mut saves = self
+                .saves
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let gone: Vec<_> = saves
+                .iter()
+                .filter(|(_, (peer, _))| holds.contains(peer))
+                .map(|(key, _)| key.clone())
+                .collect();
+            gone.into_iter()
+                .filter_map(|key| saves.remove(&key))
+                .collect()
+        };
+        drop(dropped);
+    }
+
     /// Hand `frame`, what `member` said in the workspace `scope` addresses, to every app
     /// there but the connection `except`, as the live session carries it.
     pub fn heard(
@@ -318,7 +389,6 @@ impl AppBrokerState {
                     peer_id,
                     tx,
                     native,
-                    private_alias: false,
                     apps,
                 });
         }
@@ -337,32 +407,6 @@ impl AppBrokerState {
             tilo_identity::policy_change::announce();
         }
         rx
-    }
-    pub(super) fn alias_private_context(&self, channel: &str, alias: &str, peer: u64) {
-        if let Ok(mut channels) = self.channels.lock() {
-            let subscriber = channels
-                .get(channel)
-                .and_then(|entry| {
-                    entry
-                        .context
-                        .iter()
-                        .rev()
-                        .find(|subscriber| subscriber.peer_id == peer)
-                })
-                .map(|subscriber| ContextSub {
-                    peer_id: peer,
-                    tx: subscriber.tx.clone(),
-                    native: subscriber.native.clone(),
-                    private_alias: true,
-                    apps: subscriber.apps.clone(),
-                });
-            if let Some(subscriber) = subscriber {
-                let context = &mut channels.entry(alias.to_owned()).or_default().context;
-                context.retain(|entry| entry.peer_id != peer && !entry.tx.is_closed());
-                context.push(subscriber);
-                self.windows_changed();
-            }
-        }
     }
     /// Who is in `workspace` now, as its membership names them: its people
     /// and the agents delegated in it. Presentation only, as the roster is:
@@ -668,7 +712,6 @@ impl AppBrokerState {
                 subscribers
                     .context
                     .iter()
-                    .filter(|subscriber| !subscriber.private_alias)
                     .filter_map(|subscriber| {
                         subscriber.native.as_ref().map(|native| {
                             (channel.clone(), subscriber.peer_id, native.admitted.clone())

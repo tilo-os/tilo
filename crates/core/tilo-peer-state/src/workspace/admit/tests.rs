@@ -486,7 +486,7 @@ tilo_test_env::scenario! {
 /// device records it.
 fn effect(
     invocation: u128,
-    actor: &tilo_actions::MemberId,
+    actor: &tilo_actions::Actor,
 ) -> tilo_desktop_model::WorkspaceEffectReceipt {
     tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
@@ -520,8 +520,10 @@ tilo_test_env::scenario! {
             &before,
             editor_root(),
             &[
-                effect(1, &tilo_actions::MemberId::person(person_id(editor_root()))),
-                effect(2, &tilo_actions::MemberId::agent("scribe")),
+                effect(1, &tilo_actions::MemberId::person(person_id(editor_root())).into()),
+                effect(2, &tilo_actions::MemberId::agent("scribe").into()),
+                // An app on their device that acted by itself is the author of its own effect.
+                effect(6, &tilo_actions::Actor::App("so.tilo.discord".into())),
             ],
         );
         assert!(
@@ -532,13 +534,13 @@ tilo_test_env::scenario! {
                 &own
             )
             .is_ok(),
-            "their own receipts and their agents', in their own slice"
+            "their own receipts, their agents' and their apps', in their own slice"
         );
         for (slice, actor) in [
             (viewer_root(), person_id(editor_root())),
             (editor_root(), person_id(viewer_root())),
         ] {
-            let foreign = recording(&before, slice, &[effect(3, &tilo_actions::MemberId::person(actor))]);
+            let foreign = recording(&before, slice, &[effect(3, &tilo_actions::MemberId::person(actor).into())]);
             assert_eq!(
                 admit(
                     Some(&before),
@@ -595,7 +597,7 @@ tilo_test_env::scenario! {
                 &recording(
                     &before,
                     viewer_root(),
-                    &[effect(5, &tilo_actions::MemberId::person(person_id(viewer_root())))]
+                    &[effect(5, &tilo_actions::MemberId::person(person_id(viewer_root())).into())]
                 ),
             )
             .is_ok(),
@@ -604,7 +606,7 @@ tilo_test_env::scenario! {
         let relayed = recording(
             &before,
             editor_root(),
-            &[effect(4, &tilo_actions::MemberId::person(person_id(editor_root())))],
+            &[effect(4, &tilo_actions::MemberId::person(person_id(editor_root())).into())],
         );
         let authority = key(0xA0);
         assert!(
@@ -906,12 +908,15 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
         &person_id(owner_root()),
         &[effect(
             1,
-            &tilo_actions::MemberId::person(person_id(owner_root())),
+            &tilo_actions::MemberId::person(person_id(owner_root())).into(),
         )],
     )
     .unwrap();
     recorded.commit();
-    let mut rewritten = effect(1, &tilo_actions::MemberId::person(person_id(owner_root())));
+    let mut rewritten = effect(
+        1,
+        &tilo_actions::MemberId::person(person_id(owner_root())).into(),
+    );
     rewritten.status = tilo_actions::EffectReceiptStatus::Cancelled;
     let receipt_rewrite = recording(&recorded, owner_root(), &[rewritten]);
 

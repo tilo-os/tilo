@@ -266,7 +266,10 @@ fn only_a_seed_runs_a_scenario() {
     let notebook = replica.host.root_of("so.tilo.notes").unwrap();
     replica.commit();
     let meta = &loaded.last().unwrap().meta;
-    let scenario = meta.scenarios.first().expect("Notes stages a week of notes");
+    let scenario = meta
+        .scenarios
+        .first()
+        .expect("Notes stages a week of notes");
     let kind = tilolang_tilo::meta::MetaExt::kind_of(meta, "Notebook");
     let args = serde_json::Map::new();
     let agent = tilolang_tilo::publish::Caller {
@@ -291,7 +294,8 @@ fn only_a_seed_runs_a_scenario() {
         assert!(refused.contains("no action"), "{refused}");
     }
     assert!(
-        meta.callable_actions().all(|action| action.id != scenario.action),
+        meta.callable_actions()
+            .all(|action| action.id != scenario.action),
         "another app's code cannot name it"
     );
     // The seed itself still runs it.

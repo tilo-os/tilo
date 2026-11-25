@@ -204,6 +204,30 @@ template view add_entry(placeholder: Text, create: Action) {
     }
 }
 
+/// What an action writes besides its own resource, one line each, as a person reads it: "Also
+/// writes to Passwords: record where an entry was used". `effects` is the action's declaration,
+/// read where the surface showing the action reads it (an asked call's own record, a rule's
+/// row): each record it names, `writer` saying the app that keeps it by the name a person reads,
+/// and `what` what the step does there. An action that writes only its own resource shows
+/// nothing at all.
+///
+/// The words around each effect are the platform's, in the window's language, so every place
+/// that asks a person to allow a call says what it writes the same way, and an app that shows
+/// a rule for an action gains this view and no copy of it.
+template view action_effects<T>(effects: List<T>, writer: (T) -> Text, what: (T) -> Text) {
+    if not effects.is_empty() {
+        stack(gap: .related) {
+            for effect in effects {
+                ui.Text(
+                    phrase("tilolang-also-writes", app: writer(effect), what: what(effect)),
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+        }
+    }
+}
+
 /// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
 /// with all of them called `everything`; the entry at the list's end when it gives `entry`; and
 /// nothing to list when the place chosen finds nothing, where it says `empty`. The window owns

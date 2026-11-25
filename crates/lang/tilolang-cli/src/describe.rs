@@ -226,7 +226,7 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
             || action.key.is_some()
             || !action.doc.trim().is_empty()
             || action.label != tilolang::resolve::sentence_case(&action.name);
-        if !primary && !(on_the_package && a_command && !automatic.contains(&action.id.as_str())) {
+        if !primary && (!on_the_package || !a_command || automatic.contains(&action.id.as_str())) {
             continue;
         }
         let asked: Vec<&ParamMeta> = meta

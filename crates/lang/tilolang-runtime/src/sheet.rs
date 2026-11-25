@@ -35,8 +35,7 @@ impl Core {
             let change: tilo_sheet::Change = serde_json::from_str(&change)
                 .map_err(|why| format!("the change is not a change of a sheet: {why}"))?;
             let sheets = tilo_sheet::edit(&book, &change)?;
-            serde_json::to_string(&tilo_sheet::sheet_rows(&sheets))
-                .map_err(|why| why.to_string())
+            serde_json::to_string(&tilo_sheet::sheet_rows(&sheets)).map_err(|why| why.to_string())
         });
         self.json_result(answer)
     }
@@ -138,8 +137,8 @@ impl Core {
     /// The workbook a text describes, with its cells' own date and time formats read in the
     /// language the window speaks, so every member of the workspace reads a value alike.
     fn book_of(&self, text: &str) -> Result<tilo_sheet::Book, String> {
-        let mut book: tilo_sheet::Book = serde_json::from_str(text)
-            .map_err(|why| format!("the workbook is not JSON: {why}"))?;
+        let mut book: tilo_sheet::Book =
+            serde_json::from_str(text).map_err(|why| format!("the workbook is not JSON: {why}"))?;
         book.language = self.words.borrow().language();
         Ok(book)
     }
@@ -163,8 +162,14 @@ impl Core {
                 "sheets-notion-archive-invalid",
                 "The export archive cannot be read",
             ),
-            unreadable: word("sheets-notion-unreadable", "This file is not a Notion export"),
-            no_tables: word("sheets-notion-no-tables", "No table in this export to import"),
+            unreadable: word(
+                "sheets-notion-unreadable",
+                "This file is not a Notion export",
+            ),
+            no_tables: word(
+                "sheets-notion-no-tables",
+                "No table in this export to import",
+            ),
             imported_table: word("sheets-notion-imported-table", "Imported table"),
             yes: word("sheets-notion-yes", "Yes"),
             no: word("sheets-notion-no", "No"),
@@ -201,8 +206,11 @@ fn records_of(
     let row = match request.get("row") {
         None | Some(serde_json::Value::Null) => None,
         Some(row) => Some(
-            u32::try_from(row.as_u64().ok_or_else(|| "`row` is a row number".to_owned())?)
-                .map_err(|_| "`row` is a row number".to_owned())?,
+            u32::try_from(
+                row.as_u64()
+                    .ok_or_else(|| "`row` is a row number".to_owned())?,
+            )
+            .map_err(|_| "`row` is a row number".to_owned())?,
         ),
     };
     let columns = request.get("columns").and_then(|columns| {
@@ -234,12 +242,9 @@ fn writes_json(writes: &tilo_sheet::Writes) -> Result<String, serde_json::Error>
         entries
             .iter()
             .filter_map(|(reference, input)| {
-                input.as_ref().map(|input| {
-                    (
-                        reference.clone(),
-                        serde_json::Value::String(input.clone()),
-                    )
-                })
+                input
+                    .as_ref()
+                    .map(|input| (reference.clone(), serde_json::Value::String(input.clone())))
             })
             .collect::<serde_json::Map<_, _>>()
     };

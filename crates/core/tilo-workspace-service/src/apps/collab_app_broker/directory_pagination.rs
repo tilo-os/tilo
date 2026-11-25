@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub(super) struct DirectoryPagination(Rc<RefCell<HashMap<Vec<u8>, Continuation>>>);
 
 struct Continuation {
-    actor: tilo_action_policy::MemberId,
+    actor: tilo_action_policy::Actor,
     revision: String,
     needle: String,
     parent: String,
@@ -30,7 +30,7 @@ impl DirectoryPagination {
             .borrow()
             .get(token)
             .filter(|entry| {
-                entry.actor == *actor.member()
+                entry.actor == *actor.actor()
                     && entry.revision == revision
                     && entry.needle == needle
                     && entry.parent == parent
@@ -59,7 +59,7 @@ impl DirectoryPagination {
         entries.insert(
             token,
             Continuation {
-                actor: actor.member().clone(),
+                actor: actor.actor().clone(),
                 revision: page.revision.clone(),
                 needle: needle.to_owned(),
                 parent: parent.to_owned(),

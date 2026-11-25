@@ -5015,6 +5015,9 @@ struct AppPackageSpec {
     /// Whether the app depends on the OS toolkit's `runtime-dylib`: an app on the published SDK
     /// does not, since that toolkit is built from a Tilo tree, and always links statically.
     links_toolkit_dylib: bool,
+    /// Whether its Android build takes pushes from a UnifiedPush distributor, as its Cargo
+    /// metadata declares (`[package.metadata.tilo-app] unified-push = true`).
+    unified_push: bool,
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
@@ -5587,6 +5590,13 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .get("dependencies")
         .and_then(|dependencies| dependencies.get("runtime-dylib"))
         .is_some();
+    let unified_push = cargo
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("tilo-app"))
+        .and_then(|app| app.get("unified-push"))
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
 
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
@@ -5639,6 +5649,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         gui_bin,
         thin_feature,
         links_toolkit_dylib,
+        unified_push,
     })
 }
 

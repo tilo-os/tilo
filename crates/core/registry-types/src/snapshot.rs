@@ -844,7 +844,8 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            refused.contains("package format 3") && refused.contains("publish its catalogue at format 4"),
+            refused.contains("package format 3")
+                && refused.contains("publish its catalogue at format 4"),
             "{refused}"
         );
     }

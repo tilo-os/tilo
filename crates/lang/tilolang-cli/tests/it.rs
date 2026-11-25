@@ -10,8 +10,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-use std::path::Path;
-
 mod android_platform;
 mod build;
 mod check;
@@ -24,8 +22,3 @@ mod package_platform;
 mod push;
 mod repl;
 mod support;
-
-/// This package's directory.
-fn manifest() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-}

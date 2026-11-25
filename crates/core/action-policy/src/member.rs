@@ -263,6 +263,18 @@ impl Actor {
         }
     }
 
+    /// The person, when the actor is one.
+    #[must_use]
+    pub fn person_id(&self) -> Option<&str> {
+        self.member_id().and_then(MemberId::person_id)
+    }
+
+    /// The agent, when the actor is one.
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        self.member_id().and_then(MemberId::agent_id)
+    }
+
     /// The app, when the actor is one acting by itself.
     #[must_use]
     pub fn app(&self) -> Option<&AppId> {

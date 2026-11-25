@@ -169,7 +169,6 @@ fn descriptor((action, label, reads): (&str, &str, bool)) -> ActionDescriptor {
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-        effects: Vec::new(),
     }
 }
 

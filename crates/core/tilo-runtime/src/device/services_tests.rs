@@ -1382,6 +1382,103 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
     );
 }
 
+/// What a desktop says of its device (its screens, what it is, how its session stands) is kept in
+/// the record of the person's devices by the device's daemon: the desktop runs the record's own
+/// action on the shell link the daemon handed it, and reads the fact back from the record, where
+/// the person's other devices see it.
+#[cfg(unix)]
+#[test]
+fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
+    use runtime_collab::wire::shell::SHELL_MAGIC;
+    use tilo_session_client::daemon_documents::{DaemonShell, document_read};
+    use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
+    use tokio::io::AsyncWriteExt as _;
+    const TEST: &str = "device::services::tests::the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record";
+    let Some(root) = isolated_root(TEST) else {
+        return;
+    };
+    let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let socket = session.broker.app_socket().to_path_buf();
+    let cert = session.workspaces.device_cert().clone();
+    let workspace = tilo_action_policy::roles::person_workspace_id(&cert.user_public_key);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    // The person's workspace, as a device keeps it once it was set up.
+    assert_eq!(
+        runtime
+            .block_on(tilo_workspace_service::workspaces::person_workspace::found(
+                session.workspaces.copies()
+            ))
+            .unwrap(),
+        workspace
+    );
+    let secret = session
+        .shell_links()
+        .make(tilo_workspace_service::apps::shell::ShellCaller {
+            person: cert.user_public_key,
+        });
+    let link = runtime.block_on(async {
+        let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        stream.write_all(SHELL_MAGIC).await.unwrap();
+        stream.write_all(&secret).await.unwrap();
+        runtime_collab::ShellClient::open(stream).0
+    });
+    let desktop = DaemonShell::new(Ok(link), runtime.handle().clone());
+
+    let key = hex::encode(cert.device_public_key);
+    let said = hex::encode(b"two screens");
+    let keep = Devices::KEEP_FACT.with((
+        key.clone(),
+        hex::encode(postcard::to_allocvec(&cert).unwrap()),
+        "displays".to_owned(),
+        said.clone(),
+    ));
+    desktop
+        .invoke_blocking(
+            &workspace,
+            tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: format!("record:{}:{}", DEVICES.0, DEVICES.1),
+                    address: keep.address(),
+                },
+                argument: InvokeArgument::Json(keep.arguments.clone()),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+        .expect("the daemon keeps what the device says of itself");
+
+    let readings = desktop
+        .read_blocking(resource_read(&workspace, DEVICES.0, DEVICES.1))
+        .expect("the desktop reads the record of the person's devices");
+    let Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) =
+        document_read(&readings)
+    else {
+        panic!("the record of the person's devices is read whole: {readings}");
+    };
+    let doc = automerge::AutoCommit::load(&bytes).unwrap();
+    let reader = tilo_resource::Reader::<Devices>::read(&doc).unwrap();
+    let device = reader
+        .state()
+        .devices
+        .get(&tilo_resource::Id::from_raw(key))
+        .expect("the record lists the device");
+    assert_eq!(
+        device.facts.get("displays"),
+        Some(&said),
+        "the record keeps the fact the device said"
+    );
+}
+
 /// `command` running [`SHELL_TEST`] as the child `role`, and the file its output goes to.
 fn shell_child(
     root: &Path,

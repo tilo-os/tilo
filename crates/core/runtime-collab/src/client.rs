@@ -1077,25 +1077,6 @@ impl RecordHandle {
             .map_err(crate::LocalDocumentActionError::Uncertain)
     }
 
-    /// The approved check `request` starts, followed through its reported
-    /// progress to its receipt.
-    pub async fn approved_check_reported_progress(
-        &self,
-        request: &crate::approved_checks::Request,
-    ) -> Result<crate::approved_checks::ApprovedCheckReportedProgressStream, NotAvailable> {
-        let encoded = request.encode().map_err(refused)?;
-        let feed = self.feed(Topic::ApprovedCheck(encoded)).await?;
-        Ok(crate::approved_checks::ApprovedCheckReportedProgressStream::new(feed, request.clone()))
-    }
-
-    /// Run an approved check and wait for its receipt.
-    pub(crate) async fn approved_check_command(
-        &self,
-        request: Vec<u8>,
-    ) -> Result<Vec<u8>, NotAvailable> {
-        self.command(Service::ApprovedCheck, request, &[]).await
-    }
-
     /// Send a browser service-session command, the Browser's only.
     pub(crate) async fn browser_service_session(
         &self,

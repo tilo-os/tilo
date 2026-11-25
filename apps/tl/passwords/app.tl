@@ -352,7 +352,7 @@ action learn(item: Item, listed: json.Value) (
 action keep(item: Item, ask: Text) -> Text (icon: .key, label: "Keep the item in the vault") {
     if let arguments = parsed(ask) {
         let answer = actions.call(address: vault_at("add"), arguments: arguments)
-        if answer.output != .none {
+        if answer.status == .ended {
             if let out = answer.output { learn(item, out) }
             ""
         } else if let why = answer.failure { why } else { "The vault did not keep it" }
@@ -366,7 +366,7 @@ action keep(item: Item, ask: Text) -> Text (icon: .key, label: "Keep the item in
 action add_new(v: Vault, ask: Text) -> Option<Item> (icon: .plus, label: "Add to the vault") {
     if let arguments = parsed(ask) {
         let answer = actions.call(address: vault_at("add"), arguments: arguments)
-        if answer.output != .none {
+        if answer.status == .ended {
             if let out = answer.output {
                 let id = id_of(at_text(out, "reference"))
                 if id != "" {
@@ -642,7 +642,7 @@ action copy_identity(item: Item) -> Text (
 action copy_part(item: Item, part: Text) -> Text (icon: .copy, label: "Copy from the vault") {
     if let arguments = parsed(object(["\"item\":" + js(reference(item)), "\"part\":" + js(part)])) {
         let answer = actions.call(address: vault_at("copy"), arguments: arguments)
-        if answer.output != .none {
+        if answer.status == .ended {
             ""
         } else if let why = answer.failure { why } else { "Nothing was copied" }
     } else { "Nothing was copied" }
@@ -680,7 +680,7 @@ action shown_part(item: Item, part: Text, how: Text) -> Text (
             object(["\"${how}\":true", "\"item\":" + js(reference(item)), "\"part\":" + js(part)]),
         ) {
         let answer = actions.call(address: vault_at("reveal"), arguments: arguments)
-        if answer.output != .none {
+        if answer.status == .ended {
             if let out = answer.output { at_text(out, "value") } else { "" }
         } else { "" }
     } else { "" }
@@ -710,7 +710,7 @@ destructive action delete(v: Vault, item: Item) (
     if item.entry != "" {
         if let arguments = parsed(object(["\"item\":" + js(reference(item))])) {
             let answer = actions.call(address: vault_at("remove"), arguments: arguments)
-            if answer.output == .none {
+            if answer.status != .ended {
                 v.notice = if let why = answer.failure {
                     why
                 } else { "The vault did not forget it" }
@@ -750,7 +750,7 @@ type Leave {
 action access(item: Item) -> Access (icon: .shield_check, label: "Who used it") {
     if let arguments = parsed(object(["\"item\":" + js(reference(item))])) {
         let answer = actions.call(address: vault_at("uses"), arguments: arguments)
-        if answer.output != .none {
+        if answer.status == .ended {
             if let out = answer.output {
                 return Access(
                     uses: at_list(out, "uses")
@@ -814,7 +814,7 @@ action settle(v: Vault) (icon: .refresh, label: "Settle the vault") {
     }
     if let arguments = parsed(object([])) {
         let answer = actions.call(address: vault_at("list"), arguments: arguments)
-        if answer.output != .none {
+        if answer.status == .ended {
             if let out = answer.output {
                 let listed = at_list(out, "items")
                 let ids = listed.map(one -> id_of(at_text(one, "reference")))
@@ -882,7 +882,7 @@ action carry(v: Vault, item: Item) (icon: .key, label: "Move the secret into the
         // The vault keeps no item of that id: it is added anew, and the record names it.
         if let arguments = parsed(object(pairs)) {
             let answer = actions.call(address: vault_at("add"), arguments: arguments)
-            if answer.output != .none {
+            if answer.status == .ended {
                 if let out = answer.output {
                     item.entry = id_of(at_text(out, "reference"))
                     learn(item, out)

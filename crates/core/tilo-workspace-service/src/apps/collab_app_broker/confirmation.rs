@@ -15,7 +15,7 @@ pub(super) struct ConfirmationGrant {
     /// Binds the exact arguments without retaining secrets or other raw user
     /// input in the grant registry.
     pub(super) argument_digest: [u8; 32],
-    pub(super) actor: MemberId,
+    pub(super) actor: tilo_action_policy::Actor,
     pub(super) expires: std::time::Instant,
 }
 
@@ -105,7 +105,7 @@ impl AppBrokerState {
                 resource: offered.resource.clone(),
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
-                actor: actor.member().clone(),
+                actor: actor.actor().clone(),
                 person_approved,
                 expires,
             },

@@ -19,9 +19,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use tilo_device_identity::login::{Approval, Approved, Approver, Asked, Entry, Ticket};
-use tilo_peer_state::workspace_membership::{
-    AppPayload, AppRelease, WorkspaceMembershipCommand,
-};
+use tilo_peer_state::workspace_membership::{AppPayload, AppRelease, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::in_process::Device;
@@ -407,7 +405,10 @@ fn a_phone_that_joins_lists_its_workspaces_installed_apps_by_name_and_no_others(
         "nothing that is not an app the workspace installed is listed: {apps:?}"
     );
     assert_eq!(apps[0].key, NOTES, "the app the workspace runs: {apps:?}");
-    assert_eq!(apps[0].name, "Notes", "Notes is listed by its name: {apps:?}");
+    assert_eq!(
+        apps[0].name, "Notes",
+        "Notes is listed by its name: {apps:?}"
+    );
 
     phone.stop().expect("the phone's daemon stops");
     drop(laptop);

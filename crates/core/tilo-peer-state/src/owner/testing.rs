@@ -309,6 +309,7 @@ struct Seeded {
     governor_key: SigningKey,
     governor: DeviceCert,
     device: DeviceCert,
+    device_key: SigningKey,
     workspace_id: WorkspaceId,
     hint: join::TransportHint,
     verified: join::VerifiedJoin,
@@ -434,6 +435,7 @@ fn seeded(now: SystemTime) -> Seeded {
         governor_key,
         governor,
         device,
+        device_key,
         workspace_id,
         hint,
         verified,
@@ -464,6 +466,7 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
         governor_key,
         governor,
         device,
+        device_key,
         workspace_id,
         hint,
         verified,
@@ -473,7 +476,7 @@ pub fn governed_fixture_at(now: SystemTime) -> (RawFixture, StatePeer, SigningKe
     } = seeded(now);
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &governor_key, now)
+            .admit_invited_member(&redemption, &device_key, now)
             .unwrap()
     );
     let messages = peer
@@ -534,6 +537,7 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
         governor_key,
         governor,
         device,
+        device_key,
         workspace_id,
         verified,
         redemption,
@@ -551,7 +555,7 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
     let before = peer.workspace_heads().unwrap();
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &governor_key, now)
+            .admit_invited_member(&redemption, &device_key, now)
             .unwrap()
     );
     let admitting = NeighbourMsg::SyncResp {

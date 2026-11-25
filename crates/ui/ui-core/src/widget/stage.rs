@@ -353,7 +353,7 @@ impl Stage {
             }),
             WindowEvent::Touch(touch) => Some(WindowEvent::Touch(winit::event::Touch {
                 location: on_page(touch.location),
-                ..touch.clone()
+                ..*touch
             })),
             _ => None,
         }
@@ -1874,4 +1874,3 @@ fn f32_of(v: f64) -> f32 {
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod tests;
-

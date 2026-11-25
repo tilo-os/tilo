@@ -670,7 +670,6 @@ fn descriptor(agent: &str, name: &str) -> ActionDescriptor {
             ),
         ],
         view: None,
-        effects: Vec::new(),
     }
 }
 

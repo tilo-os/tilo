@@ -280,7 +280,12 @@ fn an_action_reaches_the_other_session() {
 
     let request = laptop
         .fabric()
-        .try_send_personal_fabric_action(&session.id, PersonalFabricAction::RemoteAudioCancel { session_id: [1; 16] })
+        .try_send_personal_fabric_action(
+            &session.id,
+            PersonalFabricAction::RemoteAudioCancel {
+                session_id: [1; 16],
+            },
+        )
         .expect("the action is sent to the session");
 
     let mut heard: Vec<PersonalFabricActionEnvelope> = Vec::new();
@@ -298,7 +303,9 @@ fn an_action_reaches_the_other_session() {
     assert_eq!(envelope.target, session.id, "the session was addressed");
     assert_eq!(
         envelope.action,
-        PersonalFabricAction::RemoteAudioCancel { session_id: [1; 16] },
+        PersonalFabricAction::RemoteAudioCancel {
+            session_id: [1; 16]
+        },
         "the action arrives as it was sent"
     );
 }
@@ -321,7 +328,12 @@ fn an_action_addressed_to_a_third_device_is_not_delivered() {
 
     let request = laptop
         .fabric()
-        .try_send_personal_fabric_action(&pod.id, PersonalFabricAction::RemoteAudioCancel { session_id: [1; 16] })
+        .try_send_personal_fabric_action(
+            &pod.id,
+            PersonalFabricAction::RemoteAudioCancel {
+                session_id: [1; 16],
+            },
+        )
         .expect("the action is sent to the pod");
 
     let mut at_shell: Vec<PersonalFabricActionEnvelope> = Vec::new();

@@ -447,7 +447,9 @@ pub fn effect_slices_kept(
             return false;
         };
         if receipt.invocation.0.to_string() != invocation
-            || !(receipt.actor.person_id() == Some(person.as_str()) || receipt.actor.is_agent())
+            || !(receipt.actor.person_id() == Some(person.as_str())
+                || receipt.actor.agent_id().is_some()
+                || receipt.actor.app().is_some())
         {
             return false;
         }

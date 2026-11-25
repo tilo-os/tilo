@@ -7,11 +7,7 @@
 
 pub use ::collaboration::*;
 pub mod document_content;
-pub mod owner_view;
 
-#[cfg(test)]
-#[cfg(feature = "broker-transport")]
-mod approved_checks_tests;
 #[cfg(test)]
 #[cfg(all(unix, feature = "broker-transport"))]
 mod broker_app_tests;

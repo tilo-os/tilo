@@ -209,8 +209,7 @@ fn resample(dense: &[StrokePoint], spacing: f32) -> Vec<Sample> {
         let ty = (current.y - previous.y) / length;
         let end = travelled + length;
         if next <= end {
-            let count =
-                cell(((end - next) / spacing).floor(), usize::MAX).saturating_add(1);
+            let count = cell(((end - next) / spacing).floor(), usize::MAX).saturating_add(1);
             for step in 0..count {
                 let at = next + float(step) * spacing;
                 let along = (at - travelled) / length;

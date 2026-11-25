@@ -223,7 +223,6 @@ impl App {
                 })
                 | WindowEvent::Ime(winit::event::Ime::Commit(_))
         ) {
-            self.take_over_owner_view();
             // What the person does lands on the controls the app shows now.
             // A change of the app's structure since its last frame (what it
             // took in while the person typed) left the layout map behind: a
@@ -458,8 +457,9 @@ impl App {
                 }
                 report_point::Taken::Picked(about, bounds) => {
                     let to = pointing.to().to_vec();
+                    let carried = pointing.carried().to_vec();
                     app.report_pointing = None;
-                    app.open_send_box(Some(about), bounds, None, &to);
+                    app.open_send_box(Some(about), bounds, None, &to, &carried);
                     handled = true;
                     window.request_redraw();
                 }

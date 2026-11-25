@@ -374,7 +374,11 @@ fn covered_entries(entries: &[HistoryEntry], named: &[NamedRange]) -> HashSet<Hi
 }
 
 fn group_key(start: &HistoryEntryId) -> String {
-    format!("{}{}", ui::history_source::GROUPS_KEY, HistoryEntryId::hex(start))
+    format!(
+        "{}{}",
+        ui::history_source::GROUPS_KEY,
+        HistoryEntryId::hex(start)
+    )
 }
 
 /// Every change's actor, so a run can be told as this device's own.

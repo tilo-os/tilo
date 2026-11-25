@@ -1297,7 +1297,7 @@ impl State {
             if let Some(focus) = &focus {
                 self.note_input_serial(focus, serial.into());
                 if pressed {
-                    self.note_person_press(focus, serial.into(), person);
+                    self.note_person_press(focus, serial.into(), person, None);
                 }
             }
             if pressed && let Some(focus) = focus {
@@ -1643,7 +1643,7 @@ impl State {
         if let Some(focus) = &focus {
             self.note_input_serial(focus, serial.into());
             if pressed {
-                self.note_person_press(focus, serial.into(), person);
+                self.note_person_press(focus, serial.into(), person, Some(self.pointer));
             }
         }
         if pressed && let Some(focus) = focus {
@@ -2069,6 +2069,15 @@ pub(crate) fn window_id(state: &State, window: &Window) -> Option<u64> {
         return None;
     }
     x11_window_id(state, x11)
+}
+
+/// A point in a window, in whole logical pixels from its top-left corner.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a point in a window, far from i32 limits"
+)]
+fn window_point(local: Point<f64, Logical>) -> (i32, i32) {
+    (local.x.round() as i32, local.y.round() as i32)
 }
 
 /// The id of the toplevel drawing into `surface` , once it has one.
@@ -2777,8 +2786,16 @@ impl State {
     /// Note that the person pressed in the window drawing `surface`, delivered with `serial`:
     /// what lets a call the window's app makes run as the person
     /// ([`crate::presses::PersonPresses`]). Input another device or an agent seat sent is never
-    /// the person's, and only the window with the keyboard had their press.
-    pub(crate) fn note_person_press(&self, surface: &WlSurface, serial: u32, person: bool) {
+    /// the person's, and only the window with the keyboard had their press. `pointer` is where a
+    /// pointer or a finger pressed, in the layout; the press is recorded at that point in the
+    /// window, where a question the call raises stands.
+    pub(crate) fn note_person_press(
+        &self,
+        surface: &WlSurface,
+        serial: u32,
+        person: bool,
+        pointer: Option<Point<f64, Logical>>,
+    ) {
         if !person {
             return;
         }
@@ -2791,7 +2808,13 @@ impl State {
         {
             return;
         }
-        self.person_presses.note(window, serial);
+        let origin = self
+            .focused_element()
+            .and_then(|focused| self.space.element_location(focused));
+        let at = pointer
+            .zip(origin)
+            .map(|(pointer, origin)| window_point(pointer - origin.to_f64()));
+        self.person_presses.note(window, serial, at);
     }
 
     /// Judge the pings in flight. Returns whether the set of windows whose app is not responding

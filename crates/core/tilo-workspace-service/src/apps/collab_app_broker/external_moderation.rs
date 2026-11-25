@@ -87,9 +87,9 @@ impl Context {
             .committed_read_budget
             .try_reserve()
             .ok_or("committed document capture capacity exhausted")?;
-        let captured = self
-            .runtime
-            .block_on(service.capture(&self.document, None, MAX_DOCUMENT_BYTES))?;
+        let captured =
+            self.runtime
+                .block_on(service.capture(&self.document, None, MAX_DOCUMENT_BYTES))?;
         let NativeDocumentRead::Captured { body, .. } = captured else {
             return Err("external moderation committed report unavailable".into());
         };
@@ -356,8 +356,8 @@ pub(super) fn start(
             // A moderation worker's panic is a terminal refusal of this run alone: it
             // unwinds to this panic boundary, where outside one a release build's panic
             // hook ends the whole process.
-            let reply = tilo_rt::panic_boundary::isolate(|| moderate(&context))
-                .unwrap_or_else(|_| {
+            let reply =
+                tilo_rt::panic_boundary::isolate(|| moderate(&context)).unwrap_or_else(|_| {
                     Err("external moderation worker panicked; outcome unobserved".into())
                 });
             let _ = send.send(reply);
@@ -410,9 +410,8 @@ fn moderate(context: &Context) -> Reply {
         }
     }
     drop(state);
-    let reply = tilo_rt::panic_boundary::isolate(|| context.run()).unwrap_or_else(|_| {
-        Err("external moderation worker panicked; outcome unobserved".into())
-    });
+    let reply = tilo_rt::panic_boundary::isolate(|| context.run())
+        .unwrap_or_else(|_| Err("external moderation worker panicked; outcome unobserved".into()));
     if let Some(state) = context.state.upgrade()
         && let Ok(mut registry) = state.external_moderation_jobs.lock()
     {

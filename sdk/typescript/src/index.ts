@@ -28,6 +28,7 @@ export {
 } from "./client.ts";
 export {
   Workspace,
+  CallLane,
   Files,
   Members,
   Vault,
@@ -50,6 +51,13 @@ export {
   NATIVE_PACKAGE,
   VERSION,
   type Transport,
+  type CallAsk,
+  type CallFrame,
+  type CallLink,
+  type CallPerson,
+  type CallReport,
+  type CallTaken,
+  type CarriedCall,
   type FetchLike,
   type Group,
 } from "./transport.ts";

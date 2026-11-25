@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 
-use tilo_keyboard_engine::{Candidate, GeometricSwipeModel};
 use serde::Serialize;
+use tilo_keyboard_engine::{Candidate, GeometricSwipeModel};
 
 use super::Gesture;
 

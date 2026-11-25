@@ -17,7 +17,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::{
-    Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
+    Caller, LauncherServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
 };
 use tilo_workspace_service::apps::shell::{
     ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
@@ -53,6 +53,13 @@ pub(crate) struct TestDaemon {
 impl TestDaemon {
     /// Start the daemon, and open the session's link to it.
     pub(crate) fn start() -> Self {
+        Self::launching(None)
+    }
+
+    /// Start the daemon, admitting an app's connection as the launch `launcher` recorded, and
+    /// open the session's link to it. The daemon carries out the shell's window steps on the
+    /// apps it admits, as a device's daemon does.
+    pub(crate) fn launching(launcher: Option<Arc<dyn LauncherServices>>) -> Self {
         let runtime = tilo_rt::app();
         let dir = tempfile::tempdir().expect("a state directory");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
@@ -99,8 +106,11 @@ impl TestDaemon {
             })),
             // The providers registered on the device, the seat a shell serves among them.
             providers: Some(workspaces.providers()),
+            launcher,
             ..ProcessServices::default()
         };
+        let fanout = Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
+        tilo_runtime::device::provide_window_steps(Arc::clone(&fanout), &workspaces.providers());
         let dispatch = runtime
             .block_on(async {
                 tilo_workspace_service::apps::collab_broker::spawn_with_services(
@@ -110,7 +120,7 @@ impl TestDaemon {
                     None,
                     services,
                     Arc::default(),
-                    Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new()),
+                    fanout,
                 )
             })
             .expect("the runtime runs")
@@ -150,7 +160,15 @@ impl TestDaemon {
     /// device's own daemon does: it acts as the device it runs on, and holds each workspace's
     /// keys, as the device that founded it does.
     pub(crate) fn writing(workspaces: &[&str]) -> Self {
-        let daemon = Self::holding(workspaces);
+        Self::writing_launched(workspaces, None)
+    }
+
+    /// [`Self::writing`], admitting an app's connection as the launch `launcher` recorded.
+    pub(crate) fn writing_launched(
+        workspaces: &[&str],
+        launcher: Option<Arc<dyn LauncherServices>>,
+    ) -> Self {
+        let daemon = Self::holding_launched(workspaces, launcher);
         let service = daemon.workspaces().clone();
         service.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
             cert: daemon.cert.clone(),
@@ -174,7 +192,11 @@ impl TestDaemon {
 
     /// A daemon holding each of `workspaces`.
     pub(crate) fn holding(workspaces: &[&str]) -> Self {
-        let daemon = Self::start();
+        Self::holding_launched(workspaces, None)
+    }
+
+    fn holding_launched(workspaces: &[&str], launcher: Option<Arc<dyn LauncherServices>>) -> Self {
+        let daemon = Self::launching(launcher);
         for workspace in workspaces {
             let id = WorkspaceId::parse(workspace).expect("a workspace");
             daemon.found(id, workspace);
@@ -228,6 +250,11 @@ impl TestDaemon {
                 Some(&serde_json::to_string(&reading).expect("a reading encodes")),
             )
             .expect("the view reads the workspace");
+    }
+
+    /// Where the daemon answers the apps it admits, and the person's shell.
+    pub(crate) fn socket(&self) -> &std::path::Path {
+        &self.socket
     }
 
     /// The workspaces the daemon holds, as its own roles reach them.

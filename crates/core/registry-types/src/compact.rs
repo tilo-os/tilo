@@ -559,7 +559,8 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            refused.contains("package format 3") && refused.contains("publish its catalogue at format 4"),
+            refused.contains("package format 3")
+                && refused.contains("publish its catalogue at format 4"),
             "{refused}"
         );
 
@@ -571,7 +572,9 @@ mod tests {
             blake3_hex: blake3::hash(&bytes).to_hex().to_string(),
             size_bytes: bytes.len() as u64,
         };
-        let refused = verify_version_index(&committed, &bytes).unwrap_err().to_string();
+        let refused = verify_version_index(&committed, &bytes)
+            .unwrap_err()
+            .to_string();
         assert!(refused.contains("package format 3"), "{refused}");
     }
 

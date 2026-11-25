@@ -37,7 +37,7 @@ pub use window_actions::{
 };
 
 pub mod admitted;
-pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome};
+pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome, ReportsProgress, Serving};
 pub mod agent_tools;
 mod application;
 pub mod asked;
@@ -423,7 +423,7 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
 ];
 
 /// What the action `target` names declares it writes besides its own resource
-/// ([`crate::ActionDescriptor::effects`]), from its declaration: a device reading a record checks
+/// ([`crate::ActionContract::effects`]), from its declaration: a device reading a record checks
 /// here whether a step a call's change takes there is one the called action takes. Every action
 /// that writes another record declares it, and nothing a call carries adds to it.
 #[must_use]
@@ -698,7 +698,6 @@ pub mod device_tickets {
             input: crate::InputSpec::None,
             params,
             view: None,
-            effects: Vec::new(),
         })
     }
 
@@ -1277,6 +1276,27 @@ pub fn workspace_provider(workspace: &str) -> String {
 /// The provider that answers the language's own view of the registry (`tilo.actions`): the
 /// catalogue read and an action called by its address.
 pub const ACTIONS_PROVIDER: &str = "tilo.actions";
+
+/// The providers whose actions a workspace's host answers for a person in it: what the host
+/// keeps for them rather than for the workspace ([`person_telling`], the vault, their accounts
+/// and models, the connections made in their name, and the formats they read). A device of
+/// theirs reaches them over the device action service, as the person the transport certified,
+/// and its own dispatch answers nothing of them locally.
+pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
+    person_accounts::PROVIDER,
+    model_providers::PROVIDER,
+    person_vault::PROVIDER,
+    person_telling::PROVIDER,
+    person_connections::PROVIDER,
+    formats::PROVIDER,
+];
+
+/// Whether `provider` is one a workspace's host answers for the person
+/// ([`WORKSPACE_KEPT_PROVIDERS`]).
+#[must_use]
+pub fn kept_by_workspace_host(provider: &str) -> bool {
+    WORKSPACE_KEPT_PROVIDERS.contains(&provider)
+}
 
 /// The workspace a workspace provider token names, or `None` for an application
 /// provider.
@@ -3185,7 +3205,6 @@ mod tests {
             input: InputSpec::None,
             params: Vec::new(),
             view: None,
-            effects: Vec::new(),
         }
     }
 

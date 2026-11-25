@@ -314,7 +314,6 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         input: InputSpec::None,
         params,
         view: None,
-        effects: Vec::new(),
     })
 }
 
@@ -350,7 +349,6 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         // The inputs are the parameters; what the run answers is `output`.
         params: shortcut.inputs.clone(),
         view: None,
-        effects: Vec::new(),
     }
 }
 
@@ -828,7 +826,7 @@ pub struct SaveContext<'a> {
     /// What the saving person is offered now.
     pub catalog: &'a ActionCatalog,
     /// Who saves it; a person is recorded as the shortcut's saver.
-    pub saver: &'a tilo_action_policy::MemberId,
+    pub saver: &'a tilo_action_policy::Actor,
     /// The chords already taken on this device.
     pub keymap: &'a ShortcutConfig,
     /// What the desktop calls a fixed shortcut, in the person's language.
@@ -1411,8 +1409,8 @@ pub struct FinishedInvocation {
     /// The workspace the shortcut is saved in.
     pub workspace: String,
     pub shortcut: Shortcut,
-    /// The person or agent who invoked it.
-    pub invoker: tilo_action_policy::MemberId,
+    /// Who invoked it: a person, an agent, or an app acting by itself.
+    pub invoker: tilo_action_policy::Actor,
     pub report: InvocationReport,
 }
 
@@ -1596,7 +1594,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
 pub fn readable_folder(
     workspace: &Workspace,
     capability: &str,
-    saver: &tilo_action_policy::MemberId,
+    saver: &tilo_action_policy::Actor,
 ) -> Result<std::path::PathBuf, String> {
     let granted = workspace
         .sandbox
@@ -1674,7 +1672,6 @@ mod tests {
                 input: InputSpec::None,
                 params,
                 view: None,
-                effects: Vec::new(),
             }),
             has_children: false,
             visibility: None,
@@ -1730,7 +1727,7 @@ mod tests {
             let catalog = notes_catalog();
             let keymap = ShortcutConfig::default();
             let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
-            let saver = tilo_action_policy::MemberId::person("ada");
+            let saver = tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person("ada"));
             let plan = plan_library(
                 &workspace,
                 operation,
@@ -1781,7 +1778,7 @@ mod tests {
             let catalog = notes_catalog();
             let keymap = ShortcutConfig::default();
             let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
-            let saver = tilo_action_policy::MemberId::person("ada");
+            let saver = tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person("ada"));
             let plan = plan_library(
                 &workspace,
                 operation,

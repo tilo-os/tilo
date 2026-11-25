@@ -236,7 +236,7 @@ impl Workspaces {
             {
                 let mut row = verb.governance_row(workspace, name);
                 if let Some(descriptor) = row.action.as_mut() {
-                    descriptor.effects = workspace_agent_effects(verb.id);
+                    descriptor.contract.effects = workspace_agent_effects(verb.id);
                 }
                 rows.push(row);
             }

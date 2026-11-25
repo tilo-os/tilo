@@ -222,7 +222,7 @@ impl Device {
 
     /// What it hands the server.
     fn handed_over(&self, environment: PushEnvironment) -> Register {
-        Register {
+        Register::Apns {
             token: self.token.clone(),
             environment,
             topic: APP.to_owned(),
@@ -236,10 +236,7 @@ impl Device {
     /// The name this device knows the thing `id` by, worked out as an app
     /// works it out: from the id and its own secret.
     fn name_of(&self, id: &str) -> String {
-        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &self.secret);
-        let mut said = b"tilo told\0".to_vec();
-        said.extend_from_slice(id.as_bytes());
-        URL_SAFE_NO_PAD.encode(&ring::hmac::sign(&key, &said).as_ref()[..16])
+        tilo_actions::remote::person_telling::known_as(&self.secret, id)
     }
 
     /// What this device reads in the part of `push` that is for it alone.

@@ -89,7 +89,8 @@ pub enum JournalAction {
         keywords = "refresh journal, journal neu lesen"
     )]
     Refresh {
-        #[param("How many records to read")] limit: u32,
+        #[param("How many records to read")]
+        limit: u32,
     },
     /// Read the records written after `cursor`.
     #[effect(kind = "read")]
@@ -99,17 +100,16 @@ pub enum JournalAction {
         keywords = "follow journal, journal folgen"
     )]
     ReadAfter {
-        #[param("The cursor to read after")] cursor: String,
-        #[param("How many records to read")] limit: u32,
+        #[param("The cursor to read after")]
+        cursor: String,
+        #[param("How many records to read")]
+        limit: u32,
     },
     /// Follow the journal as new records arrive, or stop following it.
     #[effect(kind = "outside")]
-    #[effect(
-        own_device,
-        icon = "play",
-        keywords = "follow live, live verfolgen"
-    )]
+    #[effect(own_device, icon = "play", keywords = "follow live, live verfolgen")]
     SetFollowing {
-        #[param("Whether to follow new records")] on: bool,
+        #[param("Whether to follow new records")]
+        on: bool,
     },
 }

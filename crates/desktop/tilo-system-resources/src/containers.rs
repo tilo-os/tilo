@@ -27,9 +27,7 @@ pub enum ContainerState {
 }
 
 /// A published port.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct PortMapping {
     pub host_port: u16,
     pub container_port: u16,
@@ -37,9 +35,7 @@ pub struct PortMapping {
 }
 
 /// A mount in a container.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Mount {
     pub source: String,
     pub destination: String,
@@ -47,18 +43,14 @@ pub struct Mount {
 }
 
 /// A named value: an environment entry, a label.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Named {
     pub name: String,
     pub value: String,
 }
 
 /// The latest resource sample; a stopped container reports none.
-#[derive(
-    Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct ContainerStats {
     /// True only when podman answered a sample; missing telemetry is not a measured zero.
     #[serde(default)]
@@ -79,9 +71,7 @@ pub struct ContainerStats {
 }
 
 /// A container, as podman lists it.
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Container {
     pub id: String,
     pub name: String,
@@ -142,9 +132,7 @@ impl Container {
 }
 
 /// An image in the engine's store.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Image {
     pub id: String,
     pub repository: String,
@@ -163,9 +151,7 @@ impl Image {
 }
 
 /// A volume the engine holds.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Volume {
     pub name: String,
     pub driver: String,
@@ -176,9 +162,7 @@ pub struct Volume {
 }
 
 /// A tightly integrated container, listed apart because its verbs differ.
-#[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct DistroBox {
     pub name: String,
     pub image: String,
@@ -187,9 +171,7 @@ pub struct DistroBox {
 }
 
 /// What the computer's containers read as now.
-#[derive(
-    Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Containers {
     /// Whether podman answered here at all.
     #[serde(default)]
@@ -231,84 +213,153 @@ impl Containers {
 pub enum ContainerAction {
     /// Read the engine again.
     #[effect(kind = "read")]
-    #[effect(own_device, icon = "rotate-cw", keywords = "refresh containers, container neu laden")]
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "refresh containers, container neu laden"
+    )]
     Refresh,
     /// Start a stopped container.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "play", keywords = "start container, container starten")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "play",
+        keywords = "start container, container starten"
+    )]
     Start {
-        #[param("The container's id")] container: String,
+        #[param("The container's id")]
+        container: String,
     },
     /// Stop a running container.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "square", keywords = "stop container, container stoppen")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "square",
+        keywords = "stop container, container stoppen"
+    )]
     Stop {
-        #[param("The container's id")] container: String,
+        #[param("The container's id")]
+        container: String,
     },
     /// Restart a container.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "rotate-cw", keywords = "restart container, container neu starten")]
+    #[effect(
+        own_device,
+        icon = "rotate-cw",
+        keywords = "restart container, container neu starten"
+    )]
     Restart {
-        #[param("The container's id")] container: String,
+        #[param("The container's id")]
+        container: String,
     },
     /// Hold a container's processes.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "pause", keywords = "pause container, container pausieren")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "pause",
+        keywords = "pause container, container pausieren"
+    )]
     Pause {
-        #[param("The container's id")] container: String,
+        #[param("The container's id")]
+        container: String,
     },
     /// Let a paused container run again.
     #[effect(kind = "outside")]
-    #[effect(own_device, idempotent, icon = "play", keywords = "resume container, container fortsetzen")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "play",
+        keywords = "resume container, container fortsetzen"
+    )]
     Unpause {
-        #[param("The container's id")] container: String,
+        #[param("The container's id")]
+        container: String,
     },
     /// Remove a container.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "remove container, container entfernen")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "remove container, container entfernen"
+    )]
     Remove {
-        #[param("The container's id")] container: String,
+        #[param("The container's id")]
+        container: String,
     },
     /// Fetch an image.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "download", keywords = "pull image, image herunterladen")]
+    #[effect(
+        own_device,
+        icon = "download",
+        keywords = "pull image, image herunterladen"
+    )]
     Pull {
-        #[param("The image reference")] image: String,
+        #[param("The image reference")]
+        image: String,
     },
     /// Give an image another reference.
     #[effect(kind = "outside")]
     #[effect(own_device, icon = "copy", keywords = "tag image, image taggen")]
     Tag {
-        #[param("The image reference")] image: String,
-        #[param("The new tag")] tag: String,
+        #[param("The image reference")]
+        image: String,
+        #[param("The new tag")]
+        tag: String,
     },
     /// Remove an image.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "remove image, image entfernen")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "remove image, image entfernen"
+    )]
     RemoveImage {
-        #[param("The image reference")] image: String,
+        #[param("The image reference")]
+        image: String,
     },
     /// Make a volume.
     #[effect(kind = "outside")]
     #[effect(own_device, icon = "plus", keywords = "new volume, volume anlegen")]
     CreateVolume {
-        #[param("The volume's name")] name: String,
+        #[param("The volume's name")]
+        name: String,
     },
     /// Remove a volume.
     #[effect(kind = "outside")]
-    #[effect(own_device, destructive, icon = "trash", keywords = "remove volume, volume entfernen")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "remove volume, volume entfernen"
+    )]
     RemoveVolume {
-        #[param("The volume's name")] volume: String,
+        #[param("The volume's name")]
+        volume: String,
     },
     /// Run an image as a new container.
     #[effect(kind = "outside")]
-    #[effect(own_device, icon = "plus", keywords = "new container, container anlegen")]
+    #[effect(
+        own_device,
+        icon = "plus",
+        keywords = "new container, container anlegen"
+    )]
     Create {
-        #[param("The container's name, or empty for one podman picks")] name: String,
-        #[param("The image to run")] image: String,
-        #[param("Host and container ports, comma separated")] ports: String,
-        #[param("KEY=value pairs, comma separated")] env: String,
-        #[param("Volume and path, comma separated")] volumes: String,
-        #[param("The command, or empty for the image's own")] command: String,
+        #[param("The container's name, or empty for one podman picks")]
+        name: String,
+        #[param("The image to run")]
+        image: String,
+        #[param("Host and container ports, comma separated")]
+        ports: String,
+        #[param("KEY=value pairs, comma separated")]
+        env: String,
+        #[param("Volume and path, comma separated")]
+        volumes: String,
+        #[param("The command, or empty for the image's own")]
+        command: String,
     },
 }

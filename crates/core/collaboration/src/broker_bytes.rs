@@ -3,7 +3,6 @@
 //! bridge carries. `None` throughout means a size computation overflowed,
 //! which queue admission treats exactly like durable overload.
 
-use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
 use super::{CollabEvent, CollabRequest, Member, PresencePayload, SdkCommand};
 
@@ -395,14 +394,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
-            if let HandoffRequest::OwnerView { view } = request {
-                meter.string_capacity(&view.workspace);
-                meter.string_capacity(&view.app);
-                meter.string_capacity(&view.source);
-                if let Some(metadata) = &view.projection {
-                    meter.add_product(metadata.bytes.capacity(), 1);
-                }
-            }
             "Handoff"
         }
         CollabEvent::ResourcesArrived { records } => {

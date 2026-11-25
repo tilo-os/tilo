@@ -98,13 +98,6 @@ impl Server {
         *self.blocked.write().unwrap() = crate::workspaces::blocked::BlockedKeys::of(&state);
     }
 
-    /// The live policy trusts the person whose root is `user` too.
-    fn trust_person(&self, user: [u8; 32]) {
-        if let TrustPolicy::AllowList { users } = &mut *self.policy.write().unwrap() {
-            users.push(hex::encode(user));
-        }
-    }
-
     fn block_user(&self, user: [u8; 32]) {
         let mut state = crate::workspaces::blocked::Blocked::default();
         state
@@ -787,18 +780,19 @@ fn a_tab_a_device_signed_is_a_device_of_the_person() {
     assert!(!person_device(&stand_in));
 }
 
-/// The operator's block stands where a workspace's membership and the live
-/// policy both admit a person: a blocked device is refused whatever else lets
-/// it in. Blocking a person's root refuses every device of theirs.
+/// The operator's block stands where a workspace's membership admits a person
+/// the live policy does not list: the block is checked before that policy, so
+/// it is never read as the policy's refusal and bypassed. Blocking a person's
+/// root refuses every device of theirs.
 #[test]
 fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     let dir = tempfile::tempdir().unwrap();
     let server = Server::new();
     let guest = [0x4a; 32];
     let device = [0x4b; 32];
-    // The workspace holds the person and the device, and the policy trusts the
-    // person, as it does the members of the workspaces held here.
-    server.trust_person(guest);
+    // The workspace holds the person and the device; the policy lists neither,
+    // and its refusal alone would not keep the device out of a workspace its
+    // membership holds.
     let mut runtime = workspace(dir.path());
     list_person(&mut runtime, guest);
     list_device(&mut runtime, device);
@@ -828,7 +822,6 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     list_device(&mut other, second);
     let second_peer = peer(guest, second, true, None);
     let server = Server::new();
-    server.trust_person(guest);
     server.block_user(guest);
     assert_eq!(
         decide_in(

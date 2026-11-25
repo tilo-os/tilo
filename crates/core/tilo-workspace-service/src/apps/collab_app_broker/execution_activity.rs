@@ -6,7 +6,7 @@
 use super::{BrokerActor, CrdtRoute, PublishedAction, PublishedSurface};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{Caller, ExecutionLease};
-use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate, MemberId};
+use tilo_actions::{ActionAddress, Actor, InvocationId, InvocationUpdate, MemberId};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::broadcast;
 
@@ -35,7 +35,7 @@ pub struct ExecutionActivity {
     /// Host-minted run subordinate to `actor`, never a device identity.
     pub execution: uuid::Uuid,
     pub invocation: InvocationId,
-    pub actor: MemberId,
+    pub actor: Actor,
     pub peer_id: u64,
     pub route: CrdtRoute,
     pub address: ActionAddress,
@@ -54,7 +54,7 @@ impl ExecutionActivity {
 #[derive(Clone)]
 pub(super) struct ExecutionScope {
     lifetime: ExecutionLease,
-    actor: MemberId,
+    actor: Actor,
     execution: uuid::Uuid,
     invocation: InvocationId,
 }
@@ -62,9 +62,9 @@ impl ExecutionScope {
     pub(super) fn for_call(caller: &Caller, invocation: InvocationId) -> Option<Self> {
         // A person's run, or an agent's their own device handed it to.
         let actor = if let Some(person) = caller.acting().person_id() {
-            MemberId::person(person)
+            MemberId::person(person).into()
         } else if caller.acting().is_agent() && caller.acting_for_person().is_some() {
-            BrokerActor::for_caller(caller).member().clone()
+            BrokerActor::for_caller(caller).actor().clone()
         } else {
             return None;
         };
@@ -89,7 +89,7 @@ impl ExecutionScope {
         if !self.lifetime.is_live() {
             return Err("execution session ended".into());
         }
-        if *actor.member() != self.actor {
+        if *actor.actor() != self.actor {
             return Err("execution actor mismatch".into());
         }
         Ok(tilo_actions::PresenceId::for_execution(self.execution))
@@ -102,7 +102,7 @@ impl ExecutionScope {
 #[derive(Clone)]
 pub(super) struct ActivityTarget {
     scope: Option<ExecutionScope>,
-    actor: MemberId,
+    actor: Actor,
     peer_id: u64,
     route: CrdtRoute,
     address: ActionAddress,
@@ -592,7 +592,7 @@ impl ActivityTarget {
         // A fixed queue length also needs a bound on each retained value.
         // Unsupported metadata yields no presence, never a guessed target.
         if [
-            actor.member().id(),
+            actor.actor().id(),
             &surface.route.app_id,
             &surface.route.cluster_id,
             &surface.route.document_id,
@@ -606,7 +606,7 @@ impl ActivityTarget {
         }
         Some(Self {
             scope,
-            actor: actor.member().clone(),
+            actor: actor.actor().clone(),
             peer_id: surface.peer_id,
             route: surface.route.clone(),
             address: ActionAddress::new(action.resource.clone(), action.action.clone()),

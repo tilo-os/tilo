@@ -1922,8 +1922,7 @@ fn opaque(mark: &Mark, palette: &[Pigment]) -> bool {
     let laid_solid = match &mark.shape {
         Shape::Stroke { .. } => {
             crate::brushes::ink_alpha(style) >= 1.0
-                && !crate::brushes::preset_of(style)
-                    .dabbed(&crate::brushes::dynamics_of(mark))
+                && !crate::brushes::preset_of(style).dabbed(&crate::brushes::dynamics_of(mark))
         }
         _ => true,
     };

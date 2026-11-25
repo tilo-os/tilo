@@ -695,6 +695,7 @@ fn a_press_in_a_window_reads_there_as_asked_until_she_answers() {
             app: "so.tilo.mail".into(),
             instance: "window-1".into(),
             resource: "mail.draft".into(),
+            at: None,
         }),
     );
     assert!(
@@ -806,6 +807,7 @@ fn a_programs_and_a_windows_questions_are_withdrawn_when_the_device_restarts() {
                 app: "so.tilo.mail".into(),
                 instance: "window-1".into(),
                 resource: "mail.draft".into(),
+                at: None,
             }),
         );
         assert_eq!(before.store.asked_of(&ADA).len(), 4);

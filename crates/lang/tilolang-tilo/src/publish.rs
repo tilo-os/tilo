@@ -543,6 +543,13 @@ fn described(
         if !contract.tags.contains(&untrusted) {
             contract.tags.push(untrusted);
         }
+        // The device runs the check as this action's own step: the yes the action was given
+        // covers it.
+        contract.effects.push(tilo_actions::ActionEffect::new(
+            collaboration::approved_checks::PROVIDER,
+            collaboration::approved_checks::RESOURCE,
+            collaboration::approved_checks::RUN,
+        ));
     }
     spec.type_mut().contract.settle_confirmation();
     spec

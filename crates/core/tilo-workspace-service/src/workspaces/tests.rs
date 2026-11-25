@@ -9,8 +9,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    admit_view_reader, device_cert, entry_join, governor, governor_with, restricted_until,
-    signed_pre_admission, test_host, test_host_with_grants,
+    device_cert, entry_join, governor, governor_with, restricted_until, signed_pre_admission,
+    test_host, test_host_with_grants,
 };
 
 pub(crate) mod admission_cost;
@@ -204,11 +204,12 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
+    let page_key = SigningKey::from_bytes(&[9; 32]);
     let page = {
         let root = SigningKey::from_bytes(&[1; 32]);
         let mut page = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+            device_public_key: page_key.verifying_key().to_bytes(),
             device_label: "browser".into(),
             capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
@@ -228,7 +229,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
         assert!(
             candidate
                 .governance_mut()
-                .admit_member_device(&page, &workspaces.inner.host.key, now)
+                .admit_member_device(&page, &page_key, now)
                 .unwrap()
         );
         let state = governed.collaboration().clone();
@@ -383,7 +384,10 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+    workspaces
+        .enter(&created.workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
     let caller = Caller::authenticated(member.user_public_key, member.device_public_key);
     let policy = workspaces
         .resource_view_policy(created.workspace_id, &caller, "so.tilo.chat", "")
@@ -475,7 +479,10 @@ async fn admits_a_members_agent_never_a_stranger_and_never_a_revoked_device() {
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+    workspaces
+        .enter(&created.workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
     // The member's agent asks as the member, on the member's own device.
     let agent = Caller::authenticated(member.user_public_key, member.device_public_key);
     assert!(
@@ -1114,7 +1121,10 @@ async fn a_member_asks_for_a_channel_through(
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+    workspaces
+        .enter(&created.workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
     let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
     let vault = key_group::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
@@ -1554,7 +1564,10 @@ async fn a_window_a_member_opens_becomes_the_workspaces_next_generation() {
     member.device_public_key = member_key.verifying_key().to_bytes();
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
+    workspaces
+        .enter(&created.workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
     let salt = 0x3333;
     let windows = one_chat_window(salt);
     let (generation, mut doc) = {
@@ -1625,7 +1638,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    let (writer, salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let (writer, salt) = admitted_member(&workspaces, &workspace, &cert, 3).await;
     let writer_key = SigningKey::from_bytes(&[3; 32]);
     let (guest_key, guest) = guest_device();
     entry_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 4).await;
@@ -1693,12 +1706,14 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
 pub(crate) async fn admitted_member(
     workspaces: &Workspaces,
     workspace: &str,
-    key: &SigningKey,
     cert: &DeviceCert,
     seed: u8,
 ) -> (DeviceCert, u16) {
-    let (_, member) = further_device(cert, seed);
-    admit_view_reader(workspaces, workspace, key, &member).await;
+    let (member_key, member) = further_device(cert, seed);
+    workspaces
+        .enter(workspace, (&member, &member_key))
+        .await
+        .expect("the person's further device lists itself");
     (member, u16::from(seed) << 8 | 0x11)
 }
 
@@ -1786,7 +1801,7 @@ async fn the_windows_a_member_opens_are_shared_by_the_workspace() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&workspaces, &workspace, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
@@ -1862,7 +1877,7 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Team").await.unwrap();
     let workspace = created.workspace.clone();
-    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&workspaces, &workspace, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
@@ -1929,7 +1944,7 @@ async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let (a, a_salt) = admitted_member(&workspaces, &workspace, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
@@ -2675,7 +2690,7 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
     );
     // Another device of the owner, as a browser page signed in as them is: the
     // member list commits it, and the host stops before admitting by it.
-    let (_, page) = device_cert(
+    let (page_key, page) = device_cert(
         &SigningKey::from_bytes(&[1; 32]),
         "browser",
         DeviceCapabilities::member(),
@@ -2688,7 +2703,7 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
         assert!(
             candidate
                 .governance_mut()
-                .admit_member_device(&page, &workspaces.inner.host.key, now)
+                .admit_member_device(&page, &page_key, now)
                 .unwrap()
         );
         let state = governed.collaboration().clone();

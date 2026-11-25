@@ -1,7 +1,7 @@
-//! Any key holder admits: an invitation's redemption is written by any
-//! member who may invite and checked by every receiver from the invitation
-//! itself, and a device certified by a member's root is written in by any
-//! key holder.
+//! A device admits itself: an invitation's redemption is written by the
+//! device redeeming it and checked by every receiver from the invitation
+//! itself, and a device certified by a member's root writes its own row. No
+//! other device writes either in its place.
 use super::*;
 use crate::join::WorkspaceId;
 use crate::join::{
@@ -79,9 +79,9 @@ fn received(peer: &StatePeer) -> crate::workspace::WorkspaceGovernance {
 }
 
 tilo_test_env::scenario! {
-    fn a_device_is_admitted_only_by_who_may_admit_it;
+    fn a_device_is_admitted_only_by_itself;
 
-    phase an_administrator_admits_an_owners_invitation_and_an_editor_does_not;
+    phase a_device_redeems_its_own_invitation_and_no_other_device_writes_it;
     {
         let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
         let owner = peer.owner_certificates()[0].clone();
@@ -90,19 +90,20 @@ tilo_test_env::scenario! {
         let guest = device(70, 71);
         let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 72, now);
 
-        let refused = peer
-            .clone()
-            .governance_mut()
-            .admit_invited_member(&invited, &editor_key, now)
-            .unwrap_err();
-        assert!(refused.contains("may not invite"), "{refused}");
-
         peer.governance_mut()
             .set_member_administrator(user, None, &owner_key, now)
             .unwrap();
+        for (who, key) in [("an administrator", &editor_key), ("the owner", &owner_key)] {
+            let refused = peer
+                .clone()
+                .governance_mut()
+                .admit_invited_member(&invited, key, now)
+                .unwrap_err();
+            assert!(refused.contains("only its own"), "{who}: {refused}");
+        }
         assert!(
             peer.governance_mut()
-                .admit_invited_member(&invited, &editor_key, now)
+                .admit_invited_member(&invited, &guest.0, now)
                 .unwrap()
         );
         assert_eq!(
@@ -123,13 +124,13 @@ tilo_test_env::scenario! {
         );
         assert_eq!(editor.user_public_key, user);
 
-        // Spent: no key holder admits another device with it.
+        // Spent: no other device comes in with it.
         let other = device(73, 74);
         let replay = redemption(&peer, &owner, &owner_key, &other, Role::Viewer, 72, now);
         assert_eq!(replay.join().invite_id(), invited.join().invite_id());
         assert!(
             peer.governance_mut()
-                .admit_invited_member(&replay, &owner_key, now)
+                .admit_invited_member(&replay, &other.0, now)
                 .unwrap_err()
                 .contains("already redeemed")
         );
@@ -141,34 +142,39 @@ tilo_test_env::scenario! {
         let (editor, _) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
         let editor_key = SigningKey::from_bytes(&[6; 32]);
         let guest = device(75, 76);
-        // An editor holds no invite: what they sign admits no one, whoever
-        // writes it.
+        // An editor holds no invite: what they sign admits no one.
         let invited = redemption(&peer, &editor, &editor_key, &guest, Role::Viewer, 77, now);
         let refused = peer
             .governance_mut()
-            .admit_invited_member(&invited, &owner_key, now)
+            .admit_invited_member(&invited, &guest.0, now)
             .unwrap_err();
         assert!(refused.contains("issuer may not invite"), "{refused}");
         assert!(peer.permissions(guest.1.device_public_key, now).is_err());
     }
 
-    phase any_key_holder_admits_a_members_further_device;
+    phase a_members_further_device_lists_itself_and_no_other_device_writes_it;
     {
         let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
         let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
         let editor_key = SigningKey::from_bytes(&[6; 32]);
-        // Someone else's second device: the editor holds no governance, yet
-        // writes it in, for its root certifies it as a member's.
+        // A member's second device writes its own row, for its root certifies
+        // it as a member's; another member's device does not write it.
         let owner = peer.owner_certificates()[0].clone();
         let guest = device(82, 83);
         let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 84, now);
         peer.governance_mut()
-            .admit_invited_member(&invited, &owner_key, now)
+            .admit_invited_member(&invited, &guest.0, now)
             .unwrap();
-        let (_, further) = device(82, 85);
+        let (further_key, further) = device(82, 85);
+        let refused = peer
+            .clone()
+            .governance_mut()
+            .admit_member_device(&further, &editor_key, now)
+            .unwrap_err();
+        assert!(refused.contains("only its own"), "{refused}");
         assert!(
             peer.governance_mut()
-                .admit_member_device(&further, &editor_key, now)
+                .admit_member_device(&further, &further_key, now)
                 .unwrap()
         );
         assert_eq!(
@@ -178,15 +184,15 @@ tilo_test_env::scenario! {
         assert!(
             !peer
                 .governance_mut()
-                .admit_member_device(&further, &editor_key, now)
+                .admit_member_device(&further, &further_key, now)
                 .unwrap(),
             "admitted once"
         );
         // A stranger's device is no member's.
-        let (_, stranger) = device(86, 87);
+        let (stranger_key, stranger) = device(86, 87);
         assert!(
             peer.governance_mut()
-                .admit_member_device(&stranger, &editor_key, now)
+                .admit_member_device(&stranger, &stranger_key, now)
                 .is_err()
         );
         assert_ne!(user, stranger.user_public_key);
@@ -211,28 +217,21 @@ tilo_test_env::scenario! {
         let member = device(80, 81);
         let invited = redemption(&peer, &owner, &owner_key, &member, Role::Viewer, 82, now);
         peer.governance_mut()
-            .admit_invited_member(&invited, &owner_key, now)
+            .admit_invited_member(&invited, &member.0, now)
             .unwrap();
-        let (_, mut page) = device(80, 83);
+        let (page_key, mut page) = device(80, 83);
         expires(&mut page, 80);
         peer.governance_mut()
-            .admit_member_device(&page, &owner_key, now)
+            .admit_member_device(&page, &page_key, now)
             .unwrap();
         // A person the invitation admitted with a certificate that also expires:
         // their row records the admission, so it stays.
         let (invited_key, mut expiring_invitee) = device(84, 85);
         expires(&mut expiring_invitee, 84);
-        let admitted = redemption(
-            &peer,
-            &owner,
-            &owner_key,
-            &(invited_key, expiring_invitee.clone()),
-            Role::Viewer,
-            86,
-            now,
-        );
+        let invitee = (invited_key, expiring_invitee.clone());
+        let admitted = redemption(&peer, &owner, &owner_key, &invitee, Role::Viewer, 86, now);
         peer.governance_mut()
-            .admit_invited_member(&admitted, &owner_key, now)
+            .admit_invited_member(&admitted, &invitee.0, now)
             .unwrap();
 
         let rows = |peer: &StatePeer| received(peer).identities;
@@ -283,9 +282,9 @@ fn refusal_of_tampered_admission(
     peer.governance_mut()
         .set_member_administrator(user, None, &owner_key, now)
         .unwrap();
-    // The administrator's device admits the guest as every device does — the
-    // rows its operation names beside the receipt — and then changes what
-    // the log holds in the same batch.
+    // The guest's device admits itself as every device does — the rows its
+    // operation names beside the receipt — and the administrator's device
+    // changes what the log holds in the batch it carries.
     let guest = device(78, 79);
     let owner = peer.owner_certificates()[0].clone();
     let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Editor, 80, now);
@@ -296,7 +295,7 @@ fn refusal_of_tampered_admission(
     let mut writer = peer.clone();
     writer
         .governance_mut()
-        .admit_invited_member(&invited, &editor_key, now)
+        .admit_invited_member(&invited, &guest.0, now)
         .unwrap();
     let mut doc = (**writer.core.workspace_doc.as_ref().unwrap()).clone();
     let key = hex::encode(invited.join().invite_id());
@@ -421,7 +420,7 @@ fn an_owners_device_comes_in_on_an_expired_invitation_and_nobody_else_does() {
     assert!(
         writer
             .governance_mut()
-            .admit_invited_member(&invited, &owner_key, later)
+            .admit_invited_member(&invited, &own.0, later)
             .unwrap()
     );
     let NeighbourMsg::SyncResp { changes, workspace } = writer.workspace_message() else {
@@ -440,7 +439,7 @@ fn an_owners_device_comes_in_on_an_expired_invitation_and_nobody_else_does() {
     let refused = peer
         .clone()
         .governance_mut()
-        .admit_invited_member(&invited, &owner_key, later)
+        .admit_invited_member(&invited, &guest.0, later)
         .unwrap_err();
     assert!(refused.contains("expired"), "{refused}");
 }

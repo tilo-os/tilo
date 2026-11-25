@@ -1638,7 +1638,11 @@ impl WorkspaceState {
     /// Keep an opened record for the window: its route reported to the
     /// runtime, its changes followed, and the record held for the views that
     /// ask for it again.
-    fn held<P: Resource>(&self, key: OpenKey, opened: WorkspaceResource<P>) -> WorkspaceResource<P> {
+    fn held<P: Resource>(
+        &self,
+        key: OpenKey,
+        opened: WorkspaceResource<P>,
+    ) -> WorkspaceResource<P> {
         let WorkspaceResource { shared } = opened;
         let weak = Rc::downgrade(&shared);
         let refresh = Box::new(move || weak.upgrade().is_some_and(|shared| shared.refresh()));

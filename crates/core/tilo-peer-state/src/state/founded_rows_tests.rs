@@ -99,7 +99,7 @@ fn receipt(by: &DeviceCert, at: i64) -> tilo_desktop_model::WorkspaceEffectRecei
     let context = tilo_actions::ActionContext::for_resource("workspace", "workspace", "Workspace");
     tilo_desktop_model::WorkspaceEffectReceipt::recorded(
         invocation,
-        &tilo_actions::MemberId::person(hex::encode(by.user_public_key)),
+        &tilo_actions::MemberId::person(hex::encode(by.user_public_key)).into(),
         context,
         tilo_actions::EffectReceiptStatus::Succeeded,
         at,

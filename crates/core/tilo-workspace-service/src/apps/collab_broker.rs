@@ -367,21 +367,24 @@ impl SessionFollowDispatcher {
         );
     }
 
-    /// Ask exactly one application instance, addressed by its primary route
-    /// in `workspace`, for the next step of moving its window. Session-local like
-    /// Follow; the answer arrives through the host's continuation services.
-    pub fn request_handoff(
+    /// Ask the window of `app`'s instance `instance` in `workspace` to make everything it shows
+    /// durable, as request `token`. Settles with the app's answer, or with none when no app shows
+    /// that window or its connection closes before it answers.
+    pub fn save(
         &self,
         workspace: &str,
         app: &str,
         instance: u64,
-        request: collab_types::handoff::HandoffRequest,
-    ) {
-        self.fanout.fanout_to_route(
-            &CollabEvent::Handoff { request },
-            u64::MAX,
-            &CrdtRoute::record(app, workspace, format!("continuation:{instance}")),
-        );
+        token: u64,
+    ) -> tilo_actions::remote::Pending<collab_types::handoff::HandoffReport> {
+        let (answer, saved) = tilo_actions::remote::pending();
+        if !self.fanout.stopped.load(Ordering::Acquire)
+            && let Some(app_broker) = self.fanout.app_broker()
+        {
+            let window = CrdtRoute::record(app, workspace, format!("continuation:{instance}"));
+            app_broker.ask_save(&window, token, answer);
+        }
+        saved
     }
 }
 
@@ -831,7 +834,7 @@ impl AppActionBroker {
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &tilo_action_policy::MemberId,
+        actor: &tilo_action_policy::Actor,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.state.record_completion_for_test(id, actor, update);
@@ -877,7 +880,7 @@ impl AppActionBroker {
 
     pub fn statuses(
         &self,
-        actor: &tilo_action_policy::MemberId,
+        actor: &tilo_action_policy::Actor,
     ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.state
             .while_live(|state| Ok(state.invocation_statuses(actor)))
@@ -887,13 +890,13 @@ impl AppActionBroker {
     /// Request cooperative cancellation for an owned invocation, answered
     /// once the request is durable. Blocks the calling thread for that
     /// write, so never call it on the broker's loop.
-    pub fn cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> Result<(), String> {
+    pub fn cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> Result<(), String> {
         self.state
             .while_live(|state| state.request_cancellation(id, actor))?
             .wait_blocking()
     }
 
-    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> bool {
         self.state
             .while_live(|state| Ok(state.can_cancel(id, actor)))
             .unwrap_or(false)

@@ -1686,4 +1686,3 @@ fn is_content_address(text: &str) -> bool {
 fn bot_or_person(cx: &ActionCx) -> Result<(), Refusal> {
     guard::bot(cx).or_else(|_| guard::person(cx).map(drop))
 }
-

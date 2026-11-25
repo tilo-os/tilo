@@ -1009,7 +1009,6 @@ impl ResourceRoot {
     fn name_of(&self, state: &dyn std::any::Any) -> String {
         (self.label_of)(state)
     }
-
 }
 
 /// What [`ResourceRoot::new`] hands [`ResourceRoot::assemble`] of the view

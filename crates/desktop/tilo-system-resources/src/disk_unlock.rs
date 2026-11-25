@@ -40,7 +40,9 @@ pub struct UnlockVolume {
 }
 
 /// What this computer's enrolled volumes read as now.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct DiskUnlock {
     /// The volumes enrolled for sibling unlock.
     pub volumes: Vec<UnlockVolume>,

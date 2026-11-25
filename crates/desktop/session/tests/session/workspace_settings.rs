@@ -165,7 +165,10 @@ fn workspace_settings_sets_each_members_role() {
     }
     let roles = session.handle().read(|tree| {
         let workspace = tree.active_workspace().expect("a workspace in front");
-        (workspace.policy.role_of("ada"), workspace.policy.role_of("bo"))
+        (
+            workspace.policy.role_of("ada"),
+            workspace.policy.role_of("bo"),
+        )
     });
     assert_eq!(
         roles,

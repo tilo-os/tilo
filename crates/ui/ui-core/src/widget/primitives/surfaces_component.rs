@@ -635,6 +635,10 @@ pub struct PopoverProps {
     pub open: bool,
     /// The side of its anchor it prefers: `below` unless said.
     pub side: Option<PopoverSide>,
+    /// The point it stands at, `[x, y]` from the top-left of where it is declared: where a press
+    /// raised it (a question an action asks first). Its primary button stands under that point,
+    /// so pressing again at the same spot takes it.
+    pub at: Option<Vec<f64>>,
     /// It was closed (Escape, or a press outside it): a popover with this closes as it is.
     #[component(event)]
     pub dismiss: Event,
@@ -646,6 +650,16 @@ pub struct PopoverProps {
 pub struct DeclaredPopover {
     popover: Popover<Container>,
     rect: Rect,
+    /// The point it stands at, from where it is declared ([`PopoverProps::at`]).
+    at: Option<Point>,
+}
+
+/// The point `[x, y]` a popover is declared at; `None` for anything else.
+fn point_of(at: Option<&[f64]>) -> Option<Point> {
+    match at? {
+        [x, y] => Some(Point::new(*x, *y)),
+        _ => None,
+    }
 }
 
 impl DeclaredPopover {
@@ -666,6 +680,7 @@ impl DeclaredPopover {
         Self {
             popover,
             rect: Rect::ZERO,
+            at: point_of(props.at.as_deref()),
         }
     }
 
@@ -703,6 +718,9 @@ impl Widget for DeclaredPopover {
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // Declared at a point of where it stands: that point in the window.
+        let aim = self.at.map(|at| self.rect.origin() + at.to_vec2());
+        self.popover.set_aim(aim);
         self.popover.apply_layout(taffy, node, origin);
     }
 
@@ -785,9 +803,11 @@ impl Described for DeclaredPopover {
             label,
             open,
             side,
+            at,
             dismiss,
             content: _,
         } = props;
+        self.at = point_of(at.as_deref());
         let popover = &mut self.popover;
         popover.set_label_option(label);
         popover.set_side(side.unwrap_or_default());

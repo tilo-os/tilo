@@ -107,16 +107,18 @@ impl Web {
             .or(public_origin)
             .map_or_else(|| format!("https://{addr}"), str::to_owned);
         match crate::web_push::WebPush::open(state, &contact) {
-            Ok(_push) => {
+            Ok(push) => {
                 // What a person's assistant told them reaches the same
-                // browsers, while no device of theirs is looking.
+                // browsers, and the closed apps of theirs that take web
+                // push, while no device of theirs is looking.
                 #[cfg(feature = "agents")]
                 if let (Some(workspaces), Ok(runtime)) =
                     (&self.workspaces, tokio::runtime::Handle::try_current())
                 {
+                    let push = push.telling(workspaces.clone());
                     let teller = tilo_workspace_service::agents::telling::Teller::new(
                         workspaces.clone(),
-                        Arc::new(_push.clone()),
+                        Arc::new(push.clone()),
                     );
                     // An app of theirs that is closed hears of it through
                     // Apple's push service, where this server was given a

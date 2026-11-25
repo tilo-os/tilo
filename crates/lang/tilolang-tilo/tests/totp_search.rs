@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::model::{OPEN_ANCHOR, Source as _, Target};
 use tilo_resource::search_index::{IndexEntry, IndexState, Publisher};
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+use tilo_workspace_service::search::{AppContentIndex, IndexSearch, deciding};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers, VaultCode, VaultHost};
 use tilolang_runtime::value::ResourceRef;
@@ -221,7 +221,7 @@ fn search(entries: Vec<IndexEntry>, needle: &str) -> Vec<tilo_desktop_search::Hi
             .publish("workspace", APP, "vault", delta)
             .expect("the index takes what the app publishes");
     }
-    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| Box::pin(async { true })));
+    let search = IndexSearch::new(Arc::new(index), deciding(|_, _| true));
     IndexedContent::new(
         Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),

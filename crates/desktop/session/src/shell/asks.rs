@@ -33,10 +33,8 @@ impl Shared {
         // lands in is carried out here, with the asks.
         self.carry_out_presses();
         // What a person's card asked of the session: Chat's conversation with them. The roster's
-        // own resource asks through the same queue, so one pass carries out both.
-        let mut asked = self.people.borrow().take_asks();
-        asked.extend(self.people_asks.borrow_mut().drain(..));
-        for ask in asked {
+        // own resource asks through the same queue.
+        for ask in self.people_asks.borrow_mut().drain(..) {
             match ask {
                 people::PeopleAsk::Message { key } => self.message_person(&key),
                 people::PeopleAsk::Agent { who, client, ask } => self.agent_ask(&who, &client, ask),

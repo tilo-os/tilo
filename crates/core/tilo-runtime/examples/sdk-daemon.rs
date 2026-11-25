@@ -44,7 +44,9 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let mut args = std::env::args_os().skip(1);
-    let runtime = args.next().context("usage: sdk-daemon <tilo-runtime> -- <command...>")?;
+    let runtime = args
+        .next()
+        .context("usage: sdk-daemon <tilo-runtime> -- <command...>")?;
     if args.next().as_deref() != Some(std::ffi::OsStr::new("--")) {
         bail!("usage: sdk-daemon <tilo-runtime> -- <command...>");
     }

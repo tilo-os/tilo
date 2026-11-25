@@ -22,7 +22,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Mirrors the dep set used by the in-tree `ui`-based apps
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 automerge.workspace = true
 vello.workspace = true
 winit.workspace = true

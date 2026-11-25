@@ -129,7 +129,7 @@ impl AppBrokerState {
                     .current_action_caller(original)
                     .map_err(ActionCallError::unavailable)?;
                 let expected = current.broker_actor();
-                if original.workspace != workspace || expected.member() != actor.member() {
+                if original.workspace != workspace || expected.actor() != actor.actor() {
                     return Err(ActionCallError::NotPermitted);
                 }
                 // Revalidation checks the full certificate, not an actor supplied
@@ -174,17 +174,21 @@ impl AppBrokerState {
                     // Retain pre-identity connection compatibility without
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
-                    if route.cluster_id != workspace || expected.member() != actor.member() {
+                    if route.cluster_id != workspace || expected.actor() != actor.actor() {
                         return Err(ActionCallError::NotPermitted);
                     }
                     return Ok(InvocationOwner::Local {
-                        actor: actor.member().clone(),
+                        actor: actor.actor().clone(),
                     });
                 };
-                let expected = current.agent_id.as_ref().map_or_else(
-                    || MemberId::person(person_id_for_root(certificate.user_public_key)),
-                    |agent| MemberId::agent(super::delegated_agent_name(agent)),
-                );
+                let expected: tilo_action_policy::Actor = current
+                    .agent_id
+                    .as_ref()
+                    .map_or_else(
+                        || MemberId::person(person_id_for_root(certificate.user_public_key)),
+                        |agent| MemberId::agent(super::delegated_agent_name(agent)),
+                    )
+                    .into();
                 // The connection's app acting under its own identity, by what
                 // the workspace grants it: decided as that app and owned by it,
                 // never attested as the connection's person
@@ -196,10 +200,10 @@ impl AppBrokerState {
                         .is_some_and(|app| app.as_str() == route.app_id)
                 {
                     return Ok(InvocationOwner::Local {
-                        actor: actor.member().clone(),
+                        actor: actor.actor().clone(),
                     });
                 }
-                if route.cluster_id != workspace || expected != *actor.member() {
+                if route.cluster_id != workspace || expected != *actor.actor() {
                     return Err(ActionCallError::NotPermitted);
                 }
                 InvocationOwner::AuthenticatedLocal {
@@ -220,13 +224,13 @@ impl AppBrokerState {
                     .map_err(ActionCallError::unavailable)?;
                 if original_workspace != workspace
                     || *original_invocation != invocation
-                    || actor.member().person_id()
+                    || actor.actor().person_id()
                         != Some(person_id_for_root(certificate.user_public_key).as_str())
                 {
                     tracing::warn!(
                         %workspace,
                         original_workspace,
-                        caller = %actor.member(),
+                        caller = %actor.actor(),
                         "an action of the person's own was refused: its admission names another device"
                     );
                     return Err(ActionCallError::NotPermitted);
@@ -242,18 +246,23 @@ impl AppBrokerState {
                 // silently downgrade a certified caller to actor-only ownership.
                 // A host with a device or native certificates serves everyone
                 // through retained ownership, so a caller that arrives with no
-                // original admission is refused rather than downgraded.
-                if self.services.local_person.is_some()
-                    || self.services.native_certificates.is_some()
-                    || caller.device_public_key().is_some()
-                    || caller.user_public_key().is_some()
+                // original admission is refused rather than downgraded. An app
+                // acting by itself has no certificate to downgrade: it is decided
+                // by the grants that name it, and what it starts is its own.
+                let keyed =
+                    caller.device_public_key().is_some() || caller.user_public_key().is_some();
+                let app_itself = actor.actor().app().is_some();
+                if keyed
+                    || (!app_itself
+                        && (self.services.local_person.is_some()
+                            || self.services.native_certificates.is_some()))
                 {
                     return Err(ActionCallError::unavailable(
                         "action_evidence_unavailable: original caller missing",
                     ));
                 }
                 InvocationOwner::Local {
-                    actor: actor.member().clone(),
+                    actor: actor.actor().clone(),
                 }
             }
         };
@@ -316,7 +325,7 @@ impl AppBrokerState {
                 "contract": descriptor.contract,
                 "operation_kind": descriptor.kind,
                 "context": request.context,
-                "actor": actor.member(),
+                "actor": actor.actor(),
                 "app_id": app_id,
                 "document_id": "",
                 "resource": descriptor.address.resource,
