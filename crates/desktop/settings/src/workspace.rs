@@ -22,9 +22,16 @@ pub use tilo_actions::surface::setter_id as verb;
 /// device: the image grants it to its settings app alone, as [`EVERY_SETTER`].
 pub const SET_EVERY_SETTING: &str = "settings.system";
 
-/// Every setter of the person's and the device's settings, as grant patterns over their
-/// addresses (`*` standing for any text within one segment).
-pub const EVERY_SETTER: &[&str] = &["settings/*#set-*", "devices/*/settings/*#set-*"];
+/// Every change of the person's and the device's settings, as grant patterns over their
+/// addresses (`*` standing for any text within one segment): each field's setter, and the
+/// appearance's own theme verbs, which choose a theme or apply an installed theme package.
+pub const EVERY_SETTER: &[&str] = &[
+    "settings/*#set-*",
+    "devices/*/settings/*#set-*",
+    "settings/appearance#choose-theme",
+    "settings/appearance#use-theme",
+    "settings/appearance#apply-theme",
+];
 
 /// The settings' surface: every declared section's kind, and the app preferences' kind, each
 /// written by the family of setters `set-*`, one per setting. What the store checks a write of

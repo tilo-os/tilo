@@ -211,17 +211,16 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
         stock.rgba.len() / 4
     );
 
-    // A caller without the grant is refused while the package is installed, so what it names is
-    // not why: an agent does not apply a theme to the person's desktop.
-    let refused = session.invoke_with_actor(
-        &common::agent("passerby"),
+    // Nothing else applies a theme: the section publishes no generic setter for the package, so
+    // a write of the field is refused, and only the action names it.
+    let refused = session.invoke(
         APPEARANCE,
-        "apply-theme",
-        &json!({ "package": PACKAGE }),
+        "set-theme-package",
+        &arguments(json!({ "value": PACKAGE })),
     );
     assert!(
         refused.is_err(),
-        "an agent without the grant does not apply a theme"
+        "the applied package is written by its action, not a setter"
     );
 
     // The set the appearance resolves is the bundle's, on the machine code the daemon compiled
