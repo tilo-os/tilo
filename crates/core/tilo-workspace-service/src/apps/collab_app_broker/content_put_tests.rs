@@ -253,7 +253,7 @@ tilo_test_env::scenario! {
         let shelf = fixture.shelf.lock().unwrap();
         assert_eq!(
             shelf.stored,
-            [(fixture.workspace.clone(), hash.clone(), Vec::new())]
+            [(fixture.workspace.clone(), hash, Vec::new())]
         );
     }
 
