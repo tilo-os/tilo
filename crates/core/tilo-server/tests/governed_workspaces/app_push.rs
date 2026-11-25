@@ -44,10 +44,11 @@ async fn hosted_topic(
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-/// Ada pushes her v2 into the workspace while Bob runs v1. Bob's edit made with
-/// v1 is held; his device sees the workspace's version, fetches its package
-/// from the workspace by hash, checks it, installs it, and the same edit, sent
-/// again with v2, is in the workspace.
+/// Ada pushes her v2 into the workspace while Bob runs v1. Bob's device holds
+/// the edit he makes with v1, as it holds any write that waits; it sees the
+/// workspace's version, fetches its package from the workspace by hash, checks
+/// it, installs it, and the same edit, written again with v2, is in the
+/// workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in() {
     use std::sync::atomic::Ordering;
@@ -152,7 +153,8 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         .await
         .unwrap();
 
-    // Bob, still on v1, edits: the workspace holds it.
+    // Bob, still on v1, edits: his device holds the edit until it runs the
+    // workspace's version, and sends none of it before.
     crate::common::receives(&bob_link, |peer| {
         peer.governance().app_version(APP).is_some()
     })
@@ -160,9 +162,13 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     let before = doc.get_heads();
     doc.put(ROOT, "topic", "while behind").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
-    bob_link
+    let waits = bob_link
         .publish(|peer| sealed_changes(peer, &KEYS, &phone.sk, (APP, ""), doc.save_after(&before)))
-        .expect("Bob's edit made behind goes out on his link");
+        .expect_err("an edit made with another version than the workspace's waits on its device");
+    assert!(
+        waits.contains("its app surface"),
+        "the edit waits for the workspace's version, not for anything else: {waits}"
+    );
 
     // His device follows: the workspace names a file his install lacks.
     let release = bob_link.read(|peer| peer.governance().app_version(APP).unwrap().release);
@@ -208,14 +214,14 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
             .await
             .as_deref(),
         Some("v1"),
-        "an edit made with another version than the workspace's is held"
+        "an edit made with another version than the workspace's is not in it"
     );
 
-    // Installed: his device runs v2, and the same edit goes out again.
+    // Installed: his device runs v2, and the edit it held goes out.
     BOB_RUNS.store(2, Ordering::SeqCst);
     bob_link
         .publish(|peer| sealed_changes(peer, &KEYS, &phone.sk, (APP, ""), doc.save_after(&before)))
-        .expect("Bob's edit goes out again on his link");
+        .expect("Bob's held edit goes out on his link");
     tilo_test_env::within("Bob's edit made behind is in the workspace", async {
         while hosted_topic(workspaces, &workspace.workspace)
             .await
