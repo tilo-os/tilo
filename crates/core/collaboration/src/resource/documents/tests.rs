@@ -403,6 +403,48 @@ tilo_test_env::scenario! {
         assert_eq!(store.save_status(&note.id).unwrap(), ResourceSaveStatus::Saved);
     }
 
+    phase a_record_its_store_writes_wakes_its_window_once_the_write_is_answered;
+    // A store that writes its records itself starts a change's write on its next tick: a window
+    // reading the record as saving before then is woken by that write's answer, once however many
+    // frames armed it, and not at once again each frame while nothing answered.
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let port = Rc::new(MemoryWorkspace::default());
+        let workspace = workspace_id();
+        let note = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
+        let mut owners = ResourceOwners::writing(port.clone());
+        let store = owners.open(APP, &workspace).unwrap();
+        store.create_resource(&note).unwrap();
+        assert_eq!(
+            store.save_status(&note.id).unwrap(),
+            ResourceSaveStatus::Saved,
+            "a record with no change holds nothing to save"
+        );
+        store.with(&note.id, |doc| {
+            put_text(doc, "body", "typed");
+            doc.commit();
+        });
+        assert_eq!(
+            store.save_status(&note.id).unwrap(),
+            ResourceSaveStatus::Saving
+        );
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let wake: ReadyWake = {
+            let woken = std::sync::Arc::clone(&woken);
+            std::sync::Arc::new(move || {
+                woken.fetch_add(1, SeqCst);
+            })
+        };
+        store.wake_on_save_progress(&note.id, std::sync::Arc::clone(&wake));
+        store.wake_on_save_progress(&note.id, std::sync::Arc::clone(&wake));
+        assert_eq!(woken.load(SeqCst), 0, "no write answered yet");
+        store.tick();
+        assert_eq!(woken.load(SeqCst), 1, "the write's answer wakes the window once");
+        assert_eq!(store.save_status(&note.id).unwrap(), ResourceSaveStatus::Saved);
+        store.wake_on_save_progress(&note.id, wake);
+        assert_eq!(woken.load(SeqCst), 2, "nothing left to answer wakes it at once");
+    }
+
     phase nothing_unchanged_is_written_again;
     {
         let port = Rc::new(MemoryWorkspace::default());

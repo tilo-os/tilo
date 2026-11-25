@@ -241,9 +241,10 @@ impl Parked {
     }
 
     /// Whether the workspace holds everything `doc` holds: an edit still in its open typing
-    /// transaction is not the workspace's yet.
+    /// transaction is not the workspace's yet, and a record with no change holds nothing to keep.
     fn keeps_all(&self, doc: &AutoCommit) -> bool {
-        doc.pending_ops() == 0 && self.keeps(&doc.base_heads())
+        let heads = doc.base_heads();
+        doc.pending_ops() == 0 && (heads.is_empty() || self.keeps(&heads))
     }
 
     /// Take the answer to the write under way, waiting at most `wait` for it.
@@ -2264,16 +2265,26 @@ impl ResourceStore {
         self.0.try_borrow().ok()?.port.clone()
     }
 
-    /// Call `wake` once record `id`'s write under way is answered, or, in a store whose window
-    /// publishes its records, once the workspace answered what the window published of it.
+    /// Call `wake` once the workspace answered the write of record `id`'s change: the write under
+    /// way, the one this store's next tick starts, or, in a store whose window publishes its
+    /// records, what the window published of it. Called at once when nothing is left to answer.
     pub fn wake_on_save_progress(&self, id: &DocumentId, wake: ReadyWake) {
         if let Ok(mut set) = self.0.try_borrow_mut() {
-            let published = !set.writes;
             if let Some(slot) = set.open.get_mut(id) {
+                // A change the workspace does not hold yet is answered by the write that carries
+                // it: the store's own, which its next tick starts, or the one the window publishes.
                 let unanswered = slot.failed.is_none()
                     && slot.doc.as_ref().is_some_and(|doc| !slot.keeps_all(doc));
-                if slot.writing.is_some() || (published && unanswered) {
-                    slot.wakes.push(wake);
+                if slot.writing.is_some() || unanswered {
+                    // A window arms its one wake each frame it reads the status: held once.
+                    if !slot.wakes.iter().any(|held| {
+                        std::ptr::addr_eq(
+                            std::sync::Arc::as_ptr(held),
+                            std::sync::Arc::as_ptr(&wake),
+                        )
+                    }) {
+                        slot.wakes.push(wake);
+                    }
                 } else {
                     wake();
                 }
