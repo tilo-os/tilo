@@ -155,6 +155,32 @@ mod tests {
         endpoint.close().await;
     }
 
+    /// A relay that answers nothing is not waited for: every one the endpoint was given has
+    /// failed, and the address it has is named at once rather than after the whole wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relay_that_answers_nothing_is_not_waited_for() {
+        let url = "https://127.0.0.1:1"
+            .parse::<RelayUrl>()
+            .expect("a relay's address");
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(RelayMode::Custom(iroh::RelayMap::from(url)))
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let began = std::time::Instant::now();
+        let addr = relay_addr(&endpoint, Duration::from_secs(30)).await;
+        assert_eq!(addr.id, endpoint.id());
+        assert_eq!(addr.relay_urls().count(), 0);
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "the failed relay was waited for: {:?}",
+            began.elapsed()
+        );
+        endpoint.close().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waiting_names_the_relay_the_endpoint_reached() {
         let relay = tilo_test_relay::relay().await;
