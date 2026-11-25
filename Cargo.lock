@@ -18167,7 +18167,6 @@ dependencies = [
  "tilo-net",
  "tilo-resource",
  "tilo-secret-vault",
- "tilo-secrets",
  "tilo-test-env",
  "tokio",
  "tokio-tungstenite",

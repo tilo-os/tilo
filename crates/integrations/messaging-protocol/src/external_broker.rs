@@ -196,29 +196,6 @@ pub struct ExternalBroker {
     observers: Arc<crate::signal_broker::observers::Observers>,
 }
 impl ExternalBroker {
-    /// Assemble an already linked native adapter using existing OS ownership.
-    /// The host supplies the authenticated provider handle and current grant
-    /// check. This path never connects to an ambient service or creates keys.
-    /// Run on the account supervisor's worker, not the rendering thread.
-    pub fn open_system(
-        root: &std::path::Path,
-        adapter: Box<dyn NativeAdapter>,
-        scope: String,
-        authority: Arc<dyn ExternalAuthority>,
-    ) -> Result<Self, SendError> {
-        if !root.is_absolute() {
-            return Err(SendError::Unavailable);
-        }
-        let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
-        if store.protection() != tilo_secrets::Protection::OsKeychain {
-            return Err(SendError::Unavailable);
-        }
-        let key = crate::journal::FORMAT
-            .load_or_create_system_key_in(true, &store)
-            .ok_or(SendError::Unavailable)?;
-        let history = History::open(&root.join("history"), adapter.owner(), key)?;
-        Self::new(adapter, history, scope, authority)
-    }
     pub fn new(
         adapter: Box<dyn NativeAdapter>,
         history: History,

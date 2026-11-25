@@ -94,34 +94,6 @@ impl Owner {
 }
 
 impl EncryptedJournal {
-    /// Open under an already provisioned OS-keychain key. This runtime path
-    /// never creates a key, migrates a local key or weakens ownership when locked.
-    /// Provisioning belongs to the separately authorized linking workflow.
-    pub fn open_system(root: &Path, owner: &Owner) -> Result<Self, JournalError> {
-        let store = tilo_secrets::SecretStore::for_app("so.tilo.messaging-broker");
-        if store.protection() != tilo_secrets::Protection::OsKeychain {
-            return Err(JournalError::Unavailable);
-        }
-        Self::open_existing_in(root, owner, &store)
-    }
-
-    /// Host-injected ownership, for hosts supplying their own existing store.
-    /// No missing key is created, including for a new journal directory.
-    pub fn open_existing_in(
-        root: &Path,
-        owner: &Owner,
-        store: &tilo_secrets::SecretStore,
-    ) -> Result<Self, JournalError> {
-        if store.app_id() != "so.tilo.messaging-broker" {
-            return Err(JournalError::Unavailable);
-        }
-        // true requests lookup only: secret-vault must not mint a new key.
-        let key = FORMAT
-            .load_or_create_system_key_in(true, store)
-            .ok_or(JournalError::Unavailable)?;
-        Self::open(root, owner, key)
-    }
-
     /// The frozen authority bound to this journal, never inferred from labels.
     pub fn owner(&self) -> &Owner {
         &self.log.owner
@@ -558,39 +530,6 @@ mod tests {
                 Err(JournalError::Unavailable)
             );
             assert_eq!(journal.status("op"), Some(Status::Started));
-        }
-
-        phase existing_ownership_is_lookup_only_and_missing_keys_do_not_reset_journals;
-        {
-            let root = tempfile::tempdir().unwrap();
-            let store = tilo_secrets::SecretStore::memory("so.tilo.messaging-broker");
-            assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &store).is_err());
-            assert!(store.get_blocking("send-journal").unwrap().is_none());
-            assert!(!root.path().join(secret_vault::VAULT_FILE).exists());
-            // Explicit fixture provisioning uses the real secret-vault API and
-            // an isolated memory backend; production lookup never provisions.
-            FORMAT.load_or_create_system_key_in(false, &store).unwrap();
-            let mut journal =
-                EncryptedJournal::open_existing_in(root.path(), &owner(), &store).unwrap();
-            journal.begin("op", &route(), b"private").unwrap();
-            drop(journal);
-            let path = root.path().join(secret_vault::VAULT_FILE);
-            let original = std::fs::read(&path).unwrap();
-            store.delete_blocking("send-journal").unwrap();
-            assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &store).is_err());
-            assert!(store.get_blocking("send-journal").unwrap().is_none());
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-            assert!(!root.path().join(secret_vault::KEY_FILE).exists());
-        }
-
-        phase system_runtime_refuses_local_or_memory_ownership_and_wrong_store_scope;
-        {
-            let root = tempfile::tempdir().unwrap();
-            let _scope = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
-            assert!(EncryptedJournal::open_system(root.path(), &owner()).is_err());
-            let other = tilo_secrets::SecretStore::memory("another-app");
-            assert!(EncryptedJournal::open_existing_in(root.path(), &owner(), &other).is_err());
-            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         }
 
         phase submitted_sdk_write_is_durable_without_inventing_server_acknowledgment;
