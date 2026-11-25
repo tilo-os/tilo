@@ -29,8 +29,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mail_provider import (  # noqa: E402
-    ADDRESS, SEARCH_CHORD, TILOLANG, StandIn, account_kept, adds_account, opens_accounts,
-    launches_mail, opens_newest, press_in, pressed, shows_inbox, window_named,
+    ADDRESS, PASSWORD_FIELD, SEARCH_CHORD, TILOLANG, StandIn, account_kept, adds_account,
+    opens_accounts, launches_mail, opens_newest, press_in, pressed, shows_inbox, window_named,
 )
 from story import (  # noqa: E402
     CHROME, SHELL, Failed, Person, Story, front, in_front_named, invite_link, until, walk,
@@ -41,13 +41,13 @@ from real_apps import record as read_record  # noqa: E402
 
 WORKSPACE = "The lab"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
-# What both computers have: Settings, where the workspace's accounts are kept, and Mail, a
-# tilolang app (TILOLANG).
-APPS = "settings"
+# What both computers have: Settings, where the workspace's accounts are kept, and Mail, both
+# tilolang apps (TILOLANG), and no native app.
+APPS = ""
 # Settings' page with the look, as the shell's search names it, and the light look on it.
 APPEARANCE_PAGE = "Appearance"
 LIGHT = "Light"
-MODE = "Light or dark"
+MODE = "Mode"
 # The workspace's accounts record, which Settings keeps and Mail reads: by its document, as the
 # shell reads a record.
 ACCOUNTS_OWNER = "so.tilo.settings"
@@ -77,11 +77,8 @@ def keeps_light(one: Person) -> None:
     pressed(one, APPEARANCE_PAGE, f"the {APPEARANCE_PAGE} page in the shell's search")
     settings = until("Settings, where the look is picked",
                      lambda: window_named(one, "so.tilo.settings"), 60, 0.25)
-    until(f"the {MODE} setting", lambda: one.target(MODE, exact=False), 30, 0.2)
-    if not one.target(LIGHT):
-        # The modes are a choice that opens to show them.
-        press_in(one, MODE, settings, f"the {MODE} setting", exact=False)
-        until(f"the {LIGHT} look among the modes", lambda: one.target(LIGHT), 10, 0.2)
+    # The modes stand side by side in the Mode setting: the person presses Light among them.
+    until(f"the {LIGHT} look in the {MODE} setting", lambda: one.target(LIGHT), 30, 0.2)
     press_in(one, LIGHT, settings, f"the {LIGHT} look")
 
 
@@ -222,7 +219,7 @@ def steps(story: Story) -> None:
             if not grace.shows(ADDRESS):
                 raise Failed(f"Grace's Mail does not name the account {ADDRESS}")
             # Grace typed nothing, and nothing asked her to: no password field is on her shell.
-            if grace.target("Password or app password", exact=False):
+            if grace.target(PASSWORD_FIELD):
                 raise Failed("Grace's shell asks her for the account's password")
             graces = until("the stand-in to say Grace's session signed in",
                            lambda: signed_in_as("Grace", before), 30, 0.25)

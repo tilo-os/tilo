@@ -109,7 +109,9 @@ class Person:
             raise Failed(f"no tilolang tool in {BUILD / 'bin'} to build {', '.join(tilolang)}")
         built, packages = self.state.parent / "packages", []
         for name in tilolang:
-            run([str(tool), "build", str(REPO / "apps/tl" / name), "--search",
+            # Locked: the tree is read-only here, and a build reads each app's ids as they are
+            # committed (app.ids) rather than writing them.
+            run([str(tool), "build", "--locked", str(REPO / "apps/tl" / name), "--search",
                  str(REPO / "apps/tl"), "--out", str(built), "--tilo-runtime",
                  f"tilo-runtime/{runtime}"])
             package = built / f"{name}.tapp"

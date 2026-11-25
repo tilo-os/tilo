@@ -48,13 +48,20 @@ OLDER_SUBJECT = "Quarterly plan"
 OLDER_WORDS = "The draft is in the shared folder."
 # The chord whose palette is the shell's own search (Settings' shortcuts name it: Super+space).
 SEARCH_CHORD = ("Super", "Space")
-# Settings' page holding the person's accounts, as the shell's search names it, and the provider
-# row that adds a mail account by its address.
+# Settings' page holding the workspace's accounts, as the shell's search names it; the menu that
+# adds one and its mail entry; the form's fields, by the words each shows while empty; and the
+# press that adds the account (apps/tl/settings/accounts.tl).
 ACCOUNTS_PAGE = "Accounts"
-ADD_EMAIL = "Add Email"
-# Mail, the tilolang app (apps/tl/mail), installed as its signed package.
+ADD_ACCOUNT = "Add an account"
+EMAIL = "Email"
+NAME_FIELD = "The name shown for it, such as Work"
+ADDRESS_FIELD = "The address, such as you@example.com"
+PASSWORD_FIELD = "Its password or app password"
+ADD = "Add the account"
+# Mail, the tilolang app (apps/tl/mail), installed as its signed package beside Settings
+# (apps/tl/settings), where the person adds the account Mail reads.
 MAIL = "so.tilo.mail"
-TILOLANG = ("mail",)
+TILOLANG = ("mail", "settings")
 # What a conversation's read action is called once it is read (apps/tl/mail `mark_read`).
 READ = "Mark as unread"
 # How the stand-in says an IMAP sign-in on its log (`stand_in::said_sign_in`).
@@ -381,15 +388,16 @@ def opens_accounts(one: Person) -> dict:
 
 
 def adds_account(one: Person, settings: dict, password: str) -> None:
-    """Add the mail account on Settings' Accounts page: what the form asks a person for is their
-    name, their address and their password. The two server fields are left as the form shows
-    them, which is how a person names no server."""
-    press_in(one, ADD_EMAIL, settings, "the offer to add a mail account")
-    until("the form a mail account is added with", lambda: one.target("Save account"), 30, 0.2)
-    type_into(one, "Display name", DISPLAY_NAME, "the display name field", settings)
-    type_into(one, "Email address", ADDRESS, "the address field", settings)
-    type_into(one, "Password or app password", password, "the password field", settings)
-    press_in(one, "Save account", settings, "the press that connects the account")
+    """Add the mail account on Settings' Accounts page: what the form asks a person for is the
+    name shown for it, its address and its password. The server fields are left empty, which is
+    how a person names no server."""
+    press_in(one, ADD_ACCOUNT, settings, "the menu that adds an account")
+    pressed(one, EMAIL, "the menu's mail account")
+    until("the form a mail account is added with", lambda: one.target(ADD), 30, 0.2)
+    type_into(one, NAME_FIELD, DISPLAY_NAME, "the name field", settings)
+    type_into(one, ADDRESS_FIELD, ADDRESS, "the address field", settings)
+    type_into(one, PASSWORD_FIELD, password, "the password field", settings)
+    press_in(one, ADD, settings, "the press that adds the account")
 
 
 def account_kept(one: Person) -> None:
@@ -398,7 +406,7 @@ def account_kept(one: Person) -> None:
     imap. and smtp. servers on the ports mail programs use). A check that could not reach them
     leaves the form up with what failed."""
     def kept() -> str | None:
-        if one.target("Save account"):
+        if one.target(ADD):
             return None
         return "kept" if one.shows(ADDRESS) or one.shows(DISPLAY_NAME) else None
 
@@ -406,7 +414,7 @@ def account_kept(one: Person) -> None:
         until("the account to be kept", kept, 20, 0.25)
     except Failed as error:
         raise Failed(
-            "the account was not kept: Settings kept its Add Email form up after Save, so the "
+            f"the account was not kept: Settings kept its form up after {ADD}, so the "
             "sign-in check did not pass. Settings connects through the session's accounts "
             f"service to imap.{DOMAIN}:{IMAP_PORT}; the form's own message is in this step's "
             "shot, and the session's log says what the service did") from error
