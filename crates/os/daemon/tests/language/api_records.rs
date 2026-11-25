@@ -484,15 +484,14 @@ fn a_handed_workspace_runs_its_keys_commands_after_a_restart() {
     });
 }
 
-/// One more task, as an agent makes it through MCP in `workspace`.
-async fn create_issue(agent: &host::Agent, workspace: &str, made: &mut usize) -> Duration {
+/// One more task, as an agent makes it through MCP in the workspace its session acts in.
+async fn create_issue(agent: &host::Agent, made: &mut usize) -> Duration {
     let began = Instant::now();
     let (answer, failed) = said(
         &agent
             .tool(
                 "tilo_do",
-                &json!({"workspace": workspace,
-                        "path": "so.tilo.tasks#new_task",
+                &json!({"path": "so.tilo.tasks#new_task",
                         "args": {"title": format!("Issue {made}")}}),
             )
             .await,
@@ -507,32 +506,28 @@ async fn create_issue(agent: &host::Agent, workspace: &str, made: &mut usize) ->
 #[test]
 fn an_issue_create_costs_the_same_however_full_the_tracker() {
     host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let (opened, failed) = said(
             &agent
-                .tool(
-                    "tilo_do",
-                    &json!({"workspace": workspace, "path": "so.tilo.tasks#open"}),
-                )
+                .tool("tilo_do", &json!({"path": "so.tilo.tasks#open"}))
                 .await,
         );
         assert!(!failed, "the workspace serves the Tasks app: {opened}");
 
         let mut made = 0;
         while made < 10 {
-            create_issue(&agent, &workspace, &mut made).await;
+            create_issue(&agent, &mut made).await;
         }
         let mut early = Vec::new();
         for _ in 0..3 {
-            early.push(create_issue(&agent, &workspace, &mut made).await);
+            early.push(create_issue(&agent, &mut made).await);
         }
         while made < 100 {
-            create_issue(&agent, &workspace, &mut made).await;
+            create_issue(&agent, &mut made).await;
         }
         let mut late = Vec::new();
         for _ in 0..3 {
-            late.push(create_issue(&agent, &workspace, &mut made).await);
+            late.push(create_issue(&agent, &mut made).await);
         }
         let mean = |took: &[Duration]| took.iter().sum::<Duration>() / 3;
         assert!(
