@@ -65,6 +65,7 @@
     {
       "id": "choose-for-an-app",
       "said": "Notes asks for a file, and the person picks the workspace's",
+      "dark": true,
       "ops": [
         {
           "open": "notes"
@@ -143,7 +144,7 @@
         {
           "must": [
             "Notes",
-            "Shared plan.md",
+            "/var/workspace/Shared plan.md",
             "Take back"
           ]
         }
@@ -153,6 +154,7 @@
     {
       "id": "take-back",
       "said": "Take the file back from Settings",
+      "dark": true,
       "ops": [
         {
           "press_any": [
@@ -161,7 +163,7 @@
         },
         {
           "must_not": [
-            "Shared plan.md"
+            "/var/workspace/Shared plan.md"
           ]
         }
       ]
@@ -187,7 +189,7 @@
         },
         {
           "must": [
-            "Only you can reach this file."
+            "No app or person was given this file."
           ]
         },
         {
@@ -197,6 +199,56 @@
         }
       ],
       "dark": true
+    },
+    {
+      "id": "relaunch",
+      "said": "Sign in again: nothing is bound to the app any more",
+      "ops": [
+        {
+          "restart": "session"
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "act": [
+            "tl.so.tilo.file-explorer.Files",
+            "show",
+            {
+              "path": "/var/workspace"
+            }
+          ]
+        },
+        {
+          "click": "Shared plan.md"
+        },
+        {
+          "must": [
+            "No app or person was given this file."
+          ]
+        },
+        {
+          "must_not": [
+            "Notes"
+          ]
+        },
+        {
+          "open": "settings"
+        },
+        {
+          "press": "Apps"
+        },
+        {
+          "must": [
+            "No app or person was given a file."
+          ]
+        }
+      ],
+      "dark": true,
+      "budget_ms": 180000
     }
   ]
 }

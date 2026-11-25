@@ -2209,8 +2209,8 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                 access_list(
                     entries: access_reaching(e.path),
                     empty: if e.folder {
-                        "Only you can reach this folder."
-                    } else { "Only you can reach this file." },
+                        "No app or person was given this folder."
+                    } else { "No app or person was given this file." },
                 )
             }
             if let picture = s.preview {
@@ -2228,7 +2228,7 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                 ui.Section("Access") {
                     access_list(
                         entries: access_reaching(s.here),
-                        empty: "Only you can reach this folder.",
+                        empty: "No app or person was given this folder.",
                     )
                 }
             }

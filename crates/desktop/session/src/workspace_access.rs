@@ -134,16 +134,19 @@ struct Paths {
 
 impl Paths {
     /// The host path of `record` as the mounts at `mounts` say: read from the record index when
-    /// the mounts moved since the ones held, or when `record` was not read before.
+    /// the mounts moved since the ones held, or when `record` was not found before. A record the
+    /// mounts do not hold yet — a mount that is not up — is no path kept, so it is looked for
+    /// again the next time the reading is read.
     fn of(&mut self, mounts: u64, record: [u8; 16]) -> Option<&PathBuf> {
         if self.at != Some(mounts) {
             self.resolved.clear();
             self.at = Some(mounts);
         }
-        self.resolved
-            .entry(record)
-            .or_insert_with(|| tilo_app_launch::downloaded::workspace_resource(record))
-            .as_ref()
+        if !self.resolved.contains_key(&record) {
+            let found = tilo_app_launch::downloaded::workspace_resource(record)?;
+            self.resolved.insert(record, Some(found));
+        }
+        self.resolved.get(&record).and_then(Option::as_ref)
     }
 }
 
@@ -396,7 +399,7 @@ fn chosen_id(id: &str) -> Option<(String, String, String)> {
 /// The grants the workspaces of `tree` give, as the Permissions tab lists them, each with the app
 /// it is for and the file or folder its node is; and the files chosen outside any workspace, in
 /// the same list.
-pub(crate) fn reading_of(
+fn reading_of(
     tree: &tilo_desktop_model::Layout,
     person: &str,
     chosen: &[(AppKey, String, tilo_dialogs::chosen::Chosen)],

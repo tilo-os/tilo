@@ -2051,8 +2051,8 @@ d-vjrdgx4p = Bereichstitel
     .w-apps = Apps
 
 d-3ufe44kf = App-Zugriff
-    .w-no-app-can-reach-a-file = Keine App erreicht eine Datei oder einen Ordner
-    .w-a-file-you-give-an-app = Eine Datei, die du einer App im Dateiauswähler gibst, steht hier.
+    .w-access = Zugriff
+    .w-no-app-or-person-was-given = Keine App und keine Person hat eine Datei bekommen.
     .w-you-gave-this = Du hast das vergeben
     .w-gave-this = { $granted_by_name } hat das vergeben
     .w-take-back = Zurücknehmen

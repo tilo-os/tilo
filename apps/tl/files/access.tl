@@ -6,35 +6,46 @@
 /// the same list: one on a workspace's file node, and one this device keeps for a file chosen
 /// outside any workspace. Taking either back runs `workspace.access.revoke`, which writes the
 /// workspace's change or the device's record as the person.
-template view access_list(entries: List<workspace.AccessEntry>, empty: Text) {
+///
+/// The list is the platform's virtual one, so a folder shared with many people shows only the rows
+/// in view. `by_app` is the Settings pane's list: each row names the file rather than the holder,
+/// stands under a band naming the app that holds the grant, and the list is the column's own body.
+template view access_list(entries: List<workspace.AccessEntry>, empty: Text, by_app: Bool = false) {
     if entries.is_empty() {
         ui.Text(empty, role: .caption, secondary: true)
     } else {
-        for entry in entries {
-            ui.ListRow(
-                entry.holder,
-                secondary: entry.allows,
-                icon: if entry.holder_kind == "app" {
-                    .app_window
-                } else if entry.holder_kind == "agent" { .sparkles } else { .user },
-            ) {
-                trailing: {
-                    row(gap: .related, align: .center, wrap: true) {
-                        if entry.granted_by_name != "" {
-                            row(gap: .tight, align: .center) {
-                                ui.Avatar(name: entry.granted_by_name)
-                                text(
-                                    if entry.granted_by_you {
-                                        "You gave this"
-                                    } else { "{entry.granted_by_name} gave this" },
-                                    role: .caption,
-                                    secondary: true,
-                                )
-                            }
-                        }
-                        if entry.can_revoke {
-                            ui.Button("Take back", role: .destructive, size: .small) {
-                                on press: workspace.access.revoke(id: entry.id)
+        ui.VirtualList(name: "Access", in_column: by_app) {
+            for entry in entries {
+                ui.ListItem(
+                    value: entry.id,
+                    group: if by_app { .some(entry.holder) } else { .none },
+                ) {
+                    ui.ListRow(
+                        if by_app { entry.path } else { entry.holder },
+                        secondary: entry.allows,
+                        icon: if entry.holder_kind == "app" {
+                            .app_window
+                        } else if entry.holder_kind == "agent" { .sparkles } else { .user },
+                    ) {
+                        trailing: {
+                            row(gap: .related, align: .center, wrap: true) {
+                                if entry.granted_by_name != "" {
+                                    row(gap: .tight, align: .center) {
+                                        ui.Avatar(name: entry.granted_by_name)
+                                        text(
+                                            if entry.granted_by_you {
+                                                "You gave this"
+                                            } else { "{entry.granted_by_name} gave this" },
+                                            role: .caption,
+                                            secondary: true,
+                                        )
+                                    }
+                                }
+                                if entry.can_revoke {
+                                    ui.Button("Take back", role: .destructive, size: .small) {
+                                        on press: workspace.access.revoke(id: entry.id)
+                                    }
+                                }
                             }
                         }
                     }

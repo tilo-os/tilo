@@ -300,11 +300,8 @@ impl ChosenTable {
             return;
         };
         let table = self.clone();
-        if !store.follow(Arc::new(move |kept| table.replace(kept))) {
-            tracing::warn!(
-                "the files people chose are not followed; a change elsewhere is read next session"
-            );
-        }
+        // A store that cannot follow its record reads it when the table is bound only.
+        store.follow(Arc::new(move |kept| table.replace(kept)));
     }
 
     fn load(&self) {
