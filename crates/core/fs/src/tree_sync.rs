@@ -1469,7 +1469,7 @@ impl Sync {
                 }
             }
             if let Some(held) = self.documents.get_mut(&write.chunk) {
-                // A write that carried changes founded the record where the workspace held none.
+                // A write that carried changes founded the record where the workspace had none.
                 held.founded |= !write.changes.is_empty();
                 held.sent = write.heads;
             }

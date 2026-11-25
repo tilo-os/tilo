@@ -92,7 +92,7 @@ async fn reads_front(workspaces: &Workspaces, what: &str, want: &str) {
 }
 
 /// Write `front` as the layout's front on `workspaces`, on the founding every copy of the
-/// record derives where none is held yet: the record is a store record of the workspace, sealed
+/// record derives where there is none: the record is a store record of the workspace, sealed
 /// as its store seals it.
 async fn write_front(workspaces: &Workspaces, person: &str, what: &str, want: &str) {
     let read = workspaces.clone();
