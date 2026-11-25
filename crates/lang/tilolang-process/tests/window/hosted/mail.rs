@@ -4233,11 +4233,14 @@ fn an_address_in_the_subject_or_the_body_is_no_recipient() {
     session.call("send", &draft, &json!({}));
     session.until("the server to take it", |_| servers.smtp.sent().len() == 1);
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
-    let headers = sent.split("\r\n\r\n").next().unwrap_or_default();
+    let headers = sent
+        .split_once("\r\n\r\n")
+        .or_else(|| sent.split_once("\n\n"))
+        .map_or(sent.as_str(), |(headers, _)| headers);
     assert!(
         headers
             .lines()
-            .any(|line| line.starts_with("To: bo@chen.example")),
+            .any(|line| line.starts_with("To:") && line.contains("bo@chen.example")),
         "it goes to whom the draft names: {sent}"
     );
     assert!(

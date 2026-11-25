@@ -353,8 +353,8 @@ fn nobody_outside_the_workspace_reads_its_mail() {
         .hosted()
         .published()
         .iter()
-        .find(|action| action.action_label == "Search the server")
-        .expect("Ada's account offers a search")
+        .find(|action| action.action_label == "Archive")
+        .expect("Ada's conversations offer Archive")
         .address
         .clone();
     ada.inbox.borrow_mut().push_back(CollabEvent::Invocation {
