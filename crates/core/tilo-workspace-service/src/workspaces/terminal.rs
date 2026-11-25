@@ -156,18 +156,6 @@ impl TerminalService {
         mut opening: Opening,
     ) -> Result<ActionOutput, ActionCallError> {
         self.machine(workspace).await?;
-        // A fresh tab shows its window's default session record, which no device wrote yet: the
-        // host founds it at that id with the genesis every device derives for it, so what the
-        // device writes there later merges with this. A record the workspace holds already is
-        // left as it is.
-        if collab_types::document::DocumentId::is_window_record(record)
-            && !collab_types::document::DocumentId::is_window_view(record)
-        {
-            self.copies
-                .author_record(workspace, (TERMINAL_APP, SESSION_RESOURCE, record), |_| Ok(()))
-                .await
-                .map_err(|reason| ActionCallError::Unavailable { reason })?;
-        }
         opening.workspace = workspace.to_owned();
         opening.session = shell_session(caller, record);
         opening.person = self.person(workspace, caller).await;
