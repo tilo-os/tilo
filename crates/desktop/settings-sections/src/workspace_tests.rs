@@ -532,7 +532,7 @@ fn a_kept_change_is_undone_after_a_restart() {
 fn a_read_only_field_refuses_the_settings_channels_write() {
     let workspaces = Workspaces::new();
     let settings = WorkspaceSettings::new();
-    settings.attach(workspaces.clone());
+    settings.attach(workspaces);
     let write = object(json!({ "theme_package": "so.tilo.theme.triangle" }));
     let refused = settings
         .readonly_refusal("appearance", &write)

@@ -993,7 +993,7 @@ fn own_theme(service: &mut SettingsService) -> String {
 }
 
 /// Whether the theme `id` of the appearance is dark, as the section reads now.
-fn theme_is_dark(service: &mut SettingsService, id: &str) -> bool {
+fn theme_is_dark(service: &SettingsService, id: &str) -> bool {
     let read = service.read(APPEARANCE).expect("the appearance reads");
     read["themes"]
         .as_array()
@@ -1013,7 +1013,7 @@ fn a_write_to_a_read_only_field_is_refused_and_the_field_keeps_its_value() {
     let _settings = crate::in_memory::scoped();
     let mut service = own_person("ada");
     let id = own_theme(&mut service);
-    let dark = theme_is_dark(&mut service, &id);
+    let dark = theme_is_dark(&service, &id);
     let write = service.invoke(
         APPEARANCE,
         "set-themes",
@@ -1033,7 +1033,7 @@ fn a_write_to_a_read_only_field_is_refused_and_the_field_keeps_its_value() {
         "the refusal says the field is the section's actions' to change: {refused}"
     );
     assert_eq!(
-        theme_is_dark(&mut service, &id),
+        theme_is_dark(&service, &id),
         dark,
         "the read-only field keeps its value"
     );
@@ -1047,7 +1047,7 @@ fn a_sections_own_verb_changes_the_read_only_field_it_derives() {
     let _settings = crate::in_memory::scoped();
     let mut service = own_person("ada");
     let id = own_theme(&mut service);
-    let dark = theme_is_dark(&mut service, &id);
+    let dark = theme_is_dark(&service, &id);
     service
         .invoke(
             APPEARANCE,
@@ -1055,5 +1055,5 @@ fn a_sections_own_verb_changes_the_read_only_field_it_derives() {
             &arguments(json!({ "theme": id, "dark": !dark })),
         )
         .expect("the section's own verb switches the polarity");
-    assert_eq!(theme_is_dark(&mut service, &id), !dark);
+    assert_eq!(theme_is_dark(&service, &id), !dark);
 }

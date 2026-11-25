@@ -1840,9 +1840,9 @@ pub fn applied_theme_bundle(id: &str) -> Option<String> {
 fn bundle_component(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
-        && id.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
-        })
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
         && !id.starts_with('.')
 }
 
@@ -2984,7 +2984,7 @@ mod notification_app_id_tests {
                 }),
             )
             .unwrap();
-        let mail = replica.state().unwrap().per_app["so.tilo.mail"].clone();
+        let mail = replica.state().unwrap().per_app["so.tilo.mail"];
         assert_eq!(
             (mail.banners, mail.previews, mail.sounds, mail.badges),
             (Some(false), None, Some(true), None)
