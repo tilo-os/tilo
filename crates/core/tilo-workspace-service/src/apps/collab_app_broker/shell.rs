@@ -239,7 +239,7 @@ fn vouch_for(
             .api
             .as_ref()
             .ok_or("this device serves no API to its person's programs")?;
-        api(&shell.caller, handed_stream(connection))?;
+        api(&shell.caller, handed_stream(connection)?)?;
         return Ok(ShellReply::Vouched);
     }
     if to == runtime_collab::wire::shell::HandedTo::Identity {
