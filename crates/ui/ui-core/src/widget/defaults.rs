@@ -267,6 +267,7 @@ pub(super) fn take_accessibility_request(
         .find_map(|child| child.take_accessibility_request())
 }
 
+#[cfg(feature = "model")]
 pub(super) fn take_app_activation(
     children: ChildrenMut<'_>,
     ready: bool,

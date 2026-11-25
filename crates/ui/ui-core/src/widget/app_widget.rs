@@ -2,7 +2,7 @@
 //! inside a tile. Extends the base `Widget` trait with app-level metadata (kind, title, icon,
 //! permission hint, commands).
 
-use crate::widget::{AppKind, Widget};
+use crate::widget::Widget;
 use std::cell::RefCell;
 use std::rc::Weak;
 
@@ -111,15 +111,44 @@ impl std::fmt::Debug for AppCommand {
     }
 }
 
+/// What kind of app a window holds, for the mark it wears.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppKind {
+    Terminal,
+    Files,
+    Editor,
+    Browser,
+    Settings,
+    /// Any other app, by its own glyph from the icon set
+    /// ([`crate::icons::app_glyph`]): a window wears its own app's mark,
+    /// never another app's.
+    App(crate::icons::Icon),
+}
+
+impl AppKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            AppKind::Terminal => "Terminal",
+            AppKind::Files => "Files",
+            AppKind::Editor => "Editor",
+            AppKind::Browser => "Browser",
+            AppKind::Settings => "Settings",
+            AppKind::App(_) => "App",
+        }
+    }
+}
+
 /// Trait every in-process app implements so the shell can host it inside a `TileContent::App`.
 pub trait AppWidget: Widget {
     /// Capture app-owned local presentation alongside the ordinary View.
+    #[cfg(feature = "model")]
     fn capture_application_view(
         &self,
     ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError> {
         Ok(None)
     }
     /// Prepare current topology from an immutable latest-record loan.
+    #[cfg(feature = "model")]
     fn restore_application_view(
         &mut self,
         _local: &crate::application_view::ApplicationLocalView,
@@ -194,6 +223,7 @@ pub trait AppWidget: Widget {
 
     /// The component to show in this one's place, built now: what a root shown before its record
     /// ([`crate::application::ProcessContext::resource_opening`]) answers once the record is had.
+    #[cfg(feature = "model")]
     fn take_component_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
         None
     }
@@ -282,16 +312,7 @@ fn lent_permissions<'a>(
     inner
 }
 
-/// Without Tilo's model a component lends no authority of its own: its root
-/// draws in the outer environment.
-#[cfg(not(feature = "model"))]
-fn lent_permissions<'a>(
-    env: &crate::draw::DrawEnv<'a>,
-    _binding: &crate::bound_dispatch::CallbackBinding,
-) -> crate::draw::DrawEnv<'a> {
-    env.clone()
-}
-
+#[cfg(feature = "model")]
 mod component_adapter {
     use super::{AppProcessIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
@@ -2262,9 +2283,10 @@ mod component_adapter {
         }
     }
 }
+#[cfg(feature = "model")]
 pub(crate) use component_adapter::BoundAppWidget;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 mod native_lifecycle_tests {
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};

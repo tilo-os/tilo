@@ -5,7 +5,7 @@ use super::{Point, Rect, TOOLBAR_LEAD_GAP, TabBar, TextRenderer, Theme};
 use crate::a11y::AccessNode;
 use crate::i18n::widget_format;
 use crate::widget::{ChipFace, ChipLead, ChipStyle};
-use tilo_desktop_model::ownership::OpenedBy;
+use tilo_actions::opened_by::OpenedBy;
 use vello::Scene;
 use vello::kurbo::Affine;
 

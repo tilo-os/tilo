@@ -751,12 +751,8 @@ unsafe fn solve_widget_layout(
                 crate::profiling::layout_counts::kept();
                 continue;
             }
-            let binding = bindings.binding_for(*node);
-            let Ok(_owner) = binding
-                .as_ref()
-                .map(crate::bound_dispatch::CallbackBinding::enter)
-                .transpose()
-            else {
+            let binding = crate::widget::component_walk::node_binding(bindings, *node);
+            let Some(_owner) = crate::widget::component_walk::enter(binding.as_ref()) else {
                 continue;
             };
             crate::profiling::layout_counts::region();
@@ -1021,7 +1017,7 @@ pub(crate) struct CompositionFocus {
     key: Option<String>,
     semantic_key: Option<String>,
     qualified_semantic: bool,
-    binding: Option<crate::bound_dispatch::CallbackBinding>,
+    binding: Option<crate::widget::component_walk::Binding>,
     state: Option<String>,
 }
 impl CompositionFocus {
@@ -1062,10 +1058,10 @@ impl CompositionFocus {
     /// same component boundaries as the next admitted topology.
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
         type Visit<'v> =
-            dyn FnMut(&dyn Widget, &Option<crate::bound_dispatch::CallbackBinding>, bool) + 'v;
+            dyn FnMut(&dyn Widget, &Option<crate::widget::component_walk::Binding>, bool) + 'v;
         fn walk(
             widget: &dyn Widget,
-            binding: Option<crate::bound_dispatch::CallbackBinding>,
+            binding: Option<crate::widget::component_walk::Binding>,
             focused_ancestor: bool,
             visit: &mut Visit<'_>,
         ) {
@@ -1073,7 +1069,7 @@ impl CompositionFocus {
                 return;
             };
             let reset = widget.resets_binding_inheritance();
-            let own_binding = crate::bound_dispatch::callback_binding(widget);
+            let own_binding = crate::widget::component_walk::binding_of(widget);
             let binding = if reset {
                 own_binding
             } else {
@@ -1163,7 +1159,7 @@ impl CompositionFocus {
         // itself and that leaf. Preserve the uniquely named aggregate path,
         // so replacing/splitting the leaf cannot retarget a generic text key.
         // Every node of the focused widget's component is asked, so its scope is held across them.
-        let mut held = crate::bound_dispatch::HeldScope::default();
+        let mut held = crate::widget::component_walk::HeldScope::default();
         let _ = held.enter(focus.binding.as_ref());
         let aggregates: Vec<_> = nodes
             .keys()
@@ -1336,7 +1332,7 @@ impl CompositionFocus {
     ) -> Option<NodeId> {
         // Every node of the rebuilt tree is asked which control the saved focus names: the scope of
         // the one it belonged to is held across them.
-        let mut held = crate::bound_dispatch::HeldScope::default();
+        let mut held = crate::widget::component_walk::HeldScope::default();
         let _ = held.enter(self.binding.as_ref());
         let mut candidates: Vec<_> = nodes
             .keys()
@@ -1398,7 +1394,7 @@ impl CompositionFocus {
         // Relationships come from the freshly admitted layout, including
         // child delegates omitted from retained-widget traversal.
         // Every unrelated control is blurred, so every node is asked: the scope is held across them.
-        let mut held = crate::bound_dispatch::HeldScope::default();
+        let mut held = crate::widget::component_walk::HeldScope::default();
         let _ = held.enter(self.binding.as_ref());
         let related: std::collections::HashSet<_> = target
             .into_iter()

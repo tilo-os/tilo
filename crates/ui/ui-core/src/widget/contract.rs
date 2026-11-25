@@ -489,6 +489,7 @@ pub trait Widget {
     /// instance, whose keyboard focus the frame restores, or puts on its default control, so what
     /// they type next reaches it; only when `ready` (the frame may hand the keyboard over now) is it
     /// taken, and until then the move alone is reported.
+    #[cfg(feature = "model")]
     fn take_app_activation(&mut self, ready: bool) -> Option<crate::application::AppActivation> {
         defaults::take_app_activation(self.children_mut(), ready)
     }

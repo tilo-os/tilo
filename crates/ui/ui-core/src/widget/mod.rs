@@ -1,6 +1,7 @@
 mod contract;
 pub use contract::Widget;
 mod action_directory_identity;
+pub(crate) mod component_walk;
 mod wheel;
 pub use wheel::{PhaselessWheel, WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};
 mod action_emitter;
@@ -17,13 +18,15 @@ pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
 pub use resource_operation::resource_operation_handlers;
+#[cfg(feature = "model")]
+pub(crate) use resource_operation::start_operation_refused;
 pub(crate) use resource_operation::{
     ResourceOperation, ResourceOperationStart, ResourceOperations,
     local_resource_operation_handlers, poll_resource_operation, start_in_children, start_operation,
-    start_operation_refused,
 };
 
 use crate::draw::{DrawCtx, DrawEnv};
+#[cfg(feature = "model")]
 use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -35,6 +38,7 @@ use winit::event::WindowEvent;
 
 use crate::time::Instant;
 use std::collections::HashMap;
+#[cfg(feature = "model")]
 use std::collections::HashSet;
 
 /// Private foreground feedback, stripped of logical keys and typed text.
@@ -634,36 +638,19 @@ pub(crate) fn collect_widget_resources(
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
-        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        inherited: Option<component_walk::Binding>,
         root: bool,
         resources: &mut Vec<tilo_actions::ResourceSpec>,
         taken: &mut crate::widget::resources::TakenResources,
     ) {
-        if crate::bound_dispatch::has_separate_document_owner(widget)
-            && crate::bound_dispatch::callback_binding(widget).is_none()
-        {
-            return;
-        }
-        let boundary = crate::bound_dispatch::callback_binding(widget);
-        let binding = boundary.clone().or(inherited);
-        let Ok(_entry) = binding
-            .as_ref()
-            .map(crate::bound_dispatch::CallbackBinding::enter)
-            .transpose()
-        else {
+        let Some(crossing) = component_walk::cross(widget, inherited) else {
             return;
         };
-        if boundary.is_none() {
-            let found = if let Some(binding) = &binding {
-                binding
-                    .read_document(doc, |doc, _| {
-                        crate::widget::resources::resources(widget, doc)
-                    })
-                    .unwrap_or_default()
-            } else {
-                crate::widget::resources::resources(widget, doc)
-            };
-            let found = if root || binding.is_none() {
+        if !crossing.boundary {
+            let found = crossing
+                .read(doc, |doc| crate::widget::resources::resources(widget, doc))
+                .unwrap_or_default();
+            let found = if root || crossing.binding.is_none() {
                 found
             } else {
                 found
@@ -680,9 +667,16 @@ pub(crate) fn collect_widget_resources(
             }
             resources.extend(fresh);
         }
-        let below = boundary.is_some();
+        let below = crossing.boundary;
         widget.for_each_child(&mut |child| {
-            visit(child, doc, binding.clone(), below, resources, taken);
+            visit(
+                child,
+                doc,
+                crossing.binding.clone(),
+                below,
+                resources,
+                taken,
+            );
         });
     }
     visit(
@@ -707,48 +701,30 @@ pub fn find_resource(
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
-        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        inherited: Option<component_walk::Binding>,
         root: bool,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        if crate::bound_dispatch::has_separate_document_owner(widget)
-            && crate::bound_dispatch::callback_binding(widget).is_none()
-        {
-            return None;
-        }
-        let boundary = crate::bound_dispatch::callback_binding(widget);
-        let binding = boundary.clone().or(inherited);
-        let Ok(_entry) = binding
-            .as_ref()
-            .map(crate::bound_dispatch::CallbackBinding::enter)
-            .transpose()
-        else {
-            return None;
-        };
-        if boundary.is_none() {
-            let found = if let Some(binding) = &binding {
-                binding
-                    .read_document(doc, |doc, _| {
-                        crate::widget::resources::resource(widget, doc, id)
-                    })
-                    .ok()
-                    .flatten()
-            } else {
-                crate::widget::resources::resource(widget, doc, id)
-            };
+        let crossing = component_walk::cross(widget, inherited)?;
+        if !crossing.boundary {
+            let found = crossing
+                .read(doc, |doc| {
+                    crate::widget::resources::resource(widget, doc, id)
+                })
+                .flatten();
             if let Some(found) = found {
-                return Some(if root || binding.is_none() {
+                return Some(if root || crossing.binding.is_none() {
                     found
                 } else {
                     crate::widget::resources::outside_document(found)
                 });
             }
         }
-        let below = boundary.is_some();
+        let below = crossing.boundary;
         let mut found = None;
         widget.for_each_child(&mut |child| {
             if found.is_none() {
-                found = visit(child, doc, binding.clone(), below, id);
+                found = visit(child, doc, crossing.binding.clone(), below, id);
             }
         });
         found
@@ -767,31 +743,17 @@ pub fn resources_past_page(
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
-        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        inherited: Option<component_walk::Binding>,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        if crate::bound_dispatch::has_separate_document_owner(widget)
-            && crate::bound_dispatch::callback_binding(widget).is_none()
-        {
-            return Vec::new();
-        }
-        let boundary = crate::bound_dispatch::callback_binding(widget);
-        let binding = boundary.clone().or(inherited);
-        let Ok(_entry) = binding
-            .as_ref()
-            .map(crate::bound_dispatch::CallbackBinding::enter)
-            .transpose()
-        else {
+        let Some(crossing) = component_walk::cross(widget, inherited) else {
             return Vec::new();
         };
-        if boundary.is_none() {
-            let found = match &binding {
-                Some(binding) => binding
-                    .read_document(doc, |doc, _| {
-                        crate::widget::resources::resources_past_page(widget, doc)
-                    })
-                    .unwrap_or_default(),
-                None => crate::widget::resources::resources_past_page(widget, doc),
-            };
+        if !crossing.boundary {
+            let found = crossing
+                .read(doc, |doc| {
+                    crate::widget::resources::resources_past_page(widget, doc)
+                })
+                .unwrap_or_default();
             if !found.is_empty() {
                 return found;
             }
@@ -799,7 +761,7 @@ pub fn resources_past_page(
         let mut found = Vec::new();
         widget.for_each_child(&mut |child| {
             if found.is_empty() {
-                found = visit(child, doc, binding.clone());
+                found = visit(child, doc, crossing.binding.clone());
             }
         });
         found
@@ -852,29 +814,12 @@ pub fn past_page_range(
 fn visit_past_page<T>(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    inherited: Option<crate::bound_dispatch::CallbackBinding>,
+    inherited: Option<component_walk::Binding>,
     ask: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<T>,
 ) -> Option<T> {
-    if crate::bound_dispatch::has_separate_document_owner(widget)
-        && crate::bound_dispatch::callback_binding(widget).is_none()
-    {
-        return None;
-    }
-    let boundary = crate::bound_dispatch::callback_binding(widget);
-    let binding = boundary.clone().or(inherited);
-    let _entry = binding
-        .as_ref()
-        .map(crate::bound_dispatch::CallbackBinding::enter)
-        .transpose()
-        .ok()?;
-    if boundary.is_none() {
-        let found = match &binding {
-            Some(binding) => binding
-                .read_document(doc, |doc, _| ask(widget, doc))
-                .ok()
-                .flatten(),
-            None => ask(widget, doc),
-        };
+    let crossing = component_walk::cross(widget, inherited)?;
+    if !crossing.boundary {
+        let found = crossing.read(doc, |doc| ask(widget, doc)).flatten();
         if found.is_some() {
             return found;
         }
@@ -882,7 +827,7 @@ fn visit_past_page<T>(
     let mut found = None;
     widget.for_each_child(&mut |child| {
         if found.is_none() {
-            found = visit_past_page(child, doc, binding.clone(), ask);
+            found = visit_past_page(child, doc, crossing.binding.clone(), ask);
         }
     });
     found
@@ -902,6 +847,7 @@ pub fn published_resources(
 
 /// Every search provider the components in `widget`'s subtree publish, each
 /// once, as weak proxies the components keep owning.
+#[cfg(feature = "model")]
 pub fn published_search_providers(
     widget: &dyn Widget,
 ) -> Vec<Box<dyn crate::search::SearchProvider>> {
@@ -930,7 +876,7 @@ pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mu
 }
 
 /// Test traversal probe; production callers retain bound provenance.
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -941,7 +887,7 @@ pub(crate) fn resolve_widget_resource(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "model"))]
 fn resolve_bound_resource<R>(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -989,6 +935,7 @@ pub struct ActionDirectoryResourcePage {
     clippy::option_option,
     reason = "outer None means end of traversal; inner None means this ordinal has no bounded provider"
 )]
+#[cfg(feature = "model")]
 pub(crate) fn action_directory_page_at(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -2248,10 +2195,7 @@ fn first_window_answer<W: Widget + ?Sized, T>(
     own: impl FnOnce(&W) -> Option<T>,
     ask: &dyn Fn(&dyn Widget) -> Option<T>,
 ) -> Option<T> {
-    let _entry = crate::bound_dispatch::callback_binding(root)
-        .map(|binding| binding.enter())
-        .transpose()
-        .ok()?;
+    let _entry = component_walk::enter(component_walk::binding_of(root).as_ref())?;
     if let Some(answer) = own(root) {
         return Some(answer);
     }
@@ -2403,14 +2347,18 @@ pub use scrollbar::BarFade;
 mod overlay_scrollbar;
 pub use overlay_scrollbar::OverlayScrollbar;
 pub mod panic_scope;
+#[cfg(feature = "model")]
 mod tile_host;
+#[cfg(feature = "model")]
 pub use tile_host::{
-    AppKind, TileContent, TileHost, hold_windows, release_windows, resource_unavailable_title,
+    TileContent, TileHost, hold_windows, release_windows, resource_unavailable_title,
 };
 mod app_widget;
+#[cfg(feature = "model")]
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppProcessIntent, AppWidget, HostShellAllow, IconDescriptor, WindowPublication,
+    AppCommand, AppKind, AppProcessIntent, AppWidget, HostShellAllow, IconDescriptor,
+    WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;
@@ -2763,6 +2711,7 @@ mod activation;
 mod press;
 pub use press::Press;
 mod dismissal;
+#[cfg(feature = "model")]
 pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
 pub mod media_card;

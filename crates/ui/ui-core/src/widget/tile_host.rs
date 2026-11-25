@@ -3,7 +3,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
-use crate::widget::app_widget::AppWidget;
+use crate::widget::app_widget::{AppKind, AppWidget};
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
@@ -80,32 +80,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
         Rect::new(outer.x0, top, rect.x0 + outside, bottom),
         Rect::new(rect.x1 - outside, top, outer.x1, bottom),
     ]
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppKind {
-    Terminal,
-    Files,
-    Editor,
-    Browser,
-    Settings,
-    /// Any other app, by its own glyph from the icon set
-    /// ([`crate::icons::app_glyph`]): a window wears its own app's mark,
-    /// never another app's.
-    App(crate::icons::Icon),
-}
-
-impl AppKind {
-    pub fn as_str(&self) -> &str {
-        match self {
-            AppKind::Terminal => "Terminal",
-            AppKind::Files => "Files",
-            AppKind::Editor => "Editor",
-            AppKind::Browser => "Browser",
-            AppKind::Settings => "Settings",
-            AppKind::App(_) => "App",
-        }
-    }
 }
 
 pub enum TileContent {

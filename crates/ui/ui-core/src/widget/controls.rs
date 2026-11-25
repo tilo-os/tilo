@@ -218,7 +218,7 @@ fn result_to_children(
     result: &ControlResult,
 ) {
     for child in widget.children_mut() {
-        if !crate::bound_dispatch::has_separate_document_owner(child) {
+        if !crate::widget::component_walk::has_separate_document_owner(child) {
             on_control_invocation_result(child, address, result);
         }
     }
