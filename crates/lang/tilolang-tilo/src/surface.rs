@@ -188,18 +188,34 @@ pub(crate) fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     }
 }
 
-/// The schema of a workspace's actor as `tilo_action_policy::Grantee` writes it: a person by
-/// their key, an agent by its id.
+/// The schema of a workspace's actor as a member names one: a person by their key, an agent by
+/// its id and the person it acts for ([`tilo_action_policy::MemberId`]).
 fn actor_schema() -> Json {
-    let one = |tag: &str| {
-        json!({
-            "type": "object",
-            "properties": {tag: {"type": "string", "minLength": 1}},
-            "required": [tag],
-            "additionalProperties": false,
-        })
-    };
-    json!({"type": "object", "oneOf": [one("person"), one("agent")]})
+    let text = || json!({"type": "string", "minLength": 1});
+    json!({
+        "type": "object",
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"person": text()},
+                "required": ["person"],
+                "additionalProperties": false,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "object",
+                        "properties": {"id": text(), "person": text()},
+                        "required": ["id", "person"],
+                        "additionalProperties": false,
+                    },
+                },
+                "required": ["agent"],
+                "additionalProperties": false,
+            },
+        ],
+    })
 }
 
 /// The parameter `param` of an action of `meta`, as the catalogue declares it: what the API
