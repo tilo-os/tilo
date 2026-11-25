@@ -1759,6 +1759,10 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
 unify = "workspace-unify"
 packages = ["tilo-runtime"]
+# Its tests start the workspace's apps as a person's daemon does: the launcher in its sandbox, and
+# the tilolang process the apps run in, built for the job as the `test` family builds them.
+isolation = { nested = ["tilo-runtime"] }
+starts = { tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "poker:poker", "terminal:terminal"] }
 # The sizes it runs at are the ci profile's `throughput` setup step, not this family's environment:
 # there they would key every build script's and proc macro's cache entry by them.
 
