@@ -11,6 +11,12 @@
 //!
 //! Outside the thin build this crate is an empty library.
 
+// "YouTube" is the service's own name, as its product writes it, not code.
+#![allow(
+    clippy::doc_markdown,
+    reason = "YouTube is a name, not code: it reads as YouTube in prose, not as `YouTube`"
+)]
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
