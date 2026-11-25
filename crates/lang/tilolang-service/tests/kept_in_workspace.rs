@@ -27,12 +27,24 @@ action anyone() -> Bool {
 struct Store(Workspace, tilo_action_policy::WorkspacePolicy);
 
 impl Store {
+    /// A workspace governed by `policy`, its people in its members' resource as the workspace
+    /// would list them: this test's store keeps no governance of its own.
+    fn governed(policy: tilo_action_policy::WorkspacePolicy) -> Self {
+        let workspace = Workspace::new();
+        let host = tilolang_tilo::host::Host::open(
+            workspace.store(),
+            tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            None,
+            || None,
+        )
+        .expect("a host over the workspace");
+        crate::fixtures::stage_people(&host, &policy);
+        Self(workspace, policy)
+    }
+
     /// Ada's own workspace: she is its only member.
     fn ada_alone() -> Self {
-        Self(
-            Workspace::new(),
-            tilo_action_policy::WorkspacePolicy::new("workspace", "ada"),
-        )
+        Self::governed(tilo_action_policy::WorkspacePolicy::new("workspace", "ada"))
     }
 }
 
@@ -97,6 +109,14 @@ fn a_service_moved_into_the_workspace_reads_the_package_it_does_not_run() {
     }
 }
 
+/// The talk app's ids, which every compile of it shares: a root is found by its type's id, so
+/// the session that seeds it and the one that opens it again read one talk.
+const TALK_IDS: &str = "Line = tlkline1
+Line.said = tlksaid1
+Talk = tlktalk1
+Talk.lines = tlklins1
+";
+
 /// An app whose first scenario writes a line as the person running it, then one as `by`, then
 /// one as the person again.
 fn talk(by: &str) -> String {
@@ -142,9 +162,12 @@ scenario "a morning" {{
 /// Seed `talk(by)`'s app into a workspace of `policy` as Ada, as a session seeds an app it
 /// moves there: its first scenario, run as her. What the move was refused with, and what the
 /// workspace's talk says after, as another of Ada's devices reads it.
-fn seed_as_ada(by: &str, policy: tilo_action_policy::WorkspacePolicy) -> (String, String) {
+fn seed_as_ada(
+    by: &str,
+    policy: tilo_action_policy::WorkspacePolicy,
+) -> (Result<bool, String>, String) {
     let source = talk(by);
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(source.as_str(), "")]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(source.as_str(), TALK_IDS)]);
     let mut service = ResourceService::of_app("test.talk", ada.host, "ada");
     service.set_seed(|host| {
         let package = host.package("test.talk").expect("the app is loaded");
@@ -165,14 +188,33 @@ fn seed_as_ada(by: &str, policy: tilo_action_policy::WorkspacePolicy) -> (String
             .map(|_| ())
             .map_err(|error| error.to_string())
     });
-    let held = std::rc::Rc::new(Store(Workspace::new(), policy));
+    let held = std::rc::Rc::new(Store::governed(policy));
     let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = held.clone();
-    let refused = service
+    let refused = service.keep_in_workspace(&store);
+    // The workspace as Ada's next session opens it: the app's service moved into the same store,
+    // which holds the app's resources now, so it seeds nothing.
+    let (again, _) = Replica::new("ada", Workspace::new(), &[(source.as_str(), TALK_IDS)]);
+    let mut opened = ResourceService::of_app("test.talk", again.host, "ada");
+    opened
         .keep_in_workspace(&store)
-        .expect_err("the seed's step taken as someone else is refused");
-    let (reader, _) = Replica::new("ada", held.0.clone(), &[(source.as_str(), "")]);
-    let said = match crate::fixtures::call(&reader, "ada", "test.talk", "said", vec![]) {
-        tilolang_runtime::Value::Text(said) => said,
+        .expect("the workspace opens again");
+    let host = opened.host();
+    let said = host
+        .package("test.talk")
+        .and_then(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == "said")
+                .map(|action| action.id.clone())
+        })
+        .expect("the app's action that reads its lines");
+    let said = match host.runtime().invoke_action(
+        &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        (said.as_str(), vec![]),
+    ) {
+        Ok(tilolang_runtime::InvokeOutcome::Done(tilolang_runtime::Value::Text(said))) => said,
         other => panic!("the talk's lines are text: {other:?}"),
     };
     (refused, said)
@@ -187,6 +229,7 @@ fn a_seed_step_as_someone_outside_the_workspace_is_refused_and_ones_own_steps_la
         "Mia",
         tilo_action_policy::WorkspacePolicy::new("workspace", "ada"),
     );
+    let refused = refused.expect_err("the seed's step taken as someone else is refused");
     assert!(
         refused.contains("can't write as Mia: Mia is not in this workspace"),
         "the refusal names the step, who it was to run as, and why: {refused}"
@@ -206,6 +249,7 @@ fn a_seed_step_as_another_member_is_refused_as_not_being_them() {
         .members
         .insert("bo".to_owned(), tilo_action_policy::Role::Editor);
     let (refused, said) = seed_as_ada("bo", policy);
+    let refused = refused.expect_err("the seed's step taken as someone else is refused");
     assert!(
         refused.contains("can't write as ")
             && refused.contains("is not you, so this can't be done as them"),
@@ -365,4 +409,19 @@ action ask(d: Item) {
             "the moved service handed its outside effect to its origin: {handed:?}"
         );
     }
+}
+
+/// A seed whose every step is the person's own runs whole: each of their lines is in the
+/// workspace, in order.
+#[test]
+fn a_seed_taken_wholly_as_the_person_lands_whole() {
+    let (kept, said) = seed_as_ada(
+        "ada",
+        tilo_action_policy::WorkspacePolicy::new("workspace", "ada"),
+    );
+    kept.expect("the workspace takes a seed of the person's own steps");
+    assert_eq!(
+        said, "Morning, from me | Morning, from someone else | Anyone there?",
+        "every step of the person's own landed"
+    );
 }
