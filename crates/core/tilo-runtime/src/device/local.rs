@@ -104,7 +104,7 @@ impl Frames {
     /// ([`super::vault_release`]), on this connection alone.
     pub(crate) fn of_an_app(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> Self {
         let own = super::vault_release::OwnProcess::new(daemon, at.pid, &at.app, &at.workspace);
-        let caller = Caller::local_app(&at.app).in_workspace(&at.workspace);
+        let caller = Caller::launched(&at.app).in_workspace(&at.workspace);
         // The app's signed manifest declares it signs in to the workspace's accounts: the grant
         // that names it for them is the one its connection holds, never a person's.
         let caller = if daemon.app_declares(&at.app, tilo_app_package::manifest::ACCOUNT_SIGN_INS) {

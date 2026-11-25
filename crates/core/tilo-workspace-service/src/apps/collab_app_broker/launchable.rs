@@ -1013,7 +1013,7 @@ mod tests {
         let ungranted = workspace();
         let (state, workspace_id) = broker(&ungranted);
         let mut stream = serve(&state, surface(7, &workspace_id));
-        let app = Caller::local_app(chat.as_str()).in_workspace(&workspace_id);
+        let app = Caller::launched(chat.as_str()).in_workspace(&workspace_id);
         assert!(
             invoke(&state, &app, "7", "new-window", None).is_err(),
             "granted nothing, the app takes nothing"
@@ -1031,7 +1031,23 @@ mod tests {
         }
         let (state, workspace_id) = broker(&granted);
         let mut stream = serve(&state, surface(7, &workspace_id));
-        let app = Caller::local_app(chat.as_str()).in_workspace(&workspace_id);
+        let app = Caller::launched(chat.as_str()).in_workspace(&workspace_id);
+        // Naming the app is not being it: a caller this device's daemon did not attest to be
+        // the app it launched, such as one restored from what a host kept, borrows none of its
+        // grants and owns nothing as it.
+        for unattested in [
+            app.kept().restored(),
+            Caller::local_app(chat.as_str()).in_workspace(&workspace_id),
+        ] {
+            assert!(
+                invoke(&state, &unattested, "7", "new-window", None).is_err(),
+                "a caller that only names the app is refused"
+            );
+        }
+        assert!(
+            stream.try_recv().is_err(),
+            "nothing unattested reached Files"
+        );
         let receipt =
             invoke(&state, &app, "7", "new-window", None).expect("the grant names the app");
         let delivered = stream.try_recv().expect("the call reached Files");

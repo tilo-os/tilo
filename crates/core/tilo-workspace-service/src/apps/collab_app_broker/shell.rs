@@ -552,15 +552,28 @@ async fn dispatch(
         .map_err(|error| error.to_string())
 }
 
-/// The caller the shell names on its link (`named`): an app or an agent acting for the device's
-/// person, decided as itself from here on. The
+/// The caller the shell names on its link (`named`): the device's person acting through an app,
+/// or an agent acting for them, decided as itself from here on. The
 /// shell speaks for its own person alone, so a caller that names another person, another root, a
-/// system caller, or that claims this device's own key without being the person, is refused.
+/// system caller, or that claims this device's own key without being the person, is refused. So
+/// is one acted by anything but a person or an agent: an app acting by itself is the one its
+/// device's daemon launched, never one the shell names, and nothing borrows an app's grants by
+/// naming it.
 fn named_caller(
     named: tilo_actions::remote::KeptCaller,
     device: &tilo_user_identity::DeviceCert,
 ) -> Result<Caller, String> {
     let caller = named.carried();
+    let member = caller
+        .acting()
+        .member_id()
+        .is_some_and(|member| member.is_person() || member.is_agent());
+    if !member {
+        return Err(format!(
+            "the shell names {} as a caller, and it speaks only for a person or an agent",
+            caller.acting().by
+        ));
+    }
     let person = super::person_id_for_root(device.user_public_key);
     let root = &device.user_public_key;
     let acting = caller.acting();
@@ -969,4 +982,45 @@ fn write_on_wire(write: &tilo_peer_state::owner::AppWrite) -> Result<ShellWrite,
         envelope: postcard::to_allocvec(&write.envelope)
             .map_err(|error| format!("a write does not encode: {error}"))?,
     })
+}
+
+#[cfg(test)]
+mod named_caller_tests {
+    use tilo_actions::remote::{Caller, KeptCaller};
+
+    fn device() -> tilo_user_identity::DeviceCert {
+        tilo_user_identity::DeviceCert {
+            user_public_key: [3; 32],
+            device_public_key: [4; 32],
+            device_label: "laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
+    /// A caller crafted on the shell's link to be an app acting by itself, for the device's
+    /// person, is refused: the shell cannot lend any app's grants to whoever it names.
+    #[test]
+    fn a_shell_naming_an_app_by_itself_is_refused() {
+        let device = device();
+        let person = super::super::person_id_for_root(device.user_public_key);
+        let mut wire = serde_json::to_value(Caller::local_app("so.tilo.chat").kept())
+            .expect("a kept caller is written");
+        wire["acting"]["for"] =
+            serde_json::to_value(vec![tilo_action_policy::Acting::person(person.clone())])
+                .expect("an acting is written");
+        let crafted: KeptCaller = serde_json::from_value(wire).expect("the link reads it");
+        let refused = super::named_caller(crafted, &device)
+            .expect_err("an app acting by itself is never one the shell names");
+        assert!(refused.contains("person or an agent"), "{refused}");
+
+        let through = Caller::local_app("so.tilo.chat").acting_for(person).kept();
+        assert!(
+            super::named_caller(through, &device).is_ok(),
+            "the person acting through an app is named"
+        );
+    }
 }

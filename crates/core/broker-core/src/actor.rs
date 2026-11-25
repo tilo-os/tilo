@@ -140,7 +140,16 @@ impl BrokerActor {
         if let Some(app) = acting.app() {
             return match acting.person_id() {
                 Some(person) => Self::person(person).through_app(app.clone()),
-                None => Self::app_itself(app.clone()),
+                // The app itself only when it is both who acts and what is acted through, in
+                // the process this device's daemon launched as it: a visitor, bot or
+                // automation acting through an app, another app naming it, or a caller that
+                // only names it, borrows none of its grants and acts for nobody.
+                None if matches!(&acting.by, Actor::App(by) if by == app)
+                    && caller.launched_app() == Some(app) =>
+                {
+                    Self::app_itself(app.clone())
+                }
+                None => Self::person(String::new()).through_app(app.clone()),
             };
         }
         if let Some(bot) = acting.bot_id() {
@@ -557,7 +566,7 @@ mod tests {
     /// decided by the grants that name it and recorded as the app's, never as a person's.
     #[test]
     fn an_app_with_nobody_behind_it_acts_as_itself() {
-        let caller = tilo_actions::remote::Caller::local_app("so.tilo.discord").in_workspace("w");
+        let caller = tilo_actions::remote::Caller::launched("so.tilo.discord").in_workspace("w");
         let actor = BrokerActor::for_caller(&caller);
         let app = tilo_action_policy::Actor::App("so.tilo.discord".into());
         assert_eq!(actor.actor(), &app);
@@ -573,6 +582,39 @@ mod tests {
             &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person("ada")),
             "an app its person runs acts as them"
         );
+    }
+
+    /// Only the app itself acts as the app: a visitor, a bot or another app acting through it
+    /// borrows none of its grants.
+    #[test]
+    fn only_the_app_itself_acts_as_the_app() {
+        use tilo_actions::remote::Caller;
+        let discord = tilo_action_policy::Actor::App("so.tilo.discord".into());
+        for (who, caller) in [
+            ("a visitor", Caller::visitor([7; 32])),
+            ("a bot", Caller::local_bot("b1")),
+            ("another app", Caller::launched("so.tilo.other")),
+            (
+                "a caller only naming it",
+                Caller::local_app("so.tilo.discord"),
+            ),
+            (
+                "a caller kept and restored",
+                Caller::launched("so.tilo.discord").kept().restored(),
+            ),
+        ] {
+            let actor = BrokerActor::for_caller(&caller.through_app("so.tilo.discord"));
+            assert_ne!(
+                actor.actor(),
+                &discord,
+                "{who} through an app is not the app"
+            );
+            assert_eq!(
+                actor.actor(),
+                &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person("")),
+                "{who} through an app acts for nobody"
+            );
+        }
     }
 
     /// A change an agent session makes records the session beside the agent and the person it

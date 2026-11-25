@@ -96,9 +96,8 @@ fn caller_of(caller: &Caller, workspace: &str) -> Caller {
         Actor::Member(MemberId::Agent(agent)) => Caller::local_agent(agent.as_str()),
         Actor::Member(MemberId::Bot(bot)) => Caller::local_bot(bot.as_str()),
         Actor::Member(MemberId::Person(person)) => Caller::local_person(person.clone()),
-        // An app acting by itself reaches the activity as itself.
-        Actor::App(app) => Caller::local_app(app.as_str()),
-        Actor::Automation(_) | Actor::Visitor(_) => caller.clone(),
+        // An app acting by itself reaches the activity as itself, as its daemon attested it.
+        Actor::App(_) | Actor::Automation(_) | Actor::Visitor(_) => caller.clone(),
     };
     caller.in_workspace(workspace)
 }

@@ -1327,7 +1327,7 @@ impl Daemon {
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, broker.app_calls()).await })
             .map_err(io::Error::other)?;
-        Ok((joined, Caller::local_app(app).in_workspace(workspace)))
+        Ok((joined, Caller::launched(app).in_workspace(workspace)))
     }
 
     /// The tree `workspace` reaches for `caller`.
