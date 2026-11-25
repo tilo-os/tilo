@@ -768,7 +768,7 @@ impl Workspaces {
             governed.may_start(author, (app, &write.doc), now)?;
         }
         self.store_of(governed)
-            .check_writes(writes, author)
+            .check_batch(writes, author)
             .map_err(|refusal| format!("{refusal:?}"))
     }
 }
