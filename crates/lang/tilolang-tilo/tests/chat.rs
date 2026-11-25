@@ -1378,11 +1378,7 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
-    let design = call(
-        &ada,
-        "new_channel",
-        vec![all.clone(), Value::text("design")],
-    );
+    let design = call(&ada, "new_channel", vec![all.clone(), Value::text("design")]);
     let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
     ada.commit();
 
@@ -1411,10 +1407,15 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     };
     let access: std::rc::Rc<std::cell::RefCell<Option<tilo_action_policy::MemberAccess>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
-    let (ben, _) = Replica::following("ben", ada.doc.fork(), &[(CHAT, &loaded[0].ids)], {
-        let access = std::rc::Rc::clone(&access);
-        move || access.borrow().clone()
-    });
+    let (ben, _) = Replica::following(
+        "ben",
+        ada.doc.fork(),
+        &[(CHAT, &loaded[0].ids)],
+        {
+            let access = std::rc::Rc::clone(&access);
+            move || access.borrow().clone()
+        },
+    );
     let plan = |channel: &tilolang_runtime::ResourceRef| {
         let meta = ben.host.package(APP).unwrap().meta;
         let send = meta.actions.iter().find(|a| a.name == "send").unwrap();
@@ -1454,6 +1455,69 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     ));
     let reading_only = plan(&design_ref).err().expect("viewing is not posting");
     assert!(reading_only.contains("not allowed"), "{reading_only}");
+}
+
+#[test]
+fn a_channel_lists_its_threads_and_opening_one_opens_it() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    let ask = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("Can we move the account step to the end?"), Value::none()],
+    );
+    let account = call(
+        &ada,
+        "start_thread",
+        vec![design.clone(), ask, Value::text("Account step")],
+    );
+    let when = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("When does the build go out?"), Value::none()],
+    );
+    call(
+        &ada,
+        "start_thread",
+        vec![design.clone(), when, Value::text("Release date")],
+    );
+    ada.commit();
+
+    // The channel lists the threads its messages started, each a row of the shared list under
+    // the section that counts them.
+    let mut view = open(&ada, &target(&design));
+    view.poll_patches().unwrap();
+    let rows: Vec<&UiNode> = view
+        .tree()
+        .of_kind("ui.Section")
+        .into_iter()
+        .flat_map(|section| section.of_kind("ui.ListRow"))
+        .collect();
+    let titles: Vec<String> = rows.iter().filter_map(|row| text_prop(row, "title")).collect();
+    assert_eq!(titles, ["Account step", "Release date"], "{titles:?}");
+
+    // Each row shows the thread it lists, and activating it opens that thread.
+    let row = rows
+        .into_iter()
+        .find(|row| text_prop(row, "title") == Some("Account step".to_owned()))
+        .expect("the account thread's row");
+    assert!(
+        matches!(row.props.get("item"), Some(Value::Ref(reference))
+            if reference.target.id_string() == target(&account).id_string()),
+        "the row names its thread: {:?}",
+        row.props.get("item")
+    );
+    let opened = view
+        .event_action(&row.key, "activate")
+        .expect("the row opens its thread");
+    assert!(
+        matches!(opened.args.first(), Some(Value::Ref(reference))
+            if reference.target.id_string() == target(&account).id_string()),
+        "the row opens the thread it lists: {:?}",
+        opened.args
+    );
 }
 
 /// How many ways the view offers to make a channel: the bar's primary, and any empty state's

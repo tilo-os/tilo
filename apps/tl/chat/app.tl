@@ -2338,6 +2338,30 @@ view channel(c: TextChannel) {
         channel_message(c, m, c.messages, replying, editing, revised)
         composer: {
             typing_here(c)
+            // The side conversations its messages started, each counted and opening where it
+            // was branched: a thread is found here without scrolling back to the message that
+            // began it.
+            if not c.threads.is_empty() {
+                section(
+                    if c.threads.len() == 1 {
+                        "1 thread"
+                    } else { "{c.threads.len()} threads" },
+                    collapsible: true,
+                ) {
+                    for t in c.threads {
+                        ui.ListRow(
+                            t.name,
+                            secondary: if t.messages.len() == 1 {
+                                "1 reply"
+                            } else { "{t.messages.len()} replies" },
+                            icon: .message_square,
+                            item: t,
+                        ) {
+                            on activate: open(t)
+                        }
+                    }
+                }
+            }
             // What can be done to the channel itself: its name, what it is for, the page its
             // pins stand on, and setting it aside. A press that needs words opens the form that
             // asks for them. What the channel is about stands beside them, so everyone reading
