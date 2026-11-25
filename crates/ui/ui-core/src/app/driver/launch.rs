@@ -48,6 +48,11 @@ impl Driver {
         if spec.window_bar {
             driver.present_in_window_bar();
         }
+        // Kept before anything runs, so a scenario that fails still writes the results it asked
+        // for, and the failure reported is its own.
+        if spec.results.is_some() {
+            driver.retain_invocation_results();
+        }
         let mut failure = stage(&mut driver)
             .map_err(|error| format!("scenario: {error}"))
             .err();
@@ -60,7 +65,11 @@ impl Driver {
             .and_then(|()| driver.write_spec_outputs(spec))
         {
             tilo_startup_metrics::mark("headless-output-failed");
-            failure = Some(error);
+            // A failure already met is the cause; what could not be written after it follows it.
+            failure = Some(match failure.take() {
+                Some(cause) => format!("{cause}; then {error}"),
+                None => error,
+            });
         } else {
             tilo_startup_metrics::mark("headless-output-done");
         }
@@ -93,9 +102,6 @@ impl Driver {
     /// Wait for the controls the app pressed on its own to run, then run `spec`'s steps in order,
     /// offering the record's writer what each changed. Why the run stopped, if it did.
     fn drive_spec_steps(&mut self, spec: &Spec) -> Option<String> {
-        if spec.results.is_some() {
-            self.retain_invocation_results();
-        }
         tilo_startup_metrics::mark("headless-actions-start");
         if !self.wait_until(crate::time::Duration::from_secs(10), Self::controls_settled) {
             return Some("startup control invocation did not become ready".into());
