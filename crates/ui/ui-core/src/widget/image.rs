@@ -20,6 +20,8 @@ use vello::peniko::{Blob, Color, Fill, ImageBrush, ImageData as PenikoImage};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use winit::event::{ElementState, Ime, MouseButton as WMouseButton, WindowEvent};
+use winit::keyboard::Key as WKey;
 
 static FALLBACK_ERROR_INK: LazyLock<Color> =
     LazyLock::new(|| Theme::dark().tokens.colors.semantic.danger);
@@ -123,6 +125,15 @@ pub struct Image {
     /// What its box was last laid out for: its picture's size, and whether it stands as the
     /// icon of a picture that failed. A box laid out for what it shows asks for no layout.
     laid_out: Option<((u32, u32), bool)>,
+    /// The destination a person's pointer and keys go to, when the picture is one they point and
+    /// type into; nothing when it is only looked at.
+    input: Option<String>,
+    keys: Option<Arc<dyn crate::key_input::Keys>>,
+    /// Where the pointer last stood over the picture, in the widget's own coordinates.
+    pointer: Option<Point>,
+    focused: bool,
+    /// How far one wheel notch scrolls, from the theme the picture was last laid out in.
+    wheel_line: f64,
 }
 
 impl Image {
@@ -144,6 +155,11 @@ impl Image {
             content_picture: false,
             layout_scale: 1.0,
             laid_out: None,
+            input: None,
+            keys: None,
+            pointer: None,
+            focused: false,
+            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -168,6 +184,11 @@ impl Image {
             content_picture: false,
             layout_scale: 1.0,
             laid_out: None,
+            input: None,
+            keys: None,
+            pointer: None,
+            focused: false,
+            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -232,6 +253,11 @@ impl Image {
             content_picture: false,
             layout_scale: 1.0,
             laid_out: None,
+            input: None,
+            keys: None,
+            pointer: None,
+            focused: false,
+            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
         })
     }
 
@@ -252,6 +278,11 @@ impl Image {
             content_picture: false,
             layout_scale: 1.0,
             laid_out: None,
+            input: None,
+            keys: None,
+            pointer: None,
+            focused: false,
+            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -334,6 +365,76 @@ impl Image {
     /// [`Self::with_fit`] after construction.
     pub fn set_fit(&mut self, fit: ImageFit) {
         self.fit = fit;
+    }
+
+    /// Take the person's pointer and keys for the destination `id` names: the picture is one
+    /// they point and type into, such as another machine's screen.
+    #[must_use]
+    pub fn with_input(mut self, id: impl Into<String>) -> Self {
+        self.input = Some(id.into());
+        self
+    }
+
+    /// [`Self::with_input`] after construction; `None` leaves the picture only looked at.
+    pub fn set_input(&mut self, id: Option<String>) {
+        if self.input == id {
+            return;
+        }
+        if self.focused {
+            self.keys().map(|keys| keys.focus(false));
+            self.focused = false;
+        }
+        self.keys = None;
+        self.input = id;
+    }
+
+    /// What takes the pointer and keys now, looked up where the window or the engine keeps it.
+    fn keys(&self) -> Option<Arc<dyn crate::key_input::Keys>> {
+        self.keys
+            .clone()
+            .or_else(|| crate::key_input::window_input(self.input.as_deref()?))
+    }
+
+    /// The rect the picture is actually painted in, as the fit places it: a `contain`ed one
+    /// letterboxes inside its box.
+    fn painted_rect(&self) -> Option<Rect> {
+        if self.intrinsic_size.0 == 0
+            || self.intrinsic_size.1 == 0
+            || self.rect.width() <= 0.0
+            || self.rect.height() <= 0.0
+        {
+            return None;
+        }
+        let (rw, rh) = (self.rect.width(), self.rect.height());
+        let (iw, ih) = (
+            f64::from(self.intrinsic_size.0),
+            f64::from(self.intrinsic_size.1),
+        );
+        Some(match self.fit {
+            ImageFit::Fill | ImageFit::Cover => self.rect,
+            ImageFit::Contain => {
+                let scale = (rw / iw).min(rh / ih);
+                let (dw, dh) = (iw * scale, ih * scale);
+                let (dx, dy) = (
+                    self.rect.x0 + (rw - dw) * 0.5,
+                    self.rect.y0 + (rh - dh) * 0.5,
+                );
+                Rect::new(dx, dy, dx + dw, dy + dh)
+            }
+        })
+    }
+
+    /// The pointer `at`, as fractions of the picture where it is painted: `None` for a point
+    /// outside it.
+    fn picture_point(&self, at: Point) -> Option<(f64, f64)> {
+        let painted = self.painted_rect()?;
+        if painted.width() <= 0.0 || painted.height() <= 0.0 || !painted.contains(at) {
+            return None;
+        }
+        Some((
+            (at.x - painted.x0) / painted.width(),
+            (at.y - painted.y0) / painted.height(),
+        ))
     }
 
     /// Set the alternative text describing the image.
@@ -642,6 +743,7 @@ impl Widget for Image {
         // gives the very first frame its decoded intrinsic dimensions.
         self.ensure_cached();
         self.layout_scale = theme.ui_scale;
+        self.wheel_line = f64::from(theme.tokens.metrics.wheel_line).max(1.0);
         let edge = self.icon_size.map(|size| size.px(theme)).or_else(|| {
             matches!(self.source, Source::Failed).then(|| super::IconSize::Regular.px(theme))
         });
@@ -740,10 +842,134 @@ impl Widget for Image {
             }
         }
         self.paint(scene, transform, theme.tokens.colors.semantic.danger);
+        if self.focused
+            && self.input.is_some()
+            && let Some(painted) = self.painted_rect()
+        {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.border_focus,
+                None,
+                &painted,
+            );
+        }
     }
 
     fn name(&self) -> &'static str {
         "Image"
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.input.is_some()
+    }
+
+    /// A screen a person points and types into takes the keyboard when its window opens, as the
+    /// session they just connected to.
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.input.is_some()
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused == focused {
+            return;
+        }
+        self.focused = focused;
+        if let Some(keys) = self.keys() {
+            keys.focus(focused);
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.input.is_none() {
+            return;
+        };
+        let held = crate::key_input::held(&ctx.modifiers.state());
+        match event {
+            WindowEvent::Focused(focused) => {
+                self.set_focus(*focused);
+                *ctx.handled = true;
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = ctx.logical(*position);
+                self.pointer = Some(at);
+                if let (Some((x, y)), Some(keys)) = (self.picture_point(at), self.keys()) {
+                    keys.pointer(x, y, held);
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some(at) = self.pointer else {
+                    return;
+                };
+                if self.picture_point(at).is_none() {
+                    return;
+                }
+                let Some(mapped) = (match button {
+                    WMouseButton::Left => Some(crate::key_input::Button::Left),
+                    WMouseButton::Middle => Some(crate::key_input::Button::Middle),
+                    WMouseButton::Right => Some(crate::key_input::Button::Right),
+                    _ => None,
+                }) else {
+                    return;
+                };
+                let pressed = *state == ElementState::Pressed;
+                if pressed && !self.focused {
+                    *ctx.focus_target = Some(ctx.node_id);
+                    self.set_focus(true);
+                }
+                if let Some(keys) = self.keys() {
+                    keys.button(mapped, pressed, held);
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (across, down) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (f64::from(*x), f64::from(*y))
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(position) => {
+                        let line = self.wheel_line.max(1.0);
+                        (position.x / line, position.y / line)
+                    }
+                };
+                if let Some(keys) = self.keys() {
+                    keys.wheel(across, down);
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::Ime(Ime::Commit(text)) if self.focused && !text.is_empty() => {
+                if let Some(keys) = self.keys() {
+                    keys.text(text);
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::KeyboardInput { event: key, .. } if self.focused => {
+                if let Some(mapped) = crate::key_input::map_key(&key.logical_key) {
+                    let Some(keys) = self.keys() else {
+                        return;
+                    };
+                    match key.state {
+                        ElementState::Pressed => keys.key(mapped, key.text.as_deref(), held),
+                        ElementState::Released => keys.key_up(mapped),
+                    }
+                    *ctx.handled = true;
+                } else if let (ElementState::Pressed, WKey::Character(text)) =
+                    (key.state, &key.logical_key)
+                    && !text.is_empty()
+                    && let Some(keys) = self.keys()
+                {
+                    // A layout's character this vocabulary has no key for: text to the far side.
+                    keys.text(text);
+                    *ctx.handled = true;
+                }
+            }
+            _ => {}
+        }
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -893,6 +1119,309 @@ mod tests {
     }
 
     const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
+
+    /// What a picture that takes input heard, in the order it heard it.
+    #[derive(Default)]
+    struct Heard(std::sync::Mutex<Vec<String>>);
+
+    impl Heard {
+        fn said(&self) -> Vec<String> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl crate::key_input::Keys for Heard {
+        fn key(
+            &self,
+            key: crate::key_input::Key,
+            text: Option<&str>,
+            held: crate::key_input::Held,
+        ) {
+            let _ = held;
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("key {key:?} {}", text.unwrap_or("")));
+        }
+
+        fn text(&self, text: &str) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("text {text}"));
+        }
+
+        fn paste(&self, text: &str) {
+            self.text(text);
+        }
+
+        fn mouse(
+            &self,
+            _button: crate::key_input::Button,
+            _pressed: bool,
+            _held: crate::key_input::Held,
+            _column: usize,
+            _row: usize,
+        ) -> bool {
+            false
+        }
+
+        fn pointer(&self, x: f64, y: f64, _held: crate::key_input::Held) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("pointer {x:.2} {y:.2}"));
+        }
+
+        fn button(
+            &self,
+            button: crate::key_input::Button,
+            pressed: bool,
+            _held: crate::key_input::Held,
+        ) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("button {button:?} {pressed}"));
+        }
+
+        fn wheel(&self, across: f64, down: f64) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("wheel {across} {down}"));
+        }
+
+        fn key_up(&self, key: crate::key_input::Key) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("key up {key:?}"));
+        }
+
+        fn focus(&self, focused: bool) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("focus {focused}"));
+        }
+    }
+
+    /// A key a person pressed (`Pressed`), or let go of (`Released`), as the window reports it.
+    fn key_event(state: ElementState) -> WindowEvent {
+        let logical = WKey::Character("a".into());
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyA,
+                    ),
+                    state,
+                },
+                logical.clone(),
+                Some(winit::keyboard::SmolStr::new("a")),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some(winit::keyboard::SmolStr::new("a")),
+                logical,
+            ),
+            is_synthetic: false,
+        }
+    }
+
+    fn event(
+        picture: &mut dyn Widget,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
+    ) -> bool {
+        let mut doc = automerge::AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        let mut handled = false;
+        let mut focus_target = None;
+        picture.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: crate::widget::Edits::lend(&mut doc),
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
+        );
+        handled
+    }
+
+    tilo_test_env::scenario! {
+        fn a_picture_points_and_types_for_its_destination;
+
+        phase a_point_over_the_picture_reaches_its_destination_in_fractions;
+        {
+            let heard = std::sync::Arc::new(Heard::default());
+            crate::key_input::provide("remote-screen", heard.clone());
+            use crate::widget::Container;
+            let heard = std::sync::Arc::new(Heard::default());
+            crate::key_input::provide("remote-screen", heard.clone());
+            let picture = Image::from_rgba(Arc::from(vec![0u8; 16 * 16 * 4]), 16, 16)
+                .with_fit(ImageFit::Contain)
+                .filling()
+                .with_input("remote-screen");
+            let mut root = Container::new()
+                .with_no_padding()
+                .with_size(200.0, 100.0)
+                .with_child(Box::new(picture));
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let root_node = (&mut root as &mut dyn Widget).build_layout(
+                &mut taffy,
+                &Theme::dark(),
+                &mut node_map,
+            );
+            taffy
+                .compute_layout(
+                    root_node,
+                    Size {
+                        width: taffy::AvailableSpace::MaxContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+            let node = *taffy
+                .children(root_node)
+                .expect("the container holds the picture")
+                .first()
+                .expect("the picture's node");
+            let mut children = root.children_mut();
+            let picture = &mut *children[0];
+            picture.apply_layout(&taffy, node, Point::ZERO);
+            assert_eq!(picture.get_rect(), Rect::new(0.0, 0.0, 200.0, 100.0));
+
+            // A contained square in a 200×100 box is 100×100 at its centre: (50, 0)..(150, 100).
+            event(
+                picture,
+                &taffy,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(100.0, 50.0),
+                },
+            );
+            assert_eq!(heard.said(), ["pointer 0.50 0.50",]);
+            event(
+                picture,
+                &taffy,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(10.0, 50.0),
+                },
+            );
+            assert_eq!(
+                heard.said(),
+                ["pointer 0.50 0.50",],
+                "a point in the letterbox reaches nothing"
+            );
+            event(
+                picture,
+                &taffy,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(100.0, 50.0),
+                },
+            );
+
+            let handled = event(
+                picture,
+                &taffy,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: WMouseButton::Left,
+                },
+            );
+            assert!(handled);
+            event(
+                picture,
+                &taffy,
+                node,
+                &WindowEvent::MouseWheel {
+                    device_id: winit::event::DeviceId::dummy(),
+                    delta: winit::event::MouseScrollDelta::LineDelta(0.0, 3.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+            );
+            event(
+                picture,
+                &taffy,
+                node,
+                &WindowEvent::MouseInput {
+                    device_id: winit::event::DeviceId::dummy(),
+                    state: ElementState::Released,
+                    button: WMouseButton::Left,
+                },
+            );
+            let said = heard.said();
+            assert_eq!(
+                said.iter().filter(|said| said.starts_with("button")).count(),
+                2,
+                "{said:?}"
+            );
+            assert!(
+                said.iter().any(|said| said == "wheel 0 3"),
+                "the wheel reaches the destination in lines: {said:?}"
+            );
+            assert!(
+                said.iter().any(|said| said == "focus true"),
+                "a press takes the keyboard: {said:?}"
+            );
+
+            event(picture, &taffy, node, &key_event(ElementState::Pressed));
+            event(picture, &taffy, node, &key_event(ElementState::Released));
+            let said = heard.said();
+            assert!(
+                said.iter().any(|said| said == "key Char('a') a"),
+                "a key reaches the destination: {said:?}"
+            );
+            assert!(
+                said.iter().any(|said| said == "key up Char('a')"),
+                "and so does its release: {said:?}"
+            );
+            crate::key_input::withdraw("remote-screen");
+        }
+
+        phase a_picture_without_a_destination_keeps_its_events_to_itself;
+        {
+            let mut picture =
+                Image::from_rgba(Arc::from(vec![0u8; 4 * 4 * 4]), 4, 4).with_fit(ImageFit::Fill);
+            assert!(!picture.is_focusable());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let node = (&mut picture as &mut dyn Widget).build_layout(
+                &mut taffy,
+                &Theme::dark(),
+                &mut node_map,
+            );
+            let handled = event(
+                &mut picture,
+                &taffy,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(1.0, 1.0),
+                },
+            );
+            assert!(!handled, "a picture only looked at takes no input");
+        }
+    }
 }
 
 #[path = "image_component.rs"]

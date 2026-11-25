@@ -25,6 +25,10 @@ pub struct ImageProps {
     pub alt: Option<String>,
     /// How it fills its box: `contain`, `cover` or `fill`.
     pub fit: Option<ImageFit>,
+    /// The id whose destination takes its pointer and its keys, when the picture is something a
+    /// person points and types into — another machine's screen, a stream it runs. Nothing when
+    /// the picture is just looked at.
+    pub input: Option<String>,
     /// The window's pictures, which load its bytes; a host hands them in.
     #[component(skip)]
     pub pictures: Option<Pictures>,
@@ -38,6 +42,7 @@ impl Described for Image {
             src,
             alt,
             fit,
+            input,
             pictures,
         } = props;
         let pictures = pictures.unwrap_or_else(crate::pictures::Pictures::window);
@@ -49,6 +54,9 @@ impl Described for Image {
         if let Some(fit) = fit {
             image = image.with_fit(fit);
         }
+        if let Some(input) = input {
+            image = image.with_input(input);
+        }
         image
     }
 
@@ -57,6 +65,7 @@ impl Described for Image {
             src,
             alt,
             fit,
+            input,
             pictures,
         } = props;
         let pictures = pictures.unwrap_or_else(crate::pictures::Pictures::window);
@@ -65,6 +74,7 @@ impl Described for Image {
         if let Some(fit) = fit {
             self.set_fit(fit);
         }
+        self.set_input(input);
         true
     }
 }

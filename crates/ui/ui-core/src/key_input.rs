@@ -69,6 +69,22 @@ pub trait Keys: Send + Sync {
     /// Report a pointer button at a one-based cell; `false` when the destination takes no
     /// pointer and the component acts on it itself.
     fn mouse(&self, button: Button, pressed: bool, held: Held, column: usize, row: usize) -> bool;
+    /// The pointer moved over the picture at `x`, `y`, as fractions of what it shows.
+    fn pointer(&self, x: f64, y: f64, held: Held) {
+        let _ = (x, y, held);
+    }
+    /// A pointer button went down or came up over the picture.
+    fn button(&self, button: Button, pressed: bool, held: Held) {
+        let _ = (button, pressed, held);
+    }
+    /// The wheel turned over the picture: across it and down it, in lines.
+    fn wheel(&self, across: f64, down: f64) {
+        let _ = (across, down);
+    }
+    /// A key came up, the complement of [`Keys::key`].
+    fn key_up(&self, key: Key) {
+        let _ = key;
+    }
     /// The component took or lost the keyboard.
     fn focus(&self, focused: bool);
 }
@@ -93,14 +109,48 @@ pub fn window_inputs() -> Option<Arc<Inputs>> {
     WINDOW_INPUTS.with(|held| held.borrow().clone())
 }
 
-/// The destination `id` names, as the window drawing now holds it.
+/// The destination `id` names, as the window drawing now holds it, or the one this process's
+/// engines provided for it: a stream's job is its own destination, kept by the engine that runs
+/// it rather than by a window that may not be the one that started it.
 #[must_use]
 pub fn window_input(id: &str) -> Option<Arc<dyn Keys>> {
-    WINDOW_INPUTS.with(|held| {
-        held.borrow()
-            .as_ref()
-            .and_then(|inputs| inputs.get(id).cloned())
-    })
+    WINDOW_INPUTS
+        .with(|held| {
+            held.borrow()
+                .as_ref()
+                .and_then(|inputs| inputs.get(id).cloned())
+        })
+        .or_else(|| provided_input(id))
+}
+
+/// A destination an engine of this process answers by `id`, for every window that shows it.
+pub fn provide(id: &str, keys: Arc<dyn Keys>) {
+    provided()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id.to_owned(), keys);
+}
+
+/// The engine's destination `id` named, let go: a stream that ended takes its input with it.
+pub fn withdraw(id: &str) {
+    provided()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(id);
+}
+
+fn provided() -> &'static std::sync::Mutex<HashMap<String, Arc<dyn Keys>>> {
+    static PROVIDED: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Arc<dyn Keys>>>> =
+        std::sync::OnceLock::new();
+    PROVIDED.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn provided_input(id: &str) -> Option<Arc<dyn Keys>> {
+    provided()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(id)
+        .cloned()
 }
 
 /// Take the destination `id` names out of what the window drew with.

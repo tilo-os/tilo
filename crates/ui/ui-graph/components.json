@@ -3935,6 +3935,13 @@
               }
             }
           }
+        },
+        {
+          "name": "input",
+          "doc": "The id whose destination takes its pointer and its keys, when the picture is something a person points and types into — another machine's screen, a stream it runs. Nothing when the picture is just looked at.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
