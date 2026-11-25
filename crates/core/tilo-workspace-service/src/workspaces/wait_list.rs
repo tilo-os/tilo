@@ -594,9 +594,6 @@ pub(super) struct EntrySettings {
         String,
         tokio::sync::mpsc::UnboundedSender<super::WaitListMail>,
     )>,
-    /// What the entry says about the wait list
-    /// ([`super::Workspaces::offer_wait_list`]).
-    pub(super) wait_list: std::sync::OnceLock<tilo_server_protocol::directory::EntryWaitList>,
     /// The page an invitation's link opens ([`super::Workspaces::invite_at`]).
     pub(super) invitations: std::sync::OnceLock<String>,
     /// This host's own web origin (`https://eu1.tilo.sh`), where a page asks
@@ -644,20 +641,30 @@ fn reached_from_elsewhere(site: &str) -> bool {
     name.contains('.') && !matches!(last, "localhost" | "local" | "internal")
 }
 
-impl super::Workspaces {
-    /// The wait list the entry keeps, as whoever runs the server configured it:
-    /// what a person the entry turns away is told about leaving an address
-    /// there ([`EntryRefused::wait_list`](tilo_server_protocol::directory::EntryRefused)).
-    /// `false` once called before.
-    #[must_use]
-    pub fn offer_wait_list(&self, entry: tilo_server_protocol::directory::EntryWaitList) -> bool {
-        self.inner.entry.wait_list.set(entry).is_ok()
-    }
+/// The wait list `entry` keeps, as its refusal and its page name it: where
+/// someone asks to be taken off the list, and whether it mails an address a
+/// link that confirms it. `None` when the entry keeps no wait list.
+#[must_use]
+pub(super) fn offered(
+    entry: &tilo_action_policy::EntryPolicy,
+) -> Option<tilo_server_protocol::directory::EntryWaitList> {
+    entry
+        .keeps_requests()
+        .then(|| tilo_server_protocol::directory::EntryWaitList {
+            contact: entry.contact.clone(),
+            mail: entry.mail.is_some(),
+        })
+}
 
-    /// The wait list the entry keeps, when whoever runs the server offered one.
-    #[must_use]
-    pub fn wait_list_page(&self) -> Option<&tilo_server_protocol::directory::EntryWaitList> {
-        self.inner.entry.wait_list.get()
+impl super::Workspaces {
+    /// The wait list `workspace`'s entry keeps now, as the entry's refusal
+    /// names it
+    /// ([`EntryRefused::wait_list`](tilo_server_protocol::directory::EntryRefused)).
+    pub async fn waiting_offer(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_server_protocol::directory::EntryWaitList> {
+        offered(&self.entry_policy(workspace).await?)
     }
 
     /// The invitations members ask to mail to addresses on a wait list,

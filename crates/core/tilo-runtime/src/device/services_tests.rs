@@ -2358,13 +2358,24 @@ fn a_deployment_is_handed_its_owner_root_once_and_kept_as_that_persons_device() 
 /// A deployment given its owner's root is that owner's own device: the daemon it
 /// starts founds the workspace its configuration keeps, with the entry the
 /// deployment names, under the root rather than a key of the server's own.
-const OWNER_ROOT_TEST: &str = "device::services::tests::a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry";
+const OWNER_ROOT_TEST: &str = "device::services::tests::a_deployment_given_its_owner_root_founds_its_kept_workspaces_entry_once";
 
 /// The kept workspace's id, as the deployment names it.
 const KEPT_WORKSPACE: &str = "4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11";
 
+/// What the deployment names for its wait list.
+const CONTACT: &str = "hello@lounge.example";
+const MAIL_FROM: &str = "invitations@lounge.example";
+
+/// What the owner changes them to, after the workspace is founded.
+const OWNER_CONTACT: &str = "owner@lounge.example";
+const OWNER_LIST_MAX: usize = 7;
+
+/// The first child start changes the entry, as the workspace's owner does later.
+const CHANGE_ENTRY: &str = "TILO_TEST_OWNER_ENTRY_CHANGE";
+
 #[test]
-fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() {
+fn a_deployment_given_its_owner_root_founds_its_kept_workspaces_entry_once() {
     use std::os::unix::fs::PermissionsExt as _;
     if let Some(root) = std::env::var_os(PROCESS_ROOT) {
         // The deployment's own process: its root and its configuration, as a container's start.
@@ -2381,22 +2392,46 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() 
             "the device acts as the owner root"
         );
         let runtime = tilo_rt::daemon("owner-root-test").build().unwrap();
+        let workspaces = daemon.workspaces.service().workspaces();
         let entry = runtime
-            .block_on(
-                daemon
-                    .workspaces
-                    .service()
-                    .workspaces()
-                    .entry_policy(KEPT_WORKSPACE),
-            )
+            .block_on(workspaces.entry_policy(KEPT_WORKSPACE))
             .expect("the kept workspace is founded here");
-        assert!(
-            !entry.invitation_only,
-            "the entry is the open one the deployment names"
-        );
-        let listing = entry.listing.expect("the workspace is listed");
+        let listing = entry.listing.clone().expect("the workspace is listed");
         assert_eq!(listing.description, "Coffee and tea");
         assert_eq!(listing.default_role, tilo_action_policy::Role::Commenter);
+        if std::env::var_os(CHANGE_ENTRY).is_some() {
+            // The entry the deployment names is settled at founding: its wait list
+            // keeps addresses, names a contact and mails them.
+            assert!(
+                entry.invitation_only,
+                "the entry is the invitation-only one the deployment names"
+            );
+            assert_eq!(entry.wait_list_max, 4);
+            assert_eq!(entry.contact.as_deref(), Some(CONTACT));
+            assert_eq!(
+                entry.mail.as_ref().map(|mail| mail.from.as_str()),
+                Some(MAIL_FROM)
+            );
+            // The owner changes the wait list later, through the entry change every
+            // owner makes.
+            let changed = tilo_action_policy::EntryPolicy {
+                wait_list_max: OWNER_LIST_MAX,
+                contact: Some(OWNER_CONTACT.into()),
+                ..entry
+            };
+            runtime
+                .block_on(workspaces.found_entry(KEPT_WORKSPACE, &daemon.cert, changed))
+                .expect("the owner changes the entry");
+        } else {
+            // A later start founds nothing and settles nothing: it reads the
+            // owner's change, not the values its configuration still names.
+            assert_eq!(entry.contact.as_deref(), Some(OWNER_CONTACT));
+            assert_eq!(entry.wait_list_max, OWNER_LIST_MAX);
+            assert_eq!(
+                entry.mail.as_ref().map(|mail| mail.from.as_str()),
+                Some(MAIL_FROM)
+            );
+        }
         return;
     }
 
@@ -2413,26 +2448,41 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspace_with_its_entry() 
         format!(
             "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\
              identity_root = \"{}\"\nstate_root = \"{}\"\n\n\
-             [[kept]]\nid = \"{KEPT_WORKSPACE}\"\nname = \"Lounge\"\nentry = \"open\"\n\
-             default_role = \"commenter\"\ndescription = \"Coffee and tea\"\n",
+             [[kept]]\nid = \"{KEPT_WORKSPACE}\"\nname = \"Lounge\"\nentry = \"invite\"\n\
+             default_role = \"commenter\"\ndescription = \"Coffee and tea\"\n\
+             wait_list_max = 4\ncontact = \"{}\"\nmail_from = \"{}\"\n",
             deployment.join("server-identity").display(),
-            deployment.join("server-state").display()
+            deployment.join("server-state").display(),
+            CONTACT,
+            MAIL_FROM
         ),
     )
     .unwrap();
-    let log = root.join("child.stdout");
-    let status = isolated_command(OWNER_ROOT_TEST, &root)
-        .env(OWNER_ROOT_FILE, &root_file)
-        .env(crate::device::keep::CONFIG_ENV, &config)
-        .stdout(std::fs::File::create(&log).unwrap())
-        .status_locked()
-        .unwrap();
-    let stdout = std::fs::read_to_string(&log).unwrap();
-    assert!(status.success(), "{stdout}");
-    assert!(
-        stdout.contains("test result: ok. 1 passed"),
-        "the isolated child ran no test: {stdout}"
-    );
+    // The deployment's own start, then a restart of the same volume: the first
+    // founds the workspace and settles its entry, the second only reads it.
+    let run = |change: bool, log: &Path| {
+        let mut command = isolated_command(OWNER_ROOT_TEST, &root);
+        command
+            .env(OWNER_ROOT_FILE, &root_file)
+            .env(crate::device::keep::CONFIG_ENV, &config);
+        if change {
+            command.env(CHANGE_ENTRY, "1");
+        } else {
+            command.env_remove(CHANGE_ENTRY);
+        }
+        let status = command
+            .stdout(std::fs::File::create(log).unwrap())
+            .status_locked()
+            .unwrap();
+        let stdout = std::fs::read_to_string(log).unwrap();
+        assert!(status.success(), "{stdout}");
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the isolated child ran no test: {stdout}"
+        );
+    };
+    run(true, &root.join("first.stdout"));
+    run(false, &root.join("restart.stdout"));
 }
 
 const OWN_INSTALL_TEST: &str =

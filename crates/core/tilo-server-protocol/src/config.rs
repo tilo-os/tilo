@@ -163,6 +163,18 @@ pub struct KeptWorkspace {
     /// How many addresses a `invite` entry keeps for whoever may invite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_list_max: Option<usize>,
+    /// Where someone asks to be taken off the wait list, as the entry shows
+    /// it (`TILO_WORKSPACES_CONTACT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// The sender the wait list mails an address from
+    /// (`TILO_WORKSPACES_MAIL_FROM`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_from: Option<String>,
+    /// The directory the wait list's mails' words are read from
+    /// (`TILO_WORKSPACES_MAIL_TEMPLATES`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_templates: Option<String>,
 }
 
 fn default_work() -> WorkSetting {

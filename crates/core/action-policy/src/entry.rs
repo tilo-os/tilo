@@ -42,6 +42,11 @@ pub enum EntryError {
     Role,
     /// A wait list is only kept by an entry that takes people by invitation.
     WaitList,
+    /// A wait list's contact is too long or holds a control character.
+    Contact,
+    /// A wait list's mail names no sender, or its sender holds a control
+    /// character.
+    Mail,
 }
 
 impl std::fmt::Display for EntryError {
@@ -57,6 +62,12 @@ impl std::fmt::Display for EntryError {
             Self::WaitList => {
                 f.write_str("only an entry that takes people by invitation keeps a wait list")
             }
+            Self::Contact => f.write_str(
+                "a wait list's contact is at most 280 characters, without control characters",
+            ),
+            Self::Mail => f.write_str(
+                "a wait list mails from a sender (`hello@example.com`) without control characters",
+            ),
         }
     }
 }
@@ -79,6 +90,27 @@ pub struct EntryPolicy {
     /// `0`: the entry keeps none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wait_list_max: usize,
+    /// Where someone asks to be taken off the wait list, as the entry shows
+    /// it beside a refusal and on its wait-list page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// Where the wait list mails an address, when it mails one at all.
+    /// `None` lists an address at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<EntryMail>,
+}
+
+/// Where a workspace's wait-list mail is sent from, and where its words are
+/// read from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryMail {
+    /// The sender an address hears from (`hello@example.com`).
+    pub from: String,
+    /// The directory the mails' words are read from. `None`: the words built
+    /// into the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub templates: Option<String>,
 }
 
 impl EntryPolicy {
@@ -149,7 +181,36 @@ impl EntryPolicy {
         if self.wait_list_max > 0 && !self.invitation_only {
             return Err(EntryError::WaitList);
         }
-        Ok(Self { listing, ..self })
+        let contact = self
+            .contact
+            .map(|contact| contact.trim().to_owned())
+            .filter(|contact| !contact.is_empty());
+        if let Some(contact) = &contact
+            && (contact.chars().count() > MAX_DESCRIPTION_CHARS
+                || contact.chars().any(char::is_control))
+        {
+            return Err(EntryError::Contact);
+        }
+        let mail = match self.mail {
+            None => None,
+            Some(mail) => {
+                let from = mail.from.trim().to_owned();
+                if from.is_empty() || !from.contains('@') || from.chars().any(char::is_control) {
+                    return Err(EntryError::Mail);
+                }
+                let templates = mail
+                    .templates
+                    .map(|templates| templates.trim().to_owned())
+                    .filter(|templates| !templates.is_empty());
+                Some(EntryMail { from, templates })
+            }
+        };
+        Ok(Self {
+            listing,
+            contact,
+            mail,
+            ..self
+        })
     }
 }
 

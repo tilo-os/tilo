@@ -30,45 +30,45 @@ use crate::workspaces::{WaitListSecrets, WaitListed, Workspaces};
 use limits::{IpHasher, JoinLimits, JoinRates};
 use mail::EntryMail;
 
-/// How the entry sends mail: the sender, its Resend API key's file and where
-/// mail is posted (`TILO_WORKSPACES_MAIL_FROM`, `TILO_WORKSPACES_RESEND_KEY_FILE`,
-/// `TILO_WORKSPACES_RESEND_URL`), and the directory the words are read from
-/// (`TILO_WORKSPACES_MAIL_TEMPLATES`), or `None` for the ones built in.
+/// How the entry sends mail: the sender the workspace's entry names, where
+/// mail is posted (`TILO_WORKSPACES_RESEND_URL`, Resend's API unless the
+/// deployment names another) and the file its Resend API key is read from
+/// (`TILO_WORKSPACES_RESEND_KEY_FILE`). The key stays with the deployment:
+/// what a workspace records is where its mail goes from, never the credential.
 #[derive(Clone, Debug)]
 pub struct MailConfig {
     pub from: String,
     pub resend_key_file: std::path::PathBuf,
     pub resend_url: String,
-    pub templates: Option<std::path::PathBuf>,
 }
 
 /// Where Resend's API is, unless the deployment names another.
 const RESEND_URL: &str = "https://api.resend.com/emails";
 
+/// The page an invitation's link opens when this host knows no site of its
+/// own.
+pub(crate) const ENTRY_WITHOUT_SITE: &str = "https://tilo.sh/";
+
 impl MailConfig {
-    /// The mail `TILO_WORKSPACES_MAIL_FROM` with `TILO_WORKSPACES_RESEND_KEY_FILE`
-    /// describes, if the deployment set them: both or neither, as the workspace
-    /// service's entry required.
+    /// The mail `entry` names, with the key file and endpoint this deployment
+    /// gives its host.
     ///
     /// # Errors
     ///
-    /// Only one of the two is set, or the URL is not an `https` one.
-    pub fn from_env() -> anyhow::Result<Option<Self>> {
+    /// `TILO_WORKSPACES_RESEND_KEY_FILE` names no key file, or the URL is not
+    /// an `https` one (a loopback `http` one for a local stack).
+    pub fn for_entry(entry: &tilo_action_policy::EntryMail) -> anyhow::Result<Self> {
         let set = |name: &str| {
             std::env::var(name)
                 .ok()
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty())
         };
-        let (from, key) = match (
-            set("TILO_WORKSPACES_MAIL_FROM"),
-            set("TILO_WORKSPACES_RESEND_KEY_FILE"),
-        ) {
-            (Some(from), Some(key)) => (from, key),
-            (None, None) => return Ok(None),
-            _ => anyhow::bail!(
-                "TILO_WORKSPACES_MAIL_FROM and TILO_WORKSPACES_RESEND_KEY_FILE are set together, or neither"
-            ),
+        let Some(key) = set("TILO_WORKSPACES_RESEND_KEY_FILE") else {
+            anyhow::bail!(
+                "the entry mails from {}, but TILO_WORKSPACES_RESEND_KEY_FILE names no key file",
+                entry.from
+            );
         };
         let resend_url = set("TILO_WORKSPACES_RESEND_URL").unwrap_or_else(|| RESEND_URL.to_owned());
         anyhow::ensure!(
@@ -77,51 +77,10 @@ impl MailConfig {
                 || resend_url.starts_with("http://localhost"),
             "TILO_WORKSPACES_RESEND_URL is an https URL (a loopback http one for a local stack)"
         );
-        Ok(Some(Self {
-            from,
+        Ok(Self {
+            from: entry.from.clone(),
             resend_key_file: key.into(),
             resend_url,
-            templates: set("TILO_WORKSPACES_MAIL_TEMPLATES").map(std::path::PathBuf::from),
-        }))
-    }
-}
-
-/// How the entry's wait list is configured: what whoever runs the server said,
-/// from `--wait-list-max` and `--wait-list-mail` and the mail settings'
-/// environment.
-#[derive(Clone, Debug, Default)]
-pub struct WaitListSettings {
-    /// How many addresses the workspace keeps.
-    pub max: usize,
-    /// Where someone asks to be taken off the list (`TILO_WORKSPACES_CONTACT`).
-    pub contact: Option<String>,
-    /// The entry's page, which its mails' links open.
-    pub entry: Option<String>,
-    /// How the entry sends mail, when the deployment configured it.
-    pub mail: Option<MailConfig>,
-    /// The local review mode (`TILO_WORKSPACES_LOCAL`), where the entry's page may
-    /// be a plain `http` loopback address.
-    pub local: bool,
-}
-
-impl WaitListSettings {
-    /// What the environment says, with `max`, the entry's `entry` and the local
-    /// mode from the deployment's flags.
-    ///
-    /// # Errors
-    ///
-    /// The mail's variables are set half-way, or as no URL, as
-    /// [`MailConfig::from_env`] refuses.
-    pub fn from_env(max: usize, entry: Option<String>, local: bool) -> anyhow::Result<Self> {
-        Ok(Self {
-            max,
-            contact: std::env::var("TILO_WORKSPACES_CONTACT")
-                .ok()
-                .map(|contact| contact.trim().to_owned())
-                .filter(|contact| !contact.is_empty()),
-            entry,
-            mail: MailConfig::from_env()?,
-            local,
         })
     }
 }
@@ -258,11 +217,11 @@ impl std::fmt::Debug for WaitListPage {
 }
 
 impl WaitListPage {
-    /// The entry's wait list, when the workspace takes people by invitation
-    /// and keeps one (`settings.max` above zero): the addresses it keeps, the
-    /// contact the operator named and the mail it sends from `settings.entry`
-    /// (its outbox under `directory`), naming the workspace `name` (`mail`
-    /// below).
+    /// The wait list `workspace`'s entry keeps, as the entry settles it: the
+    /// addresses it keeps, the contact it names, and the mail it sends from
+    /// `page` (its outbox under `directory`), naming the workspace `name`.
+    /// `mailer` sends the mail in place of the deployment's Resend sender, as
+    /// a check supplies one.
     ///
     /// # Errors
     ///
@@ -273,42 +232,47 @@ impl WaitListPage {
         workspace: &str,
         name: &str,
         directory: &Path,
-        settings: &WaitListSettings,
+        page: &str,
+        entry: &tilo_action_policy::EntryPolicy,
+        mailer: Option<Arc<dyn mail::Mailer>>,
     ) -> anyhow::Result<Option<Self>> {
-        if settings.max == 0 {
+        if !entry.keeps_requests() {
             return Ok(None);
         }
-        let mail = match (&settings.entry, &settings.mail) {
-            (Some(entry), Some(config)) => {
-                let templates = match &config.templates {
-                    Some(dir) => mail::Templates::load(dir)?,
+        let mail = match &entry.mail {
+            Some(settings) => {
+                let templates = match &settings.templates {
+                    Some(dir) => mail::Templates::load(Path::new(dir))?,
                     None => mail::Templates::baked(),
                 };
-                let mailer = Arc::new(mail::Resend::new(config)?);
+                let mailer = match mailer {
+                    Some(mailer) => mailer,
+                    None => Arc::new(mail::Resend::new(&MailConfig::for_entry(settings)?)?),
+                };
+                // The local review mode (`TILO_WORKSPACES_LOCAL`), where the entry's
+                // page may be a plain `http` loopback address.
+                let local = std::env::var_os("TILO_WORKSPACES_LOCAL").is_some();
                 Some(Self::mailing(
                     workspaces,
                     workspace,
                     name,
                     mailer,
-                    entry,
+                    page,
                     templates,
-                    settings.local,
-                    &directory.join("mail-outbox"),
+                    local,
+                    // Each workspace's mail waits in its own outbox.
+                    &directory
+                        .join("wait-lists")
+                        .join(workspace)
+                        .join("mail-outbox"),
                 )?)
             }
-            (None, Some(_)) => {
-                tracing::warn!(
-                    "TILO_WORKSPACES_MAIL_FROM names a sender, but the entry has no page to mail \
-                     invitations on: the wait list lists addresses at once"
-                );
-                None
-            }
-            (_, None) => None,
+            None => None,
         };
         Ok(Some(Self::assembled(
             workspace,
-            settings.max,
-            settings.contact.clone(),
+            entry.wait_list_max,
+            entry.contact.clone(),
             mail,
         )))
     }
@@ -368,24 +332,6 @@ impl WaitListPage {
             unlists: std::sync::Mutex::new(JoinLimits::new(JoinRates::WAIT_LIST_REMOVALS)),
             lookups: std::sync::Mutex::new(JoinLimits::new(JoinRates::WAIT_LIST_LOOKUPS)),
         }
-    }
-
-    /// The entry's wait list as a check stands it up: `mailer` takes the mail,
-    /// kept only while the check runs.
-    #[cfg(test)]
-    pub fn with_mailer(
-        _workspaces: &Workspaces,
-        workspace: &str,
-        max: usize,
-        contact: Option<&str>,
-        mailer: Arc<dyn mail::Mailer>,
-        entry: &str,
-    ) -> Self {
-        let mail = Arc::new(EntryMail::new(mailer, entry, workspace));
-        // Every entry a check leaves stands until it takes it off, so the
-        // outbox sends each mail at once rather than asking first.
-        mail.set_eligibility(Arc::new(|_| Box::pin(async { Some(true) })));
-        Self::assembled(workspace, max, contact.map(ToOwned::to_owned), Some(mail))
     }
 
     /// The workspace the entry lets people into.

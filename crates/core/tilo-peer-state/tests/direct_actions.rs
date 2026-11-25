@@ -1229,6 +1229,8 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
                 listing: None,
                 invitation_only: true,
                 wait_list_max: 100,
+                contact: None,
+                mail: None,
             },
             &a.0,
             tilo_clock::wall(),

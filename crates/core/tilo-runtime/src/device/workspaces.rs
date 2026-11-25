@@ -323,6 +323,35 @@ impl ServiceWorkspaces {
         Ok(made)
     }
 
+    /// [`Self::found`], and when this call made the workspace, the entry `entry` names: the
+    /// founder's first change, settled through the same entry change an owner makes later
+    /// (the workspace service's `found_entry`), and never again over what the workspace's
+    /// owners chose since.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::found`]'s, or why the entry cannot stand.
+    pub(crate) async fn found_kept(
+        &self,
+        workspace: WorkspaceId,
+        name: &str,
+        entry: Option<&tilo_action_policy::EntryPolicy>,
+    ) -> Result<bool, String> {
+        let made = self.found(workspace, name).await?;
+        if made && let Some(entry) = entry {
+            self.service
+                .workspaces()
+                .found_entry(
+                    &workspace.to_string(),
+                    &self.identity.device_cert,
+                    entry.clone(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(made)
+    }
+
     /// Take in, once, what a desktop of this device kept itself before this service kept its
     /// person's workspaces (`account/workspaces#import`): each key group the desktop sealed, opened
     /// with the key it was sealed with and sealed again under this device's vault beside the groups

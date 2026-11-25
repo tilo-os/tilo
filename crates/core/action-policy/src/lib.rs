@@ -55,7 +55,9 @@ pub use content::{ContentLimit, ContentPolicy, KeptLimits, Raises};
 pub use decide::{Authority, Basis, Cap, Decision, Effective, Party, Refuser, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use earlier::EarlierIds;
-pub use entry::{EntryError, EntryPolicy, ListingPolicy, VISITOR_ENTRY_ACTIONS, VISITOR_ENTRY_APP};
+pub use entry::{
+    EntryError, EntryMail, EntryPolicy, ListingPolicy, VISITOR_ENTRY_ACTIONS, VISITOR_ENTRY_APP,
+};
 /// The id prefix of the answers a person gives an agent session: "Allow for this agent" records
 /// one, deciding that session's later steps and no other session's ([`is_session_answer`]).
 pub const SESSION_ANSWER_PREFIX: &str = "session-answer:";

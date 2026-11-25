@@ -110,7 +110,8 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         presence: Arc::new(live::Authority::new(server.web_context().server.clone())),
         page_errors: page_errors::PageErrors::default(),
         site: site.and_then(Site::new),
-        wait_list: Arc::default(),
+        state_root: server.state_root().to_path_buf(),
+        served_lists: ServedLists::default(),
     }
 }
 
@@ -1120,7 +1121,7 @@ async fn mails_taken(
 }
 
 /// A server serving one workspace, listed and taking people by invitation
-/// only, with the entry's wait list keeping `max` addresses.
+/// only. [`waiting_entry`] settles the wait list its entry keeps.
 async fn invitation_only_host(
     root: &SigningKey,
     seed: u8,
@@ -1148,25 +1149,36 @@ async fn invitation_only_host(
     (server, host, workspace, state)
 }
 
-/// The entry of `workspace`, keeping `max` addresses and mailing them through
-/// `mailer`.
-fn wait_list_page(
-    server: &Server,
+/// `workspace`'s entry as its founder settles it: listed, taking people by
+/// invitation only, keeping `max` addresses, naming a contact and mailing them.
+async fn waiting_entry(
+    workspaces: &crate::workspaces::Workspaces,
+    founder: &DeviceCert,
     workspace: &str,
     max: usize,
-    mailer: Arc<crate::entry::mail::FakeMailer>,
-) -> Arc<crate::entry::WaitListPage> {
-    let workspaces = server.workspaces().unwrap();
-    let page = Arc::new(crate::entry::WaitListPage::with_mailer(
-        workspaces,
-        workspace,
-        max,
-        Some("hello@tilo.example"),
-        mailer,
-        "https://site.example/",
-    ));
-    let _ = workspaces.offer_wait_list(page.offered());
-    page
+) {
+    use tilo_action_policy::{EntryMail, EntryPolicy, ListingPolicy};
+
+    workspaces
+        .found_entry(
+            workspace,
+            founder,
+            EntryPolicy {
+                listing: Some(ListingPolicy {
+                    description: "Coffee and tea".into(),
+                    default_role: tilo_action_policy::Role::Editor,
+                }),
+                invitation_only: true,
+                wait_list_max: max,
+                contact: Some("hello@tilo.example".into()),
+                mail: Some(EntryMail {
+                    from: "wait-list@tilo.example".into(),
+                    templates: None,
+                }),
+            },
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1180,18 +1192,16 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
     let root = SigningKey::from_bytes(&[150; 32]);
     let (server, host, workspace, _state) = invitation_only_host(&root, 151).await;
     let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
-    let web = web_of(&server, &host);
-    assert!(
-        web.wait_list
-            .set(wait_list_page(&server, &workspace, 4, mailer.clone()))
-            .is_ok()
-    );
+    let workspaces = server.workspaces().unwrap();
+    // The entry the founder settles names the wait list the flow serves.
+    waiting_entry(workspaces, &host.cert, &workspace, 4).await;
+    let mut web = web_of_at(&server, &host, Some("https://site.example/"));
+    web.served_lists = ServedLists::with_mailer(mailer.clone());
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     // Someone the entry turns away is told it keeps a wait list, where the
     // contact is, and that it mails: the refusal their entry hears on its
     // session.
-    let workspaces = server.workspaces().unwrap();
     let refusal = workspaces
         .admit_listed(
             &workspace,
@@ -1202,7 +1212,8 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
         )
         .await
         .expect_err("an invitation-only entry turns a stranger away");
-    let refused: EntryRefused = refusal.answer_with(workspaces.wait_list_page());
+    let refused: EntryRefused =
+        refusal.answer_with(workspaces.waiting_offer(&workspace).await.as_ref());
     assert_eq!(refused.code, EntryRefusalCode::InvitationOnly);
     assert!(refused.wait_list, "{refused:?}");
     assert_eq!(refused.contact.as_deref(), Some("hello@tilo.example"));
@@ -1343,12 +1354,9 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
     let root = SigningKey::from_bytes(&[152; 32]);
     let (server, host, workspace, _state) = invitation_only_host(&root, 153).await;
     let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
-    let web = web_of(&server, &host);
-    assert!(
-        web.wait_list
-            .set(wait_list_page(&server, &workspace, 1, mailer))
-            .is_ok()
-    );
+    waiting_entry(server.workspaces().unwrap(), &host.cert, &workspace, 1).await;
+    let mut web = web_of_at(&server, &host, Some("https://site.example/"));
+    web.served_lists = ServedLists::with_mailer(mailer);
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     let ask = |step: &str, body: serde_json::Value| {
@@ -1453,7 +1461,6 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
         plain_listen: Some("127.0.0.1:0".parse().unwrap()),
         public_origin: public_origin.map(str::to_owned),
         fetch_proxy: None,
-        wait_list: Arc::default(),
         link: None,
         site: None,
     };

@@ -953,7 +953,6 @@ impl LoungeHost {
                     plain_listen: Some("127.0.0.1:0".parse().expect("an address")),
                     public_origin: None,
                     fetch_proxy: None,
-                    wait_list: Arc::default(),
                     link: None,
                     site: None,
                 })

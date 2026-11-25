@@ -201,7 +201,12 @@ own relay.
 The Lounge's workspace is the stack's own person's: their device founds it,
 settles its entry and places it on the server, which keeps and serves it.
 TILO_SH_ADMISSION=invite (production's, and the default) lists it and admits
-only people it invited; =open admits anyone who asks, as an editor.
+only people it invited; =open admits anyone who asks, as an editor. An
+invitation-only entry keeps a wait list that mails each address through the
+stack's own sink: TILO_SH_WAIT_LIST_MAX (default 100) says how many it keeps,
+TILO_SH_MAIL_FROM (default wait-list@tilo.sh) who it mails from,
+TILO_SH_CONTACT where to ask off it, and TILO_SH_MAIL_TEMPLATES the directory
+its words are read from.
 
 A running stack belongs to the checkout that started it: up, down and restart
 from another checkout refuse (TILO_SH_TAKE_OVER=1 takes it over). Give each
@@ -699,7 +704,13 @@ server_env() {
     printf 'web_entry = "%s"\n' "$site_origin/"
     printf 'web_listen = "127.0.0.1:%s"\n' "$server_web_port"
   } > "$state/server/server.toml"
-  local env=("TILO_SERVER_CONFIG=$state/server/server.toml")
+  # The mail the entry sends: the stack's sink takes what Resend's API takes, and
+  # the key stays a file among the deployment's secrets, never in a workspace's
+  # records. Every address here is loopback, so the links mails carry open here.
+  local env=("TILO_SERVER_CONFIG=$state/server/server.toml"
+    "TILO_WORKSPACES_RESEND_KEY_FILE=$state/secrets/resend-key"
+    "TILO_WORKSPACES_RESEND_URL=http://127.0.0.1:$mail_port/emails"
+    "TILO_WORKSPACES_LOCAL=1")
   # Not here: the summary model key (no model is asked locally).
   # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
   # (a person's and their agents') starts its programs on this machine, as the
@@ -1052,9 +1063,19 @@ print(made if isinstance(made, str) else made.get("id") or made.get("workspace")
     printf '%s\n' "$id" > "$id_file"
   fi
   # The entry is the workspace's own setting, settled by its owner: listed, and
-  # anyone who asks joins at an editor's part, or only people it invited.
+  # anyone who asks joins at an editor's part, or only people it invited. An
+  # invitation-only entry keeps the wait list the onboarding walk leaves an
+  # address on: it mails each address from the sender the deployment names,
+  # through the sink the server posts to.
+  local wait_list=()
+  if [[ $admission == invite ]]; then
+    wait_list+=("wait_list_max=${TILO_SH_WAIT_LIST_MAX:-100}")
+    wait_list+=("mail_from=${TILO_SH_MAIL_FROM:-wait-list@tilo.sh}")
+    [[ -z ${TILO_SH_CONTACT:-} ]] || wait_list+=("contact=$TILO_SH_CONTACT")
+    [[ -z ${TILO_SH_MAIL_TEMPLATES:-} ]] || wait_list+=("mail_templates=$TILO_SH_MAIL_TEMPLATES")
+  fi
   owner_tilo do workspace#publish default_role=editor description=Lounge \
-    admission="$admission" -w "$id" >/dev/null \
+    admission="$admission" "${wait_list[@]}" -w "$id" >/dev/null \
     || die "the stack's person did not settle the Lounge's entry"
   # The server keeps it from here: the person's device holds the workspace and
   # its governance, and the server serves it. Where it is reached at is what it

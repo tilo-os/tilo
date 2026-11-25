@@ -9,8 +9,11 @@
 # owner's root among the operator's secrets: the daemon is that owner's own
 # device, so it founds the workspace its configuration keeps, under the root and
 # with the entry the deployment names. `LOUNGE_ADMISSION` (open unless set),
-# `LOUNGE_DEFAULT_ROLE`, `LOUNGE_DESCRIPTION` and `LOUNGE_WAIT_LIST_MAX` are the
-# entry it founds with. `restart_lounge` stops the Lounge alone and starts it
+# `LOUNGE_DEFAULT_ROLE`, `LOUNGE_DESCRIPTION`, `LOUNGE_WAIT_LIST_MAX`,
+# `LOUNGE_CONTACT`, `LOUNGE_MAIL_FROM` and `LOUNGE_MAIL_TEMPLATES` are the entry
+# it founds with; `LOUNGE_RESEND_KEY_FILE` and `LOUNGE_RESEND_URL` are where the
+# daemon reads the mail key and posts the mail (never in the workspace's
+# records). `restart_lounge` stops the Lounge alone and starts it
 # again on the volume it kept, the site left serving, as a deployment's restart
 # does. It needs node, chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN
 # naming built programs, and TILO_FONTS_DIR the product's font catalog. The
@@ -55,6 +58,9 @@ run_lounge() {
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
     TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
     TILO_WORKSPACES_STATE="$lounge_volume" \
+    TILO_WORKSPACES_LOCAL=1 \
+    TILO_WORKSPACES_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
+    TILO_WORKSPACES_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
     TILO_SERVER_CONFIG="$lounge_volume/server.toml" \
     sh "$lounge_here/entrypoint.sh" >> "$log" 2>&1 &
   lounge_pid=$!
@@ -205,6 +211,10 @@ start_lounge() {
       "$id" "$admission" "$role" "$description"
     [ -z "${LOUNGE_WAIT_LIST_MAX:-}" ] \
       || printf 'wait_list_max = %s\n' "$LOUNGE_WAIT_LIST_MAX"
+    [ -z "${LOUNGE_CONTACT:-}" ] || printf 'contact = "%s"\n' "$LOUNGE_CONTACT"
+    [ -z "${LOUNGE_MAIL_FROM:-}" ] || printf 'mail_from = "%s"\n' "$LOUNGE_MAIL_FROM"
+    [ -z "${LOUNGE_MAIL_TEMPLATES:-}" ] \
+      || printf 'mail_templates = "%s"\n' "$LOUNGE_MAIL_TEMPLATES"
   } > "$volume/server.toml"
 
   # The daemon keeps a profile private to its account, and the volume is its

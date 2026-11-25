@@ -29,6 +29,21 @@
 #   TILO_WORKSPACES_DEFAULT_ROLE    the role everyone who joins through the entry
 #                                   holds to begin with: viewer, commenter or
 #                                   editor (default editor)
+#   TILO_WORKSPACES_WAIT_LIST_MAX   how many addresses an invitation-only kept
+#                                   workspace's wait list keeps
+#   TILO_WORKSPACES_CONTACT         where someone asks to be taken off a kept
+#                                   workspace's wait list
+#   TILO_WORKSPACES_MAIL_FROM       the sender a kept workspace's wait list mails
+#                                   an address from; mail needs the API key
+#                                   TILO_WORKSPACES_RESEND_KEY_FILE names
+#   TILO_WORKSPACES_MAIL_TEMPLATES  the directory its mails' words are read from
+#   TILO_WORKSPACES_RESEND_KEY_FILE the file the mail API key is read from, kept
+#                                   with the volume's secrets rather than in a
+#                                   workspace's records
+#   TILO_WORKSPACES_RESEND_URL      where mail is posted (default: Resend's API)
+#   TILO_WORKSPACES_LOCAL           this deployment's addresses are this
+#                                   machine's own (a local stack), so the links
+#                                   its mails carry open here
 #   TILO_WORKSPACES_ROOT_FILE       the owner's root, mounted from the operator's
 #                                   secrets: its 32-byte seed as 64 hexadecimal
 #                                   characters, readable by this image's user alone.
@@ -56,6 +71,9 @@ fail() {
 
 known='TILO_WORKSPACES_STATE TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_LIVE
 TILO_WORKSPACES_ADMISSION TILO_WORKSPACES_DESCRIPTION TILO_WORKSPACES_DEFAULT_ROLE
+TILO_WORKSPACES_WAIT_LIST_MAX TILO_WORKSPACES_CONTACT TILO_WORKSPACES_MAIL_FROM
+TILO_WORKSPACES_MAIL_TEMPLATES
+TILO_WORKSPACES_RESEND_KEY_FILE TILO_WORKSPACES_RESEND_URL TILO_WORKSPACES_LOCAL
 TILO_WORKSPACES_ROOT_FILE'
 known=$(printf '%s' "$known" | tr '\n' ' ')
 for variable in $(env | sed -n 's/^\(TILO_WORKSPACES_[A-Za-z0-9_]*\)=.*/\1/p'); do
@@ -149,6 +167,22 @@ if [ ! -s "$config" ]; then
       description=${TILO_WORKSPACES_DESCRIPTION:-$name}
       printf '\n[[kept]]\nid = "%s"\nname = "%s"\nentry = "%s"\ndefault_role = "%s"\ndescription = "%s"\n' \
         "$id" "$name" "$admission" "$role" "$description"
+      # The wait list's size, contact and mail are the workspace's own entry
+      # settings.
+      # The mail API key is not: it stays where this deployment reads it
+      # (`TILO_WORKSPACES_RESEND_KEY_FILE`), never in the workspace's records.
+      if [ -n "${TILO_WORKSPACES_WAIT_LIST_MAX:-}" ]; then
+        printf 'wait_list_max = %s\n' "$TILO_WORKSPACES_WAIT_LIST_MAX"
+      fi
+      if [ -n "${TILO_WORKSPACES_CONTACT:-}" ]; then
+        printf 'contact = "%s"\n' "$TILO_WORKSPACES_CONTACT"
+      fi
+      if [ -n "${TILO_WORKSPACES_MAIL_FROM:-}" ]; then
+        printf 'mail_from = "%s"\n' "$TILO_WORKSPACES_MAIL_FROM"
+      fi
+      if [ -n "${TILO_WORKSPACES_MAIL_TEMPLATES:-}" ]; then
+        printf 'mail_templates = "%s"\n' "$TILO_WORKSPACES_MAIL_TEMPLATES"
+      fi
     done
   } > "$config"
 fi

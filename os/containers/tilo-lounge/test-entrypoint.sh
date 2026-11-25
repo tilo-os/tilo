@@ -85,6 +85,26 @@ has 'name = "Lounge"'
 has 'entry = "invite"'
 has 'default_role = "viewer"'
 has 'description = "Coffee and tea"'
+
+# The wait list's contact and mail are the entry's own settings; the mail key
+# stays where the deployment reads it, never in a workspace's records.
+rm -f "$config_file"
+lounge TILO_KEPT=4b0d9a52-7b4e-4e0d-9e0e-2b1c2a0c9a11=Lounge \
+  TILO_WORKSPACES_ADMISSION=invite \
+  TILO_WORKSPACES_WAIT_LIST_MAX=100 \
+  TILO_WORKSPACES_CONTACT=hello@lounge.example \
+  TILO_WORKSPACES_MAIL_FROM=wait-list@lounge.example \
+  TILO_WORKSPACES_MAIL_TEMPLATES=/etc/tilo/mails \
+  TILO_WORKSPACES_RESEND_KEY_FILE=/etc/tilo/resend-key \
+  TILO_WORKSPACES_LOCAL=1 \
+  || fail "a deployment with a wait list did not start: $(cat "$work/err")"
+has 'wait_list_max = 100'
+has 'contact = "hello@lounge.example"'
+has 'mail_from = "wait-list@lounge.example"'
+has 'mail_templates = "/etc/tilo/mails"'
+grep -Fq 'resend' "$config_file" && fail 'a mail key was written into a workspace record'
+env_has 'TILO_WORKSPACES_RESEND_KEY_FILE=/etc/tilo/resend-key'
+
 fails_with lounge TILO_WORKSPACES_ADMISSION=closed
 fails_with lounge TILO_WORKSPACES_DEFAULT_ROLE=owner
 

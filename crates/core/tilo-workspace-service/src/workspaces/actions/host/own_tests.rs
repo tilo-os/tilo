@@ -1661,8 +1661,6 @@ async fn held_host() -> (
     (SigningKey, tilo_user_identity::DeviceCert),
     tempfile::TempDir,
 ) {
-    use tilo_server_protocol::workspaces::Role;
-
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1672,29 +1670,29 @@ async fn held_host() -> (
         .unwrap();
     let host = super::super::tests::host_dispatch(&workspaces);
     // The site's home workspace: its entry, or an invitation into it, is the
-    // one way to workspaces of one's own here.
+    // one way to workspaces of one's own here. It takes people by invitation
+    // and keeps their addresses.
     let lounge = home_of(&workspaces).await;
     workspaces
-        .publish(
+        .found_entry(
             &lounge,
             &owner,
-            tilo_server_protocol::directory::Listing {
-                description: "Coffee and tea".into(),
-                default_role: Role::Editor,
+            tilo_action_policy::EntryPolicy {
+                listing: Some(tilo_action_policy::ListingPolicy {
+                    description: "Coffee and tea".into(),
+                    default_role: tilo_action_policy::Role::Editor,
+                }),
+                invitation_only: true,
+                wait_list_max: 1,
+                contact: Some("hello@tilo.example".into()),
+                mail: Some(tilo_action_policy::EntryMail {
+                    from: "lounge@example.com".into(),
+                    templates: None,
+                }),
             },
         )
         .await
         .unwrap();
-    workspaces
-        .list_invitation_only(&lounge, &owner, true)
-        .await
-        .unwrap();
-    assert!(
-        workspaces.offer_wait_list(tilo_server_protocol::directory::EntryWaitList {
-            contact: Some("hello@tilo.example".into()),
-            mail: true,
-        })
-    );
     let (stranger_key, stranger) = guest_device();
     assert!(
         workspaces
@@ -1778,7 +1776,8 @@ async fn the_wait_list_holds_the_entry_and_lets_nobody_in_on_an_address() {
         matches!(refused, crate::workspaces::EntryRefusal::InvitationOnly),
         "{refused:?}"
     );
-    let said = refused.answer_with(workspaces.wait_list_page());
+    let offered = workspaces.waiting_offer(&lounge).await;
+    let said = refused.answer_with(offered.as_ref());
     assert!(
         said.wait_list && said.mail && said.contact.as_deref() == Some("hello@tilo.example"),
         "the refusal offers the wait list: {said:?}"

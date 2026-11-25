@@ -1068,6 +1068,60 @@ fn webhook_delete_params() -> Vec<ActionParam> {
     )]
 }
 
+/// The entry `workspace#publish` asks for, as its arguments name it.
+fn published_entry(args: &Args) -> Result<EntryPolicy, ActionCallError> {
+    let text = args.required_text("default_role")?;
+    let default_role = Role::parse(text)
+        .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
+        .ok_or_else(|| {
+            ActionCallError::invalid_request(format!(
+                "a public workspace hands out viewer, commenter or editor, not `{text}`"
+            ))
+        })?;
+    let admission = args.text("admission")?.unwrap_or("open").trim().to_owned();
+    let invitation_only = match admission.as_str() {
+        "open" => false,
+        "invite" => true,
+        other => {
+            return Err(ActionCallError::invalid_request(format!(
+                "an entry is `open` or `invite`, not `{other}`"
+            )));
+        }
+    };
+    let wait_list_max = args
+        .integer("wait_list_max")?
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|_| ActionCallError::invalid_request("`wait_list_max` is too large".to_owned()))?
+        .map_or(0, |kept| kept as usize);
+    let contact = args
+        .text("contact")?
+        .map(str::trim)
+        .filter(|contact| !contact.is_empty())
+        .map(str::to_owned);
+    let mail = match args.text("mail_from")?.map(str::trim) {
+        None | Some("") => None,
+        Some(from) => Some(tilo_action_policy::EntryMail {
+            from: from.to_owned(),
+            templates: args
+                .text("mail_templates")?
+                .map(str::trim)
+                .filter(|templates| !templates.is_empty())
+                .map(str::to_owned),
+        }),
+    };
+    Ok(EntryPolicy {
+        listing: Some(ListingPolicy {
+            description: args.text("description")?.unwrap_or_default().to_owned(),
+            default_role,
+        }),
+        invitation_only,
+        wait_list_max,
+        contact,
+        mail,
+    })
+}
+
 fn publish_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
@@ -1097,6 +1151,22 @@ fn publish_params() -> Vec<ActionParam> {
             "wait_list_max",
             ParamType::Integer,
             "How many addresses the entry keeps for whoever may invite. An `open` entry keeps none.",
+        ),
+        ActionParam::optional(
+            "contact",
+            ParamType::Text,
+            "Where someone asks to be taken off the wait list, shown beside a refusal.",
+        ),
+        ActionParam::optional(
+            "mail_from",
+            ParamType::Text,
+            "The sender the wait list mails an address from (`hello@example.com`). Empty: it \
+             lists an address at once.",
+        ),
+        ActionParam::optional(
+            "mail_templates",
+            ParamType::Text,
+            "The directory the wait list's mails' words are read from. Empty: the host's own.",
         ),
     ]
 }
@@ -2864,55 +2934,39 @@ impl Workspaces {
                 }),
                 None => json!({ "public": false }),
             };
-            answer["admission"] = json!(if entry.invitation_only {
-                "invite"
-            } else {
-                "open"
-            });
-            answer["wait_list_max"] = json!(entry.wait_list_max);
+            if let Some(fields) = answer.as_object_mut() {
+                fields.insert(
+                    "admission".into(),
+                    json!(if entry.invitation_only {
+                        "invite"
+                    } else {
+                        "open"
+                    }),
+                );
+                fields.insert("wait_list_max".into(), json!(entry.wait_list_max));
+                fields.insert("contact".into(), json!(entry.contact));
+                fields.insert(
+                    "mail_from".into(),
+                    json!(entry.mail.as_ref().map(|mail| &mail.from)),
+                );
+                fields.insert(
+                    "mail_templates".into(),
+                    json!(
+                        entry
+                            .mail
+                            .as_ref()
+                            .and_then(|mail| mail.templates.as_deref())
+                    ),
+                );
+            }
             answer
         };
         match action {
-            PUBLISH => {
-                let text = args.required_text("default_role")?;
-                let default_role = Role::parse(text)
-                    .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
-                    .ok_or_else(|| {
-                        ActionCallError::invalid_request(format!(
-                            "a public workspace hands out viewer, commenter or editor, not `{text}`"
-                        ))
-                    })?;
-                let admission = args.text("admission")?.unwrap_or("open").trim().to_owned();
-                let invitation_only = match admission.as_str() {
-                    "open" => false,
-                    "invite" => true,
-                    other => {
-                        return Err(ActionCallError::invalid_request(format!(
-                            "an entry is `open` or `invite`, not `{other}`"
-                        )));
-                    }
-                };
-                let wait_list_max = args
-                    .integer("wait_list_max")?
-                    .map(u32::try_from)
-                    .transpose()
-                    .map_err(|_| {
-                        ActionCallError::invalid_request("`wait_list_max` is too large".to_owned())
-                    })?
-                    .map_or(0, |kept| kept as usize);
-                let entry = EntryPolicy {
-                    listing: Some(ListingPolicy {
-                        description: args.text("description")?.unwrap_or_default().to_owned(),
-                        default_role,
-                    }),
-                    invitation_only,
-                    wait_list_max,
-                };
-                self.found_entry(workspace, device, entry)
-                    .await
-                    .map(|entry| entry_answer(&entry))
-                    .map_err(|error| ActionCallError::refused(error.to_string()))
-            }
+            PUBLISH => self
+                .found_entry(workspace, device, published_entry(args)?)
+                .await
+                .map(|entry| entry_answer(&entry))
+                .map_err(|error| ActionCallError::refused(error.to_string())),
             UNPUBLISH => self
                 .unpublish(workspace, device)
                 .await

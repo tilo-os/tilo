@@ -20,7 +20,7 @@
  * back; every mail's removal link carries one too. The links mailed land on
  * this entry (`arrival`): a confirmation link confirms and shows `listed`, a
  * removal link takes the address off and shows `left`. Where the host names
- * a contact (`TILO_WORKSPACES_CONTACT`), a line under it says where questions and
+ * a contact (the entry's own `contact`), a line under it says where questions and
  * removal requests go; without one, nothing.
  */
 import {DESKTOP_LANGUAGE, localized, waitListFailure} from './arrival.mjs';

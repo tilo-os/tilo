@@ -1905,21 +1905,11 @@ impl Daemon {
                 stage("founding the workspaces this server keeps");
                 let handle = tilo_rt::app().handle().clone();
                 for kept in listed {
-                    let id = kept.id.to_string();
-                    let made = handle
-                        .block_on(workspaces.found(kept.id, &kept.name))
-                        .map_err(io::Error::other)?;
                     // The entry the deployment names is the founder's first change: settled as
                     // the workspace is made, never again over what its owners chose since.
-                    if made && let Some(entry) = &kept.entry {
-                        handle
-                            .block_on(workspaces.service().workspaces().found_entry(
-                                &id,
-                                &identity.cert,
-                                entry.clone(),
-                            ))
-                            .map_err(|error| io::Error::other(error.to_string()))?;
-                    }
+                    handle
+                        .block_on(workspaces.found_kept(kept.id, &kept.name, kept.entry.as_ref()))
+                        .map_err(io::Error::other)?;
                 }
             }
         }

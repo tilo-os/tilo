@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{EntryPolicy, ListingPolicy, Role};
+use tilo_action_policy::{EntryMail, EntryPolicy, ListingPolicy, Role};
 use tilo_server::daemon::{OnDevice, PacketRelay, Protocols, Server, ServerIdentity};
 use tilo_server_protocol::config::{KeptWorkspace, ServerConfig, WebTls};
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -54,9 +54,19 @@ pub(crate) struct KeptFounding {
 /// `None` founds a workspace only its members reach: not listed, and joined by
 /// invitation.
 fn founding_entry(kept: &KeptWorkspace, name: &str) -> Result<Option<EntryPolicy>, String> {
+    let text = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
     let Some(entry) = kept.entry.as_deref().map(str::trim) else {
-        if kept.wait_list_max.is_some_and(|kept| kept > 0) {
-            return Err("only an `invite` entry keeps a wait list".into());
+        if kept.wait_list_max.is_some_and(|kept| kept > 0)
+            || text(kept.contact.as_deref()).is_some()
+            || text(kept.mail_from.as_deref()).is_some()
+            || text(kept.mail_templates.as_deref()).is_some()
+        {
+            return Err("only an entry keeps a wait list".into());
         }
         return Ok(None);
     };
@@ -80,6 +90,14 @@ fn founding_entry(kept: &KeptWorkspace, name: &str) -> Result<Option<EntryPolicy
         .filter(|description| !description.is_empty())
         .unwrap_or(name)
         .to_owned();
+    let contact = text(kept.contact.as_deref());
+    let mail = text(kept.mail_from.as_deref()).map(|from| EntryMail {
+        from,
+        templates: text(kept.mail_templates.as_deref()),
+    });
+    if mail.is_none() && text(kept.mail_templates.as_deref()).is_some() {
+        return Err("mail templates need the sender they write for (`mail_from`)".into());
+    }
     let policy = EntryPolicy {
         listing: Some(ListingPolicy {
             description,
@@ -87,6 +105,8 @@ fn founding_entry(kept: &KeptWorkspace, name: &str) -> Result<Option<EntryPolicy
         }),
         invitation_only,
         wait_list_max: kept.wait_list_max.unwrap_or(0),
+        contact,
+        mail,
     };
     policy
         .checked()
@@ -402,7 +422,6 @@ fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> tilo_server::web::WebCo
         plain_listen: None,
         public_origin: None,
         fetch_proxy: None,
-        wait_list: Arc::default(),
         link: None,
         site: cfg.web_entry.clone(),
     }
@@ -539,6 +558,9 @@ mod tests {
             default_role: Some("commenter".into()),
             description: Some("Coffee and tea".into()),
             wait_list_max: None,
+            contact: None,
+            mail_from: None,
+            mail_templates: None,
         })
         .kept()
         .expect("the kept workspace reads");
@@ -562,12 +584,23 @@ mod tests {
             default_role: None,
             description: None,
             wait_list_max: Some(500),
+            contact: Some("hello@lounge.example".into()),
+            mail_from: Some("invitations@lounge.example".into()),
+            mail_templates: None,
         })
         .kept()
         .expect("the kept workspace reads");
         let entry = invite[0].entry.as_ref().expect("its entry is founded");
         assert!(entry.invitation_only, "only people it invited join");
         assert_eq!(entry.wait_list_max, 500);
+        assert_eq!(entry.contact.as_deref(), Some("hello@lounge.example"));
+        assert_eq!(
+            entry.mail,
+            Some(EntryMail {
+                from: "invitations@lounge.example".into(),
+                templates: None,
+            })
+        );
         assert_eq!(
             entry.listing.as_ref().map(|listing| listing.default_role),
             Some(Role::Editor),
@@ -589,6 +622,9 @@ mod tests {
             default_role: None,
             description: None,
             wait_list_max: None,
+            contact: None,
+            mail_from: None,
+            mail_templates: None,
         })
         .kept()
         .expect("the kept workspace reads");
@@ -605,6 +641,9 @@ mod tests {
                 default_role: (told == "role").then(|| "owner".to_owned()),
                 description: None,
                 wait_list_max: None,
+                contact: None,
+                mail_from: None,
+                mail_templates: None,
             })
             .kept()
             .expect_err("a value that is no entry stops the start");

@@ -24,6 +24,10 @@ const fn refused(reason: String) -> EnterRefusal {
 }
 
 impl Admit for Workspaces {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one entry, every refusal decided where the entry reads it"
+    )]
     fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
             let Entry {
@@ -186,6 +190,7 @@ impl Workspaces {
         workspace: &str,
         name: &str,
     ) -> Result<(Vec<u8>, String), EnterRefusal> {
+        let wait_list = self.waiting_offer(workspace).await;
         // A key acting for someone the workspace has in it is no device of
         // theirs: the entry would hand it its person's part, and its
         // redemption would hold it unbounded. It comes in by the delegation
@@ -202,7 +207,7 @@ impl Workspaces {
                     "an agent comes into a workspace its person is in by its delegation, not through the entry"
                         .to_owned(),
                 )
-                .answer_with(self.wait_list_page()),
+                .answer_with(wait_list.as_ref()),
             });
         }
         let join = EntryJoin {
@@ -221,7 +226,7 @@ impl Workspaces {
                     }
                     _ => None,
                 },
-                refused: refusal.answer_with(self.wait_list_page()),
+                refused: refusal.answer_with(wait_list.as_ref()),
             })
     }
 

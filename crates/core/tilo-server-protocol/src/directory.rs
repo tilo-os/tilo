@@ -250,11 +250,11 @@ impl EntryRefused {
 
 /// The wait list an entry keeps for a workspace that takes people by
 /// invitation: what its page offers someone it turns away, in the refusal's
-/// [`EntryRefused::wait_list`] (`workspaces::Workspaces::offer_wait_list`).
+/// [`EntryRefused::wait_list`] (`workspaces::Workspaces::waiting_offer`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntryWaitList {
-    /// Where someone asks to be taken off the list (`TILO_WORKSPACES_CONTACT`).
+    /// Where someone asks to be taken off the list, as the entry names it.
     pub contact: Option<String>,
     /// The entry mails the address a link that confirms it.
     pub mail: bool,

@@ -35,6 +35,7 @@ pub use tls::TlsSource;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
+use tilo_lock::MutexRecover as _;
 pub(crate) use tilo_server_protocol::web as protocol;
 use tilo_server_protocol::web::{
     API_PREFIX, MAX_REQUEST_BYTES, ServerAddress, ServerInfo, WebLink,
@@ -65,11 +66,6 @@ pub struct WebConfig {
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
-    /// The wait list this host keeps for a workspace that takes people by
-    /// invitation, when whoever runs it keeps one
-    /// ([`crate::entry::WaitListPage`]): set once that workspace's entry is
-    /// settled, which can be after the listener serves.
-    pub wait_list: WaitListSlot,
     /// Where the host takes WebTransport sessions, when not on the UDP port of
     /// [`Self::listen`] at the origin pages are told: a deployment whose
     /// HTTPS arrives through a proxy that carries no UDP names a way around
@@ -251,16 +247,113 @@ struct Web {
     /// The site this host belongs to, when it knows one: where a browser that
     /// opened a link at the host's own address is sent.
     site: Option<Site>,
-    /// The wait list the entry keeps for a workspace taking people by
-    /// invitation, when whoever runs this host keeps one.
-    wait_list: WaitListSlot,
+    /// Where this host keeps each workspace's wait list's outbox.
+    state_root: std::path::PathBuf,
+    /// The wait lists this host serves, built from each workspace's entry when
+    /// a page asks for one.
+    served_lists: ServedLists,
 }
 
-/// Where a listener finds the wait list its host keeps, once it keeps one
-/// ([`WebConfig::wait_list`]).
-pub type WaitListSlot = Arc<std::sync::OnceLock<Arc<crate::entry::WaitListPage>>>;
+/// What a workspace's entry says of its wait list: how many addresses it
+/// keeps, where to ask off it, and where it mails from.
+type ServedEntrySettings = (usize, Option<String>, Option<tilo_action_policy::EntryMail>);
+
+/// A workspace's wait list as it was built, and the list itself.
+type ServedList = (ServedEntrySettings, Option<Arc<crate::entry::WaitListPage>>);
+
+/// What `entry` says of its wait list.
+fn served_settings(entry: &tilo_action_policy::EntryPolicy) -> ServedEntrySettings {
+    (
+        entry.wait_list_max,
+        entry.contact.clone(),
+        entry.mail.clone(),
+    )
+}
+
+/// The wait lists a host serves, built from each workspace's entry the first
+/// time a page asks for one, and again when the entry changes
+/// ([`crate::entry::WaitListPage`]).
+#[derive(Default)]
+struct ServedLists {
+    /// A mailer that sends in place of the deployment's Resend sender, as a
+    /// check supplies one.
+    mailer: Option<Arc<dyn crate::entry::mail::Mailer>>,
+    /// The entry each page was built from, and the page (none when the entry
+    /// keeps no wait list).
+    served: std::sync::Mutex<std::collections::HashMap<String, ServedList>>,
+}
+
+impl ServedLists {
+    #[cfg(test)]
+    fn with_mailer(mailer: Arc<dyn crate::entry::mail::Mailer>) -> Self {
+        Self {
+            mailer: Some(mailer),
+            ..Self::default()
+        }
+    }
+}
 
 impl Web {
+    /// The wait list `workspace`'s entry keeps now, as its entry settles it:
+    /// built the first time a page asks for one and again when the entry
+    /// changes. `None` when the entry keeps none.
+    ///
+    /// # Errors
+    ///
+    /// The entry names mail this host cannot send: its key file, its
+    /// templates or the outbox's directory.
+    async fn wait_list(
+        &self,
+        workspaces: &crate::workspaces::Workspaces,
+        workspace: &str,
+    ) -> anyhow::Result<Option<Arc<crate::entry::WaitListPage>>> {
+        let Some(entry) = workspaces.entry_policy(workspace).await else {
+            return Ok(None);
+        };
+        if !entry.keeps_requests() {
+            return Ok(None);
+        }
+        let settings = served_settings(&entry);
+        if let Some((built, page)) = self.served_lists.served.lock_recover().get(workspace)
+            && *built == settings
+        {
+            return Ok(page.clone());
+        }
+        let name = workspaces
+            .summary(workspace)
+            .await
+            .map(|summary| summary.name)
+            .unwrap_or_default();
+        // The entry's page, which the mails' links open: the site this host
+        // belongs to, ending in `/`, or the site every link opens without one.
+        let entry_page = match &self.site {
+            Some(site) => format!("{}/", site.origin),
+            None => crate::entry::ENTRY_WITHOUT_SITE.to_owned(),
+        };
+        let wait_list = crate::entry::WaitListPage::open(
+            workspaces,
+            workspace,
+            &name,
+            &self.state_root,
+            &entry_page,
+            &entry,
+            self.served_lists.mailer.clone(),
+        )?
+        .map(Arc::new);
+        // The invitations members ask the entry to mail go out from the page that
+        // mails the addresses it keeps.
+        if let Some(wait_list) = &wait_list
+            && let Some(mut invitations) = wait_list.invitations(workspaces)
+        {
+            tokio::spawn(async move { while invitations.mail_next().await {} });
+        }
+        self.served_lists
+            .served
+            .lock_recover()
+            .insert(workspace.to_owned(), (settings, wait_list.clone()));
+        Ok(wait_list)
+    }
+
     /// What `/host` answers: who this host is, and where its endpoint is dialled now. A
     /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
     /// reached only after the listener started (its first network report found none, as when
@@ -623,8 +716,22 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         presence: live.authority(),
         page_errors: page_errors::PageErrors::default(),
         site: config.site.as_deref().and_then(Site::new),
-        wait_list: config.wait_list.clone(),
+        state_root: state_root.clone(),
+        served_lists: ServedLists::default(),
     });
+    // Each listed workspace's wait list opens now: its entry mails the addresses
+    // people leave, and the invitations members ask for, from the start.
+    if let Some(workspaces) = &web.workspaces {
+        for workspace in workspaces.published_workspaces().await {
+            if let Err(error) = web.wait_list(workspaces, &workspace).await {
+                tracing::warn!(
+                    %workspace,
+                    %error,
+                    "this workspace's wait list could not be opened"
+                );
+            }
+        }
+    }
     // The name each person gives themselves is kept with their profile, which the workspaces
     // here name them by.
     if let Some(workspaces) = &web.workspaces {
@@ -1023,19 +1130,27 @@ async fn directory_entry(
         step,
         WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STATUS
     ) {
-        let Some(wait_list) = web.wait_list.get() else {
-            return Err(refused(
-                StatusCode::NOT_FOUND,
-                "this workspace keeps no wait list",
-            ));
+        let wait_list = match web.wait_list(workspaces, workspace).await {
+            Ok(Some(wait_list)) => wait_list,
+            Ok(None) => {
+                return Err(refused(
+                    StatusCode::NOT_FOUND,
+                    "this workspace keeps no wait list",
+                ));
+            }
+            Err(error) => {
+                tracing::error!(
+                    %workspace,
+                    %error,
+                    "the workspace's wait list could not be served"
+                );
+                return Err(status(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "this workspace cannot serve its wait list",
+                ));
+            }
         };
-        if wait_list.workspace() != workspace {
-            return Err(refused(
-                StatusCode::NOT_FOUND,
-                "this workspace keeps no wait list",
-            ));
-        }
-        let answered = crate::entry::route(wait_list, workspaces, client, step, bytes).await;
+        let answered = crate::entry::route(&wait_list, workspaces, client, step, bytes).await;
         let mut response = json_status(answered.status, &answered.body);
         if let Some(seconds) = answered.retry_after_secs
             && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())

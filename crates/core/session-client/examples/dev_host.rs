@@ -28,7 +28,6 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use std::sync::Arc;
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -95,7 +94,6 @@ async fn main() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            wait_list: Arc::default(),
             link: None,
             site: None,
         })

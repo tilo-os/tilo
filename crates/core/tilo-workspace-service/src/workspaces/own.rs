@@ -573,9 +573,10 @@ impl Workspaces {
                 };
             }
         };
-        let entry = self
-            .wait_list_page()
-            .filter(|_| code == EntryRefusalCode::InvitationOnly);
+        let entry = match (home, code == EntryRefusalCode::InvitationOnly) {
+            (Some(home), true) => self.waiting_offer(home).await,
+            _ => None,
+        };
         if entry.is_some() {
             error.push_str("; leave your address on its wait list");
         }
@@ -586,7 +587,7 @@ impl Workspaces {
             error,
             ..EntryRefused::default()
         }
-        .with_wait_list(entry)
+        .with_wait_list(entry.as_ref())
     }
 
     /// Put `person` on `plan` here: how much the workspaces of their own may
@@ -676,8 +677,8 @@ impl Workspaces {
 
     /// Label `workspace` with `labels`, in place of what it was labelled with before (none takes
     /// them all off).
-    pub(super) fn label(&self, workspace: &str, labels: WorkspaceLabels) -> Result<(), String> {
-        let labels = serde_json::to_string(&labels).map_err(|error| error.to_string())?;
+    pub(super) fn label(&self, workspace: &str, labels: &WorkspaceLabels) -> Result<(), String> {
+        let labels = serde_json::to_string(labels).map_err(|error| error.to_string())?;
         self.change(
             workspace,
             membership::OWNERSHIP,

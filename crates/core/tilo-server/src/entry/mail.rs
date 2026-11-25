@@ -4,8 +4,8 @@
 //!
 //! The words are in `mail/` beside this crate's sources, one plain-text and
 //! one HTML file per mail and language, and `mail/layout.html` around the
-//! HTML ones. `TILO_WORKSPACES_MAIL_TEMPLATES` names a directory of the same
-//! shape to use instead (the shared mail repository's generated coffee set);
+//! HTML ones. The workspace's entry names a directory of the same shape to use
+//! instead (`mail_templates`, the shared mail repository's generated coffee set);
 //! a configured file that is missing or malformed stops the service, never
 //! falling back to the built-in words. A plain-text file's first line is the
 //! subject (after an optional `Subject: `). `{{workspace}}`, `{{email}}`,
@@ -136,7 +136,7 @@ pub struct Templates {
 
 impl Templates {
     /// The templates built into the service, for an entry that configures no
-    /// directory (`TILO_WORKSPACES_MAIL_TEMPLATES`).
+    /// directory (`mail_templates`).
     pub fn baked() -> Self {
         Self {
             layout: LAYOUT.to_owned(),

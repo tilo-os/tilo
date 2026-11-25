@@ -1191,8 +1191,8 @@ struct WorkspacesInner {
     /// When each workspace was last written to, and a ping after each entry
     /// that changed: the directory's own, beside the entries' governance.
     directory: listing::Directory,
-    /// The entry's wait list, once whoever runs the server offers one
-    /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
+    /// The entry's mail, once whoever runs the server offers it
+    /// ([`Workspaces::mail_wait_list`]).
     entry: wait_list::EntrySettings,
     /// Held while a workspace is let go ([`Workspaces::release`]): whoever
     /// asks after it waits until what the host served of it is gone.

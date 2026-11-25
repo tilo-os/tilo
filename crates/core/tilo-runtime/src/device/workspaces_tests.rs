@@ -989,3 +989,68 @@ async fn a_server_answers_an_action_through_its_devices_dispatch() {
     );
     server.shutdown().await;
 }
+
+/// A kept workspace's entry is settled once, as it is made: the values the
+/// deployment names are the founder's first change, through the same entry
+/// change an owner makes later. A start that finds the workspace held settles
+/// nothing, so the owner's later change is what every start reads.
+#[tokio::test]
+async fn a_kept_workspaces_entry_is_settled_once_and_the_owners_change_stays() {
+    use tilo_action_policy::{EntryMail, EntryPolicy, ListingPolicy, Role};
+
+    let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
+    let (own, _directory, _key, cert, _) = ServiceWorkspaces::test_of_person().await;
+    let workspace = tilo_server_protocol::WorkspaceId::new();
+    let deployment = EntryPolicy {
+        listing: Some(ListingPolicy {
+            description: "Coffee and tea".into(),
+            default_role: Role::Editor,
+        }),
+        invitation_only: true,
+        wait_list_max: 4,
+        contact: Some("hello@lounge.example".into()),
+        mail: Some(EntryMail {
+            from: "invitations@lounge.example".into(),
+            templates: None,
+        }),
+    };
+    assert!(
+        own.found_kept(workspace, "Lounge", Some(&deployment))
+            .await
+            .unwrap(),
+        "this start founds the workspace"
+    );
+    let workspaces = own.service().workspaces();
+    let entry = workspaces
+        .entry_policy(&workspace.to_string())
+        .await
+        .expect("the kept workspace is founded here");
+    assert_eq!(
+        entry, deployment,
+        "the entry is the one the deployment names"
+    );
+
+    // The owner changes the wait list later, through the same entry change.
+    let changed = EntryPolicy {
+        wait_list_max: 7,
+        contact: Some("owner@lounge.example".into()),
+        ..deployment.clone()
+    };
+    workspaces
+        .found_entry(&workspace.to_string(), &cert, changed.clone())
+        .await
+        .expect("the owner changes the entry");
+
+    // A later start finds the workspace held and settles nothing over it.
+    assert!(
+        !own.found_kept(workspace, "Lounge", Some(&deployment))
+            .await
+            .unwrap(),
+        "the workspace is held, not founded again"
+    );
+    let entry = workspaces
+        .entry_policy(&workspace.to_string())
+        .await
+        .unwrap();
+    assert_eq!(entry, changed, "the owner's change survives the restart");
+}

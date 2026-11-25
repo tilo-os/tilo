@@ -38,6 +38,13 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_DESCRIPTION` | the workspace's name | what a kept workspace is, as the public directory shows it |
 | `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the entry holds to begin with |
 | `TILO_WORKSPACES_ROOT_FILE` | none | the owner's root, mounted from the operator's secrets: its 32-byte seed as 64 hexadecimal characters, readable by the image's user alone. A volume given it is that owner's own device and founds its kept workspaces; an empty volume then needs no ticket |
+| `TILO_WORKSPACES_WAIT_LIST_MAX` | none | how many addresses an invitation-only kept workspace's wait list keeps |
+| `TILO_WORKSPACES_CONTACT` | none | where someone asks to be taken off a kept workspace's wait list |
+| `TILO_WORKSPACES_MAIL_FROM` | none | the sender a kept workspace's wait list mails an address from; mail needs `TILO_WORKSPACES_RESEND_KEY_FILE` |
+| `TILO_WORKSPACES_MAIL_TEMPLATES` | none | the directory its wait-list mails' words are read from; the image's own words when none |
+| `TILO_WORKSPACES_RESEND_KEY_FILE` | none | the file the mail API key is read from, kept among the deployment's secrets, never in a workspace's records |
+| `TILO_WORKSPACES_RESEND_URL` | Resend's API | where mail is posted |
+| `TILO_WORKSPACES_LOCAL` | none | this deployment's addresses are this machine's own (a local stack), so the links its mails carry open here |
 
 A kept workspace's entry is settled once, when it is founded, and what its owners
 change later stands: a later start reads the workspace's entry rather than

@@ -45,7 +45,7 @@ use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
-use super::{CollaborationError, GovernedWorkspace, Workspaces};
+use super::{CollaborationError, GovernedWorkspace, Workspaces, wait_list};
 
 /// Where a server kept its public workspaces' listings before a workspace's
 /// entry was part of its governance ([`Workspaces::adopt_listings_file`]).
@@ -684,11 +684,8 @@ impl Workspaces {
                 last_active_ms: self.inner.directory.last_active(&summary.workspace),
                 community: false,
                 invitation_only: entry.invitation_only,
-                // The wait list every invitation-only entry here names in its refusal.
-                wait_list: self
-                    .wait_list_page()
-                    .filter(|_| entry.invitation_only)
-                    .cloned(),
+                // The wait list an entry here names in its refusal.
+                wait_list: wait_list::offered(&entry),
             });
         }
         entries
@@ -1966,7 +1963,7 @@ pub(crate) mod entry_tests {
             .unwrap();
 
         // Still a listed workspace: the site's directory names it, says it is
-        // invitation-only, and names no wait list while the server offers none.
+        // invitation-only, and names no wait list while its entry keeps none.
         let listed = workspaces
             .directory(&std::collections::BTreeSet::new())
             .await;
@@ -1974,13 +1971,33 @@ pub(crate) mod entry_tests {
         assert_eq!(listed[0].name, "Lounge");
         assert!(listed[0].invitation_only);
         assert_eq!(listed[0].wait_list, None);
-        // Once it offers one, the directory names it, as the entry's refusal does: a
-        // page offers it to someone with no invitation before anyone asks the entry.
+        // Once its entry keeps one, the directory names it, as the entry's refusal
+        // does: a page offers it to someone with no invitation before anyone asks
+        // the entry.
+        workspaces
+            .found_entry(
+                &workspace,
+                &owner,
+                EntryPolicy {
+                    listing: Some(ListingPolicy {
+                        description: "Coffee and tea".into(),
+                        default_role: Role::Editor,
+                    }),
+                    invitation_only: true,
+                    wait_list_max: 4,
+                    contact: Some("hello@lounge.example".into()),
+                    mail: Some(tilo_action_policy::EntryMail {
+                        from: "lounge@example.com".into(),
+                        templates: None,
+                    }),
+                },
+            )
+            .await
+            .unwrap();
         let offered = tilo_server_protocol::directory::EntryWaitList {
             contact: Some("hello@lounge.example".into()),
             mail: true,
         };
-        assert!(workspaces.offer_wait_list(offered.clone()));
         let listed = workspaces
             .directory(&std::collections::BTreeSet::new())
             .await;
@@ -2165,6 +2182,8 @@ pub(crate) mod entry_tests {
                     }),
                     invitation_only: false,
                     wait_list_max: 0,
+                    contact: None,
+                    mail: None,
                 },
             )
             .await
@@ -2222,6 +2241,8 @@ pub(crate) mod entry_tests {
                     }),
                     invitation_only: true,
                     wait_list_max: 0,
+                    contact: None,
+                    mail: None,
                 },
             )
             .await
@@ -2300,6 +2321,8 @@ pub(crate) mod entry_tests {
                     }),
                     invitation_only: false,
                     wait_list_max: 0,
+                    contact: None,
+                    mail: None,
                 },
             )
             .await
@@ -2357,6 +2380,8 @@ pub(crate) mod entry_tests {
                     }),
                     invitation_only: false,
                     wait_list_max: 0,
+                    contact: None,
+                    mail: None,
                 },
             )
             .await;
