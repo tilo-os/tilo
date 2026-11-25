@@ -687,6 +687,12 @@ tilo_test_env::scenario! {
         let of = "org.example.notes";
         store.install(of, &manifest(of, "gui", ""), &[("probe", b"binary")]);
         let dev = store.install_dev(of, &device);
+        // The toolkit's loop is what runs the app's code, even drawing nothing: it is handed the
+        // display, as a window's launch is.
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
         let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "sleep 600\n").unwrap();
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
         let app = apps
