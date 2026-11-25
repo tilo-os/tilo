@@ -865,7 +865,6 @@ mod tests {
     /// never as the person whose device serves it.
     #[tokio::test]
     async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
-        use tilolang_tilo::runtime::Value;
         const TASKS: &str = "so.tilo.tasks";
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
