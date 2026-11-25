@@ -1984,3 +1984,24 @@ fn a_view_declared_key_shows_as_the_buttons_shortcut_hint() {
         "a key the view computed to nothing draws no hint"
     );
 }
+
+#[test]
+fn an_icon_only_button_without_words_is_named_by_its_accessible_name() {
+    use super::component::ButtonProps;
+    use crate::component::Described;
+    let button = Button::from_props(
+        "sync",
+        ButtonProps {
+            label: String::new(),
+            icon: Some(crate::icons::Icon::Plus),
+            icon_only: true,
+            accessible_name: Some("Sync calendars".into()),
+            ..ButtonProps::default()
+        },
+    );
+    assert_eq!(Widget::tooltip(&button).as_deref(), Some("Sync calendars"));
+    assert_eq!(
+        Widget::accessibility(&button).unwrap().name.as_deref(),
+        Some("Sync calendars")
+    );
+}

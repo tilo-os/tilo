@@ -131,7 +131,15 @@ impl Described for Button {
                 .with_accessible_name(&label)
                 .tooltip(label.clone())
                 .with_faces_of(faces),
-            Some(icon) if icon_only => Self::icon_only(key, icon, &label),
+            // An icon alone is named by its accessible name when the label is empty
+            // (`ui.Button("", icon: .refresh, icon_only: true, accessible_name: ...)`).
+            Some(icon) if icon_only => {
+                let name = match accessible_name.as_deref() {
+                    Some(name) if label.is_empty() => name,
+                    _ => &label,
+                };
+                Self::icon_only(key, icon, name)
+            }
             Some(icon) => Self::new(key, &label).with_icon(icon),
             None => Self::new(key, &label),
         };
