@@ -75,14 +75,14 @@ pub(super) fn first_frame(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), La
     }
     let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
     let (constructed, construction) =
-        tilo_resource::profiling::observe(|| dispatch_definition(spec, args));
+        tilo_resource_plain::profiling::observe(|| dispatch_definition(spec, args));
     let DefinitionDispatch::Native(mut app) = constructed? else {
         return Err(LaunchError::Operation(
             "--first-frame constructs the live app".into(),
         ));
     };
     tilo_startup_metrics::mark("first-frame-start");
-    let ((), frame) = tilo_resource::profiling::observe(|| {
+    let ((), frame) = tilo_resource_plain::profiling::observe(|| {
         let mut scene = vello::Scene::new();
         app.surface_frame(&Offscreen(viewport), &mut scene);
     });

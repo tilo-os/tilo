@@ -289,6 +289,7 @@ pub(super) struct OwnerWakes {
 }
 
 impl Driver {
+    #[cfg(feature = "model")]
     /// Attach the queue shared by this tree's hosted components, so a service reaches the owner a
     /// worker woke ([`Self::service_pending_owner_models`]).
     ///
@@ -305,6 +306,7 @@ impl Driver {
         Ok(())
     }
 
+    #[cfg(feature = "model")]
     /// Service one batch of the owner models a worker woke: the owners whose record's save moved on
     /// are told the status they show, and any other owner is served its model through the tree,
     /// which the next frame builds again. How many owners were served.

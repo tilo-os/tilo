@@ -270,7 +270,7 @@ impl State {
     /// undo and outbound frontiers with the merged graph. Returns an error when `data` is
     /// not a valid Automerge snapshot or cannot be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
-        let load = tilo_resource::profiling::Phase::start("committed.load");
+        let load = tilo_resource_plain::profiling::Phase::start("committed.load");
         let mut incoming = AutoCommit::load(data)?;
         load.end();
         let before = self.doc.get_heads();

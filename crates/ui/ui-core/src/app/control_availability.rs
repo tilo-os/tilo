@@ -75,7 +75,7 @@ impl App {
     pub(crate) fn permissions_walk_due(&self, now: crate::time::Instant) -> bool {
         self.layout.walks.availability.as_ref().is_some_and(|walk| {
             walk.changes_at.is_some_and(|at| at <= now)
-                || walk.inputs.tree.shared_permissions != crate::permissions::shared_revision()
+                || walk.inputs.tree.shared_permissions != shared_permissions_revision()
         })
     }
 

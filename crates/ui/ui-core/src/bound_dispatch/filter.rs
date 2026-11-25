@@ -65,7 +65,7 @@ fn filter_shared_node(
     resource: &SharedResource,
 ) -> crate::published::Filtered<SharedResource> {
     use crate::published::{Filtered, SharedChildren};
-    let _phase = tilo_resource::profiling::Phase::start("ui.filtered_resource");
+    let _phase = tilo_resource_plain::profiling::Phase::start("ui.filtered_resource");
     let head = resource.head();
     let permissions = binding.permissions.borrow();
     let decider = permissions.action_decider(&binding.app_id);

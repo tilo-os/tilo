@@ -5,7 +5,7 @@
 use automerge::legacy::{Key, ObjectId, OpId};
 use automerge::{Automerge, ChangeHash};
 use std::collections::HashSet;
-use tilo_resource::profiling::measure;
+use tilo_resource_plain::profiling::measure;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchemaObjectId(String);

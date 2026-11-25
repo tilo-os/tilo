@@ -533,7 +533,7 @@ impl HistoryHost {
         true
     }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
-        let _phase = tilo_resource::profiling::Phase::start("ui.history_root_validation");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.history_root_validation");
         self.registration
             .validate_root_with_owner(root, self.enclosing_owner.as_ref())
     }
@@ -1316,7 +1316,7 @@ impl HistoryHost {
     /// Whether the shown source's committed frontier asks for a refresh: it cannot be read, or an open
     /// History has not taken it up yet.
     pub(crate) fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
-        let _phase = tilo_resource::profiling::Phase::start("ui.history_heads");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.history_heads");
         let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
         };

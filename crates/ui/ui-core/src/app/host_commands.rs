@@ -5,6 +5,7 @@ use super::App;
 use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
 use crate::platform::HostShortcut;
+#[cfg(feature = "model")]
 use crate::state::StateHistory as _;
 
 /// Changes whenever a host command's label, enabled state or presence may

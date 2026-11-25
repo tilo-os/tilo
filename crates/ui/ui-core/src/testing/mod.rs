@@ -30,9 +30,10 @@ pub(crate) use own_process::{in_own_process, test_path};
 pub(crate) use owned_text::OwnedText;
 pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};
 #[cfg(test)]
-pub(crate) use widgets::{
-    TwoWindows, delegate_widget_methods, inert_widget_methods, test_app_widget,
-};
+#[cfg(feature = "model")]
+pub(crate) use widgets::TwoWindows;
+#[cfg(test)]
+pub(crate) use widgets::{delegate_widget_methods, inert_widget_methods, test_app_widget};
 
 /// Write the frame a regression test drew, when a run asks for the evidence: a PNG under
 /// `$TILO_DRAW_REGRESSION_DIR` named `<case>-<theme>-<phase>.png`, where the phase is

@@ -21,7 +21,10 @@ pub use crate::app::driver::drive::{
 
 pub use crate::app::driver::fixtures::FIXTURE_PICTURE;
 #[cfg(any(test, feature = "test-support"))]
-pub use crate::app::driver::fixtures::{MOUNT_VIEWPORT, fixture_runner_inputs};
+pub use crate::app::driver::fixtures::MOUNT_VIEWPORT;
+#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "model")]
+pub use crate::app::driver::fixtures::fixture_runner_inputs;
 
 pub use crate::app::driver::frame::{
     CAPTURE_FRAME_INTERVAL, FrameDemand, FrameOutput, FrameRenderInput, FrameSchedule,

@@ -339,7 +339,7 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
-        let _phase = tilo_resource::profiling::Phase::start("ui.frame_update");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.frame_update");
         // The workspace's presence is state of the frame, lent under the window's
         // authority, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
@@ -382,7 +382,7 @@ impl super::App {
         if !force && !self.needs_sync {
             return false;
         }
-        let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.frame_sync");
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root_widget.settle(

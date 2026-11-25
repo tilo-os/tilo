@@ -13,6 +13,7 @@ use serde::Serialize;
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
 use super::Driver;
+#[cfg(feature = "model")]
 use crate::collaboration::CollabRequest;
 use crate::widget::{ResourceOperationStart, Widget};
 
@@ -28,6 +29,7 @@ pub(super) struct Jobs {
 }
 
 impl Driver {
+    #[cfg(feature = "model")]
     /// Every update the job `invocation` reported to its caller so far, oldest first: its
     /// progress, then what it ended as.
     #[must_use]
@@ -35,6 +37,7 @@ impl Driver {
         self.call_updates(invocation)
     }
 
+    #[cfg(feature = "model")]
     /// Start `address` with `arguments` as the workspace's broker delivers an admitted call, for
     /// `invoker` (an agent, a member) or, with none, for the person at this device; sent again with
     /// the person's approve when `approval` holds it ([`Self::approval`]). The broker's admission
@@ -58,6 +61,7 @@ impl Driver {
         self.start_job_within(invoker, None, address, arguments, approval, None)
     }
 
+    #[cfg(feature = "model")]
     /// Cancel the running job `invocation`, as its caller does through the broker: the job decides
     /// where it can stop and answers with what it ended as, which is also in
     /// [`Self::job_updates`]. `None` when it had already ended, or has not answered yet.
@@ -78,6 +82,7 @@ impl Driver {
             .find(InvocationUpdate::is_terminal)
     }
 
+    #[cfg(feature = "model")]
     /// The resources the app's hosted components publish, as their permissions let their bound
     /// actions be invoked. With `id`, only that resource: an app may resolve it lazily (a search
     /// hit, an open document), so it can be absent from the root listing and still be
@@ -92,6 +97,7 @@ impl Driver {
         self.bound_resources_of(None, id)
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::bound_resources`] of one hosted component instance, such as one window of a shell;
     /// `None` for every hosted component.
     ///
@@ -138,15 +144,18 @@ impl Driver {
             .reasons()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        failures.extend(self.call_failures());
-        failures.extend(
-            self.peer_requests()
-                .into_iter()
-                .filter_map(|request| match request {
-                    CollabRequest::ResourceLocalEffect { update, .. } => ended_badly(&update),
-                    _ => None,
-                }),
-        );
+        #[cfg(feature = "model")]
+        {
+            failures.extend(self.call_failures());
+            failures.extend(
+                self.peer_requests()
+                    .into_iter()
+                    .filter_map(|request| match request {
+                        CollabRequest::ResourceLocalEffect { update, .. } => ended_badly(&update),
+                        _ => None,
+                    }),
+            );
+        }
         failures
     }
 
@@ -242,10 +251,16 @@ impl Driver {
     /// Whether the record the window was opened on has not arrived: the component shows its
     /// opening view, and what it will publish is read from the record once that is here.
     fn record_still_arriving(&self) -> bool {
-        crate::bound_dispatch::callback_binding(&*self.app.root_widget)
-            .is_some_and(|binding| binding.records.read(&binding.checkout.id, |_| ()).is_none())
+        #[cfg(feature = "model")]
+        let arriving = crate::bound_dispatch::callback_binding(&*self.app.root_widget)
+            .is_some_and(|binding| binding.records.read(&binding.checkout.id, |_| ()).is_none());
+        // Without Tilo's model a window is opened on no record.
+        #[cfg(not(feature = "model"))]
+        let arriving = false;
+        arriving
     }
 
+    #[cfg(feature = "model")]
     /// Every action contract violation for which the app would withdraw a hosted component's
     /// published surface: it withdraws a whole component when one of its actions breaks its
     /// contract, so a test asserts this is empty rather than finding the surface gone at runtime.
@@ -337,6 +352,7 @@ impl Driver {
         }
     }
 
+    #[cfg(feature = "model")]
     /// What the app asked of its peer since this was last asked, oldest first: the transport
     /// requests a live window's host takes from it.
     ///
@@ -360,6 +376,7 @@ impl Driver {
     }
 }
 
+#[cfg(feature = "model")]
 /// What an `update` that ended failed or cancelled says of why.
 fn ended_badly(update: &InvocationUpdate) -> Option<String> {
     match update {

@@ -42,6 +42,7 @@ mod action_directory_snapshot;
 #[cfg(feature = "model")]
 mod bound_document_sync;
 mod close_admission;
+#[cfg(feature = "model")]
 mod follow_ups;
 #[cfg(feature = "model")]
 mod handoff;
@@ -54,6 +55,7 @@ mod report_point_tests;
 mod window_box;
 
 mod model_lifecycle;
+#[cfg(feature = "model")]
 mod presences;
 mod retirement_assembly;
 #[cfg(test)]
@@ -64,10 +66,9 @@ include!("app/floating.rs");
 mod part_bar;
 mod runtime;
 mod window_bar;
-use runtime::{
-    AccessibilityRuntime, ActionRuntime, BrokerReply, HeldOwnInvocation, InputRuntime,
-    LayoutRuntime, WindowRuntime,
-};
+use runtime::{AccessibilityRuntime, ActionRuntime, InputRuntime, LayoutRuntime, WindowRuntime};
+#[cfg(feature = "model")]
+use runtime::{BrokerReply, HeldOwnInvocation};
 #[cfg(feature = "model")]
 use runtime::{CollaborationRuntime, ContinuationRuntime, HistoryRuntime, PresenceRuntime};
 #[cfg(feature = "model")]
@@ -1880,7 +1881,7 @@ impl App {
     /// route certifies, so it needs no private window binding, which a workspace
     /// whose records are sealed channels never hands out.
     fn publish_search_index(&mut self) {
-        let _phase = tilo_resource::profiling::Phase::start("ui.publish_search_index");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.publish_search_index");
         let Some(state) = crate::search::capability::search_index_state(self.root_widget.as_ref())
         else {
             return;
@@ -2452,7 +2453,7 @@ impl App {
     /// and the tree it names both stand.
     pub(crate) fn rebuild_structure_placing_focus(&mut self) {
         let _entry = self.enter_wake_scope();
-        let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.rebuild_structure");
         // The header the rebuild builds hears whether the window's bar
         // presents search, so it never shows a second search control.
         self.offer_window_bar_to_header();

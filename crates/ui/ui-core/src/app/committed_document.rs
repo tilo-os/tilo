@@ -29,7 +29,7 @@ impl App {
             if !read.is_current() || read.was_applied() {
                 continue;
             }
-            let _phase = tilo_resource::profiling::Phase::start("committed.take");
+            let _phase = tilo_resource_plain::profiling::Phase::start("committed.take");
             // Changes apply only to an owner holding their base; one that
             // does not makes the reader read the document whole.
             let mut lacks_base = false;

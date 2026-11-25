@@ -27,7 +27,6 @@ use executing::{ExecutingHostDevice, ExecutingHostPerson, ExecutingScope};
 pub use executing::{
     executing_device, executing_person, executing_scope, local_person_invocation_permitted,
 };
-#[cfg(feature = "model")]
 use tilo_actions::ResourceSpec;
 
 mod node_map;
@@ -1784,7 +1783,8 @@ pub(crate) fn discover_cached_bound_resources(
             let snapshot = if let Some(cached) = cached {
                 cached
             } else {
-                let _phase = tilo_resource::profiling::Phase::start("ui.bound_discovery_miss");
+                let _phase =
+                    tilo_resource_plain::profiling::Phase::start("ui.bound_discovery_miss");
                 // The snapshot this one replaces: its controls' derivation
                 // and its filter token carry over, so what the two forests
                 // share is neither filtered nor surveyed again.
@@ -1922,7 +1922,6 @@ pub(crate) fn press_asks(
     }
 }
 
-#[cfg(feature = "model")]
 /// Why an invocation the person made did not run, in words for them: what
 /// the window says instead of dropping the click unseen.
 pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
@@ -1953,7 +1952,6 @@ pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
     reason
 }
 
-#[cfg(feature = "model")]
 /// What a person reads for a refusal the toolkit routing made, by
 /// its code: those refusals say, for an agent or a log, which step of the
 /// dispatch stopped, never what the person can do. `None` for a refusal
@@ -2277,14 +2275,12 @@ pub(crate) fn select_bound_target(
     Ok(selected)
 }
 
-#[cfg(feature = "model")]
 pub(crate) type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
     &'a ResourceSpec,
     &'a tilo_actions::ActionSpec,
 );
 
-#[cfg(feature = "model")]
 pub(crate) fn find_action_resource<'a>(
     resources: &'a [ResourceSpec],
     id: &str,
@@ -2298,7 +2294,6 @@ pub(crate) fn find_action_resource<'a>(
     })
 }
 
-#[cfg(feature = "model")]
 pub(crate) fn resolve_resource_invocation<'a>(
     resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
@@ -2328,7 +2323,6 @@ pub(crate) fn resolve_resource_invocation<'a>(
     Ok((typed, resource, spec))
 }
 
-#[cfg(feature = "model")]
 pub(crate) fn encode_resource_action(
     resources: &[ResourceSpec],
     address: &tilo_actions::ActionAddress,
@@ -2342,7 +2336,6 @@ pub(crate) fn encode_resource_action(
     }
 }
 
-#[cfg(feature = "model")]
 /// Resolve an invocation's arguments against `resources` and encode it.
 pub(crate) fn encode_resource_invocation(
     resources: &[ResourceSpec],
@@ -4815,7 +4808,7 @@ impl CallbackBinding {
         if OPEN_SCOPES.with_borrow(|open| open.last().is_some_and(|open| open.same(self, &actor))) {
             return Ok(CallbackScopeGuard::held());
         }
-        let _profile = tilo_resource::profiling::Phase::start("ui.callback_scope");
+        let _profile = tilo_resource_plain::profiling::Phase::start("ui.callback_scope");
         let wake = self
             .lifetime
             .enter_if_open()
@@ -4975,7 +4968,7 @@ impl CallbackBinding {
                 Ok(callback(outer, &ROOT))
             };
         }
-        let _phase = tilo_resource::profiling::Phase::start("ui.record_frame");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.record_frame");
         self.records
             .with_action_state(&self.checkout.id, |document, history, state| {
                 let frame = Rc::new(RefCell::new(Some(ActionFrame {

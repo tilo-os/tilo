@@ -8,10 +8,12 @@ pub const FIXTURE_PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgA
 
 #[cfg(any(test, feature = "test-support"))]
 mod runner {
+    #[cfg(feature = "model")]
     use crate::application::ComponentRunnerInputs;
 
     /// The runner inputs every application test draws with: the pinned font catalogue and the dark
     /// theme a capture is usually taken in.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
         ComponentRunnerInputs {
@@ -26,4 +28,7 @@ mod runner {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub use runner::{MOUNT_VIEWPORT, fixture_runner_inputs};
+pub use runner::MOUNT_VIEWPORT;
+#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "model")]
+pub use runner::fixture_runner_inputs;

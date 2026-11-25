@@ -63,7 +63,7 @@ impl App {
             rebuilds: self.layout.rebuilds,
             remounts: self.layout.remounts,
             permissions: self.actions.permission_generation.get(),
-            shared_permissions: crate::permissions::shared_revision(),
+            shared_permissions: shared_permissions_revision(),
         }
     }
 
@@ -203,6 +203,7 @@ impl App {
             })
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
+        #[cfg(feature = "model")]
         if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -252,6 +253,7 @@ impl App {
             .filter(|cache| cache.key == key)
             .and_then(|cache| cache.complete.clone())
             .unwrap_or_default();
+        #[cfg(feature = "model")]
         if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -264,6 +266,7 @@ impl App {
                     .flat_map(|snapshot| snapshot.into_resources()),
             );
         }
+        #[cfg(feature = "model")]
         crate::history_source::sentence::learn_labels(&resources);
         resources
     }
@@ -526,10 +529,10 @@ impl App {
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
     fn publish_action_surface(&mut self) {
-        let _phase = tilo_resource::profiling::Phase::start("ui.publish_action_surface");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.publish_action_surface");
         self.actions.action_surface_owed = false;
         if self.collaboration.manager.is_connected() {
-            let _routes = tilo_resource::profiling::Phase::start("ui.publish.routes");
+            let _routes = tilo_resource_plain::profiling::Phase::start("ui.publish.routes");
             self.refresh_document_routes();
         }
         if self.collaboration.manager.take_action_surface_failed() {
@@ -543,7 +546,8 @@ impl App {
         // keystroke begins by publishing (an input's edits are attributed
         // to the surface on the route); this keeps that to a comparison.
         let unchanged = {
-            let _observation = tilo_resource::profiling::Phase::start("ui.publish.observation");
+            let _observation =
+                tilo_resource_plain::profiling::Phase::start("ui.publish.observation");
             let stamp = self.publication_stamp();
             stamp.as_ref().is_some_and(|stamp| {
                 Some(stamp) == self.actions.published_stamp.as_ref()
@@ -2043,7 +2047,7 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same API/lifecycle as every other caller.
     pub(super) fn dispatch_control_invocations(&mut self) -> usize {
-        let _phase = tilo_resource::profiling::Phase::start("ui.dispatch_controls");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.dispatch_controls");
         // What an earlier pass refused and has not said yet is said first.
         self.say_refusals();
         self.service_close_admission();
@@ -3238,4 +3242,14 @@ impl App {
         let anchor = self.tree().acting_control_rect();
         self.refuse_at(error, anchor);
     }
+}
+
+/// The revision of the permissions every window shares: an outside authority's change moves it. A
+/// window without Tilo's model follows no shared permissions, so it never moves.
+fn shared_permissions_revision() -> u64 {
+    #[cfg(feature = "model")]
+    let revision = crate::permissions::shared_revision();
+    #[cfg(not(feature = "model"))]
+    let revision = 0;
+    revision
 }

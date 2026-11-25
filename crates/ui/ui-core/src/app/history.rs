@@ -123,11 +123,12 @@ impl App {
             history.discard_pending_output(self.root_widget.as_mut());
             return;
         }
+        #[cfg(feature = "model")]
         {
             let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
-            while crate::widget::controls::take_control_invocation(self.root_widget.as_mut())
-                .is_some()
-            {}
+        }
+        while crate::widget::controls::take_control_invocation(self.root_widget.as_mut()).is_some()
+        {
         }
     }
     #[cfg(feature = "model")]

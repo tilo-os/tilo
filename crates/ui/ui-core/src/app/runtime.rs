@@ -15,6 +15,7 @@ use crate::collaboration::CollaborationManager;
 #[cfg(feature = "model")]
 use crate::presence::PresenceKey;
 use crate::theme::Theme;
+#[cfg(feature = "model")]
 use crate::time::Instant;
 use crate::widget::Widget;
 use std::cell::{Cell, RefCell};

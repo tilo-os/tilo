@@ -20,6 +20,8 @@ pub(super) struct Overlay {
     retained_frames: u64,
 }
 
+// History's held-back controls and the actions hosted components publish: Tilo's model's.
+#[cfg(feature = "model")]
 impl Driver {
     // ---- History's held-back controls ----
 
@@ -293,7 +295,9 @@ impl Driver {
         visit(self.app.root_widget.as_ref(), pointer, bounds, &mut matches);
         (matches.len() == 1).then(|| matches[0])
     }
+}
 
+impl Driver {
     // ---- other people's pointers a host placed on the surface ----
 
     /// Place `pointers` over the app, in the surface's logical pixels: each is drawn with the

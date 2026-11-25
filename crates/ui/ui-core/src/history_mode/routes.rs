@@ -55,7 +55,7 @@ pub(crate) fn with_mutation<T>(
     mutation: &DocumentMutation,
     apply: impl FnOnce(Incoming<'_>) -> Result<T, RemoteApplyError>,
 ) -> Result<T, RemoteApplyError> {
-    let _phase = tilo_resource::profiling::Phase::start("committed.load");
+    let _phase = tilo_resource_plain::profiling::Phase::start("committed.load");
     Incoming::of(mutation, apply)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?
 }
@@ -67,7 +67,7 @@ pub(crate) fn merge_committed(
     candidate: &mut AutoCommit,
     incoming: Incoming<'_>,
 ) -> Result<bool, RemoteApplyError> {
-    let _phase = tilo_resource::profiling::Phase::start("committed.merge");
+    let _phase = tilo_resource_plain::profiling::Phase::start("committed.merge");
     ready(candidate)?;
     let before = super::sorted_heads(candidate.base_heads());
     match incoming {
@@ -93,7 +93,7 @@ fn ready(doc: &AutoCommit) -> Result<(), RemoteApplyError> {
 
 /// Apply an incremental stream to `doc`, whole or not at all.
 pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
-    let _phase = tilo_resource::profiling::Phase::start("committed.changes");
+    let _phase = tilo_resource_plain::profiling::Phase::start("committed.changes");
     let changes = automerge::Automerge::parse_changes(bytes)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
     doc.apply_incoming(changes)

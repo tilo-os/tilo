@@ -12,6 +12,7 @@ use automerge::{AutoCommit, ObjId};
 pub(crate) use collab_types::history::HistoryMoment;
 #[cfg(feature = "model")]
 use collab_types::history::same_frontier;
+#[cfg(feature = "model")]
 pub use collab_types::history::{UndoEntry, UndoLog};
 #[cfg(feature = "model")]
 pub use collab_types::history::{write_patches, write_revert_patches, write_revert_patches_where};

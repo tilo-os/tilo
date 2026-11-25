@@ -139,6 +139,7 @@ macro_rules! test_app_widget {
 
 pub(crate) use {delegate_widget_methods, inert_widget_methods, test_app_widget};
 
+#[cfg(feature = "model")]
 /// Two editor windows side by side, as the shell's strip lays them out: 400x300 each in
 /// a surface that fills its parent.
 pub(crate) struct TwoWindows {
@@ -146,6 +147,7 @@ pub(crate) struct TwoWindows {
     rect: ::vello::kurbo::Rect,
 }
 
+#[cfg(feature = "model")]
 impl TwoWindows {
     /// Two stub windows labelled `labels`.
     pub(crate) fn new(labels: [&str; 2]) -> Self {
@@ -161,6 +163,7 @@ impl TwoWindows {
     }
 }
 
+#[cfg(feature = "model")]
 impl crate::widget::Widget for TwoWindows {
     fn build_layout(
         &mut self,

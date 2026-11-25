@@ -17,7 +17,7 @@
 //!
 //! A person's "every click takes seconds" then names its phase in the next
 //! log instead of needing a profiler on their machine. The line ends with the
-//! named scopes (`tilo_resource::profiling::Phase`) the event ran, the costliest
+//! named scopes (`tilo_resource_plain::profiling::Phase`) the event ran, the costliest
 //! first, as `scopes: ui.publish_action_surface=812/3` (milliseconds, then how
 //! many times): what inside a phase took the time. Outside a slow event the
 //! cost is two clock reads per event and per marked phase or scope.
@@ -111,7 +111,7 @@ impl Span {
         if owner && name != FRAME && name != "other" && !name.is_empty() {
             note_cause(name);
         }
-        let scopes = owner && tilo_resource::profiling::begin_live();
+        let scopes = owner && tilo_resource_plain::profiling::begin_live();
         Self {
             kind,
             name,
@@ -131,7 +131,7 @@ impl Drop for Span {
         }
         let phases = ACTIVE.with(|active| active.borrow_mut().take());
         let scopes = if self.scopes {
-            tilo_resource::profiling::take_live()
+            tilo_resource_plain::profiling::take_live()
         } else {
             Vec::new()
         };
@@ -228,7 +228,7 @@ const MOST_SCOPES: usize = 10;
 
 /// The costliest named scopes an event ran, as the report's tail: each
 /// `name=ms/calls`, the costliest first. Scopes nest, so they do not add up.
-fn scopes_line(mut scopes: Vec<tilo_resource::profiling::Sample>) -> String {
+fn scopes_line(mut scopes: Vec<tilo_resource_plain::profiling::Sample>) -> String {
     scopes.retain(|scope| scope.elapsed_ns >= 1_000_000);
     if scopes.is_empty() {
         return String::new();
@@ -296,13 +296,13 @@ mod tests {
         {
             let span = Span::begin("test", "scoped");
             assert!(span.scopes, "the owner observes the scopes inside it");
-            drop(tilo_resource::profiling::Phase::start("ui.draw"));
+            drop(tilo_resource_plain::profiling::Phase::start("ui.draw"));
             drop(span);
             assert!(
-                tilo_resource::profiling::begin_live(),
+                tilo_resource_plain::profiling::begin_live(),
                 "the span ended its observation"
             );
-            drop(tilo_resource::profiling::take_live());
+            drop(tilo_resource_plain::profiling::take_live());
         }
     }
 
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn the_report_names_the_costliest_scopes_first() {
-        let scope = |phase, ms: u128, calls| tilo_resource::profiling::Sample {
+        let scope = |phase, ms: u128, calls| tilo_resource_plain::profiling::Sample {
             phase,
             elapsed_ns: ms * 1_000_000,
             calls,

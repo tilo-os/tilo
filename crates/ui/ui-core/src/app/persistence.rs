@@ -7,13 +7,14 @@ impl App {
         self.autosave_generation = self.autosave_generation.wrapping_add(1);
     }
 
+    #[cfg(feature = "model")]
     /// Show the record the window's component asked to open in its place
     /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)):
     /// close the component, keeping its recovery, mount the one it built,
     /// and move the window's collaboration to the new record's route.
     /// Whether the window now shows another record.
     pub fn swap_requested_component(&mut self) -> bool {
-        let _phase = tilo_resource::profiling::Phase::start("ui.swap_component");
+        let _phase = tilo_resource_plain::profiling::Phase::start("ui.swap_component");
         let _entry = self.enter_wake_scope();
         let Some(replacement) =
             crate::component_lifecycle::take_replacement(self.root_widget.as_mut())
@@ -89,12 +90,14 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     /// The window's collaboration, for a test of what it joined.
     #[cfg(test)]
     pub(crate) fn collaboration_manager(&self) -> &CollaborationManager {
         &self.collaboration.manager
     }
 
+    #[cfg(feature = "model")]
     /// Send what the window's records changed to their workspace, where the store writes them
     /// itself.
     #[cfg(feature = "native")]

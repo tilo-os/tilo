@@ -55,6 +55,7 @@ impl Driver {
 
 // Presence: where the person is, and where others act.
 impl Driver {
+    #[cfg(feature = "model")]
     /// What the focused widget publishes as presence (its caret or selection): what the app tells
     /// its peers of where the person is.
     #[must_use]

@@ -11,6 +11,7 @@ use super::Driver;
 use crate::headless::{Capture, DEFAULT_VIEWPORT, Spec};
 
 impl Driver {
+    #[cfg(feature = "model")]
     /// Drive the prepared `component` with `spec`'s steps, audit it and write the outputs the spec
     /// names. Returns 0 for success, 1 for a step or output failure, and 3 when the component
     /// could not be mounted or what it holds could not be kept.
@@ -22,6 +23,7 @@ impl Driver {
         Self::run_component_staged(spec, component, inputs, |_| Ok(()))
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::run_component`], with `stage` run on the mounted window before the steps: the
     /// named scenario's selection, open menu or drag, as a capture of it shows them.
     pub fn run_component_staged(

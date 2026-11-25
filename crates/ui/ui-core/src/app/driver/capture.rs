@@ -2,12 +2,15 @@
 //! calls made within a caller's context (an agent's run), the jobs they start and how they end,
 //! and the items a collection leaves past its page.
 
+#[cfg(feature = "model")]
 use tilo_actions::{ActionAddress, ApiError, InvocationId, InvocationUpdate};
 
 use super::Driver;
+#[cfg(feature = "model")]
 use crate::widget::ResourceOperationStart;
 
 impl Driver {
+    #[cfg(feature = "model")]
     /// The record the hosted component shows now: the one it was launched on, or one it opened in
     /// that one's place.
     #[must_use]
@@ -19,6 +22,7 @@ impl Driver {
             .map(|bound| bound.component.record())
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::invoke_action`] as the person at the surface within `ambient`, the context a
     /// caller's connection gives every invocation it makes (an agent's run, its purpose): what
     /// the action changes is recorded with it.
@@ -48,6 +52,7 @@ impl Driver {
         started
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::start_bound_job_for`] within `ambient` for the action the hosted component
     /// `address.instance_id` publishes: the task the invoker carries out (an agent's run, its
     /// purpose), recorded with every edit the job makes. The job runs under the invocation
@@ -264,6 +269,7 @@ impl Driver {
         Ok((invocation, started))
     }
 
+    #[cfg(feature = "model")]
     /// Run `address`, an immediate document action the app's own person makes, where the app
     /// resolves and judges it, as its own press runs there: then the frame that shows what it
     /// changed is the one whoever reads the app runs.
@@ -298,6 +304,7 @@ impl Driver {
         }
     }
 
+    #[cfg(feature = "model")]
     /// What a call of `address` at `instance` is told when the app could not resolve it: the
     /// permission its publication keeps it from the caller, or that nothing publishes it.
     fn unoffered(
@@ -313,6 +320,7 @@ impl Driver {
         )
     }
 
+    #[cfg(feature = "model")]
     /// Run frames as an idle window does until the job `invocation` ended or `timeout` passed on
     /// the current [`crate::background::Background`]'s clock: what it ended as, `None` while it
     /// still runs.
@@ -325,6 +333,7 @@ impl Driver {
         self.job_end(invocation)
     }
 
+    #[cfg(feature = "model")]
     /// What the job `invocation` ended as, if it has.
     fn job_end(&self, invocation: InvocationId) -> Option<InvocationUpdate> {
         self.call_updates(invocation)
@@ -357,6 +366,7 @@ impl Driver {
         crate::widget::resources_past_page(self.app.root_widget.as_ref(), &self.app.state.doc)
     }
 
+    #[cfg(feature = "model")]
     /// The hosted component instance that owns the widget named `name`: whose bound actions a
     /// press on it invokes.
     #[must_use]

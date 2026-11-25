@@ -30,6 +30,7 @@ mod launch;
 mod layout_check;
 pub(crate) mod metrics;
 mod palette;
+#[cfg(feature = "model")]
 mod peer;
 mod pictures;
 mod session;
@@ -39,12 +40,14 @@ mod uicore;
 mod wake;
 mod widget;
 mod window_bar;
+#[cfg(feature = "model")]
 mod workspace_side;
 use crate::a11y::AccessNode;
 use crate::headless::{
     AccessibilityAudit, InspectionNode, InspectionSnapshot, NativeAppAudit, NativeAppIssue,
     SemanticExpectation,
 };
+#[cfg(feature = "model")]
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -54,6 +57,7 @@ use crate::widget::Widget;
 pub use apps_a::{WindowBarNotice, WindowBarNoticeButton};
 pub use palette::FollowedView;
 pub use wake::OwedSettle;
+#[cfg(feature = "model")]
 pub use workspace_side::{ProvidedInvocation, ServedProvider, ShownHost};
 
 /// The surface a [`Driver`] shows its app on: a size and a scale, with
@@ -221,6 +225,7 @@ pub struct Driver {
         crate::window_toolbar::WindowScope,
     )>,
     /// The peer standing for the workspace's broker, once connected ([`Self::connect_peer`]).
+    #[cfg(feature = "model")]
     peer: Option<peer::Peer>,
     metrics: metrics::Metrics,
     /// What the driver keeps of the calls it made and the requests it read ([`jobs`]).
@@ -270,6 +275,7 @@ impl Driver {
             bar: None,
             bar_at_rest: false,
             window: None,
+            #[cfg(feature = "model")]
             peer: None,
             metrics: metrics::Metrics::default(),
             jobs: jobs::Jobs::default(),
@@ -442,6 +448,7 @@ impl Driver {
         Self::from_managed_root_with(state, root, viewport, DriverInputs::themed(Theme::dark()))
     }
 
+    #[cfg(feature = "model")]
     /// [`Self::from_managed_root`] with caller-owned fonts and identity.
     ///
     /// # Errors
@@ -560,6 +567,7 @@ impl Driver {
         self.note_retained_frame();
         self.check_retained_geometry_if_due();
         // What the app asked of its broker in this frame is answered in the frame after.
+        #[cfg(feature = "model")]
         if let Some(serve) = self.peer.as_ref().map(|peer| peer.serve)
             && serve(self)
         {
@@ -757,6 +765,13 @@ impl Driver {
     /// Serve one batch of the owner models a worker woke, as a live host's idle pass does: a
     /// refusal keeps the rest queued and the next pass retries.
     fn service_idle_owner_models(&mut self) {
+        // Only Tilo's model hosts components whose models a worker wakes.
+        #[cfg(feature = "model")]
+        self.service_woken_owner_models();
+    }
+
+    #[cfg(feature = "model")]
+    fn service_woken_owner_models(&mut self) {
         if !self.has_pending_owner_models() {
             return;
         }
@@ -801,6 +816,7 @@ impl Driver {
         }
     }
 
+    #[cfg(feature = "model")]
     /// Offer the hosted component's store what the app changed and run the frame that shows it.
     /// Whether anything was written: false when no component is hosted.
     pub fn persist_tick(&mut self) -> bool {
@@ -812,11 +828,18 @@ impl Driver {
     /// Offer the hosted component's store what the app changed, laying nothing out: the write the
     /// next frame shows. Whether a component is hosted.
     fn tick_writes(&self) -> bool {
-        let binding = crate::bound_dispatch::callback_binding(&*self.app.root_widget);
-        if let Some(binding) = &binding {
-            binding.records.tick();
-        }
-        binding.is_some()
+        #[cfg(feature = "model")]
+        let hosted = {
+            let binding = crate::bound_dispatch::callback_binding(&*self.app.root_widget);
+            if let Some(binding) = &binding {
+                binding.records.tick();
+            }
+            binding.is_some()
+        };
+        // Only Tilo's model hosts a component with a store of its own.
+        #[cfg(not(feature = "model"))]
+        let hosted = false;
+        hosted
     }
 
     /// When the app next wants a frame with no input to bring one.
@@ -1398,14 +1421,17 @@ impl Driver {
 
     /// The first widget of type `T` in the tree, without running a frame.
     pub fn widget_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        /// The component a widget belongs to, the nearest above it: with Tilo's model only.
+        #[cfg(feature = "model")]
+        type Owner = Option<crate::bound_dispatch::CallbackBinding>;
+        #[cfg(not(feature = "model"))]
+        type Owner = ();
         fn find(
             widget: &mut dyn Widget,
             ty: TypeId,
-            owner: Option<crate::bound_dispatch::CallbackBinding>,
-        ) -> Option<(
-            &mut dyn Widget,
-            Option<crate::bound_dispatch::CallbackBinding>,
-        )> {
+            owner: Owner,
+        ) -> Option<(&mut dyn Widget, Owner)> {
+            #[cfg(feature = "model")]
             let owner = crate::bound_dispatch::callback_binding(widget).or(owner);
             if widget
                 .as_any_mut()
@@ -1423,8 +1449,13 @@ impl Driver {
         // What the caller changes may be anything the widget publishes: nothing the app derived
         // from it before stands.
         self.app.invalidate_widget_resource_cache();
-        let (found, owner) = find(self.app.root_widget.as_mut(), TypeId::of::<T>(), None)?;
-        if let Some(owner) = owner {
+        let (found, _owner) = find(
+            self.app.root_widget.as_mut(),
+            TypeId::of::<T>(),
+            Owner::default(),
+        )?;
+        #[cfg(feature = "model")]
+        if let Some(owner) = _owner {
             owner.note_input();
         }
         found.as_any_mut()?.downcast_mut::<T>()
@@ -1510,6 +1541,7 @@ impl Driver {
         pick.icon()
     }
 
+    #[cfg(feature = "model")]
     /// What the app wants its process to do (open another window, quit), once.
     pub fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         let bound = self
@@ -1523,6 +1555,7 @@ impl Driver {
     /// The document as JSON: the mounted component's record when one is, else the app's own
     /// document.
     pub fn dump_json(&mut self) -> String {
+        #[cfg(feature = "model")]
         if let Some(binding) = crate::bound_dispatch::callback_binding(&*self.app.root_widget) {
             let records = &binding.records;
             let Some(mut dump) = records.read(&binding.checkout.id, |doc| {
@@ -2632,6 +2665,7 @@ impl Driver {
         }
     }
 
+    #[cfg(feature = "model")]
     /// The invocation the app handed its peer since `sent` of its requests were made
     /// ([`Self::peer_requests`]) for a call of `address`, whose answers [`Self::job_updates`]
     /// reads. The call names the action the caller gave it: what an app publishes beside its
@@ -2799,6 +2833,7 @@ impl Driver {
             .map(|binding| binding.instance_id)
     }
 
+    #[cfg(feature = "model")]
     /// The record the hosted component was launched on.
     #[must_use]
     pub fn component_resource(&self) -> Option<crate::resource::DocumentCheckout> {
@@ -2813,6 +2848,7 @@ impl Driver {
         crate::app::driver::drive::drive(self, steps)
     }
 
+    #[cfg(feature = "model")]
     /// Have the record writer acknowledge every pending edit of the hosted component, then run
     /// the frame that shows the record saved: an explicit save boundary for a capture.
     ///
