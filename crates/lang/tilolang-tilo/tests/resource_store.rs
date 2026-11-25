@@ -448,12 +448,13 @@ view ticks(list: Ticks) {
 }
 "#;
 
-/// A store held in this process that counts the resources its pages answered with, and the
-/// resources it was asked for one by one.
+/// A store held in this process that counts the resources its pages answered with, the
+/// resources it was asked for one by one, and the ends of histories it was asked for.
 struct Counted {
     port: tilo_resource_store::LocalPort,
     rows: std::cell::Cell<usize>,
     gets: std::cell::Cell<usize>,
+    ends: std::cell::Cell<usize>,
 }
 
 impl tilo_resource_store::Port for Counted {
@@ -461,8 +462,12 @@ impl tilo_resource_store::Port for Counted {
         &self,
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
-        if matches!(command, tilo_resource_store::wire::Command::Get { .. }) {
-            self.gets.set(self.gets.get() + 1);
+        match command {
+            tilo_resource_store::wire::Command::Get { .. } => self.gets.set(self.gets.get() + 1),
+            tilo_resource_store::wire::Command::VersionEnd { .. } => {
+                self.ends.set(self.ends.get() + 1);
+            }
+            _ => {}
         }
         let reply = tilo_resource_store::Port::command(&self.port, command)?;
         if let tilo_resource_store::wire::Reply::Page(page) = &reply {
@@ -492,6 +497,7 @@ fn a_filter_after_an_actions_own_write_reads_what_the_index_narrows_it_to() {
         port: tilo_resource_store::LocalPort::in_memory(),
         rows: std::cell::Cell::new(0),
         gets: std::cell::Cell::new(0),
+        ends: std::cell::Cell::new(0),
     });
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
@@ -562,6 +568,7 @@ fn a_resource_the_store_holds_none_of_is_asked_for_once_until_its_record_moves()
         port: tilo_resource_store::LocalPort::in_memory(),
         rows: std::cell::Cell::new(0),
         gets: std::cell::Cell::new(0),
+        ends: std::cell::Cell::new(0),
     });
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
@@ -588,5 +595,65 @@ fn a_resource_the_store_holds_none_of_is_asked_for_once_until_its_record_moves()
         port.gets.get(),
         2,
         "its record moved: the store is asked again, once"
+    );
+}
+
+/// When a list was made, read for each of its rows (who may read a row its author made), is
+/// asked of the store once: the answer holds until the list is written, and then it is asked
+/// again.
+#[test]
+fn a_lists_first_version_is_asked_for_once_until_the_list_is_written() {
+    use tilolang_runtime::store::Store as _;
+    let compiled = tilolang::compile_package(TICKS, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"));
+    let port = std::rc::Rc::new(Counted {
+        port: tilo_resource_store::LocalPort::in_memory(),
+        rows: std::cell::Cell::new(0),
+        gets: std::cell::Cell::new(0),
+        ends: std::cell::Cell::new(0),
+    });
+    let store = ResourceStore::new(port.clone());
+    store.declare(&compiled.meta);
+    let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+    rt.load_compiled(&compiled).unwrap();
+    let list = rt.create("Ticks").unwrap();
+    let made = store.version_end(&list, false).unwrap();
+    assert!(
+        made.is_some(),
+        "the list was made, so it has a first version"
+    );
+    for _ in 0..1000 {
+        assert_eq!(store.version_end(&list, false).unwrap(), made);
+    }
+    assert_eq!(
+        port.ends.get(),
+        1,
+        "a thousand reads of when the list was made asked the store {} times",
+        port.ends.get()
+    );
+    let before = store.version_end(&list, true).unwrap();
+    assert_eq!(store.version_end(&list, true).unwrap(), before);
+    assert_eq!(port.ends.get(), 2, "its last version is asked for once too");
+    let add = &compiled
+        .meta
+        .actions
+        .iter()
+        .find(|held| held.name == "add")
+        .unwrap()
+        .id;
+    rt.invoke_action(
+        &me(),
+        (
+            add.as_str(),
+            vec![Value::resource(&list), Value::text("written")],
+        ),
+    )
+    .unwrap();
+    assert!(store.version_end(&list, true).unwrap().is_some());
+    assert!(store.version_end(&list, true).unwrap().is_some());
+    assert_eq!(
+        port.ends.get(),
+        3,
+        "an item was written into the list: its last version is asked again, once"
     );
 }

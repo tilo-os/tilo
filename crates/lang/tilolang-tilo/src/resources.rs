@@ -360,9 +360,10 @@ struct Inner {
     minted: StdCell<u64>,
     /// The text written here since [`ResourceStore::take_wrote`] was last asked.
     wrote: RefCell<Wrote>,
-    /// Each resource's versions as last read, by id, until a write of it or of what it holds:
-    /// a list sorted by when its rows last changed reads every row's, each time it is read.
-    versions: RefCell<HashMap<String, Vec<Version>>>,
+    /// What was read of each resource's history, by id, until a write of it or of what it
+    /// holds: a list sorted by when its rows last changed reads every row's, each time it is
+    /// read, and each row that says when its list was made reads that list's first version.
+    versions: RefCell<HashMap<String, History>>,
     /// How far this device's changes of each record have gone, as last asked, by record: until
     /// the record moves or this store writes ([`Store::reach`]).
     reach: RefCell<HashMap<DocId, RecordReach>>,
@@ -509,6 +510,28 @@ impl Watch {
     #[must_use]
     pub fn peek(&self) -> Moved {
         self.0.borrow().clone()
+    }
+}
+
+/// What was read of one resource's history: all of it, or one of its ends.
+#[derive(Default)]
+struct History {
+    all: Option<Vec<Version>>,
+    first: Option<Option<Version>>,
+    last: Option<Option<Version>>,
+}
+
+impl History {
+    fn end(&self, last: bool) -> Option<&Option<Version>> {
+        if last { &self.last } else { &self.first }.as_ref()
+    }
+
+    fn end_mut(&mut self, last: bool) -> &mut Option<Option<Version>> {
+        if last {
+            &mut self.last
+        } else {
+            &mut self.first
+        }
     }
 }
 
@@ -1142,7 +1165,7 @@ impl ResourceStore {
     /// forgets them all.
     fn forget_versions_of(&self, command: &Command) {
         // An item's id is under the ids of what holds it (`doc/item`).
-        fn forget(versions: &mut HashMap<String, Vec<Version>>, id: &str) {
+        fn forget(versions: &mut HashMap<String, History>, id: &str) {
             versions.remove(id);
             let mut held = id;
             while let Some((holder, _)) = held.rsplit_once('/') {
@@ -3659,6 +3682,39 @@ impl ResourceStore {
         }
     }
 
+    /// One end of the history of `at`, as the store answers it.
+    fn read_version_end(
+        &self,
+        at: &ResourceRef,
+        last: bool,
+    ) -> Result<Option<Version>, StoreError> {
+        let at = &*self.typed(at);
+        let Ok(kind) = self.kind_of_type(&at.ty) else {
+            return Ok(None);
+        };
+        let entry = self.entry_of_kind(&kind);
+        let Reply::Versions(held) = self.command(Command::VersionEnd {
+            kind,
+            id: id_of(at),
+            last,
+        })?
+        else {
+            return Err(backend("a read of a version answered no versions"));
+        };
+        let end = self.versions_of(&id_of(at), held, entry.as_ref()).pop();
+        if !last {
+            return Ok(end);
+        }
+        let made = self
+            .made_from(at)?
+            .into_iter()
+            .max_by(|a, b| a.at.cmp(&b.at));
+        Ok(match (end, made) {
+            (Some(end), Some(made)) if made.at >= end.at => Some(made),
+            (end, made) => end.or(made),
+        })
+    }
+
     /// The versions that made what was made from `at`, as changes of `at` of none of its
     /// fields, each the version of what it made.
     fn made_from(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
@@ -5422,14 +5478,22 @@ impl Store for ResourceStore {
     }
 
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        if let Some(read) = self.inner.versions.borrow().get(&id_of(at)) {
+        if let Some(read) = self
+            .inner
+            .versions
+            .borrow()
+            .get(&id_of(at))
+            .and_then(|history| history.all.as_ref())
+        {
             return Ok(read.clone());
         }
         let read = self.read_versions(at)?;
         self.inner
             .versions
             .borrow_mut()
-            .insert(id_of(at), read.clone());
+            .entry(id_of(at))
+            .or_default()
+            .all = Some(read.clone());
         Ok(read)
     }
 
@@ -5438,34 +5502,23 @@ impl Store for ResourceStore {
     /// runtime's versions for the one at its end. What was made from `at` counts as its last
     /// change when it came after the store's last, as [`Self::read_versions`] places it.
     fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {
-        if let Some(read) = self.inner.versions.borrow().get(&id_of(at)) {
-            return Ok(if last { read.last() } else { read.first() }.cloned());
+        if let Some(history) = self.inner.versions.borrow().get(&id_of(at)) {
+            if let Some(all) = &history.all {
+                return Ok(if last { all.last() } else { all.first() }.cloned());
+            }
+            if let Some(end) = history.end(last) {
+                return Ok(end.clone());
+            }
         }
-        let at = &*self.typed(at);
-        let Ok(kind) = self.kind_of_type(&at.ty) else {
-            return Ok(None);
-        };
-        let entry = self.entry_of_kind(&kind);
-        let Reply::Versions(held) = self.command(Command::VersionEnd {
-            kind,
-            id: id_of(at),
-            last,
-        })?
-        else {
-            return Err(backend("a read of a version answered no versions"));
-        };
-        let end = self.versions_of(&id_of(at), held, entry.as_ref()).pop();
-        if !last {
-            return Ok(end);
-        }
-        let made = self
-            .made_from(at)?
-            .into_iter()
-            .max_by(|a, b| a.at.cmp(&b.at));
-        Ok(match (end, made) {
-            (Some(end), Some(made)) if made.at >= end.at => Some(made),
-            (end, made) => end.or(made),
-        })
+        let end = self.read_version_end(at, last)?;
+        *self
+            .inner
+            .versions
+            .borrow_mut()
+            .entry(id_of(at))
+            .or_default()
+            .end_mut(last) = Some(end.clone());
+        Ok(end)
     }
 
     fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {
