@@ -53,7 +53,6 @@ image = "registry.tilo.so/tilo/tilo-builder@sha256:67dd1e7626599170108d1ad823fbe
 # read is that profile's setup step instead (.config/nextest.toml), which reaches the tests and no
 # build, so the units one family builds are the units every other family builds.
 [env]
-XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
 # Debug info is what the test binaries' panics need, not the debugger: line tables only, which is
 # what the profiles in Cargo.toml ask for anyway.
 CARGO_PROFILE_DEV_DEBUG = "0"
