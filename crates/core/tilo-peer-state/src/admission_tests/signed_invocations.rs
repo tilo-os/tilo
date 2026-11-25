@@ -1499,8 +1499,8 @@ fn admit_agent(
             workspaces: vec![crate::join::WorkspaceId::parse(WORKSPACE).unwrap()],
             apps: Vec::new(),
         },
-        now_ns(now - Duration::from_secs(1)),
-        now_ns(now + Duration::from_secs(3600)),
+        now_ns(now.checked_sub(Duration::from_secs(1)).expect("a second before now")),
+        now_ns(now.checked_add(Duration::from_secs(3600)).expect("an hour from now")),
     )
     .unwrap();
     let device = cert.device_public_key;
@@ -1677,7 +1677,7 @@ tilo_test_env::scenario! {
         // reaches the replica as the governor's changes do.
         let mut governor = receiver.clone();
         let heads = receiver.workspace_heads().unwrap();
-        let later = now + Duration::from_secs(5);
+        let later = now.checked_add(Duration::from_secs(5)).expect("five seconds from now");
         assert!(governor.governance_mut().withdraw_agent(device, &a, later).unwrap());
         let workspace = receiver.workspace_id().to_owned();
         receiver
