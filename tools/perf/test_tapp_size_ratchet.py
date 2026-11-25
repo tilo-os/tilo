@@ -94,6 +94,18 @@ class Measure(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn('lower it: [apps."so.tilo.b"] x86_64 = 1048576', lines[0])
 
+    def test_a_budget_the_full_run_did_not_build_fails(self):
+        # A release of some apps measures only those; the size check builds them all, so there a
+        # budget no app was measured against was written without a measurement.
+        package = self.package({"so.tilo.a": 1_000_000})
+        self.assertEqual(ratchet.measure(package, budget(), "x86_64")[0], 0)
+        status, lines = ratchet.measure(package, budget(), "x86_64", every=True)
+        self.assertEqual(status, 1)
+        self.assertIn('error: so.tilo.b x86_64: has a budget but was not built, so nothing measured it; '
+                      'build it or drop [apps."so.tilo.b"] x86_64', lines)
+        both = self.package({"so.tilo.a": 1_000_000, "so.tilo.b": 3_000_000})
+        self.assertEqual(ratchet.measure(both, budget(), "x86_64", every=True)[0], 0)
+
     def test_the_architecture_must_match(self):
         directory = self.package({"so.tilo.a": 10}, arch="aarch64")
         self.assertEqual(ratchet.measure(directory, budget(), "x86_64")[0], 1)

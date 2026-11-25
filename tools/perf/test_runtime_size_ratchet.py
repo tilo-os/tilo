@@ -241,22 +241,35 @@ class Closure(Scratch):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
                              "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so", "libc.so.6"],
                                                             rela=[(0x1000, R_X86_64_RELATIVE)]),
+                             "libtilo_timezone_engine.so": elf(needed=["libruntime_dylib.so", "libc.so.6"]),
                              "calculator": elf(needed=["libruntime_dylib.so", "libc.so.6"])})
         system = self.tree({"libc.so.6": elf()})
         engine = runtime / "libtilo_typst_engine.so"
+        engines = [engine, runtime / "libtilo_timezone_engine.so"]
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
-                                           [runtime / "calculator"], [system], [engine])
+                                           [runtime / "calculator"], [system], engines)
         self.assertEqual(status, 0, lines)
         self.assertTrue(any(line.startswith("engine libtilo_typst_engine.so x86_64: ") and "1 dynamic relocations"
                             in line for line in lines), lines)
         # An app that plays no media and typesets nothing must not map Typst.
         (runtime / "calculator").write_bytes(elf(needed=["libruntime_dylib.so", "libtilo_typst_engine.so"]))
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
-                                           [runtime / "calculator"], [system], [engine])
+                                           [runtime / "calculator"], [system], engines)
         self.assertEqual(status, 1)
         self.assertIn("error: calculator loads the engine libtilo_typst_engine.so at exec "
                       "(libtilo_typst_engine.so <- calculator); an engine library is loaded only by the app "
                       "that uses it", lines)
+
+    def test_an_engine_budget_no_built_engine_was_measured_against_fails(self):
+        # Every engine is built with the runtime: a budget for one the run did not build was
+        # written without a measurement, and nothing holds the engine to it.
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so", "libc.so.6"])})
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
+                                           engines=[runtime / "libtilo_typst_engine.so"])
+        self.assertEqual(status, 1)
+        self.assertIn("error: engine libtilo_timezone_engine.so x86_64: has a budget but was not built, so "
+                      'nothing measured it; build it or drop [engines.x86_64] "libtilo_timezone_engine.so"', lines)
 
     def test_an_app_without_media_loads_only_the_engine_it_uses(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
@@ -298,15 +311,17 @@ class Closure(Scratch):
 
     def test_an_engine_is_held_to_its_budget(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
-                             "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so"], padding=70000)})
+                             "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so"], padding=70000),
+                             "libtilo_timezone_engine.so": elf(needed=["libruntime_dylib.so"])})
         engine = runtime / "libtilo_typst_engine.so"
-        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64", engines=[engine])
+        both = [engine, runtime / "libtilo_timezone_engine.so"]
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64", engines=both)
         self.assertEqual(status, 1)
         self.assertTrue(any(line.startswith("error: engine libtilo_typst_engine.so x86_64: ")
                             and "over its budget of 65536" in line for line in lines), lines)
         self.assertIn('    "libtilo_typst_engine.so" = 65536', lines)
         raised = budget(typst=f'{REASON}[engines.x86_64]\n"libtilo_typst_engine.so" = 65536\n')
-        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", raised, "x86_64", engines=[engine])
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", raised, "x86_64", engines=both)
         self.assertEqual(status, 0, lines)
         # One that has no budget fails, and names the line to add.
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(HEADER + RUNTIME), "x86_64",

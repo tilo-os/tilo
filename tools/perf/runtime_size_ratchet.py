@@ -501,9 +501,13 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
         status |= checked
         lines += more
     if engines:
+        # Every engine is built with the runtime, so a budget no engine of the run was measured
+        # against is one nobody measured.
         built = {engine.name for engine in engines}
-        lines += [f'engine {name} {arch}: has a budget but was not built; drop [engines.{arch}] "{name}"'
-                  for arch, name in sorted(budget.totals("engines")) if arch == stats.arch and name not in built]
+        unbuilt = [name for on, name in sorted(budget.totals("engines")) if on == stats.arch and name not in built]
+        status |= int(bool(unbuilt))
+        lines += [f'error: engine {name} {stats.arch}: has a budget but was not built, so nothing measured it; '
+                  f'build it or drop [engines.{stats.arch}] "{name}"' for name in unbuilt]
     if directories is None:
         return status, lines, stats
     # What every app loads with the runtime, built or not.

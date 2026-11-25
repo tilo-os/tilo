@@ -253,8 +253,12 @@ def judge_apps(sizes: dict[str, int], arch: str, budget: Budget,
     return (1 if over or missing else 0), lines
 
 
-def measure(directory: pathlib.Path, budget: Budget, arch: str | None = None) -> tuple[int, list[str]]:
-    """The tapps package-apps.sh wrote to `directory`, each against its budget."""
+def measure(directory: pathlib.Path, budget: Budget, arch: str | None = None,
+            every: bool = False) -> tuple[int, list[str]]:
+    """The tapps package-apps.sh wrote to `directory`, each against its budget.
+
+    With `every`, the run built every app there is a budget for: a budget no app of the run
+    was measured against is one nobody measured, and fails."""
     index = json.loads((directory / "index.json").read_text(encoding="utf-8"))
     built = index.get("architecture", "")
     if arch is not None and built != arch:
@@ -265,7 +269,14 @@ def measure(directory: pathlib.Path, budget: Budget, arch: str | None = None) ->
     if not apps:
         return 1, [f"error: {directory}/index.json lists no app, so nothing was measured"]
     sizes = {app["id"]: (directory / "tapp" / app["file"]).stat().st_size for app in apps}
-    return judge_apps(sizes, built, budget)
+    status, lines = judge_apps(sizes, built, budget)
+    if every:
+        unbuilt = sorted(app for app, on in budget.app_totals() if on == built and app not in sizes)
+        if unbuilt:
+            status = 1
+            lines += [f'error: {app} {built}: has a budget but was not built, so nothing measured it; '
+                      f'build it or drop [apps."{app}"] {built}' for app in unbuilt]
+    return status, lines
 
 
 def newest_versions(entries: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -540,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
     measured.add_argument("directory", type=pathlib.Path)
     measured.add_argument("--arch")
     measured.add_argument("--summary", type=pathlib.Path)
+    measured.add_argument("--every", action="store_true",
+                          help="the run built every app with a budget; a budget nothing measured fails")
     fleet_parser = commands.add_parser("fleet", help="the registry index against the budgets and fleet ceilings")
     fleet_parser.add_argument("entries", type=pathlib.Path)
     fleet_parser.add_argument("--summary", type=pathlib.Path)
@@ -554,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         current = load()
         if args.command == "measure":
-            return emit(*measure(args.directory, current, args.arch), args.summary)
+            return emit(*measure(args.directory, current, args.arch, args.every), args.summary)
         if args.command == "fleet":
             entries = json.loads(args.entries.read_text(encoding="utf-8"))
             apps = current.apps()

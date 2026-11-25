@@ -99,6 +99,10 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # budgets, and Typst's is its earlier library's, until the first aarch64 run
 # prints what to lower them to. libtilo_browser_engine.so's budget is an estimate
 # on both architectures until the first run prints what to lower it to.
+# libtilo_music_engine.so (5018456) and libtilo_youtube_engine.so (4554056) were
+# measured on x86_64 in the first app-sizes run that built them (r18da0989fd), and
+# their budget is that size to the next 4 KiB on both architectures until an
+# aarch64 run measures them there.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: they load it at exec. the app release
@@ -153,12 +157,12 @@ bytes = 2490368
 "libtilo_git_engine.so" = 3735552
 "libtilo_grayjay_engine.so" = 458752
 "libtilo_highlight_engine.so" = 2818048
-"libtilo_music_engine.so" = 5111808
+"libtilo_music_engine.so" = 5021696
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 34406400
 "libtilo_wasm_engine.so" = 2621440
-"libtilo_youtube_engine.so" = 4653056
+"libtilo_youtube_engine.so" = 4554752
 
 [engines.aarch64]
 "libtilo_adblock_engine.so" = 262144
@@ -171,7 +175,9 @@ bytes = 2490368
 "libtilo_git_engine.so" = 3735552
 "libtilo_grayjay_engine.so" = 458752
 "libtilo_highlight_engine.so" = 2752512
+"libtilo_music_engine.so" = 5021696
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 41418752
 "libtilo_wasm_engine.so" = 2621440
+"libtilo_youtube_engine.so" = 4554752
