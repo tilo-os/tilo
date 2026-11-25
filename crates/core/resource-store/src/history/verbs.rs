@@ -1036,7 +1036,7 @@ fn entry(
     // The action the change was made by, as its author stamped it: what tells a watcher one
     // action from another (a ban from a member's removal) without working it out from what it
     // saw before. Never the action's arguments, which may name a secret.
-    if let Some(verb) = verb_of(doc, version) {
+    if let Some(verb) = stamped_verb(doc, version) {
         entry.insert("verb".into(), verb.into());
     }
     entry.insert("sentence".into(), sentence(version, words).into());
@@ -1091,19 +1091,19 @@ fn entry(
     Value::Object(entry)
 }
 
-/// What `version` did to the resource it is a change of, and that resource's id, as the store
-/// reads the change: it made the resource, removed it, or edited it. `None` for a document
-/// whose changes are not resources kept in the store: a change with no word for what it did is
-/// a fault to a watcher, never an edit.
 /// The verb the change `version` was made by, as its author stamped it; `None` for a change
 /// that names none.
-fn verb_of(doc: &AutoCommit, version: &Version) -> Option<String> {
+fn stamped_verb(doc: &AutoCommit, version: &Version) -> Option<String> {
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
     let stamp = collab_types::Stamp::of(&change)?;
     (!stamp.verb.is_empty()).then_some(stamp.verb)
 }
 
+/// What `version` did to the resource it is a change of, and that resource's id, as the store
+/// reads the change: it made the resource, removed it, or edited it. `None` for a document
+/// whose changes are not resources kept in the store: a change with no word for what it did is
+/// a fault to a watcher, never an edit.
 fn happened(
     doc: &AutoCommit,
     version: &Version,
