@@ -108,7 +108,7 @@ struct Earlier {
 /// What one workspace's parts hold: the record as this build reads it, or the pair an earlier
 /// build wrote, still to be brought up.
 enum Read {
-    Current(StoredWorkspace),
+    Current(Box<StoredWorkspace>),
     Earlier(Earlier),
 }
 
@@ -157,7 +157,7 @@ impl Journaled {
             revision = revision.max(newest.unwrap_or(0));
             match read {
                 Read::Current(stored) => {
-                    workspaces.insert(workspace, stored);
+                    workspaces.insert(workspace, *stored);
                 }
                 Read::Earlier(read) => earlier.push(read),
             }
@@ -196,7 +196,7 @@ impl Journaled {
         // A snapshot this build reads as it is; one a later build wrote is refused here.
         let snapshot = parts.bring_up_part(&name, snapshot, version)?;
         let (stored, newest) = self.read_current(parts, workspace, snapshot_revision, &snapshot)?;
-        Ok((Read::Current(stored), newest))
+        Ok((Read::Current(Box::new(stored)), newest))
     }
 
     /// The snapshot and journal the earlier build wrote, kept as they are until the pair this build
