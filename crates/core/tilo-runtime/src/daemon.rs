@@ -399,6 +399,31 @@ impl Running {
         Ok(self.person.within(within)?.actor().to_owned())
     }
 
+    /// Take `delta`, an encoded search index change, as the app `app` publishes it on its
+    /// connection here from its record `record` of `workspace`, once the person's services run
+    /// (within `within`): what an app a test runs in this process holds reaches the device's one
+    /// index exactly as a running app's does, and every caller of the daemon's search finds it.
+    ///
+    /// # Errors
+    /// The person's services did not start in time, the daemon keeps no index yet, or the index
+    /// refused the change.
+    #[cfg(feature = "test-support")]
+    pub fn publish_search_entries(
+        &self,
+        within: Duration,
+        (workspace, app, record): (&str, &str, &str),
+        delta: &[u8],
+    ) -> io::Result<()> {
+        let workspace = tilo_desktop_model::WorkspaceId::parse(workspace)
+            .ok_or_else(|| invalid(format!("{workspace} names no workspace")))?;
+        self.person
+            .within(within)?
+            .search_index_services()
+            .ok_or_else(|| io::Error::other("the daemon keeps no search index yet"))?
+            .publish(workspace, app, record, delta)
+            .map_err(io::Error::other)
+    }
+
     /// Where the daemon's native endpoint listens.
     #[must_use]
     pub fn native_socket(&self) -> &Path {

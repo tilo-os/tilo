@@ -330,36 +330,10 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
     );
 }
 
-/// A session whose search reads `index` : the one index the palette and an agent's `tilo` tool find
-/// things through, with `app` 's entries in it.
-fn session_searching(
-    index: std::sync::Arc<tilo_workspace_service::search::AppContentIndex>,
-) -> Session {
-    DEVICE.with(|device| {
-        device.session_with(Options {
-            search: tilo_session::SearchOptions {
-                // Searched as the device's daemon searches it for the person, who may read all
-                // of it.
-                index: Some(std::sync::Arc::new(
-                    tilo_workspace_service::search::IndexSearch::new(
-                        index,
-                        tilo_workspace_service::search::deciding(|_, _| true),
-                    ),
-                )),
-                ..tilo_session::SearchOptions::default()
-            },
-            ..options()
-        })
-    })
-}
-
-/// Publish the mailbox into the index the session searches, as an app does: the entry opens the
-/// resource through its app's `open` , at that resource.
-fn index_mailbox(
-    index: &tilo_workspace_service::search::AppContentIndex,
-    app: &str,
-    workspace: &str,
-) {
+/// Publish the mailbox into the device's index, as the app does on its connection to the
+/// device's daemon: the session searches that index through the daemon, as every caller of the
+/// device's search does. The entry opens the resource through its app's `open` , at that resource.
+fn index_mailbox(app: &str, workspace: &str) {
     let entry = tilo_resource::search_index::IndexEntry {
         key: "tl:so.tilo.mail:inbox".to_owned(),
         resource: "tl:so.tilo.mail:inbox".to_owned(),
@@ -384,14 +358,17 @@ fn index_mailbox(
         },
         vec![entry],
     ) {
-        index
-            .publish(
-                workspace,
-                app,
-                "tab:0001",
-                &delta.encode().expect("a delta encodes"),
-            )
-            .expect("the index takes the delta");
+        let delta = delta.encode().expect("a delta encodes");
+        DEVICE.with(|device| {
+            device
+                .daemon
+                .publish_search_entries(
+                    tilo_test_env::hang_bound(),
+                    (workspace, app, "tab:0001"),
+                    &delta,
+                )
+                .expect("the device's index takes the delta");
+        });
     }
 }
 
@@ -400,16 +377,12 @@ fn index_mailbox(
 #[test]
 fn text_typed_on_the_canvas_places_what_find_finds() {
     let _settled = ui::motion::testing::settled();
-    let index = std::sync::Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
-    let mut session = session_searching(index.clone());
-    // The workspace in front is the device's once the daemon's list reaches this session: the id
-    // a search entry is read under is that workspace's, never the shell's own before it.
-    let seeded = workspace_in_front(&session);
-    let workspace = crate::common::wait_for(&mut session, "the device's workspace", |session| {
-        workspace_in_front(session).filter(|now| Some(now.as_str()) != seeded.as_deref())
-    });
+    let mut session = session();
+    step(&mut session);
+    // The workspace in front, the one the device's daemon holds: where search reads its entries.
+    let workspace = workspace_in_front(&session).expect("a workspace is in front");
     let (app, _) = with_mailbox(&mut session);
-    index_mailbox(&index, &app, &workspace);
+    index_mailbox(&app, &workspace);
 
     session
         .invoke(

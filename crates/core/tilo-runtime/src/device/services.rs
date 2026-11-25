@@ -1029,6 +1029,15 @@ impl Daemon {
         Ok(child)
     }
 
+    /// Where an app's search entries are published on its connection here, once the daemon
+    /// keeps the device's index.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn search_index_services(
+        &self,
+    ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
+        self.workspaces.search_index_services()
+    }
+
     /// The workspaces this device holds, through its opened workspace service.
     #[must_use]
     pub fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
