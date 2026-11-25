@@ -2565,6 +2565,54 @@ fn the_keys_held_are_read_at_once_on_a_runtime_of_one_thread() {
     );
 }
 
+/// On a runtime of several threads whose blocking pool is full, the keys held are still read: a
+/// resource write asks for them while it holds its workspace's lock, and the threads filling the
+/// pool may be waiting for that same lock, so a read that waited for one of them would never run.
+#[test]
+fn the_keys_held_are_read_while_the_blocking_pool_is_full() {
+    let (asking, held, _dirs) = laptop_holding_keys();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_time()
+        .build()
+        .unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (started, has_started) = std::sync::mpsc::channel::<()>();
+    let filling = runtime.spawn_blocking(move || {
+        let _ = started.send(());
+        let _ = released.recv();
+    });
+    has_started
+        .recv()
+        .expect("the pool's one thread is taken");
+    let workspace_name = held.to_string();
+    let read = runtime.block_on(async move {
+        tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                asking.group_keys(
+                    &workspace_name,
+                    collab_types::EVERY_MEMBER,
+                    false,
+                    Duration::from_secs(1),
+                ),
+            )
+            .await
+        })
+        .await
+        .expect("the read does not panic")
+    });
+    release.send(()).unwrap();
+    runtime.block_on(filling).unwrap();
+    let read = read.expect("the keys held are read without a thread of the blocking pool");
+    assert!(
+        matches!(read, Some(Ok(_))),
+        "the keys held are read: {:?}",
+        read.map(|r| r.map(|_| ()))
+    );
+}
+
 /// A document whose roles the workspace's founder does not read (a workspace a server made, where
 /// only its members read the document) is founded by the first reader that needs its keys, and the
 /// other reader is answered them: left to the founder, no device founded its group.
