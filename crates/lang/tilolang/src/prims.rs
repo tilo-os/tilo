@@ -258,6 +258,15 @@ pub fn choice(kind: &str) -> Option<&'static Choice> {
     CHOICES.iter().find(|c| c.kind == kind)
 }
 
+/// Whether the primitive's `key` is a keyboard shortcut (a button's), not the name of the element
+/// the call builds: only the former is read as a chord.
+#[must_use]
+pub fn shortcut_key(prim: &str) -> bool {
+    PRIMS
+        .iter()
+        .any(|p| p.name == prim && p.named.contains(&"key"))
+}
+
 pub fn choice_name(kind: &str) -> &'static str {
     choice(kind).map_or("?", |c| c.name)
 }

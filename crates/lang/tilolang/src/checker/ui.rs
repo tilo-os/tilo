@@ -1083,7 +1083,7 @@ impl Checker<'_> {
                 vec![node, Ex::str(name), v],
                 Ty::Unit,
             )));
-        } else if name == "key" {
+        } else if name == "key" && crate::prims::shortcut_key(prim) {
             if !self.shortcut_prop(n, name, value) {
                 // A key the control computes where the view runs: an `Option<Text>` shows only
                 // when it holds one.
