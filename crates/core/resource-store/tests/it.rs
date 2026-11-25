@@ -309,6 +309,58 @@ fn a_listing_kept_across_writes_answers_as_one_read_after_them() {
     }
 }
 
+/// The reminders due by now, asked again each second with that second as their bound, read the
+/// few resources that hold a reminder: the thousands that hold none are never walked, so no
+/// listing of them is kept and pushes out the listings a window shows.
+#[test]
+fn a_range_of_a_field_few_hold_reads_only_its_holders() {
+    let mut index = Index::new();
+    let changes: Vec<Change> = (0..2000)
+        .map(|n| {
+            let mut change = issue(
+                &format!("i{n:04}"),
+                "board",
+                &format!("{n:04}"),
+                &format!("Issue {n}"),
+                "open",
+                1,
+            );
+            if n % 100 == 0
+                && let Change::Put { fields, .. } = &mut change
+            {
+                fields.insert(
+                    "remind".to_owned(),
+                    Cell::One(format!("2026-01-{:02}", n / 100 + 1).into()),
+                );
+            }
+            change
+        })
+        .collect();
+    commit(&mut index, "doc-1", &changes);
+    for day in 1..=40 {
+        let now = format!("2026-01-{day:02}");
+        let due = Query::of(ISSUE, 200)
+            .filter(Filter::Present("remind".into()))
+            .filter(Filter::Within {
+                field: "remind".into(),
+                from: Bound::Unbounded,
+                to: Bound::Included(now.as_str().into()),
+            });
+        let expected: Vec<String> = (0..2000)
+            .filter(|n| n % 100 == 0 && n / 100 < day)
+            .map(|n| format!("i{n:04}"))
+            .collect();
+        assert_eq!(ids(&index, &due), expected, "the reminders due by {now}");
+        assert_eq!(count(&index, ISSUE, &due.filters), expected.len());
+    }
+    assert_eq!(
+        index.kept(),
+        0,
+        "forty asks of the reminders due, each by another bound, kept {} listings of every issue",
+        index.kept()
+    );
+}
+
 #[test]
 fn a_row_is_found_by_its_position_and_a_position_by_its_row() {
     // Three reader sets, interleaved in the kind's order, so a listing merges their tables.
