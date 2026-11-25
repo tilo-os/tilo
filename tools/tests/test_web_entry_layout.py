@@ -48,13 +48,17 @@ class Layout(unittest.TestCase):
         # The sign-in page's own module, and the modules it imports: a page
         # whose graph is four modules, not the desktop's.
         shutil.copy(WEB / 'sign-in.mjs', bundle / 'sign-in.mjs')
-        # entry-page.mjs imports two modules, each of them two more, and one of
-        # those a fourth; the rest is what a module may mention without
-        # importing.
+        # entry-page.mjs imports four modules (the three the page hints itself
+        # among them), two of those two more, and one of those a fourth; the rest
+        # is what a module may mention without importing.
         modules = {
             'entry-page.mjs': "import {a} from './host.mjs';\n"
                               "export * from './arrival.mjs';\n"
-                              "const lazy = () => import('./never-preloaded.mjs');\n",
+                              "const lazy = () => import('./never-preloaded.mjs');\n"
+                              "import {boot} from './entry.mjs';\n"
+                              "import {connectPeer} from './peer.mjs';\n",
+            'entry.mjs': "export const boot = 1;\n",
+            'peer.mjs': "export const connectPeer = 1;\n",
             'arrival.mjs': "import './desktop.mjs';\n",
             'host.mjs': "import {b} from './session/peer.mjs';\nimport './session/live.mjs';\n"
                         "import {\n  c,\n  d,\n} from './table.mjs';\n",
@@ -108,13 +112,15 @@ class Layout(unittest.TestCase):
     SIGN_IN = ('sign-in.mjs', 'device-key.mjs', 'entered-workspaces.mjs', 'identity.mjs', 'identity-profile.mjs')
 
     def hints(self, site, page):
-        return re.findall(r'<link rel="modulepreload" href="([^"]+)">', self.page(site, page))
+        # A hint may say how soon it is wanted (`fetchpriority`) beside where.
+        return re.findall(r'<link\b[^>]*\brel="modulepreload"[^>]*\bhref="([^"]+)"[^>]*>',
+                          self.page(site, page))
 
     # The entry module's whole static graph, in the order a browser meets it: the
     # page's own modulepreload of the entry module, then the modules it imports,
     # each level in import order. Dynamic imports, comments and strings name no
     # module.
-    EXPECTED = ('entry-page.mjs', 'host.mjs', 'arrival.mjs',
+    EXPECTED = ('entry-page.mjs', 'host.mjs', 'arrival.mjs', 'entry.mjs', 'peer.mjs',
                 'session/peer.mjs', 'session/live.mjs', 'table.mjs', 'desktop.mjs',
                 'session/buffers.mjs')
 
