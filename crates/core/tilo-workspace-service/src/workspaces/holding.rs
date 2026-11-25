@@ -358,8 +358,16 @@ impl Workspaces {
             }
         }
         let state = if let Some(held) = held {
-            if !names_holder(&held.lock().await.peer(), caller) {
-                return Err(NOT_A_HOLDER.into());
+            let member = {
+                let copy = held.lock().await;
+                if !names_holder(&copy.peer(), caller) {
+                    return Err(NOT_A_HOLDER.into());
+                }
+                copy.member.is_some()
+            };
+            if member {
+                self.govern_joined(&workspace, &held, request, &holder, now)
+                    .await?;
             }
             held
         } else {
@@ -484,6 +492,49 @@ impl Workspaces {
         self.serve_direct(&governed)?;
         drop(governed);
         Ok(state)
+    }
+
+    /// Hold `state`, `workspace`'s member copy here, as one of the workspace's
+    /// holders: what a server that took part in its person's workspace as a
+    /// member is handed once that person adds it to keep the workspace. The copy
+    /// stops syncing as a member of the device that served it, takes in the
+    /// governance the hand-over carries, and is served over the workspace's
+    /// link as every copy held here is: the device handing it over asks that
+    /// link whether this host keeps all it does.
+    async fn govern_joined(
+        &self,
+        workspace: &str,
+        state: &Arc<AsyncMutex<GovernedWorkspace>>,
+        request: &HostWorkspaceRequest,
+        holder: &WorkspaceDeviceHintV1,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        // Taken before the copy, as a member hold takes them, so neither waits on the other.
+        let _holding = self.inner.member.holding.lock().await;
+        let mut governed = state.lock().await;
+        let Some(_) = governed.member.take() else {
+            return Ok(());
+        };
+        let workspace_id = governed.workspace_id();
+        self.let_go_member(workspace_id);
+        let mut peer = governed.peer().clone();
+        take_governance(&mut peer, &request.bootstrap, now)?;
+        *governed.peer.lock() = peer;
+        governed.persist()?;
+        super::member::forget_member(&governed.path)?;
+        self.bind(&governed).await?;
+        tilo_files::native::atomic::write(
+            &governed.path.with_extension(HANDED),
+            &postcard::to_stdvec(&request.holder_hint).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        governed.handed_by = Some(holder.clone());
+        self.inner
+            .readings
+            .hold(workspace, state, governed.reading());
+        self.serve_direct(&governed)?;
+        tracing::info!(%workspace, "a member copy held here holds the workspace from now on");
+        Ok(())
     }
 
     /// Write `person`'s list of workspaces where `workspace`, just taken in, is

@@ -1074,6 +1074,106 @@ async fn a_server_that_does_not_take_the_changes_in_is_not_handed_the_workspace(
     made_on.stop().await;
 }
 
+/// A server of the person that took part in their workspace as a member first, as a server
+/// signed in with a ticket does, is handed the workspace later: it holds the workspace from then
+/// on, served over the workspace's link, so the device handing it over hears that it keeps every
+/// change, and what that device writes next reaches the server's own copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    host_writes(
+        &governor,
+        workspace.workspace_id,
+        "note:1",
+        "before the hand-over",
+    )
+    .await;
+
+    // The server takes part in the workspace as one of Alice's devices: a member copy synced
+    // with the laptop.
+    workspaces
+        .enter(&workspace.workspace, (&nas.cert, &nas.sk))
+        .await
+        .unwrap();
+    let at_server = server.host.workspaces();
+    at_server.set_member_device(std::sync::Arc::new(
+        tilo_workspace_service::workspaces::MemberDevice {
+            cert: nas.cert.clone(),
+            signer: std::sync::Arc::new(nas.sk.clone()),
+        },
+    ));
+    let laptop_hint = workspaces
+        .hosts(&workspace.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|hint| hint.host == laptop.cert)
+        .expect("the laptop names its own address");
+    tilo_test_env::within(
+        "the server to hold the workspace as a member copy",
+        at_server.hold_as_member(workspace.workspace_id, &laptop_hint),
+    )
+    .await
+    .expect("the laptop admits the server as Alice's device");
+    assert!(at_server.is_member(&workspace.workspace).await.unwrap());
+
+    // Handed the workspace, the server holds it: the hand-over answers only once the server
+    // said it keeps every change the laptop keeps.
+    let hint = tilo_test_env::within(
+        "the laptop to hand the server the workspace",
+        workspaces.attach_server(
+            &workspace.workspace,
+            nas.device_pubkey(),
+            server.host.node_addr(),
+            CopyRole::KeyHolder,
+        ),
+    )
+    .await
+    .expect("the server that was a member holds the workspace");
+    assert!(
+        workspaces
+            .hosts(&workspace.workspace)
+            .await
+            .unwrap()
+            .contains(&hint),
+        "the workspace names the server among its holders"
+    );
+    assert!(
+        !at_server.is_member(&workspace.workspace).await.unwrap(),
+        "the server holds the workspace itself, not as a member copy"
+    );
+    reaches_host(
+        &server,
+        workspace.workspace_id,
+        "note:1",
+        "before the hand-over",
+    )
+    .await;
+    host_writes(
+        &governor,
+        workspace.workspace_id,
+        "note:2",
+        "after the hand-over",
+    )
+    .await;
+    reaches_host(
+        &server,
+        workspace.workspace_id,
+        "note:2",
+        "after the hand-over",
+    )
+    .await;
+
+    server.stop().await;
+    governor.stop().await;
+}
+
 /// A device that is handed a workspace keeps its files under the
 /// workspace's id. A hand-over that names its workspace by anything else (a
 /// path that climbs out of the folder, an absolute path, a name with a
