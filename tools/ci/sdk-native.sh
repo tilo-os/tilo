@@ -60,7 +60,7 @@ build() {
 
 # The runtime an app of the suite's links its interpreter's libraries against (`[package]
 # runtime`): this machine's loader set, as the launcher mounts any app's.
-APP_RUNTIME=sdk-app-runtime
+APP_RUNTIME=0.0.1
 
 # What the TypeScript suite makes an app of its own from, a process the daemon launches through
 # tilo-launcher and hands its connection, into <kit>:
