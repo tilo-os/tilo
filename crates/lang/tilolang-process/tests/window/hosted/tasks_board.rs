@@ -321,15 +321,21 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         &serde_json::Map::new(),
     )
     .unwrap();
-    // And removes one it added.
-    let remove = action_id(&mut app, &tasks, "Delete…");
-    let mut which = serde_json::Map::new();
-    which.insert(
-        "t".to_owned(),
-        crate::change_marks::reference("so.tilo.tasks", &mut app, "Book the dentist"),
+    // And removes one it added: Delete is the task's own, and asks nothing more.
+    let dentist = crate::change_marks::reference("so.tilo.tasks", &mut app, "Book the dentist");
+    let dentist = format!(
+        "tl:so.tilo.tasks:{}",
+        dentist["id"].as_str().expect("the task's id")
     );
-    app.invoke(Some(agent), Some(&ambient), &tasks, &remove, &which)
-        .unwrap();
+    let remove = action_id(&mut app, &dentist, "Delete");
+    app.invoke(
+        Some(agent),
+        Some(&ambient),
+        &dentist,
+        &remove,
+        &serde_json::Map::new(),
+    )
+    .unwrap();
     settle(&mut app);
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
     // Every row the run touched that the inbox still holds is marked: the one it removed

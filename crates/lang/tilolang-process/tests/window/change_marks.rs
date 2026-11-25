@@ -187,10 +187,11 @@ pub(crate) fn removed_rows(app: &mut impl Driven) -> Vec<String> {
         .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
         .filter_map(|node| {
             let semantics = node.semantics.as_ref()?;
-            semantics
-                .name
-                .as_deref()
-                .is_some_and(|name| name.contains("Removed by"))
+            // Who removed it is said in the row's name or, under its title, in its value.
+            [semantics.name.as_deref(), semantics.value.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|said| said.contains("Removed by"))
                 .then(|| semantics.shown_name().unwrap_or_default().to_owned())
         })
         .collect()
@@ -199,12 +200,19 @@ pub(crate) fn removed_rows(app: &mut impl Driven) -> Vec<String> {
 /// The id of the action labelled `label` the published resource `resource` offers.
 pub(crate) fn action_id(app: &mut impl Driven, resource: &str, label: &str) -> String {
     let resources = app.harness().resources();
-    flattened(&resources)
+    let published = flattened(&resources)
         .into_iter()
         .find(|published| published.id.as_str() == resource)
-        .and_then(|published| published.actions.iter().find(|a| a.label == label))
+        .unwrap_or_else(|| panic!("{resource} is not published"));
+    published
+        .actions
+        .iter()
+        .find(|a| a.label == label)
         .map_or_else(
-            || panic!("{resource} offers no `{label}`"),
+            || {
+                let offered: Vec<_> = published.actions.iter().map(|a| a.label.as_str()).collect();
+                panic!("{resource} offers no `{label}`, only {offered:?}")
+            },
             |action| action.id.clone(),
         )
 }
