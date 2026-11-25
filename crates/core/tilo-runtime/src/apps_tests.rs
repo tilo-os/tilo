@@ -1663,11 +1663,43 @@ tilo_test_env::scenario! {
             "echo 'the sandbox refused this app' >&2\nexit 3\n",
         )
         .unwrap();
-        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
-        let Err(error) = apps.start(&dev.id, WORKSPACE) else {
-            panic!("a start that ran no app is refused");
+        let apps =
+            apps(&store, &root, vec![launcher.path().to_owned()]).expecting_connection();
+        let error = match apps.start(&dev.id, WORKSPACE) {
+            Ok(_) => panic!("a start that ran no app is refused"),
+            Err(error) => error,
         };
         assert!(error.contains("ended as it started"), "{error}");
         assert!(error.contains("the sandbox refused this app"), "{error}");
+    }
+
+    // On a device's daemon a start answers only once the app is up: a launcher that keeps
+    // running and then ends without connecting ends the start, with its own words, rather than
+    // answering that it started.
+    phase a_start_that_ends_before_it_connects_answers_why;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        let device = SigningKey::from_bytes(&[7_u8; 32]);
+        let of = "org.example.notes";
+        store.install(of, &manifest(of, "gui", ""), &[("probe", b"binary")]);
+        let dev = store.install_dev(of, &device);
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            "sleep 0.3\necho 'the app could not load its module' >&2\nexit 4\n",
+        )
+        .unwrap();
+        let apps =
+            apps(&store, &root, vec![launcher.path().to_owned()]).expecting_connection();
+        let error = match apps.start(&dev.id, WORKSPACE) {
+            Ok(_) => panic!("a start that ended before connecting is refused"),
+            Err(error) => error,
+        };
+        assert!(error.contains("ended as it started"), "{error}");
+        assert!(error.contains("the app could not load its module"), "{error}");
     }
 }

@@ -81,6 +81,10 @@ fn ready_when_started() -> tilo_workspace_service::apps::services::WindowlessSta
 
 /// The profile's installed applications and the launches it made.
 pub struct Apps {
+    /// Whether a start waits for its app's first connection, as a device's daemon does, where
+    /// the broker attests the launcher's connection. Where none is expected (a test's launch),
+    /// the start only refuses a process that ended at once.
+    connection_wait: bool,
     /// The stores the profile reads; `None` when no app store can be
     /// located, which is a catalogue with nothing in it.
     catalog: Option<package_store::Catalog>,
@@ -143,13 +147,14 @@ impl Apps {
     #[must_use]
     pub(crate) fn from_env(profile: &Path, sockets: &Sockets) -> Self {
         let home = tilo_paths::home();
-        let apps = Self::new(
+        let mut apps = Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
             sockets.clone(),
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         );
+        apps.connection_wait = true;
         #[cfg(any(target_os = "macos", windows))]
         if let Some(catalog) = apps.catalog.as_ref() {
             carried::install_carried_runtimes(catalog);
@@ -194,6 +199,7 @@ impl Apps {
         // connection from it as the app it runs.
         let launched: Arc<Launched> = Arc::default();
         Self {
+            connection_wait: false,
             instances: instances::Instances::new(&sockets, finds_launcher, Arc::clone(&launched)),
             catalog,
             root: profile.to_path_buf(),
@@ -209,6 +215,13 @@ impl Apps {
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
         }
+    }
+
+    /// Wait for a start's first connection, as a daemon does.
+    #[cfg(test)]
+    pub(crate) fn expecting_connection(mut self) -> Self {
+        self.connection_wait = true;
+        self
     }
 
     /// Attest this runtime's own process as the windowless endpoint of `app`
@@ -887,18 +900,29 @@ impl Apps {
             launch.kill();
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
-        // A start that ends as it starts has run no app: answer what it said, never "started".
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(100))
-            .ok_or_else(|| {
-                format!("refusing to keep {app_id} running: its end cannot be waited for")
-            })?;
+        // The start answers once the app is up: its launcher has connected, as the broker
+        // attests it. A process that ends first ends the start, with what it said, never
+        // answering that it started; one that stays alive without connecting is waited for, not
+        // cut off at a time this code invented, and said so in the log while it waits. Where no
+        // connection is expected (a test's launch), a process still running after the start
+        // grace is taken as started.
+        let started = std::time::Instant::now();
+        let mut warned = started;
         loop {
+            if self.launched.connected(launch.pid) {
+                return Ok(launch);
+            }
             match launch.ended() {
                 Ok(Some(status)) => {
                     self.launched.forget(launch.pid);
                     let said = launch.said();
                     let said = said.trim();
+                    tracing::error!(
+                        app = app_id,
+                        %status,
+                        said,
+                        "an app ended as its start began"
+                    );
                     return Err(if said.is_empty() {
                         format!("{app_id} ended as it started ({status})")
                     } else {
@@ -909,13 +933,24 @@ impl Apps {
                 Err(error) => {
                     self.launched.forget(launch.pid);
                     launch.kill();
+                    tracing::error!(app = app_id, %error, "an app's start could not be read");
                     return Err(format!("{app_id}'s start could not be read: {error}"));
                 }
             }
-            if std::time::Instant::now() >= deadline {
+            if self.connection_wait {
+                if warned.elapsed() >= std::time::Duration::from_secs(5) {
+                    warned = std::time::Instant::now();
+                    tracing::warn!(
+                        app = app_id,
+                        waited_s = started.elapsed().as_secs(),
+                        said = launch.said(),
+                        "an app has not connected since its start"
+                    );
+                }
+            } else if started.elapsed() >= std::time::Duration::from_millis(100) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         Ok(launch)
     }
@@ -1354,6 +1389,8 @@ struct LaunchRecord {
     start_time: u64,
     app: String,
     workspace: String,
+    /// The app has connected: its launch is up, and the start may answer.
+    connected: bool,
     /// The record the launch opened, when it named one: a process serves the one record its App
     /// holds, so a call on another record starts a process of its own.
     record: Option<String>,
@@ -1406,6 +1443,7 @@ impl Launched {
                 start_time,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
+                connected: false,
                 record: record.map(str::to_owned),
                 ticket,
                 no_window: shows != Shows::Window,
@@ -1453,7 +1491,23 @@ impl Launched {
     /// Whether `pid` is still the process recorded for exactly `app` and
     /// `workspace`.
     fn attest(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        self.no_window_of(pid, app, workspace).is_some()
+        let mut launches = self.0.lock_recover();
+        let Some(record) = launches.get_mut(&pid) else {
+            return false;
+        };
+        if record.app != app || record.workspace != workspace {
+            return false;
+        }
+        record.connected = true;
+        true
+    }
+
+    /// Whether the app launched as `pid` has connected.
+    fn connected(&self, pid: u32) -> bool {
+        self.0
+            .lock_recover()
+            .get(&pid)
+            .is_some_and(|record| record.connected)
     }
 
     /// Whether `pid` is the process this device started with no window for `app` in `workspace`.
