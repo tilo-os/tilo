@@ -1879,6 +1879,10 @@ impl Layout {
 /// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the layout
 /// it makes names it. The layout is `person`'s, so an actor that is not them acts for them: an agent
 /// arranging their layout works for them, and their undo takes its step back.
+///
+/// The person's own device hands its agent the session it runs, which is the delegation its change
+/// carries: every workspace admits the agent's change by the preset that delegation gives it, as it
+/// admits the agent's other calls, and an agent no grant names is refused there like anyone else.
 pub fn step_context(
     asked: &Actor,
     action: &LayoutAction,
@@ -1886,7 +1890,9 @@ pub fn step_context(
 ) -> tilo_actions::ActionContext {
     let mut acting: tilo_actions::Acting = asked.clone().into();
     if !acting.is_person() {
-        acting = acting.acting_for(tilo_actions::Acting::person(person));
+        acting = acting
+            .handed()
+            .acting_for(tilo_actions::Acting::person(person));
     }
     tilo_actions::ActionContext {
         invoker: Some(tilo_actions::ActionInvoker::admitted(&acting)),
