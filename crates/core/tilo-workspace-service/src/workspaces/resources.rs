@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
 #[cfg(any(feature = "apps", feature = "agents"))]
-#[cfg(any(feature = "apps", feature = "agents"))]
-use tilo_resource_store::{Admit, Received, Refusal, Schema, Store};
+use tilo_resource_store::Schema;
+use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
