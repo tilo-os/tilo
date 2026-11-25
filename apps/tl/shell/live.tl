@@ -27,7 +27,7 @@ view live_pill(phone: Bool, wide: Bool) {
                     if newest.expanded {
                         "Fold {live_name(newest)} back"
                     } else { "{live_name(newest)}, live" },
-                    icon: if newest.expanded { .minimize_2 } else { .play },
+                    icon: if newest.expanded { .minimize_2 } else { .maximize_2 },
                     icon_only: true,
                     role: .bar,
                 ) {
@@ -41,7 +41,13 @@ view live_pill(phone: Bool, wide: Bool) {
         } else if not roomy {
             // A bar narrower than a wide one has no room for the thing itself: one control
             // says something is live, and opens quick settings, where it stands with its controls.
-            ui.Button("{live_name(newest)}, live", icon: .play, icon_only: true, role: .bar) {
+            // Neither it nor the phone's control is a transport: neither shows play.
+            ui.Button(
+                "{live_name(newest)}, live",
+                icon: .chevron_down,
+                icon_only: true,
+                role: .bar,
+            ) {
                 on press: device.show_surface(device.overlays, surface: "quick-settings")
             }
         } else {
@@ -157,7 +163,7 @@ view native_row(r: device.LiveItem, compact: Bool) {
                 ui.Text(r.value, role: .caption, numeric: true, lines: 1)
             }
             for c in r.controls {
-                if c.id == "play-pause" {
+                if c.transport == "play-pause" {
                     live_control(r, c, on_bar: true)
                 }
             }
@@ -181,15 +187,15 @@ view native_row(r: device.LiveItem, compact: Bool) {
     }
 }
 
-/// One control of a row the shell draws itself: a transport control as its glyph, any other by
-/// its app's words.
+/// One control of a row the shell draws itself: a transport control as its glyph, by what it does
+/// whatever its app calls it, any other by its app's words.
 view live_control(r: device.LiveItem, c: device.LiveControl, on_bar: Bool) {
-    if c.id == "play-pause" or c.id == "previous" or c.id == "next" {
+    if c.transport != "" {
         ui.Button(
             c.label,
-            icon: if c.id == "previous" {
+            icon: if c.transport == "previous" {
                 .skip_back
-            } else if c.id == "next" {
+            } else if c.transport == "next" {
                 .skip_forward
             } else if r.playing { .pause } else { .play },
             icon_only: true,

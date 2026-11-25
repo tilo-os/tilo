@@ -1,7 +1,6 @@
 //! The design system's primitives (`docs/design-language.md`, "Primitives"): the only way to
 //! build these things.
 
-mod activity_card;
 mod bar_chip;
 #[path = "bar_chip_component.rs"]
 mod bar_chip_component;
@@ -21,7 +20,6 @@ mod surface;
 mod surfaces_component;
 mod text_stack;
 
-pub use activity_card::ActivityCardFace;
 pub use bar_chip::{BarChipFace, BarChipLayout};
 pub use bar_chip_component::{BarChip, BarChipProps};
 pub use bar_control::{BarControlFace, IconButton};

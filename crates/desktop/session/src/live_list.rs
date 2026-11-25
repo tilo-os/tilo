@@ -14,6 +14,7 @@ use tilo_actions::ApiError;
 use tilo_broker_core::route::CrdtRoute;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Started;
+use ui::widget::TransportControl;
 
 /// The resource the rows are published under.
 pub(crate) const RESOURCE: &str = "session:live";
@@ -455,15 +456,15 @@ impl Sources {
                 subtitle: summary.subtitle,
                 icon: summary.icon,
                 value: summary.value,
-                playing: matches!(
-                    summary.kind,
-                    ui::live_activity::Kind::Music | ui::live_activity::Kind::Call
-                ),
+                playing: summary.controls.iter().any(|c| {
+                    c.transport() == Some(TransportControl::PlayPause { playing: true })
+                }),
                 controls: summary
                     .controls
                     .into_iter()
                     .map(|c| LiveControl {
                         ends: c.kind == ui::live_activity::ControlKind::Close,
+                        transport: transport_role(c.transport()).to_owned(),
                         id: c.id,
                         label: c.label,
                         icon: c.icon,
@@ -662,12 +663,24 @@ fn kind_name(kind: ui::live_activity::Kind) -> &'static str {
     }
 }
 
+/// One of the player's transport controls, whose id is its step.
 fn control(id: &str, label: &str, icon: &str) -> LiveControl {
     LiveControl {
         id: id.to_owned(),
         label: label.to_owned(),
         icon: icon.to_owned(),
+        transport: id.to_owned(),
         ends: false,
+    }
+}
+
+/// The name a control's transport step goes by in a live row, however its app named the control.
+fn transport_role(step: Option<TransportControl>) -> &'static str {
+    match step {
+        Some(TransportControl::PlayPause { .. }) => "play-pause",
+        Some(TransportControl::Previous) => "previous",
+        Some(TransportControl::Next) => "next",
+        None => "",
     }
 }
 

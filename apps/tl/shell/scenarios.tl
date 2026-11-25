@@ -1597,9 +1597,24 @@ fn playing_here_and_on_the_phone() -> device.Live {
                 icon: "music",
                 playing: true,
                 controls: [
-                    device.LiveControl(id: "previous", label: "Previous", icon: "skip-back"),
-                    device.LiveControl(id: "play-pause", label: "Pause", icon: "pause"),
-                    device.LiveControl(id: "next", label: "Next", icon: "skip-forward"),
+                    device.LiveControl(
+                        id: "previous",
+                        label: "Previous",
+                        icon: "skip-back",
+                        transport: "previous",
+                    ),
+                    device.LiveControl(
+                        id: "play-pause",
+                        label: "Pause",
+                        icon: "pause",
+                        transport: "play-pause",
+                    ),
+                    device.LiveControl(
+                        id: "next",
+                        label: "Next",
+                        icon: "skip-forward",
+                        transport: "next",
+                    ),
                 ],
             ),
         ],

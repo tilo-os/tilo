@@ -369,7 +369,7 @@ view widget_music(unfolded: Bool) {
                         ui.Text(r.subtitle, role: .caption, secondary: true, lines: 1, truncate)
                     }
                 }
-                let play = r.controls.find(c -> c.id == "play-pause")
+                let play = r.controls.find(c -> c.transport == "play-pause")
                 if let c = play {
                     live_control(r, c, on_bar: not unfolded)
                 }
@@ -389,7 +389,9 @@ view widget_music(unfolded: Bool) {
                     }
                 }
                 row(gap: .related, align: .center, distribute: .center) {
-                    for c in r.controls.filter(c -> c.id == "previous" or c.id == "next") {
+                    for c in r.controls.filter(
+                        c -> c.transport == "previous" or c.transport == "next",
+                    ) {
                         live_control(r, c, on_bar: false)
                     }
                 }

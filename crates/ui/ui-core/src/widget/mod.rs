@@ -2408,7 +2408,7 @@ pub use context_menu::{
 mod row_menu;
 pub use chrome_body::paint_bar_body;
 pub use primitives::{
-    ActivityCardFace, BarChip, BarChipFace, BarChipLayout, BarChipProps, BarControlFace,
+    BarChip, BarChipFace, BarChipLayout, BarChipProps, BarControlFace,
     DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, DensityRegion,
     DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact, FactMark, FactProps,
     Facts, FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,

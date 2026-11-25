@@ -476,58 +476,6 @@ tilo_test_env::scenario! {
         );
         assert_eq!(layer.folded.len(), 1, "the rest wait in the pill");
     }
-
-    phase the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest;
-    {
-        let song = activity(Kind::Music, "song");
-        let timer = activity(Kind::Timer, "tea").with_countdown(300);
-        let soon = activity(Kind::Timer, "coffee").with_countdown(30);
-        let route = activity(Kind::Navigation, "route");
-        let call = activity(Kind::Call, "call");
-        let of = |held: &[&Summary]| {
-            pill(
-                &held
-                    .iter()
-                    .map(|summary| ("so.tilo.app".to_owned(), (*summary).clone()))
-                    .collect::<Vec<_>>(),
-            )
-        };
-
-        assert_eq!(
-            of(&[&song, &timer, &route, &soon, &call]).reading(),
-            call.reading(),
-            "a call stands first"
-        );
-        assert_eq!(
-            of(&[&song, &timer, &route, &soon]).reading(),
-            route.reading(),
-            "directions before a timer"
-        );
-        assert_eq!(
-            of(&[&song, &timer, &soon])
-                .heading
-                .map(|named| named.summary.id),
-            Some("coffee".to_owned()),
-            "the timer that is due within a minute"
-        );
-        assert_eq!(
-            of(&[&song, &timer]).heading.map(|named| named.summary.id),
-            Some("tea".to_owned()),
-            "a timer before music"
-        );
-        let music = of(&[&song]);
-        assert_eq!(
-            music.heading.map(|named| named.summary.id),
-            Some("song".to_owned())
-        );
-        assert_eq!(music.more, 0);
-        assert_eq!(
-            of(&[&song, &timer, &route, &soon, &call]).more,
-            4,
-            "one dot each"
-        );
-        assert!(pill(&[]).is_empty());
-    }
 }
 
 tilo_test_env::scenario! {
@@ -556,10 +504,6 @@ tilo_test_env::scenario! {
             shown,
             ["mute", "video", "more"],
             "three actions, the close beside them"
-        );
-        assert_eq!(
-            summary.first_control().map(|control| control.id.as_str()),
-            Some("mute")
         );
         assert_eq!(
             summary.close_control().map(|control| control.id.as_str()),

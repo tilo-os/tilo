@@ -402,16 +402,6 @@ impl Summary {
         (rank, left, self.id.as_str())
     }
 
-    /// The control a plain press (Space, a click on the card) runs: the first one the app marked
-    /// primary, else its first.
-    #[must_use]
-    pub fn first_control(&self) -> Option<&Control> {
-        self.controls
-            .iter()
-            .find(|control| control.kind == ControlKind::Primary)
-            .or_else(|| self.controls.first())
-    }
-
     /// The control that ends the activity, when the app offers one.
     #[must_use]
     pub fn close_control(&self) -> Option<&Control> {

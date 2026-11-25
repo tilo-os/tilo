@@ -51,7 +51,8 @@ pub struct LiveItem {
     pub icon: String,
     /// What it reads now: "4:32", "muted".
     pub value: String,
-    /// It plays now (a player, a call): a play-pause button shows pause.
+    /// It runs now, as its play-pause control says (a song playing, a timer counting down): the
+    /// button shows pause.
     pub playing: bool,
     /// What the person can do to it from the shell, for a row the shell draws itself.
     pub controls: Vec<LiveControl>,
@@ -107,6 +108,9 @@ pub struct LiveControl {
     pub label: String,
     /// The glyph it shows, by lucide name.
     pub icon: String,
+    /// What it does in a transport, whatever its app calls it: `play-pause`, `previous` or `next`;
+    /// empty for any other control.
+    pub transport: String,
     /// It ends what is live: a card carries it in its header, beside the way back to the bar.
     pub ends: bool,
 }

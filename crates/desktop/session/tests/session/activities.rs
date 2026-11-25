@@ -29,19 +29,29 @@ fn shots_dir() -> std::path::PathBuf {
     )
 }
 
-/// The timer the pill names, with the controls its card carries.
+/// The timer the pill names, running, with the controls its card carries: its pause is the
+/// transport's play-pause by its glyph, whatever Clocks calls the command.
 fn tea() -> Summary {
     Summary::new(Kind::Timer, "Tea", "4:32")
         .with_id("tea")
         .with_countdown(272)
         .with_progress(0.5)
-        .with_control(Control::new("toggle", "Pause", ControlKind::Primary))
+        .with_control(Control::new("toggle", "Pause", ControlKind::Primary).with_icon("pause"))
         .with_control(Control::new(
             "add-minute",
             "A minute more",
             ControlKind::Secondary,
         ))
         .with_control(Control::new("close", "End", ControlKind::Close))
+}
+
+/// The same timer as Clocks publishes it once it is paused: what it had left holds, and its
+/// control resumes it.
+fn tea_paused() -> Summary {
+    let mut paused = tea();
+    paused.countdown = None;
+    paused.controls[0] = Control::new("toggle", "Resume", ControlKind::Primary).with_icon("play");
+    paused
 }
 
 /// Show `summary` on the session's board as `app` publishes it: a card over the windows when
@@ -566,7 +576,8 @@ fn the_bar_shows_the_whole_clock_on_a_phone_and_a_desktop() {
                 // The time gives way to nothing, and nor does what the timer has left: the pill
                 // reads it on a phone and on a desktop alike.
                 let left = session.shell_text_bounds("4:32");
-                if !left.is_some_and(|(x, y, w, _)| y < 48.0 && x >= 0.0 && x + w <= f64::from(width))
+                if !left
+                    .is_some_and(|(x, y, w, _)| y < 48.0 && x >= 0.0 && x + w <= f64::from(width))
                 {
                     clipped.push(format!("{name}: the bar reads no time left: {left:?}"));
                 }
@@ -703,4 +714,88 @@ fn theme_contrast(frame: &[u8], size: (u32, u32), rect: (usize, usize, usize, us
         }
     }
     (lightest + 0.05) / (darkest + 0.05)
+}
+
+/// A running timer's pill on a desktop's bar offers its pause, by what the control does rather
+/// than what its app calls it: the press reaches Clocks, and once Clocks says the timer is paused
+/// the time left holds and the button turns to resume, its glyph with it. In both themes, each
+/// state written as a picture.
+#[test]
+fn the_desktop_pill_pauses_a_running_timer_and_turns_to_resume() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = super::shell::held_clock();
+    let dir = shots_dir();
+    for (theme, presentation) in [
+        (
+            "dark",
+            ui::headless::fixture_runner_inputs as fn() -> ui::application::ComponentRunnerInputs,
+        ),
+        (
+            "light",
+            super::shell::light_runner_inputs as fn() -> ui::application::ComponentRunnerInputs,
+        ),
+    ] {
+        let mut session = session_with(crate::common::WIDTH, presentation);
+        settle(&mut session, 8);
+        show(&session, CLOCKS, tea(), false);
+        let (x, y, w, h) = standing(&mut session, "Pause");
+        assert!(
+            y < f64::from(BAR),
+            "{theme}: the pause stands on the bar: {y}"
+        );
+        settle(&mut session, 8);
+        super::shell::capture_to(&mut session, &dir, &format!("pill-{theme}-running"));
+        let (running, width) = shot(&mut session);
+
+        crate::common::press(&mut session, "Pause");
+        crate::common::wait_for(&mut session, "the pause to reach Clocks", |session| {
+            (commands(session, CLOCKS) == ["toggle"]).then_some(())
+        });
+        assert_eq!(pressed(&session, CLOCKS)[0]["activity_id"], "tea");
+
+        // Clocks answers with the paused timer.
+        show(&session, CLOCKS, tea_paused(), false);
+        standing(&mut session, "Resume");
+        gone(&mut session, "Pause");
+        for _ in 0..3 {
+            session.step(Duration::from_secs(1)).expect("step");
+        }
+        settle(&mut session, 8);
+        super::shell::capture_to(&mut session, &dir, &format!("pill-{theme}-paused"));
+        let (paused, _) = shot(&mut session);
+        assert!(
+            session
+                .shell_text_bounds("4:32")
+                .is_some_and(|(_, top, _, _)| top < f64::from(BAR)),
+            "{theme}: the time left holds on the bar"
+        );
+
+        // The glyph turned: the button's own pixels moved, and nothing else on the bar did.
+        let scale = f64::from(width) / f64::from(crate::common::WIDTH);
+        let stride = usize::try_from(width).expect("columns") * 4;
+        let pixel = |value: f64| (value * scale).round().max(0.0) as usize;
+        let mut moved = 0_usize;
+        for row in pixel(y)..pixel(y + h) {
+            for column in pixel(x)..pixel(x + w) {
+                let at = row * stride + column * 4;
+                if running[at..at + 4] != paused[at..at + 4] {
+                    moved += 1;
+                }
+            }
+        }
+        assert!(
+            moved > 20,
+            "{theme}: the button's glyph turned to play: {moved} pixels moved"
+        );
+        assert_eq!(
+            changed(&running, &paused, width, 0, BAR) - moved,
+            0,
+            "{theme}: only the button changed on the bar"
+        );
+
+        crate::common::press(&mut session, "Resume");
+        crate::common::wait_for(&mut session, "the resume to reach Clocks", |session| {
+            (commands(session, CLOCKS) == ["toggle", "toggle"]).then_some(())
+        });
+    }
 }
