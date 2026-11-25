@@ -766,14 +766,14 @@ tilo_test_env::scenario! {
                 )
                 .claiming_self(),
                 collab_types::Member::of_software(
-                    collab_types::MemberId::agent("build-helper"),
+                    collab_types::MemberId::agent("build-helper", "original-caller"),
                     "Build helper",
                 ),
             ],
             permissions: vec![],
             apps: Vec::new(),
         });
-        let helper = crate::permissions::MemberId::agent("build-helper");
+        let helper = crate::permissions::MemberId::agent("build-helper", "original-caller");
 
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![

@@ -1033,7 +1033,9 @@ fn app_of(provider: &str) -> &str {
 fn grant_of(record: &Record) -> Result<tilo_action_policy::Grant, ActionCallError> {
     use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
     let delegate = match &record.facts.by {
-        AskedBy::Agent(agent) => tilo_action_policy::Grantee::agent(agent.id.clone()),
+        AskedBy::Agent(agent) => {
+            tilo_action_policy::Grantee::agent(agent.id.clone(), record.person.clone())
+        }
         AskedBy::App { app, .. } => tilo_action_policy::Grantee::app(app.clone()),
         AskedBy::Device(_) | AskedBy::Program { .. } => {
             return Err(refused("A device's or a program's question grants nothing"));

@@ -230,7 +230,7 @@ mod tests {
         phase an_agent_says_what_it_does_and_an_unnamed_member_is_not_a_raw_key;
         {
             let mut presence = PresenceCtx::empty();
-            let bot = MemberId::agent("bot");
+            let bot = MemberId::agent("bot", "ada-device");
             presence.set_display_name(bot.clone(), "Scribe");
             let cursor = presence.placed_cursor(PlacedPointer {
                 user: bot,
@@ -254,7 +254,7 @@ mod tests {
                 "a key their presence says is no name"
             );
             let named = presence.placed_cursor(PlacedPointer {
-                user: MemberId::agent(key),
+                user: MemberId::agent(key, "ada-device"),
                 name: Some("Ada".into()),
                 ..placed(key)
             });

@@ -101,7 +101,8 @@ fn a_step_an_agent_made_for_the_person_is_theirs_to_take_back() {
     doc.put(ROOT, "word", "theirs".to_owned()).unwrap();
     commit_as(
         &mut doc,
-        &tilo_actions::Acting::agent("scout").acting_for(tilo_actions::Acting::person("ada")),
+        &tilo_actions::Acting::agent("scout", "ada")
+            .acting_for(tilo_actions::Acting::person("ada")),
     );
     let history = UndoLog::new(&mut doc);
     assert!(

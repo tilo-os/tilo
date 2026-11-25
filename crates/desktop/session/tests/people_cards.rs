@@ -100,7 +100,7 @@ fn an_agent(publisher: &str, name: &str, doing: &str) -> LiveMember {
         publisher: publisher.to_owned(),
         kind: "agent".to_owned(),
         label: name.to_owned(),
-        member: Some(tilo_actions::MemberId::agent(name.to_lowercase())),
+        member: Some(tilo_actions::MemberId::agent(name.to_lowercase(), "ada")),
         activity: Some(doing.to_owned()),
         ..LiveMember::default()
     }

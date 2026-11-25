@@ -142,14 +142,12 @@ impl Moderation {
 }
 
 fn reporter(cx: &ActionCx) -> Result<MemberId, Refusal> {
-    let invoked_by = cx.invoked_by();
-    let by_person = invoked_by
+    let by_person = cx
+        .invoked_by()
         .as_ref()
         .is_none_or(tilo_actions::Acting::is_person);
-    let by_software = invoked_by.is_some_and(|by| by.is_agent() || by.is_bot());
     match cx.author() {
         Some(author) if by_person => Ok(author.clone()),
-        Some(author) if by_software && *author == crate::agent() => Ok(author.clone()),
         _ => Err(Refusal::new("only a person reports, for themselves")),
     }
 }

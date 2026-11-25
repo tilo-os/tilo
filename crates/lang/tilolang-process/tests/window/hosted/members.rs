@@ -116,7 +116,7 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
             (MemberId::person("u_mia"), "Mia"),
             (MemberId::person("u_leo"), "Leo"),
             (MemberId::person("u_zoe"), "Zoe"),
-            (MemberId::agent("planner"), "Planner"),
+            (MemberId::agent("planner", "u_zoe"), "Planner"),
         ],
         |workspace| {
             let mut policy = policy::WorkspacePolicy::new(workspace, "ada");
@@ -124,7 +124,7 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
             policy.members.insert("u_leo".to_owned(), Role::Viewer);
             policy.grants.push(policy::Grant::new(
                 "agent-member:planner",
-                Grantee::agent("planner"),
+                Grantee::agent("planner", "ada"),
                 policy::TreePath::workspace(workspace),
                 policy::KindSet::READ_UNDOABLE,
                 policy::Answer::Allow,

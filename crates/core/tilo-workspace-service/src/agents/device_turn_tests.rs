@@ -489,7 +489,7 @@ fn message_written(
         before: None,
         after: Some(serde_json::json!({
             "body": text,
-            "$in": {"$id": "direct-1", "people": [{"person": person}, {"agent": SCOUT}]},
+            "$in": {"$id": "direct-1", "people": [{"person": person}, {"agent": {"id": SCOUT, "person": person}}]},
         })),
         origin: None,
         caused_by: None,

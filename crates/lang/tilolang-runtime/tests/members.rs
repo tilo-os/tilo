@@ -71,7 +71,7 @@ view two(r: Workspace) {
         vec![
             Member::person("ada", tilo_actions::policy::Role::Owner),
             Member::person("bo", tilo_actions::policy::Role::Editor),
-            Member::agent("planner"),
+            Member::agent("planner", "ada"),
         ]
     }
 

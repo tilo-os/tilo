@@ -103,7 +103,7 @@ fn an_agent_is_made_with_a_name_who_made_it_and_when() {
         state.by_name("Claude").map(|agent| agent.id.0.clone()),
         Some(agent.id.0.clone())
     );
-    assert_eq!(agent.identity(), format!("agent:{}", agent.id.0));
+    assert_eq!(agent.identity(), format!("agent:{ADA}/{}", agent.id.0));
     // Names are one line of a bounded length.
     for name in [&"x".repeat(super::MAX_NAME + 1), "two\nlines"] {
         let refused = record.apply(make(name)).unwrap_err();
@@ -640,17 +640,17 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
     let others = [
         (
             "the agent itself",
-            Acting::agent(agent.as_str()).acting_for(person(ADA)),
+            Acting::agent(agent.as_str(), "ada").acting_for(person(ADA)),
             true,
         ),
         (
             "another agent",
-            Acting::agent("another").acting_for(person(ADA)),
+            Acting::agent("another", "ada").acting_for(person(ADA)),
             true,
         ),
         (
             "another agent for Grace",
-            Acting::agent("another").acting_for(person(GRACE)),
+            Acting::agent("another", "ada").acting_for(person(GRACE)),
             true,
         ),
         (
@@ -666,7 +666,7 @@ fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
         (
             "an automation an agent works",
             Acting::automation("nightly")
-                .acting_for(Acting::agent(agent.as_str()).acting_for(person(ADA))),
+                .acting_for(Acting::agent(agent.as_str(), "ada").acting_for(person(ADA))),
             false,
         ),
         ("an app by itself", Acting::by_app("so.tilo.chat"), false),

@@ -499,7 +499,7 @@ const BO: &str = "bo";
 const SCOUT: &str = "scout";
 
 fn scout() -> Actor {
-    tilolang_tilo::runtime::ids::MemberId::agent(SCOUT).into()
+    tilolang_tilo::runtime::ids::MemberId::agent(SCOUT, "ada").into()
 }
 
 /// Ada's week when she was away a day: she wrote four tasks, and while she was out Bo took the

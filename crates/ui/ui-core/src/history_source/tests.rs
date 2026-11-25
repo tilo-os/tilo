@@ -833,7 +833,7 @@ tilo_test_env::scenario! {
         step(
             &mut doc,
             "agents",
-            ActionInvoker::agent("scout")
+            ActionInvoker::agent("scout", "kai")
                 .acting_for("kai"),
         );
         let mut authors = AuthorDirectory::new();
@@ -894,7 +894,7 @@ tilo_test_env::scenario! {
                 [],
             )))
             .with_invoker(
-                ActionInvoker::agent("scout")
+                ActionInvoker::agent("scout", "ada")
                     .acting_for("ada"),
             );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
@@ -911,7 +911,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             author.attribution,
             Some(HistoryAttribution {
-                acting: tilo_actions::Acting::agent("scout")
+                acting: tilo_actions::Acting::agent("scout", "ada")
                     .acting_for(tilo_actions::Acting::person("ada")),
                 on_behalf_of_name: Some("ada".into()),
                 writer: Some(fs_protocol::AttributedWriter::Agent {
@@ -941,7 +941,7 @@ tilo_test_env::scenario! {
         authors.register_agent(
             &hex::encode(device),
             HistoryAgent {
-                agent: tilo_actions::MemberId::agent("scribe"),
+                agent: tilo_actions::MemberId::agent("scribe", person.clone()),
                 label: "Scribe".into(),
                 rgb: (10, 20, 30),
                 person: person.clone(),
@@ -962,7 +962,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             author.attribution,
             Some(HistoryAttribution {
-                acting: tilo_actions::Acting::agent("scribe")
+                acting: tilo_actions::Acting::agent("scribe", person.clone())
                     .acting_for(tilo_actions::Acting::person(person.clone())),
                 on_behalf_of_name: Some("Ada".into()),
                 writer: None,
@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
                 "Prepare Q3 financials",
                 "task",
             )
-            .with_invoker(ActionInvoker::agent("scout").acting_for("ada"));
+            .with_invoker(ActionInvoker::agent("scout", "ada").acting_for("ada"));
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
         authors.set_reader(crate::permissions::MemberId::person("kai"));

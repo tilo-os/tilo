@@ -408,7 +408,8 @@ impl Workspaces {
     ) -> Result<Option<(tilo_actions::InvocationId, SignedCall)>, String> {
         let agent = acting
             .filter(|acting| acting.acted_for_person().is_some())
-            .and_then(Acting::agent_id);
+            .and_then(Acting::member_id)
+            .filter(|member| member.is_agent());
         // A call signed as its acting would sign it is kept as it was signed.
         let signed_as_acting = request.signed.as_deref().is_some_and(|signed| {
             acting.is_none_or(|acting| tilo_server_protocol::invocation::signs_for(acting, signed))
@@ -449,14 +450,14 @@ impl Workspaces {
     async fn lasting_grant(
         &self,
         workspace: &str,
-        agent: &str,
+        agent: &tilo_action_policy::MemberId,
         target: &tilo_actions::remote::RemoteActionTarget,
         used: &[&str],
     ) -> Option<String> {
         use tilo_action_policy::Level;
         let policy = self.policy_of(workspace).await?;
         let cx = tilo_action_policy::Context::at(tilo_clock::unix_now_ms());
-        let grantee = tilo_action_policy::Grantee::agent(agent);
+        let grantee = tilo_action_policy::Grantee::Member(agent.clone());
         policy
             .grants
             .iter()

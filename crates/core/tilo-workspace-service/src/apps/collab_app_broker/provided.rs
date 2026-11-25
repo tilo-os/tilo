@@ -1346,7 +1346,7 @@ mod identity_admin_tests {
                     ..Default::default()
                 },
             );
-            let agent = Caller::local_agent("planner").in_workspace(workspace_id.clone());
+            let agent = Caller::local_agent("planner", owner.clone()).in_workspace(workspace_id.clone());
             assert!(
                 invoked(&state, &agent, &request(device_tickets::IDENTITIES, None)).is_err(),
                 "an agent outside any run takes no host step"
@@ -2061,7 +2061,7 @@ mod settings_documents_tests {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Settings");
         workspace.policy.set_owner(owner.clone());
         workspace.allow_agent("scribe", KindSet::READ);
-        workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::ALL);
+        workspace.allow_app(Grantee::agent("scribe", owner.clone()), APP, KindSet::ALL);
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);

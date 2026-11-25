@@ -255,7 +255,7 @@ async fn where_a_persons_devices_are_reached_is_theirs_alone() {
         ),
         (
             "an agent no device stands behind",
-            (ada, Caller::local_agent(ASSISTANT)),
+            (ada, Caller::local_agent(ASSISTANT, "ada")),
         ),
         ("an app", (ada, Caller::local_app("so.tilo.chat"))),
         (

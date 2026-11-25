@@ -99,7 +99,10 @@ fn current(
                 .agent_id()
                 .ok_or(MembershipError::Delegate(DelegateInactive::Delegation))?;
             Some(crate::state::ActingAs {
-                actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.to_owned())),
+                actor: tilo_action_policy::Actor::Member(MemberId::agent(
+                    agent_id.to_owned(),
+                    person.as_str(),
+                )),
                 // Its person handed it the delegation its root-signed
                 // certificate names.
                 grants: tilo_action_policy::Acting::handed_agent(agent_id, person.as_str())

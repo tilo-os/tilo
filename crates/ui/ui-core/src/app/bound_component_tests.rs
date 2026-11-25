@@ -3278,7 +3278,7 @@ fn a_step_heard_elsewhere_reaches_the_window_through_its_bound_component() {
         "version": tilo_actions::INTERACTION_VERSION,
         "invocation": tilo_actions::InvocationId::new(),
         "sequence": 1,
-        "actor": tilo_actions::Acting::agent("helper"),
+        "actor": tilo_actions::Acting::agent("helper", "fixture-user"),
         "phase": tilo_actions::InteractionPhase::Applying,
         "action": {"id": "new_task", "label": "New task"},
         "resource": {"id": "tl:tasks:root", "kind": "tl.tasks.Tasks", "label": "Tasks"},

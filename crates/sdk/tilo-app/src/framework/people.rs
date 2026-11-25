@@ -418,7 +418,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     };
                     let kind = match member.id {
                         MemberId::Person(_) => "person",
-                        MemberId::Agent(_) => "agent",
+                        MemberId::Agent { .. } => "agent",
                         MemberId::Bot(_) => "bot",
                     };
                     choices = choices.push(cx.person_choice(
@@ -572,7 +572,7 @@ mod tests {
         phase an_agents_chip_reads_its_name_and_its_mark_says_agent;
         {
             let me = MemberId::person("me-id");
-            let agent = MemberId::agent("planner");
+            let agent = MemberId::agent("planner", "me-id");
             let people = People::new(Some(&me));
             let mut presence = PresenceCtx::default();
             presence.set_self_member(me, "Ada");
@@ -602,7 +602,7 @@ mod tests {
         {
             let me = MemberId::person("me-id");
             let ada = MemberId::person("ada-key");
-            let planner = MemberId::agent("planner");
+            let planner = MemberId::agent("planner", "ada-key");
             let people = People::new(Some(&me));
             tilo_resource::members::know([
                 (ada.clone(), "Ada".to_owned()),

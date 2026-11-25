@@ -2446,7 +2446,7 @@ fn a_draft_is_its_authors_alone_and_the_send_empties_it() {
 fn admitted(workspace: &str, agent: &str, person: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         format!("agent-member:{agent}"),
-        tilo_action_policy::Grantee::agent(agent),
+        tilo_action_policy::Grantee::agent(agent, person),
         tilo_action_policy::TreePath::workspace(workspace),
         tilo_action_policy::KindSet::READ_UNDOABLE,
         tilo_action_policy::Answer::Allow,
@@ -2492,7 +2492,9 @@ fn a_conversation_with_an_agent_offers_the_model_its_answers_come_from() {
         )
         .expect("the model choice is served");
 
-    let helper = Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("helper"));
+    let helper = Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+        "helper", "ada",
+    ));
     let direct = call(&ada, "message_person", vec![all, Value::Actor(helper)]);
     ada.commit();
     let view = open(&ada, &target(&direct));

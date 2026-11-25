@@ -73,7 +73,7 @@ fn paragraphs(service: &ResourceService, note: &ResourceRef) -> Vec<String> {
 
 /// The agent that edits the notes: a task acting for Ada.
 fn agent() -> tilo_actions::ActionInvoker {
-    tilo_actions::ActionInvoker::agent("task-1").acting_for("ada")
+    tilo_actions::ActionInvoker::agent("task-1", "ada").acting_for("ada")
 }
 
 #[test]

@@ -248,7 +248,7 @@ impl TaskApi for Apps {
 /// The task as the broker delivers its invocations: an agent acting for ada.
 fn task_caller() -> tilolang_tilo::publish::Caller {
     tilolang_tilo::publish::Caller {
-        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1", "ada").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
         handed: false,

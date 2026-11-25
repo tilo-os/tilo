@@ -126,7 +126,7 @@ fn an_owner_closes_the_workspace_vault_and_shares_it_with_one_member() {
 #[test]
 fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
     let mail = TreePath::workspace("r").app("so.tilo.mail");
-    let key = Grantee::member(tilo_action_policy::MemberId::Agent("key".into()));
+    let key = Grantee::member(tilo_action_policy::MemberId::agent("key", ALICE));
     let mut grants = roles::workspace_role_grants("r", &alice());
     let mailbox = mail.clone().resource("");
     assert_eq!(
@@ -515,7 +515,7 @@ tilo_test_env::scenario! {
         assert_eq!(as_editor.answer, Answer::Allow);
         let agent = decide(
             &grants,
-            &[Grantee::agent(BOB)],
+            &[Grantee::agent(BOB, ALICE)],
             &send(),
             ActionKind::Read,
             &cx(),
@@ -1035,11 +1035,11 @@ tilo_test_env::scenario! {
         );
         let agent = MemberAccess::new(
             workspace.clone(),
-            Acting::agent("ag").acting_for(Acting::person(BOB)),
+            Acting::agent("ag", BOB).acting_for(Acting::person(BOB)),
         )
         .granted(roles::agent_default(&[mail()]).assign(
             "ag",
-            &Grantee::agent("ag"),
+            &Grantee::agent("ag", BOB),
             &alice(),
             &Lifetime::UntilRevoked,
         ));
@@ -1630,7 +1630,7 @@ tilo_test_env::scenario! {
         let denial = |id: &str| {
             Change::Grant(Grant::new(
                 id,
-                Grantee::agent("ag"),
+                Grantee::agent("ag", ALICE),
                 mail(),
                 KindSet::ALL,
                 Answer::Deny,
@@ -1686,7 +1686,7 @@ tilo_test_env::scenario! {
                     grant("person", mail(), KindSet::ALL, person_answer),
                     Grant::new(
                         "agent",
-                        Grantee::agent("ag"),
+                        Grantee::agent("ag", ALICE),
                         mail(),
                         KindSet::ALL,
                         agent_answer,
@@ -1694,7 +1694,7 @@ tilo_test_env::scenario! {
                     ),
                 ];
                 let authority = Authority::person(Party::new(vec![alice()], &grants))
-                    .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
+                    .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &grants));
                 let verdict = authority.decide(&send(), ActionKind::Outside, &cx());
                 assert_eq!(verdict.answer, person_answer.min(agent_answer));
                 assert_eq!(verdict.parts.len(), 2);
@@ -1708,7 +1708,7 @@ tilo_test_env::scenario! {
             grant("person", mail(), KindSet::READ, Answer::Allow),
             Grant::new(
                 "agent",
-                Grantee::agent("ag"),
+                Grantee::agent("ag", ALICE),
                 TreePath::root(),
                 KindSet::ALL,
                 Answer::Allow,
@@ -1716,7 +1716,7 @@ tilo_test_env::scenario! {
             ),
         ];
         let authority = Authority::person(Party::new(vec![alice()], &grants))
-            .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
+            .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &grants));
         assert_eq!(
             authority.decide(&send(), ActionKind::Read, &cx()).answer,
             Answer::Allow
@@ -1729,7 +1729,7 @@ tilo_test_env::scenario! {
         let mut restricted = grants.to_vec();
         restricted.push(grant("no-send", send(), KindSet::ALL, Answer::Deny));
         let authority = Authority::person(Party::new(vec![alice()], &restricted))
-            .bounded_by(Party::new(vec![Grantee::agent("ag")], &restricted));
+            .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &restricted));
         assert_eq!(
             authority.decide(&send(), ActionKind::Read, &cx()).answer,
             Answer::Deny
@@ -1742,7 +1742,7 @@ tilo_test_env::scenario! {
             grant("person", mail(), KindSet::ALL, Answer::Allow),
             Grant::new(
                 "agent",
-                Grantee::agent("ag"),
+                Grantee::agent("ag", ALICE),
                 mail(),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -1750,7 +1750,7 @@ tilo_test_env::scenario! {
             ),
         ];
         let authority = Authority::person(Party::new(vec![alice()], &grants))
-            .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
+            .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &grants));
         assert_eq!(
             authority
                 .decide(&archive(), ActionKind::Undoable, &cx())
@@ -1778,13 +1778,13 @@ tilo_test_env::scenario! {
         preset.validate().expect("valid");
         let grants = preset.assign(
             "agent:ag",
-            &Grantee::agent("ag"),
+            &Grantee::agent("ag", ALICE),
             &alice(),
             &Lifetime::UntilRevoked,
         );
         let workspace = workspace_with_members(&[(BOB, Role::Editor)]);
         let authority = Authority::person(workspace.party(ALICE))
-            .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
+            .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &grants));
         assert_eq!(
             authority
                 .decide(&archive(), ActionKind::Undoable, &cx())
@@ -1806,7 +1806,7 @@ tilo_test_env::scenario! {
         );
         // The agent of an editor asks no more than the editor does: Outside is Ask either way.
         let bob = Authority::person(workspace.party(BOB))
-            .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants));
+            .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &grants));
         assert_eq!(
             bob.decide(&send(), ActionKind::Outside, &cx()).answer,
             Answer::Ask
@@ -1833,7 +1833,7 @@ tilo_test_env::scenario! {
         };
         let for_carol = Acting::handed_agent("scout", CAROL);
         let answering_carol = for_carol.clone().agent_of(BOB);
-        let sub_agent = answering_carol.clone().handed_on("helper");
+        let sub_agent = answering_carol.clone().handed_on("helper").expect("an agent starts it");
         assert_eq!(decided(&for_carol, &archive()), Answer::Allow);
         for (who, acting) in [("the turn", &answering_carol), ("its sub-agent", &sub_agent)] {
             assert_eq!(
@@ -1888,7 +1888,7 @@ tilo_test_env::scenario! {
 
     phase a_privileged_action_needs_the_persons_own_allow;
     {
-        let agent = || Grantee::agent("ag");
+        let agent = || Grantee::agent("ag", ALICE);
         let asks = [grant("asks", mail(), KindSet::ALL, Answer::Ask)];
         let alone = Authority::person(Party::new(vec![alice()], &asks));
         assert_eq!(
@@ -1946,7 +1946,7 @@ tilo_test_env::scenario! {
                     grant("person", mail(), KindSet::ALL, person),
                     Grant::new(
                         "agent",
-                        Grantee::agent("ag"),
+                        Grantee::agent("ag", ALICE),
                         mail(),
                         KindSet::ALL,
                         delegation,
@@ -1954,7 +1954,7 @@ tilo_test_env::scenario! {
                     ),
                 ];
                 let verdict = Authority::person(Party::new(vec![alice()], &grants))
-                    .bounded_by(Party::new(vec![Grantee::agent("ag")], &grants))
+                    .bounded_by(Party::new(vec![Grantee::agent("ag", ALICE)], &grants))
                     .decide(&send(), ActionKind::Outside, &cx());
                 if verdict.answer == Answer::Allow {
                     assert_eq!(verdict.clone().privileged().answer, Answer::Allow);
@@ -1974,7 +1974,7 @@ tilo_test_env::scenario! {
         let set_role = roles::governance_action("r", governance::SET_ROLE);
         let owner_agent = MemberAccess::new(
             workspace.clone(),
-            Acting::agent("scribe").acting_for(Acting::person(ALICE)),
+            Acting::agent("scribe", ALICE).acting_for(Acting::person(ALICE)),
         )
         .granted(tilo_action_policy::Acting::handed_agent("scribe", ALICE).handed_preset("r"));
         assert_eq!(
@@ -1992,7 +1992,7 @@ tilo_test_env::scenario! {
         );
         let viewer_agent = MemberAccess::new(
             workspace,
-            Acting::agent("scribe").acting_for(Acting::person(BOB)),
+            Acting::agent("scribe", BOB).acting_for(Acting::person(BOB)),
         )
         .granted(tilo_action_policy::Acting::handed_agent("scribe", BOB).handed_preset("r"));
         assert_eq!(

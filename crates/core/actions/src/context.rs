@@ -1457,9 +1457,11 @@ impl ActionInvoker {
         Self::admitted(&Acting::person(id))
     }
 
+    /// The agent `id` of `person`, acting by itself.
+    #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::admitted(&Acting::agent(id))
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_action_policy::PersonId>) -> Self {
+        Self::admitted(&Acting::agent(id, person))
     }
 
     #[must_use]
@@ -1761,32 +1763,32 @@ mod tests {
         phase the_host_rewriting_the_invoker_drops_a_device_the_caller_put_there;
         {
             let smuggled = ActionContext::default().with_invoker(
-                ActionInvoker::agent("mallory").from_device(Some(laptop())),
+                ActionInvoker::agent("mallory", "ada").from_device(Some(laptop())),
             );
-            let hosted = smuggled.with_host_actor(&crate::Acting::agent("mallory"), None);
+            let hosted = smuggled.with_host_actor(&crate::Acting::agent("mallory", "ada"), None);
             assert_eq!(hosted.invoker.unwrap().device, None);
         }
 
         phase a_delivered_invoker_keeps_the_device_only_for_the_named_actor;
         {
             let context = ActionContext::default().with_invoker(
-                ActionInvoker::agent("task-7").from_device(Some(laptop())),
+                ActionInvoker::agent("task-7", "ada").from_device(Some(laptop())),
             );
             assert_eq!(
-                ActionInvoker::delivered(&MemberId::agent("task-7").into(), Some(&context)).device,
+                ActionInvoker::delivered(&MemberId::agent("task-7", "ada").into(), Some(&context)).device,
                 Some(laptop())
             );
             assert_eq!(
-                ActionInvoker::delivered(&MemberId::agent("task-8").into(), Some(&context)).device,
+                ActionInvoker::delivered(&MemberId::agent("task-8", "ada").into(), Some(&context)).device,
                 None,
                 "another actor is not on that device because a context names it"
             );
-            assert_eq!(ActionInvoker::delivered(&MemberId::agent("task-7").into(), None).device, None);
+            assert_eq!(ActionInvoker::delivered(&MemberId::agent("task-7", "ada").into(), None).device, None);
         }
 
         phase invoker_round_trips_and_is_enriched_from_ambient;
         {
-            let invoker = ActionInvoker::agent("alpha")
+            let invoker = ActionInvoker::agent("alpha", "ada")
                 .with_presence(PresenceId::new("task-7").unwrap());
             let context = ActionContext::for_resource("r", "k", "l").with_invoker(invoker.clone());
             let message = context.change_message().unwrap();
@@ -1804,7 +1806,7 @@ mod tests {
                 ActionInvoker::person("ada").acting_for("ada").acting.acted_for_person(),
                 None
             );
-            let agent = ActionInvoker::agent("claude").acting_for("ada");
+            let agent = ActionInvoker::agent("claude", "ada").acting_for("ada");
             assert!(agent.acting.is_agent());
             assert_eq!(agent.acting.acted_for_person(), Some("ada"));
         }
@@ -1819,13 +1821,13 @@ mod tests {
             let task = PresenceId::new("agent-alpha-view").unwrap();
             let rewritten = forged
                 .clone()
-                .with_host_actor(&crate::Acting::agent("alpha"), Some(task.clone()));
+                .with_host_actor(&crate::Acting::agent("alpha", "owner"), Some(task.clone()));
             assert_eq!(
                 rewritten.invoker,
-                Some(ActionInvoker::agent("alpha").with_presence(task))
+                Some(ActionInvoker::agent("alpha", "owner").with_presence(task))
             );
             let delegated = forged.with_host_actor(
-                &crate::Acting::agent("alpha").acting_for(crate::Acting::person("owner")),
+                &crate::Acting::agent("alpha", "owner").acting_for(crate::Acting::person("owner")),
                 None,
             );
             let invoker = delegated.invoker.unwrap();
@@ -1842,10 +1844,10 @@ mod tests {
             let presence = PresenceId::new("agent-a-view").unwrap();
             let context =
                 ActionContext::default()
-                    .with_host_actor(&crate::Acting::agent("a"), Some(presence.clone()));
+                    .with_host_actor(&crate::Acting::agent("a", "ada"), Some(presence.clone()));
             assert_eq!(
-                ActionInvoker::delivered(&MemberId::agent("a").into(), Some(&context)),
-                ActionInvoker::agent("a").with_presence(presence)
+                ActionInvoker::delivered(&MemberId::agent("a", "ada").into(), Some(&context)),
+                ActionInvoker::agent("a", "ada").with_presence(presence)
             );
             // A context naming another actor never routes to a view, and the
             // actor always comes from the delivery.
@@ -1909,7 +1911,7 @@ mod tests {
         phase the_device_an_agent_works_from_round_trips_through_the_change_message;
         {
             let entry = ActionContext::default().with_invoker(
-                ActionInvoker::agent("task-7")
+                ActionInvoker::agent("task-7", "ada")
                     .acting_for("ada")
                     .from_device(Some(laptop())),
             );
@@ -1917,7 +1919,7 @@ mod tests {
             assert_eq!(read, entry);
             assert_eq!(read.invoker.unwrap().device, Some(laptop()));
             // An actor on the host's own device says nothing of a device.
-            let local = ActionContext::default().with_invoker(ActionInvoker::agent("task-8"));
+            let local = ActionContext::default().with_invoker(ActionInvoker::agent("task-8", "ada"));
             let json = serde_json::to_string(&local.invoker).unwrap();
             assert!(!json.contains("\"device\""), "{json}");
         }
@@ -1951,7 +1953,7 @@ mod tests {
                 .with_described(starred())
                 .with_group("run:7", "Tidy snippets", "agent-session")
                 .with_invoker(
-                    ActionInvoker::agent("claude").acting_for("ada"),
+                    ActionInvoker::agent("claude", "ada").acting_for("ada"),
                 )
                 .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
             let message = entry.change_message().unwrap();

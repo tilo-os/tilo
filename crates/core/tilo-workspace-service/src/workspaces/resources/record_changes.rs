@@ -1095,7 +1095,7 @@ kind = "undoable"
             workspace,
             &[Grant::new(
                 "scout",
-                Grantee::agent("scout"),
+                Grantee::agent("scout", person.as_str()),
                 TreePath::workspace(workspace),
                 KindSet::READ_UNDOABLE,
                 answer,

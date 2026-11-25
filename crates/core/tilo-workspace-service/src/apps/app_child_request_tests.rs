@@ -189,7 +189,7 @@ fn ran(
     assert_eq!(delivered.invocation, request.invocation);
     assert_eq!(
         delivered.actor,
-        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
     );
     request.invocation
 }
@@ -217,8 +217,12 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
+                workspace.allow_app(
+                    Grantee::agent("scribe", "ada"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+                workspace.allow_app(Grantee::agent("scribe", "ada"), NOTES, KindSet::ALL);
             }
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -228,7 +232,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(
                 delivered.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada"))
             );
 
             // The person could send mail, and the app is theirs; the agent
@@ -243,13 +247,13 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             assert_eq!(note.action, "create-page");
             assert_eq!(
                 note.actor,
-                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "ada")),
                 "delivered as the agent's own"
             );
             let invoker = tilo_actions::ActionInvoker::delivered(&note.actor, note.context());
             assert_eq!(
                 invoker.acting.by,
-                tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe")),
+                tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe", "ada")),
                 "its history names the agent"
             );
             assert!(notes.try_recv().is_err(), "one call, one delivery");
@@ -316,8 +320,12 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             {
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("scribe", KindSet::READ);
-                workspace.allow_app(Grantee::agent("scribe"), &env.route.app_id, KindSet::ALL);
-                workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);
+                workspace.allow_app(
+                    Grantee::agent("scribe", "ada"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+                workspace.allow_app(Grantee::agent("scribe", "ada"), NOTES, KindSet::ALL);
             }
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();

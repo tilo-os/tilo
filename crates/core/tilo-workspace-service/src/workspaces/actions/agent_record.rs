@@ -392,11 +392,11 @@ impl Workspaces {
         agent: &str,
         name: &str,
     ) {
-        if !self.is_own_person(acting) {
+        let Some(person) = acting.person_id().filter(|_| self.is_own_person(acting)) else {
             return;
-        }
+        };
         let save = tilo_automation::ShortcutChange::Save(Box::new(
-            crate::agents::triggered::triggers(agent, name),
+            crate::agents::triggered::triggers(agent, person, name),
         ));
         if let Err(error) = self.change_own_shortcuts(workspace, save).await {
             tracing::warn!(%workspace, %agent, %error, "a new agent's triggers were not saved");
@@ -408,11 +408,11 @@ impl Workspaces {
     /// when they make the agent that watches the workspace's chat.
     #[cfg(feature = "agents")]
     async fn save_moderates(&self, workspace: &str, acting: &Acting, agent: &str, name: &str) {
-        if !self.is_own_person(acting) {
+        let Some(person) = acting.person_id().filter(|_| self.is_own_person(acting)) else {
             return;
-        }
+        };
         let save = tilo_automation::ShortcutChange::Save(Box::new(
-            crate::agents::triggered::moderates(agent, name),
+            crate::agents::triggered::moderates(agent, person, name),
         ));
         if let Err(error) = self.change_own_shortcuts(workspace, save).await {
             tracing::warn!(%workspace, %agent, %error, "an agent's chat watch was not saved");

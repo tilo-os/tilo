@@ -871,7 +871,7 @@ fn a_windows_author_is_who_opened_it_person_or_agent() {
     session.handle().set_authors(authors);
     let run = tilo_desktop_model::ownership::OpenedBy {
         run: "agent-run:1".to_owned(),
-        agent: "claude".to_owned(),
+        agent: tilo_action_policy::MemberId::agent("claude", "ada"),
         label: "Claude".to_owned(),
         title: "Sort the notes".to_owned(),
     };

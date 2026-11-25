@@ -117,23 +117,19 @@ impl HostedTurn<'_> {
     /// only what an answer names and none denies.
     #[must_use]
     pub(crate) fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
-        let agent = agent_of(self.caller);
-        let agent = agent
-            .as_ref()
-            .map(|(agent, person)| (*agent, person.as_str()));
-        agent_policy_allows(self.policy, agent, workspace, target)
+        agent_policy_allows(self.policy, agent_of(self.caller), workspace, target)
     }
 }
 
-/// The agent `caller` acts as and the person it is the agent of, whom its verified certificate
-/// chains to: the one person whose answers narrow it. `None` for a caller that is no agent.
+/// The agent `caller` acts as and the person it is the agent of, as its member names them: the
+/// one person whose answers narrow it. `None` for a caller that is no agent.
 #[must_use]
-pub(crate) fn agent_of(caller: &Caller) -> Option<(&str, String)> {
-    let person = caller
-        .user_public_key()
-        .map(hex::encode)
-        .unwrap_or_default();
-    Some((caller.acting().agent_id()?, person))
+pub(crate) fn agent_of(caller: &Caller) -> Option<(&str, &str)> {
+    caller
+        .acting()
+        .member_id()?
+        .as_agent()
+        .map(|(agent, person)| (agent, person.as_str()))
 }
 
 /// The action `target` of `workspace` as the policy's tree holds it.
@@ -155,7 +151,7 @@ pub(crate) fn agent_decision<'p>(
     (agent, person): (&str, &str),
     node: &TreePath,
 ) -> tilo_action_policy::Decision<'p> {
-    Party::new(vec![Grantee::agent(agent.to_owned())], &[])
+    Party::new(vec![Grantee::agent(agent, person)], &[])
         .with_grants(policy.grants_of_agent(agent, person))
         .decide(
             node,
@@ -314,7 +310,7 @@ impl Workspaces {
         if !self.agent_is_active(&named, agent).await {
             return None;
         }
-        let policy = self.agent_policy(&named, agent, &person).await;
+        let policy = self.agent_policy(&named, agent, person).await;
         Some(KeptTurn { workspace, policy })
     }
 
@@ -504,8 +500,8 @@ pub struct AskedTurn {
     pub person: [u8; 32],
     /// The workspace, as the caller names it.
     pub workspace: String,
-    /// The agent, by its id.
-    pub agent: String,
+    /// The agent: its id and the person it is of.
+    pub agent: tilo_action_policy::MemberId,
     /// The agent's name, as its person reads it.
     pub name: String,
 }
@@ -515,8 +511,15 @@ impl AskedTurn {
     /// ([`Workspaces::acting_or_own`] says whom each names).
     #[must_use]
     pub fn acting(&self) -> tilo_action_policy::Acting {
-        tilo_action_policy::Acting::agent(self.agent.as_str())
+        tilo_action_policy::Acting::member(self.agent.clone())
             .acting_for(tilo_action_policy::Acting::person(hex::encode(self.person)))
+    }
+
+    /// The name a use of the vault on this turn is remembered under: the agent's id, as every
+    /// agent's use is ([`super::workspace_stores::Reach::by`]).
+    #[must_use]
+    pub fn by(&self) -> &str {
+        self.agent.as_agent().map_or("", |(id, _)| id)
     }
 }
 
@@ -1036,7 +1039,7 @@ impl Workspaces {
         }
         let (Some(person), Some(agent), Some(workspace)) = (
             caller.turn_person().copied(),
-            acting.agent_id(),
+            acting.member_id().filter(|member| member.is_agent()),
             caller.workspace(),
         ) else {
             return Err(UnknownAction);
@@ -1051,8 +1054,8 @@ impl Workspaces {
         Ok(AskedTurn {
             person,
             workspace: workspace.to_owned(),
-            agent: agent.to_owned(),
-            name: caller.agent_name().unwrap_or(agent).to_owned(),
+            agent: agent.clone(),
+            name: caller.agent_name().unwrap_or_else(|| agent.id()).to_owned(),
         })
     }
 

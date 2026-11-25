@@ -9,7 +9,7 @@ use vello::kurbo::Rect;
 /// An agent's edit of `resource`, a second ago.
 fn agent_acting(frame: &mut Driver, resource: &str) -> tilo_actions::SemanticInteraction {
     let mut event = tilo_ui::headless::agent_acting(resource, "edit");
-    event.actor = tilo_actions::Acting::agent("scribe");
+    event.actor = tilo_actions::Acting::agent("scribe", "someone-else");
     event.action.label = "Edit".into();
     event.resource.kind = "example".into();
     event.resource.label = "Same label".into();
@@ -48,7 +48,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
     frame.update_presence(|presence| {
         presence.set_caret(
             &block.clone(),
-            tilo_ui::permissions::MemberId::agent("scribe"),
+            tilo_ui::permissions::MemberId::agent("scribe", "someone-else"),
             written,
         );
         true
@@ -75,7 +75,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
         "not following moves nothing"
     );
     let mut followed = FollowedView::default();
-    let scribe = tilo_ui::permissions::MemberId::agent("scribe");
+    let scribe = tilo_ui::permissions::MemberId::agent("scribe", "someone-else");
     assert!(frame.follow_view(&scribe, &mut followed));
     let shown = frame
         .semantic_locus(&event)
@@ -101,7 +101,11 @@ fn following_an_agents_caret_in_text_settles() {
     let event = agent_acting(&mut frame, "notes.document:root");
     frame.update_presence(|presence| {
         let block = tilo_rich_edit::block_editor::block_presence_key("p-33");
-        presence.set_caret(&block, tilo_ui::permissions::MemberId::agent("scribe"), 13);
+        presence.set_caret(
+            &block,
+            tilo_ui::permissions::MemberId::agent("scribe", "someone-else"),
+            13,
+        );
         true
     });
     let said = tilo_ui::presence::capability::subtree_presence(frame.root_widget());
@@ -109,7 +113,7 @@ fn following_an_agents_caret_in_text_settles() {
     let mut moved = 0;
     for _ in 0..60 {
         moved += usize::from(frame.follow_view(
-            &tilo_ui::permissions::MemberId::agent("scribe"),
+            &tilo_ui::permissions::MemberId::agent("scribe", "someone-else"),
             &mut followed,
         ));
         frame.relayout();

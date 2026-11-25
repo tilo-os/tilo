@@ -847,8 +847,8 @@ impl Workspaces {
     /// Why the workspace did not take the answer, or does not hold this device
     /// as a member.
     pub async fn answer_stop(&self, workspace: &str, agent: &str) -> Result<(), String> {
-        let person = Grantee::person(hex::encode(self.inner.host.cert.user_public_key));
-        let stop = tilo_action_policy::agent_answers::stop_grant(workspace, agent, person);
+        let person = hex::encode(self.inner.host.cert.user_public_key);
+        let stop = tilo_action_policy::agent_answers::stop_grant(workspace, agent, &person);
         self.commit_own_change(
             workspace,
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {

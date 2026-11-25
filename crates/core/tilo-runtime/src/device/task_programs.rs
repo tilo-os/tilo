@@ -120,7 +120,9 @@ impl DaemonPrograms {
     /// the daemon's API for them.
     fn start(&self, request: &ProgramRequest<'_>) -> Result<Session, String> {
         let (latest, api, person) = match request.caller {
-            ProgramCaller::Agent { agent, person, .. } => {
+            ProgramCaller::Agent {
+                agent, of, person, ..
+            } => {
                 let provider = request
                     .provider
                     .clone()
@@ -129,7 +131,7 @@ impl DaemonPrograms {
                 let api = Api::for_task(
                     Arc::clone(&latest),
                     request.workspace.to_owned(),
-                    agent,
+                    (agent, of),
                     person,
                 );
                 (latest, api, person)
@@ -548,7 +550,7 @@ mod tests {
             programs: programs(&hosts),
             through: Arc::new(Workspace),
         };
-        let agent = Caller::local_agent("agent-laptop-1a2b")
+        let agent = Caller::local_agent("agent-laptop-1a2b", "ada")
             .in_workspace(WORKSPACE)
             .in_agent_session("agent-session:1")
             .in_new_execution();

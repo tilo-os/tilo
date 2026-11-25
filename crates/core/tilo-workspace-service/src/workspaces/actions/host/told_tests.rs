@@ -537,7 +537,7 @@ async fn what_a_person_was_told_is_theirs_alone() {
         ),
         (
             "an agent no device stands behind",
-            (ada, Caller::local_agent(ASSISTANT)),
+            (ada, Caller::local_agent(ASSISTANT, "ada")),
         ),
         ("an app", (ada, Caller::local_app("so.tilo.chat"))),
         (

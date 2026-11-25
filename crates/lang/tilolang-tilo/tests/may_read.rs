@@ -63,7 +63,7 @@ fn access(kind: &str, open: &ResourceRef, secret: &ResourceRef, scout_reads: boo
     if scout_reads {
         policy.grants.push(Grant::new(
             "agent-member:scout",
-            Grantee::agent("scout"),
+            Grantee::agent("scout", "ada"),
             node_of(kind, open),
             KindSet::READ,
             Answer::Allow,
@@ -73,7 +73,7 @@ fn access(kind: &str, open: &ResourceRef, secret: &ResourceRef, scout_reads: boo
     // An answer Ada gave an agent working for her lets it read, but admits it to nothing.
     policy.grants.push(Grant::new(
         "answer:helper",
-        Grantee::agent("helper"),
+        Grantee::agent("helper", "ada"),
         TreePath::workspace(WORKSPACE),
         KindSet::READ,
         Answer::Allow,
@@ -142,7 +142,7 @@ fn may_read_answers_what_the_workspace_grants() {
     );
     assert!(ask(&ada, MemberId::person("cy"), &open), "a viewer reads");
     assert!(
-        ask(&ada, MemberId::agent("scout"), &open),
+        ask(&ada, MemberId::agent("scout", "cy"), &open),
         "the agent's grant lets it read"
     );
     // A member the grants keep out does not.
@@ -151,7 +151,7 @@ fn may_read_answers_what_the_workspace_grants() {
         "Cy's denial holds"
     );
     assert!(
-        !ask(&ada, MemberId::agent("scout"), &secret),
+        !ask(&ada, MemberId::agent("scout", "cy"), &secret),
         "no grant lets the agent read the secret"
     );
     // Nor does anyone who is no member, whatever a grant says of them.
@@ -160,14 +160,14 @@ fn may_read_answers_what_the_workspace_grants() {
         "a stranger reads nothing"
     );
     assert!(
-        !ask(&ada, MemberId::agent("helper"), &open),
+        !ask(&ada, MemberId::agent("helper", "stranger"), &open),
         "an agent an answer lets read is no member"
     );
 
     // The agent's grant revoked, it reads nothing more.
     follow(&ada, &access(&kind, &open, &secret, false));
     assert!(
-        !ask(&ada, MemberId::agent("scout"), &open),
+        !ask(&ada, MemberId::agent("scout", "cy"), &open),
         "a revoked grant reads false"
     );
     assert!(
@@ -227,7 +227,7 @@ fn a_read_refuses_what_the_reader_may_not_read() {
         "it reads as not there: {refused}"
     );
     assert!(
-        read(MemberId::agent("scout"), &secret).is_err(),
+        read(MemberId::agent("scout", "stranger"), &secret).is_err(),
         "no grant lets the agent read it"
     );
     assert!(

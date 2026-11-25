@@ -44,6 +44,8 @@ pub enum ProgramCaller<'a> {
     Agent {
         /// The agent whose program it is, by its id without the `agent:` prefix.
         agent: &'a str,
+        /// The person whose agent it is.
+        of: &'a str,
         /// The person the agent acts for, when one delegated it: `me` in the program.
         person: Option<&'a str>,
         /// The agent session the program is a step of.
@@ -290,7 +292,10 @@ fn program_request<T>(
         return Err("unknown step of a session's programs".into());
     }
     let acting = caller.acting();
-    let (who, provider) = if let Some(agent) = acting.agent_id() {
+    let (who, provider) = if let Some((agent, of)) = acting
+        .member_id()
+        .and_then(tilo_actions::MemberId::as_agent)
+    {
         let session = acting
             .agent_session
             .as_ref()
@@ -303,6 +308,7 @@ fn program_request<T>(
         (
             ProgramCaller::Agent {
                 agent,
+                of: of.as_str(),
                 person: acting.acted_for_person(),
                 session,
             },
@@ -583,12 +589,12 @@ mod tests {
                 Some("a program is a person's or an agent session's".to_owned())
             );
             assert_eq!(
-                took(Caller::local_agent("claude").in_workspace("the-workspace")),
+                took(Caller::local_agent("claude", "Pat").in_workspace("the-workspace")),
                 Some("an agent runs programs as a step of its session".to_owned())
             );
             assert_eq!(
                 took(
-                    Caller::local_agent("claude")
+                    Caller::local_agent("claude", "Pat")
                         .in_workspace("the-workspace")
                         .in_agent_session("agent-session:1")
                 ),
@@ -606,7 +612,7 @@ mod tests {
                 Arc::clone(&host) as Arc<dyn Programs>,
                 || None,
             ));
-            let agent = Caller::local_agent("claude")
+            let agent = Caller::local_agent("claude", "Pat")
                 .in_workspace("the-workspace")
                 .in_agent_session("agent-session:1");
             let admitted = Admitted {

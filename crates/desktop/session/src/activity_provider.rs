@@ -93,7 +93,9 @@ fn caller_of(caller: &Caller, workspace: &str) -> Caller {
     // it reaches the activity as itself, never through a person's id.
     use tilo_actions::policy::{Actor, MemberId};
     let caller = match member.actor() {
-        Actor::Member(MemberId::Agent(agent)) => Caller::local_agent(agent.as_str()),
+        Actor::Member(MemberId::Agent { id: agent, person }) => {
+            Caller::local_agent(agent.as_str(), person.clone())
+        }
         Actor::Member(MemberId::Bot(bot)) => Caller::local_bot(bot.as_str()),
         Actor::Member(MemberId::Person(person)) => Caller::local_person(person.clone()),
         // An app acting by itself reaches the activity as itself, as its daemon attested it.

@@ -35,8 +35,10 @@ impl crate::Acting {
         self.nodes()
             .into_iter()
             .filter(|node| node.handed)
-            .filter_map(|node| Some((node.agent_id()?, node.acted_for_person()?)))
-            .flat_map(|(agent, person)| crate::roles::agent_preset(workspace, agent, person))
+            .filter_map(|node| Some((node.member_id()?.as_agent()?, node.acted_for_person()?)))
+            .flat_map(|((agent, own), person)| {
+                crate::roles::agent_preset(workspace, (agent, own.as_str()), person)
+            })
             .collect()
     }
 }
@@ -84,10 +86,10 @@ impl<'a> Authority<'a> {
                             party
                         });
                     }
-                    MemberId::Agent(_) | MemberId::Bot(_) => {
-                        others.extend(
-                            software_parties(member, node, policy, granted)
-                                .map(|party| party.with_grants(answers.iter().copied())),
+                    MemberId::Agent { .. } | MemberId::Bot(_) => {
+                        others.push(
+                            software_party(member, policy, granted)
+                                .with_grants(answers.iter().copied()),
                         );
                     }
                 },
@@ -119,48 +121,24 @@ impl<'a> Authority<'a> {
 /// A member of `member` as a grant names it.
 #[must_use]
 pub fn granted_to(member: &MemberId) -> Grantee {
-    match member {
-        MemberId::Person(id) => Grantee::person(id.clone()),
-        MemberId::Agent(id) => Grantee::agent(id.clone()),
-        MemberId::Bot(id) => Grantee::bot(id.clone()),
-    }
+    Grantee::Member(member.clone())
 }
 
 /// An agent's or bot's own grants: the workspace's naming it, and those its
-/// acting carries (`granted`, what its certificate's delegation gives it).
-///
-/// An agent is the pair of its id and a person it acts for: only that
-/// person's grants and answers in the workspace reach the pair
-/// ([`WorkspacePolicy::party_of_agent`]). An agent acting for several people
-/// at once (a turn answering one person through another's agent, bounded by
-/// whoever saved its watch) is each of those pairs, and each bounds it on its
-/// own: what its own person answered for it refuses it whichever person's
-/// turn it answers, and no one's answer widens what another's refuses. One
-/// acting for nobody holds none of the workspace's grants for it.
-fn software_parties<'a>(
+/// acting carries (`granted`, what its certificate's delegation gives it). An
+/// agent is the pair of its id and the person it acts for, whom its
+/// certificate chains to: only the grants and answers naming that pair reach
+/// it.
+fn software_party<'a>(
     member: &MemberId,
-    node: &crate::Acting,
     policy: &'a WorkspacePolicy,
     granted: &'a [Grant],
-) -> impl Iterator<Item = Party<'a>> {
-    let parties: Vec<Party<'a>> = match member {
-        MemberId::Agent(agent) => {
-            let mut people = node.people();
-            people.sort_unstable();
-            people.dedup();
-            if people.is_empty() {
-                people.push("");
-            }
-            people
-                .into_iter()
-                .map(|person| policy.party_of_agent(agent, person))
-                .collect()
-        }
-        member => vec![policy.party_of(granted_to(member))],
+) -> Party<'a> {
+    let party = match member {
+        MemberId::Agent { id, person } => policy.party_of_agent(id, person.as_str()),
+        member => policy.party_of(granted_to(member)),
     };
-    parties
-        .into_iter()
-        .map(move |party| party.with_grants(granted))
+    party.with_grants(granted)
 }
 
 /// One invocation, as admission weighs it.
@@ -308,13 +286,13 @@ mod tests {
             // What the agent's turn gives it: reading and changing the workspace.
             let turn = [Grant::new(
                 "turn:scribe:0",
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "editor"),
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 Grantee::person("editor"),
             )];
-            let agent_for_editor_and_owner = Acting::agent("scribe")
+            let agent_for_editor_and_owner = Acting::agent("scribe", "editor")
                 .acting_for(Acting::person("editor"))
                 .acting_for(Acting::person("owner"));
             assert_eq!(
@@ -362,18 +340,18 @@ mod tests {
             let mut policy = policy();
             policy.grants.push(Grant::new(
                 "scribe-may-edit",
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "editor"),
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 Grantee::person("editor"),
             ));
-            let acting = Acting::agent("scribe").acting_for(Acting::person("editor"));
+            let acting = Acting::agent("scribe", "editor").acting_for(Acting::person("editor"));
             assert_eq!(
                 answer(&acting, &policy, &[], ActionKind::Undoable),
                 Answer::Allow
             );
-            let unbounded = Acting::agent("other").acting_for(Acting::person("editor"));
+            let unbounded = Acting::agent("other", "editor").acting_for(Acting::person("editor"));
             assert_eq!(
                 answer(&unbounded, &policy, &[], ActionKind::Undoable),
                 Answer::Deny,
@@ -387,13 +365,13 @@ mod tests {
             // no for it on the whole workspace. Its turn answers the editor, through the owner.
             let turn = [Grant::new(
                 "turn:scribe:0",
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "owner"),
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 Grantee::person("owner"),
             )];
-            let answering_the_editor = Acting::agent("scribe")
+            let answering_the_editor = Acting::agent("scribe", "owner")
                 .acting_for(Acting::person("editor"))
                 .agent_of("owner");
             assert_eq!(
@@ -404,7 +382,7 @@ mod tests {
             let mut refusing = policy();
             refusing.grants.push(crate::agent_answers::grant(
                 WORKSPACE,
-                "scribe",
+                ("scribe", "owner"),
                 (&crate::agent_answers::AnswerScope::Workspace, ActionKind::Undoable),
                 Answer::Deny,
                 Grantee::person("owner"),
@@ -415,9 +393,11 @@ mod tests {
                 "what its own person answered for it refuses it, whoever's turn it answers"
             );
             let mut widening = refusing.clone();
+            // The editor answers only for an agent of their own: `scribe` of the editor is
+            // another agent.
             widening.grants.push(crate::agent_answers::grant(
                 WORKSPACE,
-                "scribe",
+                ("scribe", "editor"),
                 (
                     &crate::agent_answers::AnswerScope::app("so.tilo.notes"),
                     ActionKind::Undoable,
@@ -439,7 +419,7 @@ mod tests {
             let mut policy = policy();
             policy.grants.push(Grant::new(
                 "scribe-asks",
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "editor"),
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Ask,
@@ -447,13 +427,13 @@ mod tests {
             ));
             policy.grants.push(Grant::new(
                 format!("{SESSION_ANSWER_PREFIX}{session}:app:so.tilo.notes:undoable"),
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "editor"),
                 app(),
                 KindSet::UNDOABLE,
                 Answer::Allow,
-                Grantee::person("owner"),
+                Grantee::person("editor"),
             ));
-            let run = Acting::agent("scribe")
+            let run = Acting::agent("scribe", "editor")
                 .acting_for(Acting::person("editor"))
                 .caused_by(session);
             assert_eq!(
@@ -461,7 +441,7 @@ mod tests {
                 Answer::Allow,
                 "the person's answer for the session decides its steps"
             );
-            let another = Acting::agent("scribe")
+            let another = Acting::agent("scribe", "editor")
                 .acting_for(Acting::person("editor"))
                 .caused_by("so.tilo.session/agent-session/other");
             assert_eq!(
@@ -475,10 +455,10 @@ mod tests {
         {
             let policy = policy();
             let automation = Acting::automation("1")
-                .acting_for(Acting::agent("scribe").acting_for(Acting::person("editor")));
+                .acting_for(Acting::agent("scribe", "editor").acting_for(Acting::person("editor")));
             let turn = [Grant::new(
                 "turn:scribe:0",
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "editor"),
                 TreePath::workspace(WORKSPACE),
                 KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -606,7 +586,7 @@ mod tests {
             let person = Acting::person("editor");
             assert!(person.asker(true).reachable);
             assert!(!person.asker(true).delegated);
-            let agent = Acting::agent("scribe").acting_for(Acting::person("editor"));
+            let agent = Acting::agent("scribe", "editor").acting_for(Acting::person("editor"));
             assert!(agent.asker(true).delegated);
             assert!(
                 !agent.asker(false).reachable,

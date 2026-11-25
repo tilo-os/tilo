@@ -47,7 +47,12 @@ pub fn shown(member: &Present, now_ms: f64) -> Shown {
         publisher: hex::encode(member.publisher),
         epoch: member.epoch,
         agent: member.agent(),
-        member: member.member.as_deref().map(collab_types::MemberId::agent),
+        // The agent a session is of, and the person its device is theirs.
+        member: member
+            .member
+            .as_deref()
+            .zip(member.user.as_deref())
+            .map(|(agent, person)| collab_types::MemberId::agent(agent, person)),
         spoken_by: member.spoken_by.map(hex::encode),
         label: member.label().to_owned(),
         activity: member.activity().map(|(activity, _)| activity.to_owned()),

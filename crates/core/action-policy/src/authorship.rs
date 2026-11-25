@@ -58,7 +58,12 @@ pub fn code_party<'g>(author: &Grantee, own: &'g [Grant], workspace: &'g [Grant]
 fn grantee_key(grantee: &Grantee) -> String {
     match grantee {
         Grantee::Member(crate::MemberId::Person(id)) => id.as_str().to_owned(),
-        Grantee::Member(crate::MemberId::Agent(id)) => format!("agent:{id}"),
+        Grantee::Member(crate::MemberId::Agent { id, person }) => {
+            format!(
+                "agent:{}",
+                crate::agent_answers::agent_key(id, person.as_str())
+            )
+        }
         other => other.to_string(),
     }
 }
@@ -90,7 +95,7 @@ mod tests {
 
         phase trusted_code_asks_only_before_reaching_outside;
         {
-            let author = Grantee::agent("helper");
+            let author = Grantee::agent("helper", "owner");
             let own = code_grants(WORKSPACE, &author, true);
             let party = code_party(&author, &own, &[]);
             assert_eq!(
@@ -102,7 +107,7 @@ mod tests {
 
         phase untrusted_code_asks_for_everything;
         {
-            let author = Grantee::agent("helper");
+            let author = Grantee::agent("helper", "owner");
             let own = code_grants(WORKSPACE, &author, false);
             let party = code_party(&author, &own, &[]);
             for kind in [ActionKind::Undoable, ActionKind::Outside] {
@@ -112,7 +117,7 @@ mod tests {
 
         phase the_workspaces_denial_of_an_author_holds;
         {
-            let author = Grantee::agent("helper");
+            let author = Grantee::agent("helper", "owner");
             let own = code_grants(WORKSPACE, &author, true);
             let workspace = [Grant::new(
                 "deny-notes",

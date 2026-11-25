@@ -472,7 +472,7 @@ tilo_test_env::scenario! {
             )
             .is_err()
         );
-        let agent = tilo_actions::ActionInvoker::agent("helper")
+        let agent = tilo_actions::ActionInvoker::agent("helper", ada())
             .acting_for(ada());
         app.call_by(
             agent,

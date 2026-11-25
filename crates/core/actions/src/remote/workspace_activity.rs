@@ -208,6 +208,9 @@ pub struct Author {
     /// For software: who it acted for, as a sentence names them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<String>,
+    /// For software: the member it is, an agent by its id and its person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member: Option<crate::MemberId>,
     /// The person it acted for is the reader.
     pub for_reader: bool,
     /// The task that named it, as it was called then.

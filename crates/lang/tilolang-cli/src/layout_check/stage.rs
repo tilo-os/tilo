@@ -709,7 +709,7 @@ mod tests {
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,
-            actor: tilo_actions::Acting::agent("scribe"),
+            actor: tilo_actions::Acting::agent("scribe", "ada"),
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
                 id: descriptor.address.action.clone(),

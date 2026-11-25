@@ -285,7 +285,7 @@ pub(crate) async fn write(
     mut write: Write<'_>,
 ) {
     let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
-    let acted_for = matches!(write.by, Who::Member(tilo_actions::MemberId::Agent(_)))
+    let acted_for = matches!(write.by, Who::Member(tilo_actions::MemberId::Agent { .. }))
         .then(|| hex::encode(cert.user_public_key));
     let stamp = Stamp {
         verb: write.verb.to_owned(),

@@ -1082,7 +1082,7 @@ tilo_test_env::scenario! {
 /// sender that knows no members leaves it to the rule every surface derives it by.
 #[test]
 fn a_person_wears_the_colour_that_travels_with_them() {
-    let identity: tilo_actions::Actor = tilo_actions::MemberId::agent("planner").into();
+    let identity: tilo_actions::Actor = tilo_actions::MemberId::agent("planner", "ada").into();
     let worn = |hue| {
         Person::from_value(&Value::Actor {
             identity: identity.clone(),

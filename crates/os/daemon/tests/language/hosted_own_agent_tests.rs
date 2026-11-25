@@ -473,7 +473,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         &bea_who,
         (MESSAGE, "m-1", Some(general.as_str())),
         Vec::new(),
-        Some(mentioning("Scout, what is planned?", SCOUT)),
+        Some(mentioning("Scout, what is planned?", (SCOUT, &bea_person))),
     )
     .await
     .unwrap();

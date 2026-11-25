@@ -11,7 +11,13 @@ use crate::person::PersonId;
 pub enum MemberId {
     /// A person, by their root public key ([`PersonId`]).
     Person(PersonId),
-    Agent(String),
+    /// An agent: its id and the person it acts for, whom its certificate chains to. The pair is
+    /// the agent: `scout` acting for one person and `scout` acting for another are two members,
+    /// each with its own person's reach, answers and stops.
+    Agent {
+        id: String,
+        person: PersonId,
+    },
     Bot(String),
 }
 
@@ -56,9 +62,14 @@ impl MemberId {
         PersonId::parse(id).ok().map(Self::Person)
     }
 
+    /// The agent `id` acting for `person`.
+    #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::Agent(id.into())
+    pub fn agent(id: impl Into<String>, person: impl Into<PersonId>) -> Self {
+        Self::Agent {
+            id: id.into(),
+            person: person.into(),
+        }
     }
 
     #[must_use]
@@ -66,19 +77,37 @@ impl MemberId {
         Self::Bot(id.into())
     }
 
-    /// The id inside the kind.
+    /// The id inside the kind: an agent's own id, without its person.
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
             Self::Person(id) => id.as_str(),
-            Self::Agent(id) | Self::Bot(id) => id,
+            Self::Agent { id, .. } | Self::Bot(id) => id,
         }
     }
 
     #[must_use]
     pub fn agent_id(&self) -> Option<&str> {
         match self {
-            Self::Agent(id) => Some(id),
+            Self::Agent { id, .. } => Some(id),
+            Self::Person(_) | Self::Bot(_) => None,
+        }
+    }
+
+    /// The person an agent acts for, when this is an agent.
+    #[must_use]
+    pub fn agent_person(&self) -> Option<&PersonId> {
+        match self {
+            Self::Agent { person, .. } => Some(person),
+            Self::Person(_) | Self::Bot(_) => None,
+        }
+    }
+
+    /// The agent's id and its person, when this is an agent.
+    #[must_use]
+    pub fn as_agent(&self) -> Option<(&str, &PersonId)> {
+        match self {
+            Self::Agent { id, person } => Some((id, person)),
             Self::Person(_) | Self::Bot(_) => None,
         }
     }
@@ -87,7 +116,7 @@ impl MemberId {
     pub fn bot_id(&self) -> Option<&str> {
         match self {
             Self::Bot(id) => Some(id),
-            Self::Person(_) | Self::Agent(_) => None,
+            Self::Person(_) | Self::Agent { .. } => None,
         }
     }
 
@@ -96,7 +125,7 @@ impl MemberId {
     pub fn as_person(&self) -> Option<&PersonId> {
         match self {
             Self::Person(id) => Some(id),
-            Self::Agent(_) | Self::Bot(_) => None,
+            Self::Agent { .. } | Self::Bot(_) => None,
         }
     }
 
@@ -113,7 +142,7 @@ impl MemberId {
 
     #[must_use]
     pub const fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_))
+        matches!(self, Self::Agent { .. })
     }
 
     #[must_use]
@@ -122,12 +151,14 @@ impl MemberId {
     }
 
     /// The bytes a document names this member's changes by: a person's root key as written, an
-    /// agent's `agent:<id>`, a bot's `bot:<id>`, as history reads them back.
+    /// agent's `agent:<person>/<id>`, a bot's `bot:<id>`, as history reads them back.
     #[must_use]
     pub fn actor_bytes(&self) -> Vec<u8> {
         match self {
             Self::Person(id) => id.as_str().as_bytes().to_vec(),
-            Self::Agent(id) => [b"agent:", id.as_bytes()].concat(),
+            Self::Agent { id, person } => {
+                [b"agent:", person.as_str().as_bytes(), b"/", id.as_bytes()].concat()
+            }
             Self::Bot(id) => [b"bot:", id.as_bytes()].concat(),
         }
     }
@@ -138,8 +169,10 @@ impl MemberId {
     pub fn of_actor_bytes(bytes: &[u8]) -> Option<Self> {
         let text = std::str::from_utf8(bytes).ok()?;
         let nonempty = |id: &str| (!id.is_empty()).then(|| id.to_owned());
-        if let Some(id) = text.strip_prefix("agent:") {
-            return nonempty(id).map(Self::Agent);
+        if let Some(agent) = text.strip_prefix("agent:") {
+            let (person, id) = agent.split_once('/')?;
+            let person = PersonId::parse(&nonempty(person)?).ok()?;
+            return nonempty(id).map(|id| Self::Agent { id, person });
         }
         if let Some(id) = text.strip_prefix("bot:") {
             return nonempty(id).map(Self::Bot);
@@ -152,7 +185,7 @@ impl std::fmt::Display for MemberId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Person(id) => write!(f, "person {}", short(id.as_str())),
-            Self::Agent(id) => write!(f, "agent {id}"),
+            Self::Agent { id, person } => write!(f, "agent {id} of {}", short(person.as_str())),
             Self::Bot(id) => write!(f, "bot {}", short(id)),
         }
     }
@@ -430,9 +463,12 @@ impl Acting {
         }
     }
 
+    /// The agent `id` of `person` acting. Whom it acts for in this tree is its
+    /// [`Self::acting_for`]: its person, or someone it answers as well.
+    #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>) -> Self {
-        Self::member(MemberId::agent(id))
+    pub fn agent(id: impl Into<String>, person: impl Into<PersonId>) -> Self {
+        Self::member(MemberId::agent(id, person))
     }
 
     /// A visitor signing with `key`, a key no certificate in the workspace names
@@ -508,20 +544,29 @@ impl Acting {
     #[must_use]
     #[track_caller]
     pub fn handed_agent(agent: impl Into<String>, person: impl Into<PersonId>) -> Self {
-        Self::agent(agent).handed().acting_for(Self::person(person))
+        let person = person.into();
+        Self::agent(agent, person.clone())
+            .handed()
+            .acting_for(Self::member(MemberId::Person(person)))
     }
 
     /// This work, handed on to the agent `agent` that its agent started (a sub-agent): one more
-    /// actor in the chain. It acts for the same person, carrying the preset an agent gets for
-    /// them ([`Self::handed`]), and through this whole tree, so every agent and person before
-    /// it bounds what it does too: it does no more than its starter's turn may.
+    /// actor in the chain. It is an agent of its starter's person, acting for the person its
+    /// starter acts for and carrying the preset an agent gets for them ([`Self::handed`]), and
+    /// through this whole tree, so every agent and person before it bounds what it does too: it
+    /// does no more than its starter's turn may. `None` when no agent acts here to start it.
     #[must_use]
-    pub fn handed_on(self, agent: impl Into<String>) -> Self {
-        let mut on = Self::agent(agent).handed();
+    pub fn handed_on(self, agent: impl Into<String>) -> Option<Self> {
+        let starter = self.member_id()?.agent_person()?.clone();
+        let mut on = Self::member(MemberId::Agent {
+            id: agent.into(),
+            person: starter,
+        })
+        .handed();
         if let Some(person) = self.acted_for_person() {
             on = on.acting_for(Self::person(person.to_owned()));
         }
-        on.acting_for(self)
+        Some(on.acting_for(self))
     }
 
     /// The same acting, by an agent a person's own device handed its session
@@ -722,13 +767,13 @@ mod tests {
         phase a_tree_names_every_member_and_person_in_it;
         {
             let acting =
-                Acting::agent("claude").acting_for(Acting::person("q").acting_for(Acting::person("x")));
+                Acting::agent("claude", "q").acting_for(Acting::person("q").acting_for(Acting::person("x")));
             assert!(acting.delegated());
             assert_eq!(acting.direct_person(), None);
             assert_eq!(
                 acting.members(),
                 [
-                    &MemberId::agent("claude"),
+                    &MemberId::agent("claude", "q"),
                     &MemberId::person("q"),
                     &MemberId::person("x")
                 ]
@@ -753,9 +798,9 @@ mod tests {
         // Bo's turn on Ada's agent starts a sub-agent: it works for Bo, and everyone before it
         // in the chain bounds it, Ada's agent and Ada too.
         {
-            let starter = Acting::agent("scout").acting_for(Acting::person("bo")).agent_of("ada");
-            let helper = starter.clone().handed_on("helper");
-            assert_eq!(helper.agent_id(), Some("helper"));
+            let starter = Acting::agent("scout", "ada").acting_for(Acting::person("bo")).agent_of("ada");
+            let helper = starter.clone().handed_on("helper").expect("an agent starts it");
+            assert_eq!(helper.member_id(), Some(&MemberId::agent("helper", "ada")), "Ada's agent's");
             assert_eq!(helper.acted_for_person(), Some("bo"), "it works for Bo");
             assert!(helper.handed, "with the preset an agent gets for Bo");
             assert!(helper.people().contains(&"ada"), "Ada bounds it: {helper:?}");
@@ -765,7 +810,7 @@ mod tests {
             );
             // The starter's own key signs the sub-agent's work: it keeps the preset, as work
             // handed on whose chain names the person the key belongs to.
-            let signer = Acting::agent("scout").acting_for(Acting::person("ada"));
+            let signer = Acting::agent("scout", "ada").acting_for(Acting::person("ada"));
             let signed = helper.signed_by(&signer);
             assert!(signed.handed, "{signed:?}");
         }
@@ -774,7 +819,7 @@ mod tests {
         {
             for member in [
                 MemberId::person(PersonId::from_root([5; 32])),
-                MemberId::agent("helper"),
+                MemberId::agent("helper", PersonId::from_root([5; 32])),
                 MemberId::bot("mod"),
             ] {
                 assert_eq!(
@@ -791,7 +836,7 @@ mod tests {
         {
             let acting = Acting::automation("1")
                 .acting_for(
-                    Acting::agent("claude")
+                    Acting::agent("claude", "q")
                         .acting_for(Acting::person("q"))
                         .acting_for(Acting::person("x")),
                 )

@@ -108,12 +108,12 @@ pub struct AgentException {
 #[must_use]
 pub fn answer_at(
     ws: &Workspace,
-    agent: &str,
+    agent: (&str, &str),
     admission: &[tilo_action_policy::Grant],
     scope: &AnswerScope,
     kind: ActionKind,
 ) -> AnswerCell {
-    let subject = [Grantee::agent(agent)];
+    let subject = [Grantee::agent(agent.0, agent.1)];
     let cx = tilo_action_policy::Context::at_secs(tilo_clock::unix_now());
     let node = scope.node(&ws.policy.workspace);
     let decision = decide(
@@ -133,8 +133,8 @@ pub fn answer_at(
 }
 
 /// Whether `grant` is an answer the workspace keeps for `agent`.
-fn answers(grant: &Grant, agent: &str) -> bool {
-    agent_answers::is_answer(grant) && grant.grantee == Grantee::agent(agent)
+fn answers(grant: &Grant, agent: (&str, &str)) -> bool {
+    agent_answers::is_answer(grant) && grant.grantee == Grantee::agent(agent.0, agent.1)
 }
 
 /// The apps an agent's answers are offered for: every app installed for the workspace, every app
@@ -143,7 +143,7 @@ fn answers(grant: &Grant, agent: &str) -> bool {
 #[must_use]
 pub fn agent_access_rows(
     ws: &Workspace,
-    agent: &str,
+    agent: (&str, &str),
     admission: &[tilo_action_policy::Grant],
     apps: &dyn AppDirectory,
 ) -> Vec<AgentAccessRow> {
@@ -218,7 +218,7 @@ const ACCOUNT: [(&str, &str, &str); 2] = [
 #[must_use]
 pub fn agent_exceptions(
     ws: &Workspace,
-    agent: &str,
+    agent: (&str, &str),
     apps: &dyn AppDirectory,
 ) -> Vec<AgentException> {
     let mut out: Vec<AgentException> = ws
@@ -255,7 +255,7 @@ pub fn agent_exceptions(
 /// ([`PolicyEdit`]).
 pub fn answers_set(
     ws: &mut Workspace,
-    agent: &str,
+    agent: (&str, &str),
     writer: &str,
     answers: &[(AnswerScope, ActionKind, Option<Answer>)],
 ) -> PolicyEdit {
@@ -294,7 +294,7 @@ pub fn answers_set(
 /// Whether `grant` is an answer for `agent` for actions of `kind` at `node`.
 fn answers_kind(
     grant: &Grant,
-    agent: &str,
+    agent: (&str, &str),
     node: &tilo_action_policy::TreePath,
     kind: ActionKind,
 ) -> bool {
@@ -408,7 +408,7 @@ mod tests {
         ws.policy
             .grants
             .iter()
-            .filter(|grant| answers(grant, AGENT))
+            .filter(|grant| answers(grant, (AGENT, OWNER)))
             .collect()
     }
 
@@ -419,24 +419,24 @@ mod tests {
         {
             let mut ws = ws();
             let mail = AnswerScope::app(MAIL);
-            let read = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Read);
-            let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
+            let read = answer_at(&ws, (AGENT, OWNER), &admission(&ws), &mail, ActionKind::Read);
+            let outside = answer_at(&ws, (AGENT, OWNER), &admission(&ws), &mail, ActionKind::Outside);
             assert_eq!((read.answer, read.explicit), (Answer::Allow, false));
             assert_eq!((outside.answer, outside.explicit), (Answer::Ask, false));
 
             let edit = answers_set(
                 &mut ws,
-                AGENT,
+                (AGENT, OWNER),
                 OWNER,
                 &[(mail.clone(), ActionKind::Outside, Some(Answer::Deny))],
             );
             assert_eq!(edit.granted.len(), 1, "the answer is a grant of the workspace's");
             assert_eq!(kept(&ws).len(), 1);
-            let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
+            let outside = answer_at(&ws, (AGENT, OWNER), &admission(&ws), &mail, ActionKind::Outside);
             assert_eq!((outside.answer, outside.explicit), (Answer::Deny, true));
             let notes = answer_at(
                 &ws,
-                AGENT,
+                (AGENT, OWNER),
                 &admission(&ws),
                 &AnswerScope::app("so.tilo.notes"),
                 ActionKind::Outside,
@@ -451,7 +451,7 @@ mod tests {
             let set = |ws: &mut Workspace, answer| {
                 answers_set(
                     ws,
-                    AGENT,
+                    (AGENT, OWNER),
                     OWNER,
                     &[(mail.clone(), ActionKind::Undoable, answer)],
                 );
@@ -465,7 +465,7 @@ mod tests {
             assert!(kept(&ws).is_empty(), "cleared, the admission decides again");
             let cell = answer_at(
                 &ws,
-                AGENT,
+                (AGENT, OWNER),
                 &admission(&ws),
                 &mail,
                 ActionKind::Undoable,
@@ -480,7 +480,7 @@ mod tests {
             let purge = AnswerScope::action(MAIL, "mail.mailbox", "purge");
             answers_set(
                 &mut ws,
-                AGENT,
+                (AGENT, OWNER),
                 OWNER,
                 &[
                     (send.clone(), ActionKind::Outside, Some(Answer::Allow)),
@@ -489,7 +489,7 @@ mod tests {
             );
             let rows = agent_access_rows(
                 &ws,
-                AGENT,
+                (AGENT, OWNER),
                 &admission(&ws),
                 &super::super::NoAppDirectory,
             );
@@ -522,19 +522,19 @@ mod tests {
                 "its row says what reaching outside it is"
             );
             let exceptions =
-                agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory);
+                agent_exceptions(&ws, (AGENT, OWNER), &super::super::NoAppDirectory);
             assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
             assert_eq!(exceptions[0].scope, send);
             assert_eq!(exceptions[0].kind, ActionKind::Outside);
             assert_eq!(exceptions[0].label, "Send message in Mail");
             answers_set(
                 &mut ws,
-                AGENT,
+                (AGENT, OWNER),
                 OWNER,
                 &[(send, ActionKind::Outside, None)],
             );
             assert!(
-                agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory).is_empty()
+                agent_exceptions(&ws, (AGENT, OWNER), &super::super::NoAppDirectory).is_empty()
             );
         }
     }

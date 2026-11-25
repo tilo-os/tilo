@@ -452,7 +452,7 @@ async fn nobody_else_is_answered(
 ) {
     let person = hex::encode(ada.user_public_key);
     let nobodies = [
-        Caller::local_agent("helper"),
+        Caller::local_agent("helper", "ada"),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];
     for nobody in &nobodies {
@@ -1272,7 +1272,7 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
         (
             "an agent the server admitted itself",
             &ada,
-            Caller::local_agent("helper"),
+            Caller::local_agent("helper", "ada"),
         ),
         (
             "an app",

@@ -328,7 +328,10 @@ impl Workspaces {
         effect: ActionKind,
     ) -> bool {
         let (Some(agent), Some(person)) = (
-            turn.caller.acting().agent_id(),
+            turn.caller
+                .acting()
+                .member_id()
+                .filter(|member| member.is_agent()),
             turn.caller.turn_person().map(hex::encode),
         ) else {
             return false;
@@ -340,7 +343,9 @@ impl Workspaces {
             return false;
         }
         // The agent works on its asker's word: it reaches what they may, as its own member.
-        let acting = tilo_action_policy::Acting::handed_agent(agent, person.as_str());
+        let acting = tilo_action_policy::Acting::member(agent.clone())
+            .handed()
+            .acting_for(tilo_action_policy::Acting::person(person.as_str()));
         let Some(access) =
             tilo_action_policy::MemberAccess::person(policy, person.as_str()).as_acting(acting)
         else {
@@ -413,6 +418,6 @@ fn agent_read(verdict: &tilo_action_policy::Verdict<'_>, narrowed: bool) -> Answ
 /// ([`tilo_action_policy::WorkspacePolicy::answers_narrow`]).
 fn narrowed(policy: &tilo_action_policy::WorkspacePolicy, caller: &Caller) -> bool {
     agent_of(caller).is_some_and(|(agent, person)| {
-        policy.answers_narrow(agent, &person, &Context::at_time(tilo_clock::wall()))
+        policy.answers_narrow(agent, person, &Context::at_time(tilo_clock::wall()))
     })
 }

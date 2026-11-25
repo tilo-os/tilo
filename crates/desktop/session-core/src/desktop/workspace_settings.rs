@@ -277,7 +277,7 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
     }
     let key = match who {
         MemberId::Person(_) => "workspace-settings-granted-by-person",
-        MemberId::Agent(_) => "workspace-settings-granted-by-agent",
+        MemberId::Agent { .. } => "workspace-settings-granted-by-agent",
         MemberId::Bot(_) => "workspace-settings-granted-by-bot",
     };
     t_args(key, &[("id", member_name_or_short_id(ws, who).into())])
@@ -319,7 +319,10 @@ impl GrantRecipient {
             RecipientKind::Member => {
                 Some((Grantee::Member(MemberId::parsed_person(&self.id)?), None))
             }
-            RecipientKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
+            RecipientKind::Agent => Some((
+                Grantee::Member(MemberId::of_actor_bytes(self.id.as_bytes())?),
+                None,
+            )),
             // A role-wide grant is a policy decision, not a per-workspace click.
             RecipientKind::Role => None,
         }
@@ -331,7 +334,10 @@ impl GrantRecipient {
                 || self.id.clone(),
                 |member| person_name(ws, local_user, &member),
             ),
-            RecipientKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
+            RecipientKind::Agent => MemberId::of_actor_bytes(self.id.as_bytes()).map_or_else(
+                || self.id.clone(),
+                |member| person_name(ws, local_user, &member),
+            ),
             RecipientKind::App => app_display_name(apps, &self.id),
             // A role is listed as the phrase its section reads.
             RecipientKind::Role => ws
@@ -531,7 +537,7 @@ pub fn grant_recipients(ws: &Workspace) -> Vec<GrantRecipient> {
             .into_iter()
             .map(|(agent, _)| GrantRecipient {
                 kind: RecipientKind::Agent,
-                id: agent,
+                id: String::from_utf8_lossy(&agent.actor_bytes()).into_owned(),
             }),
     );
 
@@ -711,7 +717,7 @@ pub fn remove_member(ws: &mut Workspace, actor: &str, member: &str) -> Result<Po
 fn grantee_is_person(grantee: &Grantee, user: &str) -> bool {
     match grantee {
         Grantee::Member(MemberId::Person(id)) => id == user,
-        Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_))
+        Grantee::Member(MemberId::Agent { .. } | MemberId::Bot(_))
         | Grantee::Role(_)
         | Grantee::CustomRole(_)
         | Grantee::App(_)
@@ -719,9 +725,9 @@ fn grantee_is_person(grantee: &Grantee, user: &str) -> bool {
     }
 }
 
-/// Revoke every grant naming `agent` , as `actor` .
-pub fn remove_agent(ws: &mut Workspace, actor: &str, agent: &str) -> PolicyEdit {
-    let subject = tilo_action_policy::Grantee::agent(agent);
+/// Revoke every grant naming `agent`, as `actor`.
+pub fn remove_agent(ws: &mut Workspace, actor: &str, agent: &MemberId) -> PolicyEdit {
+    let subject = tilo_action_policy::Grantee::Member(agent.clone());
     let revokes = ws
         .policy
         .grants
@@ -817,9 +823,9 @@ fn classify_grantee(grantee: &Grantee) -> GrantRecipient {
             kind: RecipientKind::Member,
             id: id.as_str().to_owned(),
         },
-        Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantRecipient {
+        Grantee::Member(member @ (MemberId::Agent { .. } | MemberId::Bot(_))) => GrantRecipient {
             kind: RecipientKind::Agent,
-            id: id.clone(),
+            id: String::from_utf8_lossy(&member.actor_bytes()).into_owned(),
         },
         Grantee::App(app) => GrantRecipient {
             kind: RecipientKind::App,
@@ -1161,12 +1167,16 @@ mod agents_tests {
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe-agent";
 
+    fn agent() -> MemberId {
+        MemberId::agent(AGENT, OWNER)
+    }
+
     fn ws_with_agent() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from_u128(17), "agents-test");
         ws.policy.set_owner(OWNER);
         ws.policy.grant(Grant::new(
             format!("agent-member:{AGENT}"),
-            tilo_action_policy::Grantee::agent(AGENT),
+            tilo_action_policy::Grantee::agent(AGENT, OWNER),
             ws.policy.node(),
             KindSet::READ,
             Answer::Allow,
@@ -1174,7 +1184,7 @@ mod agents_tests {
         ));
         let notes = Grant::new(
             "scribe-notes",
-            tilo_action_policy::Grantee::agent(AGENT),
+            tilo_action_policy::Grantee::agent(AGENT, OWNER),
             ws.policy.node().app("so.tilo.notes"),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -1207,7 +1217,7 @@ mod agents_tests {
             let ws = ws_with_agent();
             let members = ws.policy.agent_members_at(tilo_clock::unix_now());
             assert_eq!(members.len(), 1, "listed with the workspace's agents");
-            assert_eq!(members[0].0, AGENT);
+            assert_eq!(members[0].0, agent());
             assert_eq!(
                 members[0].1,
                 KindSet::READ,
@@ -1220,7 +1230,7 @@ mod agents_tests {
             ws.policy.set_owner(OWNER);
             ws.policy.grant(Grant::new(
                 format!("agent-member:{AGENT}"),
-                tilo_action_policy::Grantee::agent(AGENT),
+                tilo_action_policy::Grantee::agent(AGENT, OWNER),
                 ws.policy.node(),
                 KindSet::READ,
                 Answer::Allow,
@@ -1228,7 +1238,7 @@ mod agents_tests {
             ));
             assert_eq!(
                 ws.policy.agent_members_at(tilo_clock::unix_now()),
-                vec![(AGENT.to_string(), KindSet::READ)]
+                vec![(agent(), KindSet::READ)]
             );
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Read),
@@ -1243,7 +1253,7 @@ mod agents_tests {
             ws.grant_as(
                 OWNER,
                 CapOverride::grant(
-                    Grantee::agent(AGENT),
+                    Grantee::agent(AGENT, OWNER),
                     Scope::FsPath("/var/workspace/brief.md".into()),
                     Access::Read,
                 ),
@@ -1266,7 +1276,7 @@ mod agents_tests {
 
         {
             let mut ws = ws_with_agent();
-            let edit = remove_agent(&mut ws, OWNER, AGENT);
+            let edit = remove_agent(&mut ws, OWNER, &agent());
             assert_eq!(
                 edit.revoked.len(),
                 2,
@@ -1286,7 +1296,7 @@ mod agents_tests {
         {
             let mut ws = ws_with_agent();
             let before = ws.policy.clone();
-            assert!(remove_agent(&mut ws, "viewer", AGENT).is_empty());
+            assert!(remove_agent(&mut ws, "viewer", &agent()).is_empty());
             assert_eq!(ws.policy, before);
         }
 
@@ -1295,7 +1305,10 @@ mod agents_tests {
             let subjects = grant_recipients(&ws);
             let index = subjects
                 .iter()
-                .position(|subject| subject.kind == RecipientKind::Agent && subject.id == AGENT)
+                .position(|subject| {
+                    subject.kind == RecipientKind::Agent
+                        && MemberId::of_actor_bytes(subject.id.as_bytes()) == Some(agent())
+                })
                 .expect("agent is offered in the permission composer");
             let draft = GrantDraft {
                 subject_index: index,
@@ -1304,7 +1317,7 @@ mod agents_tests {
             let Some(cap) = draft_capability(&ws, OWNER, &draft) else {
                 panic!("agent grant can be composed");
             };
-            assert_eq!(cap.grantee, Grantee::agent(AGENT));
+            assert_eq!(cap.grantee, Grantee::agent(AGENT, OWNER));
         }
 
         {

@@ -390,13 +390,13 @@ impl PermissionContext {
     /// granted exactly `kinds` at each of `nodes` (paths below the workspace):
     /// the scope an invitation gave it.
     pub fn agent_granted_at(agent: &str, nodes: &[TreePath], kinds: policy::KindSet) -> Self {
-        let subject = policy::Grantee::agent(agent);
+        let subject = policy::Grantee::agent(agent, LOCAL_USER);
         let grants = nodes
             .iter()
             .map(|node| local_grant(subject.clone(), node, kinds, None))
             .collect();
         Self::member(&MemberId::person(LOCAL_USER), Role::Owner).acting_as(
-            policy::Actor::Member(policy::MemberId::agent(agent)),
+            policy::Actor::Member(policy::MemberId::agent(agent, LOCAL_USER)),
             grants,
         )
     }
@@ -1648,10 +1648,10 @@ mod refused_listing_tests {
         assert!(shown.actions.iter().all(|action| action.id != "edit"));
         // Its agent, which the person lets read and change: their own role still denies changes.
         let agent = viewer.clone().acting_as(
-            policy::Actor::Member(crate::permissions::MemberId::agent("scribe")),
+            policy::Actor::Member(crate::permissions::MemberId::agent("scribe", person.id())),
             vec![policy::Grant::new(
                 "scribe-notes",
-                policy::Grantee::agent("scribe"),
+                policy::Grantee::agent("scribe", person.id()),
                 TreePath::workspace(LOCAL_WORKSPACE),
                 policy::KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -1682,10 +1682,10 @@ mod refused_listing_tests {
         // person's setting, and where they change it.
         let editor = PermissionContext::member(&person, Role::Editor);
         let denied = editor.acting_as(
-            policy::Actor::Member(crate::permissions::MemberId::agent("scribe")),
+            policy::Actor::Member(crate::permissions::MemberId::agent("scribe", person.id())),
             [policy::Grant::new(
                 "scribe-all",
-                policy::Grantee::agent("scribe"),
+                policy::Grantee::agent("scribe", person.id()),
                 TreePath::workspace(LOCAL_WORKSPACE),
                 policy::KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -1696,7 +1696,7 @@ mod refused_listing_tests {
             // changes in Notes.
             .chain([policy::agent_answers::grant(
                 LOCAL_WORKSPACE,
-                "scribe",
+                ("scribe", person.id()),
                 (
                     &policy::agent_answers::AnswerScope::app("so.tilo.notes"),
                     ActionKind::Undoable,
@@ -1790,10 +1790,10 @@ mod refused_listing_tests {
         );
         assert_eq!(named(&shown), post_alone, "nor named it by the typed edit");
         let agent = editor.acting_as(
-            policy::Actor::Member(crate::permissions::MemberId::agent("scribe")),
+            policy::Actor::Member(crate::permissions::MemberId::agent("scribe", person.id())),
             vec![policy::Grant::new(
                 "scribe-chat",
-                policy::Grantee::agent("scribe"),
+                policy::Grantee::agent("scribe", person.id()),
                 TreePath::workspace(LOCAL_WORKSPACE),
                 policy::KindSet::READ_UNDOABLE,
                 Answer::Allow,
@@ -1874,7 +1874,7 @@ mod tests {
                     owner
                         .clone()
                         .with_access(owner.access().clone().acting_as(
-                            policy::Actor::Member(policy::MemberId::agent("scribe")),
+                            policy::Actor::Member(policy::MemberId::agent("scribe", "owner")),
                             grants,
                         ))
                 };
@@ -1883,7 +1883,7 @@ mod tests {
                     PermissionScope::action("notes", "notes.page", page, action, ActionKind::Read)
                 };
                 let narrow = agent(vec![grant(
-                    policy::Grantee::agent("scribe"),
+                    policy::Grantee::agent("scribe", "owner"),
                     workspace.join(&action_node(
                         "notes",
                         "notes.page",
@@ -1900,7 +1900,7 @@ mod tests {
                 );
 
                 let broad = agent(vec![grant(
-                    policy::Grantee::agent("scribe"),
+                    policy::Grantee::agent("scribe", "owner"),
                     workspace.clone().app("notes"),
                     policy::KindSet::READ,
                 )]);
@@ -1957,8 +1957,8 @@ mod tests {
                 owner
                     .clone()
                     .with_access(owner.access().clone().acting_as(
-                        policy::Actor::Member(policy::MemberId::agent("scribe")),
-                        vec![grant(policy::Grantee::agent("scribe"), node.clone(), kinds)],
+                        policy::Actor::Member(policy::MemberId::agent("scribe", "owner")),
+                        vec![grant(policy::Grantee::agent("scribe", "owner"), node.clone(), kinds)],
                     ))
             };
             let outside = context(policy::KindSet::OUTSIDE);
@@ -2019,7 +2019,7 @@ mod tests {
                 let app = owner
                     .clone()
                     .with_access(owner.access().clone().acting_as(
-                        policy::Actor::Member(policy::MemberId::agent("thing")),
+                        policy::Actor::Member(policy::MemberId::agent("thing", "owner")),
                         Vec::new(),
                     ));
                 assert!(!app.check(&PermissionScope::workspace(ActionKind::Read)));

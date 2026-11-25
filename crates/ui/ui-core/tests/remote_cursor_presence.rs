@@ -67,14 +67,14 @@ fn remote_cursor_moves_populate_and_update_presence() {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![Member::of_software(
-                MemberId::agent("release"),
+                MemberId::agent("release", "alice"),
                 "Release assistant",
             )],
             permissions: vec![],
             apps: Vec::new(),
         });
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            member: MemberId::agent("release"),
+            member: MemberId::agent("release", "alice"),
             x: 24.0,
             y: 36.0,
         });

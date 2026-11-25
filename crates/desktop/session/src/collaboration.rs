@@ -86,7 +86,7 @@ impl Session {
                             .into_iter()
                             .map(|listed| {
                                 collab_types::Member::of_software(
-                                    collab_types::MemberId::agent(listed.id),
+                                    collab_types::MemberId::agent(listed.id, listed.acts_for),
                                     listed.name,
                                 )
                             }),
@@ -221,9 +221,11 @@ impl Session {
                         };
                         // The colour the agent wears wherever it shows: its member's, the same for each
                         // of its sessions — the one rule and the one key every surface asks.
-                        let (r, g, b) = ui::presence::member_color(
-                            &ui::permissions::MemberId::agent(&present.agent),
-                        );
+                        let (r, g, b) =
+                            ui::presence::member_color(&ui::permissions::MemberId::agent(
+                                &present.agent,
+                                self.shared.person.as_str(),
+                            ));
                         let face = tilo_session_client::presence::view(
                             0,
                             ui::time::unix_now_ms(),

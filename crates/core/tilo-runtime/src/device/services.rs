@@ -4661,13 +4661,17 @@ impl RuntimeActionProvider {
     /// ([`Self::session_factory`]), never a run of an agent elsewhere, of a roster turn, or of
     /// another person's key.
     fn is_own_client(&self, caller: &Caller) -> bool {
-        let own = device_agent_id(&self.workspaces.operator(), MCP_CLIENT);
+        let operator = self.workspaces.operator();
+        let own = tilo_action_policy::MemberId::agent(
+            device_agent_id(&operator, MCP_CLIENT),
+            hex::encode(operator),
+        );
         self.session.as_ref().is_some_and(|session| {
             session.admits(caller)
                 && session
                     .agent
                     .as_ref()
-                    .is_some_and(|agent| agent.acting().agent_id() == Some(own.as_str()))
+                    .is_some_and(|agent| agent.acting().member_id() == Some(&own))
         })
     }
 
@@ -4801,6 +4805,7 @@ impl RuntimeActionProvider {
         // this device holds; going on takes it back where it stands. The answer syncs with the
         // workspace, so a host running the agent elsewhere refuses its next call.
         let operator_person = hex::encode(operator);
+        let member = tilo_action_policy::MemberId::agent(agent.clone(), operator_person.clone());
         let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
         let targets: Vec<String> = self
             .workspaces
@@ -4844,7 +4849,8 @@ impl RuntimeActionProvider {
                     let origin_writes = |caller: &Caller, origin: &Origin| {
                         broker.state().may_write_origin(caller, target, origin)
                     };
-                    for cancelled in invocations.stop_agent(&person, target, &agent, &origin_writes)
+                    for cancelled in
+                        invocations.stop_agent(&person, target, &member, &origin_writes)
                     {
                         let _ = cancelled.await;
                     }

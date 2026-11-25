@@ -316,7 +316,7 @@ fn starting_a_sub_agent_asks_the_assistant_in_the_conversation_it_answers_in() {
     // Ada's assistant, admitted by her: an agent is the pair of its id and its person.
     policy.grants.push(Grant::new(
         "agent-member:assistant",
-        Grantee::agent("assistant"),
+        Grantee::agent("assistant", "ada"),
         TreePath::workspace("workspace"),
         KindSet::READ_UNDOABLE,
         Answer::Allow,

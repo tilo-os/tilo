@@ -538,7 +538,7 @@ tilo_test_env::scenario! {
         // An effect declared to only change the screen is refused to an agent as the
         // person's alone.
         let refused = app
-            .effect_by(&MemberId::agent("viewer"), &MailEffect::ShowDrafts)
+            .effect_by(&MemberId::agent("viewer", "ada"), &MailEffect::ShowDrafts)
             .expect_err("a screen effect is the person's");
         assert!(
             matches!(
@@ -553,7 +553,7 @@ tilo_test_env::scenario! {
         app.set_role(tilo_app::Role::Viewer);
         let refused = app
             .effect_by(
-                &MemberId::agent("viewer"),
+                &MemberId::agent("viewer", "ada"),
                 &MailEffect::Note {
                     text: "seen".into(),
                 },
@@ -572,7 +572,7 @@ tilo_test_env::scenario! {
         // A name nothing publishes is unknown, to a viewer as to anyone.
         let unknown = app
             .call_by(
-                tilo_actions::ActionInvoker::member(MemberId::agent("viewer")),
+                tilo_actions::ActionInvoker::member(MemberId::agent("viewer", "ada")),
                 "test.mailbox",
                 "no-such-effect",
                 serde_json::json!({}),
@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
         // The writer's is kept.
         app.set_role(tilo_app::Role::Owner);
         app.effect_by(
-            &MemberId::agent("writer"),
+            &MemberId::agent("writer", "ada"),
             &MailEffect::Note {
                 text: "seen".into(),
             },
@@ -598,7 +598,7 @@ tilo_test_env::scenario! {
         // Someone admitted to write gets the edit their effect submits, as
         // theirs.
         app.effect_by(
-            &MemberId::agent("writer"),
+            &MemberId::agent("writer", "ada"),
             &MailEffect::Fetch {
                 from: "a writer".into(),
             },
@@ -611,7 +611,7 @@ tilo_test_env::scenario! {
             .and_then(|version| version.context.clone())
             .and_then(|context| context.invoker)
             .map(|invoker| invoker.acting.by);
-        assert_eq!(invoker, Some(MemberId::agent("writer").into()));
+        assert_eq!(invoker, Some(MemberId::agent("writer", "ada").into()));
     }
 }
 
@@ -756,7 +756,7 @@ fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions
     let (invocation, started) = app
         .harness()
         .start_bound_job_for(
-            Some(tilo_actions::ActionInvoker::agent("receipt-writer")),
+            Some(tilo_actions::ActionInvoker::agent("receipt-writer", "ada")),
             &address,
             &serde_json::Map::new(),
             Some(&approval),
@@ -797,7 +797,7 @@ fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
             .unwrap()
             .acting
             .by,
-        MemberId::agent("receipt-writer").into()
+        MemberId::agent("receipt-writer", "ada").into()
     );
     assert!(
         app.harness()

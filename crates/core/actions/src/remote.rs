@@ -3834,10 +3834,10 @@ mod tests {
             "every device of one person is the same member"
         );
         assert_eq!(caller.workspace(), None);
-        let agent = Caller::local_agent("helper").in_workspace("workspace-1");
+        let agent = Caller::local_agent("helper", "ada").in_workspace("workspace-1");
         assert_eq!(
             agent.acting().member_id(),
-            Some(&tilo_action_policy::MemberId::agent("helper"))
+            Some(&tilo_action_policy::MemberId::agent("helper", "ada"))
         );
         assert_eq!(agent.workspace(), Some("workspace-1"));
         assert_eq!(agent.device_public_key(), None);

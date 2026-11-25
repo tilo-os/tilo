@@ -10,9 +10,3 @@ pub use model::{
 pub use tilo_actions::policy::roles::WORKSPACE_MODERATION_DOCUMENT as DOCUMENT;
 
 pub const KIND: &str = "tilo.moderation";
-
-/// The workspace host's moderation agent.
-#[must_use]
-pub fn agent() -> tilo_resource::MemberId {
-    tilo_resource::MemberId::agent("moderation")
-}

@@ -403,7 +403,12 @@ impl Workspaces {
     /// Whether a grant in `workspace`'s policy lets `agent` take `node`, an action that
     /// reaches outside, without its person's yes each time: a grant decides it, never a
     /// default.
-    pub async fn granted(&self, workspace: &str, agent: &str, node: &TreePath) -> bool {
+    pub async fn granted(
+        &self,
+        workspace: &str,
+        agent: &tilo_action_policy::MemberId,
+        node: &TreePath,
+    ) -> bool {
         self.granted_answer(workspace, agent, node).await == Some(Answer::Allow)
     }
 
@@ -413,13 +418,13 @@ impl Workspaces {
     pub async fn granted_answer(
         &self,
         workspace: &str,
-        agent: &str,
+        agent: &tilo_action_policy::MemberId,
         node: &TreePath,
     ) -> Option<Answer> {
         let policy = self.policy_of(workspace).await?;
         let decision = decide(
             policy.grants.iter(),
-            &[Grantee::agent(agent)],
+            &[Grantee::Member(agent.clone())],
             node,
             ActionKind::Outside,
             &Context::at(tilo_clock::unix_now_ms()),

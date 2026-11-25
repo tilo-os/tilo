@@ -274,7 +274,7 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
             let answered = |app: &str, answer| {
                 tilo_action_policy::agent_answers::grant(
                     &workspace,
-                    name,
+                    (name, &hex::encode(cert.user_public_key)),
                     (
                         &tilo_action_policy::agent_answers::AnswerScope::app(app),
                         tilo_action_policy::ActionKind::Read,

@@ -1179,15 +1179,18 @@ pub mod agent_policy {
     }
 }
 
-/// The preset of [`agent_policy::ROLE_CAP`] an agent acting for `person` in
-/// `workspace` carries, before any bound: the delegation a person hands their
-/// agent ([`crate::Acting::handed`]). Never more than the cap, never more than
-/// the person may change, and never the workspace's governance. Only
+/// The preset of [`agent_policy::ROLE_CAP`] the agent `agent` (its id and
+/// its own person) acting for `person` in `workspace` carries, before any
+/// bound: the delegation a person hands their agent
+/// ([`crate::Acting::handed`]). Never more than the cap, never more than the
+/// person may change, and never the workspace's governance. Only
 /// [`crate::Acting::handed_preset`] makes it, so every API and every receiver
 /// gives an agent the same.
 #[must_use]
-pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
-    let grantee = Grantee::agent(agent.to_owned());
+#[track_caller]
+pub(crate) fn agent_preset(workspace: &str, agent: (&str, &str), person: &str) -> Vec<Grant> {
+    let grantee = Grantee::agent(agent.0, agent.1);
+    let agent = agent.0;
     let granted_by = Grantee::person(person.to_owned());
     let prefix = format!("turn:agent:{agent}");
     let mut grants = role_preset(agent_policy::ROLE_CAP, workspace).assign(
@@ -1209,13 +1212,15 @@ pub(crate) fn agent_preset(workspace: &str, agent: &str, person: &str) -> Vec<Gr
     grants
 }
 
-/// The grants an agent's certificate gives it in `workspace`: the delegation
+/// The grants an agent's certificate gives it in `workspace`, `agent` its id and
+/// its own person and `person` whom it acts for: the delegation
 /// preset its person's certificate names for it ([`agent_preset`]), the one
 /// place a certificate's rights become grants, so every host and every receiver
 /// decides an agent alike. The workspace's own grants naming the agent narrow it
 /// further.
 #[must_use]
-pub fn certified_agent(workspace: &str, agent: &str, person: &str) -> Vec<Grant> {
+#[track_caller]
+pub fn certified_agent(workspace: &str, agent: (&str, &str), person: &str) -> Vec<Grant> {
     agent_preset(workspace, agent, person)
 }
 

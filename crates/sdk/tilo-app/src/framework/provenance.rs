@@ -278,7 +278,7 @@ mod tests {
             created_ms: Some(1_763_164_800_000),
             updated_ms: None,
         };
-        let grant = tilo_resource::MemberId::agent("grant-a8a42b74");
+        let grant = tilo_resource::MemberId::agent("grant-a8a42b74", "ada");
         let moved = people.provenance(Some(&grant), "", 1_900_000_000_000, Some(&origin));
         assert_eq!(moved.name, "xemmerling", "the author is its own field");
         assert!(moved.actor.is_none(), "a moved author is not a member");
@@ -396,7 +396,7 @@ mod tests {
             created_ms: Some(1_763_164_800_000),
             updated_ms: None,
         };
-        let grant = tilo_resource::MemberId::agent("grant-a8a42b74");
+        let grant = tilo_resource::MemberId::agent("grant-a8a42b74", "ada");
         let provenance = people.provenance(Some(&grant), "", 0, Some(&origin));
         let mut row = provenance.row("tasks-issue-written");
         let nodes = nodes(&mut *row);

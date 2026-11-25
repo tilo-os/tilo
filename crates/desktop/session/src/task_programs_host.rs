@@ -85,6 +85,7 @@ impl TaskProgramHost {
         let (key, workspace, person, agent, session) = match request.caller {
             ProgramCaller::Agent {
                 agent,
+                of,
                 person,
                 session,
             } => (
@@ -95,7 +96,7 @@ impl TaskProgramHost {
                 },
                 request.workspace.to_owned(),
                 person.map(str::to_owned),
-                Some(agent),
+                Some((agent, of)),
                 Some(session),
             ),
             ProgramCaller::Person { person, session } => (
@@ -128,7 +129,7 @@ impl TaskProgramHost {
             .map(|tasks| tasks as Arc<dyn tilo_mcp::TaskHosts>);
         let api = match (&agent, &session) {
             (Some(agent), Some(_)) => {
-                Api::for_task(Arc::clone(&current), workspace, agent, person.as_deref())
+                Api::for_task(Arc::clone(&current), workspace, *agent, person.as_deref())
                     .with_work_group(request.group.clone())
                     .with_task_hosts(hosts)
             }

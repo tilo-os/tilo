@@ -752,7 +752,7 @@ mod folder_rows_tests {
     /// An agent session working for the person.
     fn agent() -> tilo_actions::ActionInvoker {
         tilo_actions::ActionInvoker::admitted(
-            &tilo_actions::Acting::agent("claude").in_session("abc"),
+            &tilo_actions::Acting::agent("claude", hex::encode(person())).in_session("abc"),
         )
         .named(Some("Claude Code".into()))
         .acting_for(hex::encode(person()))

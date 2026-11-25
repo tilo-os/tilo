@@ -570,7 +570,8 @@ pub(crate) fn member_names(
     search: Rc<crate::search::SessionSearch>,
 ) -> Names {
     Rc::new(move |who: &ui::MemberId| {
-        who.agent_id()
+        Some(who)
+            .filter(|who| who.is_agent())
             .and_then(|agent| search.agent_name(agent))
             .or_else(|| {
                 let mut tree = shell.read(Clone::clone);

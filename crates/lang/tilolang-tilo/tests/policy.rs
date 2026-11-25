@@ -18,7 +18,7 @@ const WORKSPACE: &str = "workspace";
 
 fn agent() -> Caller {
     Caller {
-        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1", "ada").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
@@ -56,7 +56,7 @@ fn state(block: AgentBlock) -> String {
 fn an_agent_the_person_denied_the_app_is_denied() {
     let answer = agent_answers::grant(
         WORKSPACE,
-        "task-1",
+        ("task-1", "ada"),
         (&AnswerScope::app(APP), ActionKind::Undoable),
         Answer::Deny,
         Grantee::person("ada"),
@@ -94,7 +94,9 @@ fn an_agent_the_person_denied_the_app_is_denied() {
         .host
         .runtime()
         .run_agent_block(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1")),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+                "task-1", "ada",
+            )),
             &add_block(&ada, "milk"),
         )
         .unwrap();
@@ -132,7 +134,7 @@ tilo_test_env::scenario! {
         let admitted = ada
             .host
             .runtime()
-            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1")), &add_block(&ada, "eggs"))
+            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1", "stranger")), &add_block(&ada, "eggs"))
             .unwrap();
         assert_eq!(state(admitted), "done");
     }
@@ -177,7 +179,7 @@ tilo_test_env::scenario! {
                 .runtime()
                 .run_agent_block(
                     &if who == "task-1" {
-                        Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(who))
+                        Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(who, "ada"))
                     } else {
                         Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who))
                     },

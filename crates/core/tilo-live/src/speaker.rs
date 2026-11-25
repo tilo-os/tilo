@@ -96,12 +96,13 @@ impl State {
     fn moved_words(&mut self) -> Vec<(MemberId, Presence)> {
         let mut now: HashMap<Word, Payload> = HashMap::new();
         for member in self.board.here() {
-            let Some(who) = member
-                .member
-                .clone()
-                .map(MemberId::agent)
-                .or_else(|| member.user.clone().map(MemberId::person))
-            else {
+            // An agent is its person's: one whose person its presence does not name yet is no
+            // member.
+            let Some(who) = (match (&member.member, &member.user) {
+                (Some(agent), Some(person)) => Some(MemberId::agent(agent.clone(), person.clone())),
+                (Some(_), None) => None,
+                (None, user) => user.clone().map(MemberId::person),
+            }) else {
                 continue;
             };
             for (app, key, payload) in &member.apps {

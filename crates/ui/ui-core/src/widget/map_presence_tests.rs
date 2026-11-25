@@ -20,7 +20,7 @@ const PLACE: (f64, f64) = (48.137, 11.575);
 
 /// The agent's lens on a place, as a view hands it over: `lenses(place).find(l -> not l.mine)?.who`.
 fn scout() -> Person {
-    Person::new(MemberId::agent(SCOUT), "Scout")
+    Person::new(MemberId::agent(SCOUT, "me"), "Scout")
 }
 
 /// Presence with the agent in it, coloured [`SCOUT_INK`], heard from another window.
@@ -29,10 +29,10 @@ fn presence() -> PresenceCtx {
     presence.set_self_member(MemberId::person("me"), "Me");
     presence
         .names
-        .insert(MemberId::agent(SCOUT), "Scout".to_owned());
+        .insert(MemberId::agent(SCOUT, "me"), "Scout".to_owned());
     presence
         .color_overrides
-        .insert(MemberId::agent(SCOUT), SCOUT_INK);
+        .insert(MemberId::agent(SCOUT, "me"), SCOUT_INK);
     presence
 }
 
@@ -151,7 +151,7 @@ fn no_lens_and_ones_own_view_dock_nobody() {
         "a place no one else is at shows no face"
     );
     let mut own = presence();
-    own.set_own_identity([MemberId::agent(SCOUT)]);
+    own.set_own_identity([MemberId::agent(SCOUT, "me")]);
     let mut mine = map(Some(scout()));
     assert!(
         scout_pixels(&drawn(&mut mine, &own)).is_empty(),

@@ -26,6 +26,8 @@ pub struct Narrated<'a> {
     /// What the agent calls itself; a receiver binds the work to the member
     /// that published it, whatever this says.
     pub agent: &'a str,
+    /// The person the agent acts for, as it says; a receiver binds that to the member too.
+    pub person: &'a str,
     pub invocation: InvocationId,
     pub app: &'a str,
     /// The action, on the resource it is published on.
@@ -48,7 +50,7 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
         version: INTERACTION_VERSION,
         invocation: narrated.invocation,
         sequence: seq,
-        actor: Acting::agent(narrated.agent),
+        actor: Acting::agent(narrated.agent, narrated.person),
         phase: narrated.phase.clone(),
         action: InteractionAction {
             id: narrated.action.action.clone(),
@@ -106,11 +108,8 @@ pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<Se
     if interaction.invocation.0 != event.execution {
         return None;
     }
-    interaction.actor = Acting::member(
-        member
-            .member_id()
-            .unwrap_or_else(|| tilo_action_policy::MemberId::agent(publisher)),
-    );
+    // An agent whose person the board does not know yet is no member to draw the work as.
+    interaction.actor = Acting::member(member.member_id()?);
     if let Some(person) = &member.user {
         interaction.actor = interaction.actor.acting_for(Acting::person(person.clone()));
     }
@@ -178,6 +177,7 @@ mod tests {
                 publisher: hex::encode(publisher),
                 epoch: 1,
                 agent,
+                user: Some(hex::encode(person)),
                 label: label.into(),
                 colour: "#81a8ff".into(),
                 ..Shown::default()
@@ -197,6 +197,7 @@ mod tests {
             let event = frame(
                 &Narrated {
                     agent: "Claude Code",
+                    person: "",
                     invocation,
                     app: "so.tilo.sheets",
                     action: &action,
@@ -229,6 +230,7 @@ mod tests {
             let event = frame(
                 &Narrated {
                     agent: "someone-else",
+                    person: "",
                     invocation,
                     app: "so.tilo.sheets",
                     action: &action,
@@ -243,8 +245,9 @@ mod tests {
             let admitted = admit(&present, agent, &event).expect("the agent's work is drawn");
             assert_eq!(
                 admitted.actor,
-                Acting::agent(hex::encode(agent)),
-                "bound to the publisher"
+                Acting::agent(hex::encode(agent), hex::encode(person))
+                    .acting_for(Acting::person(hex::encode(person))),
+                "bound to the publisher, for its person"
             );
 
             assert!(
@@ -280,6 +283,7 @@ mod tests {
                 epoch: 1,
                 agent: true,
                 spoken_by: Some(hex::encode(host)),
+                user: Some(hex::encode(other)),
                 label: "Visa backend".into(),
                 ..Shown::default()
             }];
@@ -287,6 +291,7 @@ mod tests {
             let event = frame(
                 &Narrated {
                     agent: "Visa backend",
+                    person: "",
                     invocation: InvocationId::new(),
                     app: "so.tilo.sheets",
                     action: &action,
@@ -298,12 +303,18 @@ mod tests {
             )
             .unwrap();
             let admitted = admit(&present, host, &event).expect("the host's word for its run");
-            assert_eq!(admitted.actor, Acting::agent(hex::encode(stand_in)));
+            let for_its_person = |agent: String| {
+                Acting::agent(agent, hex::encode(other)).acting_for(Acting::person(hex::encode(other)))
+            };
+            assert_eq!(admitted.actor, for_its_person(hex::encode(stand_in)));
             // The run of a workspace's agent is that agent: named and coloured as its face is.
             let mut named = present.clone();
-            named[0].member = Some(tilo_action_policy::MemberId::agent("claude-code-0a1b2c3d4e"));
+            named[0].member = Some(tilo_action_policy::MemberId::agent(
+                "claude-code-0a1b2c3d4e",
+                hex::encode(other),
+            ));
             let admitted = admit(&named, host, &event).expect("the host's word for its run");
-            assert_eq!(admitted.actor, Acting::agent("claude-code-0a1b2c3d4e"));
+            assert_eq!(admitted.actor, for_its_person("claude-code-0a1b2c3d4e".to_owned()));
             assert!(
                 admit(&present, other, &event).is_none(),
                 "another device does not speak for the host's run"

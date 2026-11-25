@@ -110,17 +110,17 @@ pub fn moderation_shortcut_id(agent: &str) -> String {
 /// tilolang Discussion, whose comments an agent answers a task with.
 const DISCUSSION: &str = "so.tilo.lang.discussion";
 
-/// `agent` as a direct conversation's `people` holds it: a value, not the JSON text a field
-/// keeps.
-fn member_of(agent: &str) -> Value {
-    json!({"member": tilo_action_policy::MemberId::agent(agent)})
+/// The agent `agent` of `person` as a direct conversation's `people` holds it: a value, not the
+/// JSON text a field keeps.
+fn member_of(agent: &str, person: &str) -> Value {
+    json!({"member": tilo_action_policy::MemberId::agent(agent, person)})
 }
 
-/// What names `agent` wherever a resource holds it: inside a mention in rich text (the mark's
-/// value is the member's id as JSON), and inside an actor a field holds (a task's assignee, the
-/// person of a direct conversation), each kept as JSON text.
-fn named(agent: &str) -> String {
-    names(&tilo_action_policy::MemberId::agent(agent))
+/// What names the agent `agent` of `person` wherever a resource holds it: inside a mention in
+/// rich text (the mark's value is the member's id as JSON), and inside an actor a field holds (a
+/// task's assignee, the person of a direct conversation), each kept as JSON text.
+fn named(agent: &str, person: &str) -> String {
+    names(&tilo_action_policy::MemberId::agent(agent, person))
 }
 
 /// What names `member` inside an actor a field holds, kept as JSON text: its id without the
@@ -128,7 +128,8 @@ fn named(agent: &str) -> String {
 #[must_use]
 pub fn names(member: &tilo_action_policy::MemberId) -> String {
     let member = serde_json::to_string(member).unwrap_or_default();
-    // `{"agent":"<id>"}` without its braces: the same within any actor that wraps it.
+    // `{"agent":{"id":"<id>","person":"<person>"}}` without its braces: the same within any
+    // actor that wraps it.
     member
         .strip_prefix('{')
         .and_then(|inner| inner.strip_suffix('}'))
@@ -142,36 +143,47 @@ pub fn names(member: &tilo_action_policy::MemberId) -> String {
 /// mailbox. Each leaves out the agent's own changes and a copy of one carried back from
 /// elsewhere, so its answer never starts it again.
 #[must_use]
-pub fn triggers(agent: &str, name: &str) -> Shortcut {
+pub fn triggers(agent: &str, person: &str, name: &str) -> Shortcut {
+    let who = (agent, person);
     answering(
-        agent,
+        who,
         shortcut_id(agent),
         name.to_owned(),
         vec![
             // A message whose text mentions it, in any conversation.
-            watch(agent, MESSAGE, "item.body", Test::Has(json!(named(agent)))),
+            watch(
+                who,
+                MESSAGE,
+                "item.body",
+                Test::Has(json!(named(agent, person))),
+            ),
             // A message in its direct conversation: it is one of the conversation's people.
             watch(
-                agent,
+                who,
                 MESSAGE,
                 "item.$in.people",
-                Test::Has(member_of(agent)),
+                Test::Has(member_of(agent, person)),
             ),
             // A reply in a thread of its direct conversation: the thread is nested in the
             // conversation, whose people it is among.
             watch(
-                agent,
+                who,
                 MESSAGE,
                 "item.$in.$in.people",
-                Test::Has(member_of(agent)),
+                Test::Has(member_of(agent, person)),
             ),
             // A task given to it.
-            watch(agent, TASK, "item.assignee", Test::Has(json!(named(agent)))),
+            watch(
+                who,
+                TASK,
+                "item.assignee",
+                Test::Has(json!(named(agent, person))),
+            ),
             // A message that arrived in the workspace's mailbox: written by Mail's outside
             // origin, not by anyone here, and not the account's own copy of what it sent, which
             // an answer of the agent's comes back as once the server keeps it.
             watching(
-                agent,
+                who,
                 MAIL_MESSAGE,
                 Vec::new(),
                 vec![
@@ -192,21 +204,27 @@ pub fn triggers(agent: &str, name: &str) -> Shortcut {
 /// person who keeps the agent ([`triggers`] beside it), the same runner fires it and the same
 /// answer takes its turn; removing that shortcut turns the watch off again.
 #[must_use]
-pub fn moderates(agent: &str, name: &str) -> Shortcut {
+pub fn moderates(agent: &str, person: &str, name: &str) -> Shortcut {
+    let who = (agent, person);
     answering(
-        agent,
+        who,
         moderation_shortcut_id(agent),
         format!("{name} moderates"),
         vec![
-            watch_all(agent, MESSAGE),
-            watch_actions(agent, MODERATION, REPORTS.to_vec()),
+            watch_all(who, MESSAGE),
+            watch_actions(who, MODERATION, REPORTS.to_vec()),
         ],
     )
 }
 
-/// `agent`'s one step that starts its turn on the change a trigger hands it, as the shortcut
-/// `id`, named `name`, whose triggers are `triggers`.
-fn answering(agent: &str, id: String, name: String, triggers: Vec<TriggerSpec>) -> Shortcut {
+/// The one step of the agent `agent` of `person` (`who`) that starts its turn on the change a
+/// trigger hands it, as the shortcut `id`, named `name`, whose triggers are `triggers`.
+fn answering(
+    (agent, _): (&str, &str),
+    id: String,
+    name: String,
+    triggers: Vec<TriggerSpec>,
+) -> Shortcut {
     let mut step_args = std::collections::BTreeMap::new();
     step_args.insert(
         EVENT_INPUT.to_owned(),
@@ -266,39 +284,41 @@ fn answering(agent: &str, id: String, name: String, triggers: Vec<TriggerSpec>) 
     }
 }
 
-/// A change of `kind` that fires for `agent`, narrowed by `narrowing`, and never by the agent's
-/// own change or a copy of one carried back from elsewhere.
-fn watch(agent: &str, kind: &str, field: &str, test: Test) -> TriggerSpec {
-    watching(agent, kind, Vec::new(), vec![(field, test)])
+/// A change of `kind` that fires for the agent `who` (its id and its person), narrowed by
+/// `narrowing`, and never by the agent's own change or a copy of one carried back from elsewhere.
+fn watch(who: (&str, &str), kind: &str, field: &str, test: Test) -> TriggerSpec {
+    watching(who, kind, Vec::new(), vec![(field, test)])
 }
 
-/// A change of `kind` that fires for `agent` on any change of it, and never by the agent's own
-/// change or a copy of one carried back from elsewhere.
-fn watch_all(agent: &str, kind: &str) -> TriggerSpec {
-    watching(agent, kind, Vec::new(), Vec::new())
-}
-
-/// A change of `kind` made by one of the `actions` that fires for `agent`, and never by the
+/// A change of `kind` that fires for the agent `who` on any change of it, and never by the
 /// agent's own change or a copy of one carried back from elsewhere.
-fn watch_actions(agent: &str, kind: &str, actions: Vec<&str>) -> TriggerSpec {
+fn watch_all(who: (&str, &str), kind: &str) -> TriggerSpec {
+    watching(who, kind, Vec::new(), Vec::new())
+}
+
+/// A change of `kind` made by one of the `actions` that fires for the agent `who`, and never by
+/// the agent's own change or a copy of one carried back from elsewhere.
+fn watch_actions(who: (&str, &str), kind: &str, actions: Vec<&str>) -> TriggerSpec {
     watching(
-        agent,
+        who,
         kind,
         actions.into_iter().map(str::to_owned).collect(),
         Vec::new(),
     )
 }
 
-/// A change of `kind` that fires for `agent`, made by one of `actions` where they are named,
-/// narrowed by `narrowing`, and never by the agent's own change or a copy of one carried back
-/// from elsewhere.
+/// A change of `kind` that fires for the agent `who` (its id and its person), made by one of
+/// `actions` where they are named, narrowed by `narrowing`, and never by the agent's own change
+/// or a copy of one carried back from elsewhere.
 fn watching(
-    agent: &str,
+    (agent, person): (&str, &str),
     kind: &str,
     actions: Vec<String>,
     narrowing: Vec<(&str, Test)>,
 ) -> TriggerSpec {
-    let member = format!("agent:{agent}");
+    let member =
+        String::from_utf8_lossy(&tilo_action_policy::MemberId::agent(agent, person).actor_bytes())
+            .into_owned();
     TriggerSpec::ResourceChanged {
         kind: kind.to_owned(),
         actions,
@@ -487,7 +507,11 @@ pub fn asker(event: &DocumentEvent) -> Option<String> {
 /// Whether the message `event` made is in a direct conversation of `person` and `agent` alone:
 /// one whose people are those two.
 #[must_use]
-pub fn alone_with(event: &DocumentEvent, agent: &str, person: &str) -> bool {
+pub fn alone_with(
+    event: &DocumentEvent,
+    agent: &tilo_action_policy::MemberId,
+    person: &str,
+) -> bool {
     let Some(people) = event
         .after
         .as_ref()
@@ -497,7 +521,7 @@ pub fn alone_with(event: &DocumentEvent, agent: &str, person: &str) -> bool {
         return false;
     };
     let (agent, person) = (
-        names(&tilo_action_policy::MemberId::agent(agent)),
+        names(agent),
         names(&tilo_action_policy::MemberId::person(person)),
     );
     !people.is_empty()
@@ -878,7 +902,7 @@ pub async fn unreadable(
         return Some("the turn is for nobody who is a person".to_owned());
     };
     let caller = Caller::agent_turn(
-        agent,
+        (agent, saver),
         person,
         tilo_action_policy::turn::Turn::new(place.conversation(), place.item.clone()),
     );

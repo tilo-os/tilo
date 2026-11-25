@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
         assert_eq!(reviewed["target_heads"], compared["from_heads"]);
 
         let agent =
-            tilo_actions::Acting::agent("historian")
+            tilo_actions::Acting::agent("historian", "ada")
                 .acting_for(tilo_actions::Acting::person("ada"));
         let restored = app
             .call_by(

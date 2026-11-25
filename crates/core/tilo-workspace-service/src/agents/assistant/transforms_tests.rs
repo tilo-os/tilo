@@ -52,7 +52,7 @@ fn two_agents_each_run_four_transforms_and_a_fifth_is_refused_for_that_agent() {
         .build()
         .unwrap();
     let transforms = Transforms::new(ServiceSlot::default(), runtime.handle().clone());
-    let [scout, tide] = ["scout", "tide"].map(|id| Actor::from(MemberId::agent(id)));
+    let [scout, tide] = ["scout", "tide"].map(|id| Actor::from(MemberId::agent(id, "ada")));
 
     let mut scouts = Vec::new();
     for _ in 0..transform::MAX_RUNNING {

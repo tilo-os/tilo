@@ -107,7 +107,7 @@ pub fn unreachable_actions_in_share<A: ResourceApp, H: Host>(
     let mut ran = false;
     let surveyed = tilo_actions::api::survey(&resources);
     let mut unreachable = Vec::new();
-    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("reach-agent"));
+    let agent = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("reach-agent", "ada"));
     // The dialogs on the screen since anything last ran, counted when asked.
     let mut shown = None;
     let mut resource_ordinals = std::collections::HashMap::new();

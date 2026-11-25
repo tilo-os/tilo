@@ -500,7 +500,7 @@ fn a_member_list_with_devices_crosses_as_json_and_postcard() {
     let list = crate::MemberList {
         members: Vec::new(),
         devices: [
-            (crate::MemberId::Agent("planner".into()), vec![[7; 32]]),
+            (crate::MemberId::agent("planner", "ada"), vec![[7; 32]]),
             (crate::MemberId::Bot("mail".into()), vec![[1; 32], [2; 32]]),
         ]
         .into(),

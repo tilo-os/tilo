@@ -943,12 +943,18 @@ pub struct TaskProgram {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// One task of agent `agent_id` in `workspace`, acting for `person` who started it (the Tasks
-    /// agent's run of an issue): it may do what both the agent and that person may, as the
-    /// agent's own calls of the run do. Each session is its own fresh execution.
+    /// One task of agent `agent_id` of the person `of` in `workspace`, acting for `person` who
+    /// started it (the Tasks agent's run of an issue): it may do what both the agent and that
+    /// person may, as the agent's own calls of the run do. Each session is its own fresh
+    /// execution.
     #[must_use]
-    pub fn for_task(host: H, workspace: String, agent_id: &str, person: Option<&str>) -> Self {
-        let mut caller = tilo_actions::remote::Caller::local_agent(agent_id);
+    pub fn for_task(
+        host: H,
+        workspace: String,
+        (agent_id, of): (&str, &str),
+        person: Option<&str>,
+    ) -> Self {
+        let mut caller = tilo_actions::remote::Caller::local_agent(agent_id, of);
         if let Some(person) = person {
             caller = caller.acting_for(person);
         }

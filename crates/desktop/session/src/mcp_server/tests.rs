@@ -559,7 +559,7 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     // person included, rather than anyone reading it unchecked.
     for caller in [
         Caller::local_person("person"),
-        Caller::local_agent("helper").in_workspace("studio"),
+        Caller::local_agent("helper", "person").in_workspace("studio"),
     ] {
         assert_eq!(
             read_as(&caller, None),
@@ -569,7 +569,10 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     }
     for (caller, theirs) in [
         (Caller::local_person("person"), true),
-        (Caller::local_agent("helper").in_workspace("studio"), false),
+        (
+            Caller::local_agent("helper", "person").in_workspace("studio"),
+            false,
+        ),
     ] {
         let read = read_as(&caller, Some("session.styles"));
         if theirs {

@@ -254,14 +254,14 @@ tilo_test_env::scenario! {
             workspace.allow_agent("scribe", KindSet::READ);
         });
 
-        let stranger = Caller::local_agent("intruder").in_workspace(workspace.clone());
+        let stranger = Caller::local_agent("intruder", "ada").in_workspace(workspace.clone());
         assert!(
             invoked(&state, &stranger, &follow()).is_err(),
             "an agent the workspace never admitted reads nothing"
         );
         assert_eq!(counter.reads.load(Ordering::SeqCst), 0, "nothing was read");
 
-        let agent = Caller::local_agent("scribe").in_workspace(workspace.clone());
+        let agent = Caller::local_agent("scribe", "ada").in_workspace(workspace.clone());
         let request = follow();
         invoked(&state, &agent, &request).expect("the admitted agent follows the view");
         observed(&state, &agent, &request, |update| count(update) == Some(0));
@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
             .find(|candidate| candidate.id().to_string() == workspace)
             .unwrap()
             .deny(
-                Grantee::agent("scribe"),
+                Grantee::agent("scribe", "ada"),
                 &TreePath::root().app(APP),
                 KindSet::READ,
             );

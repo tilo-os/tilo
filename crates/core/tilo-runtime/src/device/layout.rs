@@ -608,7 +608,11 @@ fn opened_by(
         .unwrap_or_default();
     Some(tilo_desktop_model::ownership::OpenedBy {
         run: session.id,
-        agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
+        agent: caller
+            .acting()
+            .member_id()
+            .filter(|member| member.is_agent())?
+            .clone(),
         label: caller
             .clone()
             .in_session_of(request)

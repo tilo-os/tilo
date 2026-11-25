@@ -70,13 +70,13 @@ pub(super) fn line_of(
 /// a published action takes.
 fn mentioning(
     rich_text: &dyn crate::tl_records::RichText,
-    agent: &str,
+    agent: &tilo_actions::MemberId,
     name: &str,
     text: &str,
 ) -> Result<serde_json::Value, String> {
     rich_text.mention(
         &format!("@{name}"),
-        &tilo_reference::Embed::Member(tilo_actions::MemberId::agent(agent)),
+        &tilo_reference::Embed::Member(agent.clone()),
         text,
     )
 }
@@ -92,7 +92,7 @@ pub(super) async fn tell(
     rich_text: &dyn crate::tl_records::RichText,
     workspace: &str,
     place: &triggered::Where,
-    (agent, name): (&str, &str),
+    (agent, name): (&tilo_actions::MemberId, &str),
     text: &str,
 ) -> Result<(), String> {
     let route = DocumentRoute {
@@ -306,7 +306,7 @@ impl ServerAgents {
             rich_text,
             &acting.workspace,
             place,
-            (&starter.id.0, &starter.name),
+            (&starter.member(), &starter.name),
             &text,
         )
         .await

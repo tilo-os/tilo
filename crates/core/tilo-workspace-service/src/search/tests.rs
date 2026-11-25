@@ -116,7 +116,7 @@ fn a_caller_finds_only_what_it_may_read_now() {
         })
     });
     let ada = Caller::local_person("ada");
-    let helper = Caller::local_agent("helper").in_workspace(WORKSPACE);
+    let helper = Caller::local_agent("helper", "ada").in_workspace(WORKSPACE);
 
     let mut found = titles(&search.found(&ada, "review", &Within::default())).join(", ");
     assert!(

@@ -230,10 +230,15 @@ mod tests {
 
         phase a_handed_agent_writes_for_its_person_within_their_role;
         {
-            let agent = Acting::agent("claude").handed().in_session("s1");
-            let for_editor = agent.clone().acting_for(Acting::person(EDITOR));
+            let agent = |person: &str| {
+                Acting::agent("claude", person)
+                    .handed()
+                    .in_session("s1")
+                    .acting_for(Acting::person(person))
+            };
+            let for_editor = agent(EDITOR);
             assert!(admission(EDITOR, Some(policy())).admits(Some(&for_editor), None, verbs::WRITE));
-            let for_viewer = agent.acting_for(Acting::person(VIEWER));
+            let for_viewer = agent(VIEWER);
             assert!(!admission(VIEWER, Some(policy())).admits(Some(&for_viewer), None, verbs::WRITE));
         }
 
@@ -262,14 +267,14 @@ mod tests {
             let mut denied = policy();
             denied.grants.push(tilo_action_policy::Grant::new(
                 "no-agent-writes",
-                tilo_action_policy::Grantee::agent("claude"),
+                tilo_action_policy::Grantee::agent("claude", OWNER),
                 tilo_action_policy::TreePath::workspace("w")
                     .joined(&fs_protocol::file_action::tree_node()),
                 tilo_action_policy::KindSet::UNDOABLE,
                 Answer::Deny,
                 tilo_action_policy::Grantee::person(OWNER),
             ));
-            let agent = Acting::agent("claude")
+            let agent = Acting::agent("claude", OWNER)
                 .handed()
                 .acting_for(Acting::person(OWNER));
             let admission = admission(OWNER, Some(denied));

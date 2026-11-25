@@ -24,9 +24,7 @@ pub(super) struct OpenedByChip {
 /// The agent's colour, as presence draws the agent everywhere: by the agent, never by its display
 /// name or by the session that opened the window.
 fn agent_colour(opened: &OpenedBy) -> vello::peniko::Color {
-    let (red, green, blue) = crate::presence::member_color(
-        &::collaboration::permissions::MemberId::agent(&opened.agent),
-    );
+    let (red, green, blue) = crate::presence::member_color(&opened.agent);
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 

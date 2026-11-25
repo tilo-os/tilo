@@ -788,7 +788,7 @@ tilo_test_env::scenario! {
             })
         };
         assert!(is_bot_author(&acting(tilo_actions::Acting::bot("standup"))));
-        assert!(!is_bot_author(&acting(tilo_actions::Acting::agent("standup"))));
+        assert!(!is_bot_author(&acting(tilo_actions::Acting::agent("standup", "ada"))));
         assert!(!is_bot_author(&HistoryAuthor::new("Ada", 10.0, "cd34")));
     }
 

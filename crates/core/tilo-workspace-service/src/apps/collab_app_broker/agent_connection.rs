@@ -22,7 +22,7 @@ struct Inner {
     provider: ConnectionActionProvider,
     caller: Caller,
     workspace: String,
-    agent: String,
+    agent: tilo_action_policy::MemberId,
     session: String,
 }
 
@@ -48,7 +48,10 @@ impl AppBrokerState {
         origin: InvocationCaller,
     ) -> Option<AgentConnection> {
         let acting = caller.acting();
-        let (session, agent) = acting.agent_session.as_ref().zip(acting.agent_id())?;
+        let (session, agent) = acting
+            .agent_session
+            .as_ref()
+            .zip(acting.member_id().filter(|member| member.is_agent()))?;
         let workspace = caller.workspace()?.to_owned();
         Some(AgentConnection(Arc::new(Inner {
             provider: ConnectionActionProvider {
@@ -59,7 +62,7 @@ impl AppBrokerState {
             },
             caller: caller.clone(),
             workspace,
-            agent: agent.to_owned(),
+            agent: agent.clone(),
             session: session.as_str().to_owned(),
         })))
     }

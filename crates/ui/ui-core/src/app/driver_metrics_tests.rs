@@ -396,7 +396,7 @@ fn an_agents_mark_rests_on_the_control_it_acts_on() {
         version: tilo_actions::INTERACTION_VERSION,
         invocation: tilo_actions::InvocationId::new(),
         sequence: 1,
-        actor: tilo_actions::Acting::agent("scribe"),
+        actor: tilo_actions::Acting::agent("scribe", "portable-review"),
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: "edit".into(),
@@ -464,7 +464,7 @@ fn a_field_changed_by_someone_else_keeps_no_colour_of_theirs() {
         driver.relayout();
         driver.render_rgba()
     };
-    let agent = Person::new(MemberId::agent("scribe"), "Ada");
+    let agent = Person::new(MemberId::agent("scribe", "portable-review"), "Ada");
     for title in [false, true] {
         assert!(
             field(Some(agent.clone()), title) == field(None, title),

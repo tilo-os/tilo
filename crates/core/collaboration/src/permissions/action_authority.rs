@@ -89,7 +89,7 @@ mod tests {
             Role::Editor,
         );
         let bounded = agent.clone().with_access(agent.access().clone().acting_as(
-            policy::Actor::Member(policy::MemberId::agent("agent-a")),
+            policy::Actor::Member(policy::MemberId::agent("agent-a", "person-a")),
             Vec::new(),
         ));
         for permissions in [

@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
     phase an_agent_wears_one_colour_on_every_surface;
     {
         let helper = "agent:helper@host";
-        let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(helper));
+        let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(helper, "bo-root"));
         let announced = format!("#{r:02x}{g:02x}{b:02x}");
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -224,8 +224,8 @@ tilo_test_env::scenario! {
             (
                 here.colors().get(helper).copied(),
                 listed.rgb,
-                presence.color_for(&MemberId::agent("helper@host")),
-                ui::presence::member_color(&ui::permissions::MemberId::agent(helper)),
+                presence.color_for(&MemberId::agent("helper@host", "bo-root")),
+                ui::presence::member_color(&ui::permissions::MemberId::agent(helper, "bo-root")),
             ),
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"
@@ -853,7 +853,7 @@ tilo_test_env::scenario! {
             .map(|id| Person {
                 id: id.into(),
                 user: None,
-                member: (id == "cc").then(|| MemberId::agent("cc")),
+                member: (id == "cc").then(|| MemberId::agent("cc", "bo-root")),
                 label: id.into(),
                 devices: Vec::new(),
                 rgb: (1, 2, 3),
@@ -901,7 +901,7 @@ tilo_test_env::scenario! {
         let person = |status: Option<Line>| Person {
             id: "cc".into(),
             user: None,
-            member: Some(MemberId::agent("cc")),
+            member: Some(MemberId::agent("cc", "bo-root")),
             label: "Claude Code".into(),
             devices: Vec::new(),
             rgb: (1, 2, 3),
@@ -959,7 +959,7 @@ tilo_test_env::scenario! {
         let people = vec![Person {
             id: "bot".into(),
             user: None,
-            member: Some(MemberId::agent("scribe")),
+            member: Some(MemberId::agent("scribe", "bo-root")),
             label: "Scribe".into(),
             devices: Vec::new(),
             rgb: (1, 2, 3),
@@ -976,7 +976,7 @@ tilo_test_env::scenario! {
         let agent = workspace
             .members
             .iter()
-            .find(|member| member.id == collab_types::MemberId::agent("scribe"))
+            .find(|member| member.id == collab_types::MemberId::agent("scribe", "bo-root"))
             .expect("the agent is on the member list");
         assert!(!agent.id.is_person(), "an agent's row is software's");
         let rows = crate::desktop::people::roster_rows(&tree);
@@ -1024,7 +1024,7 @@ fn a_persons_devices_and_name_resolve_as_presence_shows_them() {
 /// colour. Its session speaks from a stand-in key of its own, which may not either.
 #[test]
 fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
-    let agent = MemberId::agent("helper");
+    let agent = MemberId::agent("helper", "bo-root");
     let keeper = (0..1000)
         .map(|n| format!("person-{n}"))
         .find(|id| {
@@ -1053,7 +1053,7 @@ fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
     let node = workspace.policy.node();
     workspace.policy.grant(tilo_action_policy::Grant::new(
         "agent-member:helper",
-        tilo_action_policy::Grantee::agent("helper"),
+        tilo_action_policy::Grantee::agent("helper", &keeper),
         node,
         tilo_action_policy::KindSet::READ,
         tilo_action_policy::Answer::Allow,

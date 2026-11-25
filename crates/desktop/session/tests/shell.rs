@@ -1685,7 +1685,7 @@ fn the_people_list_header_says_the_workspace_and_groups_people_ahead_of_software
             someone_here(
                 3,
                 "Fieldwork",
-                Some(collab_types::MemberId::agent("fieldwork")),
+                Some(collab_types::MemberId::agent("fieldwork", "ada")),
                 "so.tilo.notes",
             ),
             someone_here(
@@ -1759,7 +1759,7 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
             someone_here(
                 2,
                 "Fieldwork",
-                Some(collab_types::MemberId::agent("fieldwork")),
+                Some(collab_types::MemberId::agent("fieldwork", "ada")),
                 "so.tilo.notes",
             ),
         ],

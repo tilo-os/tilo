@@ -3289,7 +3289,7 @@ fn describe_scope(scope: &Scope) -> String {
 fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> String {
     let who = match grantee {
         Grantee::Member(MemberId::Person(id)) => short(id.as_str()),
-        Grantee::Member(MemberId::Agent(agent)) => {
+        Grantee::Member(MemberId::Agent { id: agent, .. }) => {
             t_args("activity-capability-agent", &[("agent", agent.into())])
         }
         Grantee::Member(MemberId::Bot(bot)) => {

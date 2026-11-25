@@ -94,7 +94,7 @@ fn workspace() -> Workspace {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(14), "Home");
     workspace.policy.set_owner("owner");
     workspace.deny(
-        Grantee::agent("scribe"),
+        Grantee::agent("scribe", "owner"),
         &TreePath::root().app(SHEETS),
         KindSet::ALL,
     );
@@ -415,7 +415,7 @@ tilo_test_env::scenario! {
     {
         let mut workspace = workspace();
         workspace.deny(
-            Grantee::agent("clerk"),
+            Grantee::agent("clerk", "owner"),
             &TreePath::root().app(NOTES),
             KindSet::OUTSIDE,
         );

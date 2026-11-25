@@ -395,7 +395,7 @@ mod tests {
         {
             use crate::model::{Fresh, Model};
             let _writer = crate::action::ResourceActorScope::enter(
-                tilo_action_policy::MemberId::agent("helper"),
+                tilo_action_policy::MemberId::agent("helper", "ada"),
             );
             let actor = automerge::ActorId::from(b"writer".as_slice());
             for text in ["", "héllo wörld"] {

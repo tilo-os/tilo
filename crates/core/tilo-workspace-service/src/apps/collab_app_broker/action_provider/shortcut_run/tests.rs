@@ -1166,7 +1166,7 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
     // through theirs: an outside step of theirs asks it too.
     workspace.policy.grant(Grant::new(
         "fixture:scout-reads",
-        Grantee::agent("scout"),
+        Grantee::agent("scout", owner.clone()),
         workspace.policy.node(),
         KindSet::READ,
         Answer::Allow,
@@ -1174,7 +1174,7 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
     ));
     workspace.policy.grant(Grant::new(
         "fixture:scout-asks",
-        Grantee::agent("scout"),
+        Grantee::agent("scout", owner.as_str()),
         tilo_actions::action_node(
             &workspace.policy.node(),
             tilo_automation::SHORTCUTS_APP_ID,
@@ -1324,8 +1324,7 @@ async fn an_agent_cannot_answer_for_the_person_it_acts_for() {
         .person_id()
         .unwrap()
         .to_owned();
-    let agent = Caller::local_agent("scout")
-        .acting_for(person)
+    let agent = Caller::local_agent("scout", person)
         .in_workspace(asked.fixture.caller.workspace().unwrap());
     asked
         .answer(&agent, tilo_actions::remote::asked::Offer::Approve)

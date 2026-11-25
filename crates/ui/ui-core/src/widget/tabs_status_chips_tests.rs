@@ -14,7 +14,7 @@ use vello::kurbo::Affine;
 fn opened(title: &str) -> OpenedBy {
     OpenedBy {
         run: "agent-session:7".into(),
-        agent: "scribe".into(),
+        agent: tilo_action_policy::MemberId::agent("scribe", "ada"),
         label: "Jane Doe\u{2019}s agent".into(),
         title: title.into(),
     }
@@ -224,7 +224,7 @@ tilo_test_env::scenario! {
     // One agent is one colour: its mark beside a window is drawn as its face is,
     // from the agent, never from the session that happened to open the window.
     {
-        let face = crate::presence::member_color(&::collaboration::permissions::MemberId::agent("scribe"));
+        let face = crate::presence::member_color(&::collaboration::permissions::MemberId::agent("scribe", "ada"));
         let face = vello::peniko::Color::from_rgb8(face.0, face.1, face.2);
         assert_eq!(super::agent_colour(&opened("")), face);
     }

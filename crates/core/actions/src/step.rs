@@ -362,7 +362,7 @@ mod tests {
             version: crate::INTERACTION_VERSION,
             invocation: InvocationId(uuid::Uuid::from_u128(1)),
             sequence: 1,
-            actor: crate::Acting::agent("quill"),
+            actor: crate::Acting::agent("quill", "ada"),
             phase: InteractionPhase::Applying,
             action: InteractionAction {
                 id: "create".into(),

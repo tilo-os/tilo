@@ -348,7 +348,10 @@ mod tests {
         let made = by(ada.clone());
         assert_eq!(made.author.relation, AuthorRelation::Person);
         assert_eq!(made.author.rgb(), crate::presence::identity_rgb(ada.hue));
-        let scout = Person::new(tilo_actions::MemberId::agent("scenario:Scout"), "Scout");
+        let scout = Person::new(
+            tilo_actions::MemberId::agent("scenario:Scout", "ada"),
+            "Scout",
+        );
         let made = by(scout.clone());
         assert_eq!(made.author.relation, AuthorRelation::Software);
         assert_eq!(made.author.rgb(), crate::presence::identity_rgb(scout.hue));

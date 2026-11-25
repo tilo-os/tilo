@@ -32,14 +32,14 @@ const AGENT_NAME: &str = "Helper";
 fn chat_with_an_agent() -> (Session, String) {
     let bus = Rc::new(Bus::default());
     bus.member(MemberId::person("ada"), "Ada");
-    bus.member(MemberId::agent(AGENT), AGENT_NAME);
+    bus.member(MemberId::agent(AGENT, "ada"), AGENT_NAME);
     let route = RouteSpec::app(CHAT, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
     let mut policy = policy::WorkspacePolicy::new(workspace.as_str(), "ada");
     // Ada's agent, admitted by her: an agent is the pair of its id and its person.
     policy.grants.push(policy::Grant::new(
         format!("agent-member:{AGENT}"),
-        policy::Grantee::agent(AGENT),
+        policy::Grantee::agent(AGENT, "ada"),
         policy::TreePath::workspace(&workspace),
         policy::KindSet::READ_UNDOABLE,
         policy::Answer::Allow,
@@ -159,7 +159,7 @@ fn agent_invokes(session: &mut Session, action: &str, arguments: &Map<String, se
     let identity = session.published_doing(&format!("tl.{CHAT}"), action);
     let address = ui::tilo_actions::ActionAddress::parse(&identity)
         .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
-    let invoker = ui::tilo_actions::ActionInvoker::agent(AGENT).acting_for("ada");
+    let invoker = ui::tilo_actions::ActionInvoker::agent(AGENT, "ada").acting_for("ada");
     let ambient = ui::tilo_actions::ActionContext::default();
     session
         .invoke(

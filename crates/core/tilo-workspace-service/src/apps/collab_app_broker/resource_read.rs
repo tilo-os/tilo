@@ -284,7 +284,7 @@ fn apply_document_change(
         .clone()
         .ok_or_else(|| unavailable("this host has no origin for its records".into()))?;
     drop(state);
-    let invoker = tilo_actions::ActionInvoker::agent(agent)
+    let invoker = tilo_actions::ActionInvoker::agent(agent, person)
         .acting_for(person)
         .named(name.map(str::to_owned));
     origin

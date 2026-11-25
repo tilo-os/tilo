@@ -157,11 +157,11 @@ fn narrowing(
     for (index, rule) in rules.iter().enumerate() {
         policy.grants.push(tilo_action_policy::Grant::new(
             format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
+            tilo_action_policy::Grantee::agent(agent, person),
             rule.node.clone(),
             rule.kinds,
             rule.answer,
-            tilo_action_policy::Grantee::person(person.clone()),
+            tilo_action_policy::Grantee::person(person),
         ));
     }
     policy

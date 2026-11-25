@@ -1090,7 +1090,7 @@ impl ActionService {
         // The device is its own actor when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
-            Actor::Member(MemberId::Agent(agent)) => {
+            Actor::Member(MemberId::Agent { id: agent, .. }) => {
                 let caller =
                     Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting);
                 // The roster's own word: the agent's key its person's root certified for this

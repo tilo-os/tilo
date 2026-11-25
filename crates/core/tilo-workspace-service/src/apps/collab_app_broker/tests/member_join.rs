@@ -122,7 +122,7 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
                 };
                 assert!(matches!(event,
                     CollabEvent::RemotePresenceUpdate { member, key: delivered, payload: PresencePayload::Arrived }
-                        if member == collab_types::MemberId::agent(expected) && delivered == key));
+                        if member == collab_types::MemberId::agent(expected, "ada") && delivered == key));
             }
         })
         .await;

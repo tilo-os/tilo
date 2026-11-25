@@ -193,7 +193,7 @@ tilo_test_env::scenario! {
         // Invoked as an agent answering in a conversation, the open is answered with nothing done to
         // the document: the session places the note beside that conversation.
         let agent =
-            tilo_actions::ActionInvoker::agent("tide");
+            tilo_actions::ActionInvoker::agent("tide", "ada");
         service.note_beside("chat.workspace/channels/c_tide");
         let started = service
             .invoke_as(&agent, &note, "open", &Map::new())
@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
         let (invoker, place) = &opened[0];
         assert_eq!(
             invoker.acting.by,
-            tilolang_tilo::runtime::ids::MemberId::agent("tide").into(),
+            tilolang_tilo::runtime::ids::MemberId::agent("tide", "ada").into(),
             "asked as the agent"
         );
         assert_eq!(place.resource, note, "the note the invocation addressed");
@@ -552,7 +552,7 @@ fn mail_inbox() -> (ResourceService, String) {
 #[test]
 fn an_answers_draft_is_the_answer_of_the_action_that_made_it() {
     let (mut service, conversation) = mail_inbox();
-    let invoker = tilo_actions::ActionInvoker::agent("task-1").acting_for("ada");
+    let invoker = tilo_actions::ActionInvoker::agent("task-1", "ada").acting_for("ada");
     let started = service
         .invoke_as(
             &invoker,

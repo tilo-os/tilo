@@ -922,8 +922,8 @@ tilo_test_env::scenario! {
         assert_eq!(PageActor::of(&nobody), None);
         let actors = [
             tilo_actions::Actor::from(tilo_actions::MemberId::person("ad".repeat(32))),
-            tilo_actions::MemberId::agent("ada").into(),
-            tilo_actions::MemberId::agent("x".repeat(120)).into(),
+            tilo_actions::MemberId::agent("ada", "ad".repeat(32).clone()).into(),
+            tilo_actions::MemberId::agent("x".repeat(120), "ad".repeat(32).clone()).into(),
             tilo_actions::MemberId::bot("relay").into(),
             tilo_actions::Actor::automation("nightly"),
             tilo_actions::Actor::App("so.tilo.notes".into()),

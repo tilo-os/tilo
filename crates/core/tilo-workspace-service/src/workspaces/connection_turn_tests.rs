@@ -582,7 +582,10 @@ fn app_calls(
         .policy
         .grant(tilo_action_policy::agent_answers::grant(
             workspace,
-            "scribe",
+            (
+                "scribe",
+                &hex::encode(persons_root().verifying_key().to_bytes()),
+            ),
             (
                 &tilo_action_policy::agent_answers::AnswerScope::Action {
                     app: BRIDGE.into(),
@@ -657,7 +660,7 @@ async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningKey, 
         workspace,
         &[tilo_action_policy::Grant::new(
             "scribe-bridges",
-            tilo_action_policy::Grantee::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe", person.as_str()),
             tilo_action_policy::TreePath::workspace(workspace).rest(),
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
@@ -836,7 +839,7 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     let (ran_as, request) = ran;
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        Some(&tilo_action_policy::MemberId::agent("scribe", "ada")),
         "the call runs as the agent"
     );
     assert_eq!(ran_as.device_public_key(), Some(&scribe.device_public_key));
@@ -944,7 +947,7 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     let (ran_as, _) = records.ran.lock().unwrap().pop().unwrap();
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        Some(&tilo_action_policy::MemberId::agent("scribe", "ada")),
         "the bridge's call runs as the agent it serves, never as the laptop"
     );
     assert_eq!(ran_as.forwarder(), Some(&laptop_device));

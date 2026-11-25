@@ -34,7 +34,7 @@ fn person(id: &str) -> Actor {
 }
 
 fn agent(id: &str) -> Actor {
-    Actor::from(MemberId::agent(id))
+    Actor::from(MemberId::agent(id, "ada"))
 }
 
 /// Ada's workspace: Bo edits it, and Scout and Helper are admitted to it: Scout by Ada, Helper
@@ -46,7 +46,7 @@ fn policy() -> WorkspacePolicy {
     for (agent, person) in [("scout", "ada"), ("helper", "bo")] {
         policy.grants.push(Grant::new(
             format!("agent-member:{agent}"),
-            Grantee::agent(agent),
+            Grantee::agent(agent, person),
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
@@ -397,7 +397,10 @@ fn an_agent_mentioned_in_a_conversation_it_is_not_in_reads_nothing_of_it() {
         ada, with_scout, ..
     } = workspace();
     let mut body = RichValue::from_text("Can ");
-    body.push_reference("@Helper", &Reference::Member(MemberId::agent("helper")));
+    body.push_reference(
+        "@Helper",
+        &Reference::Member(MemberId::agent("helper", "ada")),
+    );
     body.push_text(" check the numbers?");
     call(
         &ada,
@@ -614,7 +617,7 @@ fn a_conversation_naming_an_agent_a_denied_grant_stops_is_refused() {
     let mut policy = policy();
     policy.grants.push(Grant::new(
         "scout-denied",
-        Grantee::agent("scout"),
+        Grantee::agent("scout", "ada"),
         TreePath::workspace(WORKSPACE),
         KindSet::READ,
         Answer::Deny,

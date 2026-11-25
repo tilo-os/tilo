@@ -136,20 +136,19 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// The member this presence is: an agent as its host names it, a person by the root their
-    /// device's certificate names. `None` for a device whose person is not known yet.
+    /// The member this presence is: an agent as its host names it, else by its publisher and the
+    /// person its device's certificate names, a person by that root. `None` for a device whose
+    /// person is not known yet.
     #[must_use]
     pub fn member_id(&self) -> Option<tilo_action_policy::MemberId> {
+        let user = self.user.as_deref().filter(|user| !user.is_empty());
         if self.agent {
             return self
                 .member
                 .clone()
                 .filter(|member| !member.is_person())
-                .or_else(|| Some(tilo_action_policy::MemberId::agent(&self.publisher)));
+                .or_else(|| Some(tilo_action_policy::MemberId::agent(&self.publisher, user?)));
         }
-        self.user
-            .as_deref()
-            .filter(|user| !user.is_empty())
-            .map(tilo_action_policy::MemberId::person)
+        user.map(tilo_action_policy::MemberId::person)
     }
 }

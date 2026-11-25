@@ -675,7 +675,9 @@ impl Initiative {
         else {
             return Ok(proposal);
         };
-        let assistant = asked.events.agent.clone().unwrap_or_default();
+        let Some(assistant) = asked.events.agent.clone() else {
+            return Ok(proposal);
+        };
         match tracker
             .file(&assistant, &proposal.title, &proposal.why)
             .await
@@ -858,8 +860,13 @@ impl Asked {
     /// acting for them.
     fn caller(&self) -> Caller {
         let person = hex::encode(self.person);
-        let caller = match &self.events.agent {
-            Some(agent) => Caller::local_agent(agent.clone()).acting_for(person),
+        let caller = match self
+            .events
+            .agent
+            .as_ref()
+            .and_then(tilo_actions::MemberId::as_agent)
+        {
+            Some((agent, of)) => Caller::local_agent(agent, of.clone()).acting_for(person),
             None => Caller::local_person(person),
         };
         caller.in_workspace(self.workspace.clone())
@@ -870,7 +877,10 @@ impl Asked {
 /// it.
 fn thread(person: &str, agent: &str) -> String {
     use tilo_actions::policy::MemberId;
-    MemberId::direct_conversation([MemberId::person(person.to_owned()), MemberId::agent(agent)])
+    MemberId::direct_conversation([
+        MemberId::person(person.to_owned()),
+        MemberId::agent(agent, person.to_owned()),
+    ])
 }
 
 /// Where `workspace` keeps what its assistant's initiative keeps.

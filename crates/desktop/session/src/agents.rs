@@ -31,8 +31,8 @@ use crate::followed_resource::FollowedResource;
 pub(crate) struct Kept {
     /// The workspace whose record names it.
     pub workspace: String,
-    /// Its id, which its actor works as (`agent:<id>`).
-    pub id: String,
+    /// The member it is: its id, of the person here.
+    pub member: tilo_action_policy::MemberId,
     /// Its name, as people read it.
     pub name: String,
 }
@@ -220,7 +220,7 @@ impl Agents {
             {
                 every.push(Listed {
                     workspace: workspace.clone(),
-                    id: agent.id.0.clone(),
+                    member: agent.member(),
                     name: agent.name.clone(),
                     avatar: agent.avatar.clone(),
                     retired: !agent.is_active(),
@@ -246,7 +246,7 @@ impl Agents {
                 if agent.mcp_client.is_none() && agent.acts_for == person {
                     kept.push(Kept {
                         workspace: workspace.clone(),
-                        id: agent.id.0.clone(),
+                        member: agent.member(),
                         name: agent.name.clone(),
                     });
                 }
@@ -263,7 +263,7 @@ impl Agents {
         (kept, every)
     }
 
-    /// The workspace's own agent in `workspace`, as `(id, name)`, read as `person`: the one no MCP
+    /// The workspace's own agent in `workspace`, as `(member, name)`, read as `person`: the one no MCP
     /// client connects as that the record lists first, by its own order — the agent the canvas
     /// asks (shell.md §8.1). `None` where the workspace has none.
     pub(crate) fn assistant(
@@ -271,7 +271,7 @@ impl Agents {
         workspace: &str,
         policy: &WorkspacePolicy,
         person: &str,
-    ) -> Option<(String, String)> {
+    ) -> Option<(tilo_action_policy::MemberId, String)> {
         let Held::Open(record) = self.record(workspace, policy, person) else {
             return None;
         };
@@ -279,7 +279,7 @@ impl Agents {
         state
             .made_by_people()
             .find(|agent| agent.mcp_client.is_none())
-            .map(|agent| (agent.id.0.clone(), agent.name.clone()))
+            .map(|agent| (agent.member(), agent.name.clone()))
     }
 
     /// The workspace's list of its agents, followed here where it is not, at the grants the pass
@@ -396,10 +396,16 @@ impl crate::Shared {
 /// Who a request typed in a workspace goes to: the agent the person keeps there, and a new one —
 /// named as the workspace names its agent — where they keep none. Text typed on the canvas that
 /// asks and search's row that hands an agent a request both send to it (shell.md §8.1).
-pub(crate) fn agent_recipient(kept: Option<(String, String)>) -> ui::floating_surface::Recipient {
+pub(crate) fn agent_recipient(
+    kept: Option<(tilo_action_policy::MemberId, String)>,
+) -> ui::floating_surface::Recipient {
     use ui::floating_surface::{Recipient, RecipientKind};
     match kept {
-        Some((id, name)) => Recipient::found(RecipientKind::Agent, id, name),
+        Some((member, name)) => Recipient::found(
+            RecipientKind::Agent,
+            crate::search::recipient_id(&member),
+            name,
+        ),
         None => Recipient::new_agent(crate::i18n::t("session-agent-name")),
     }
 }

@@ -31,7 +31,7 @@ pub fn named(who: &Actor, names: &dyn MemberNames) -> String {
                 id.as_str().to_owned()
             }
         }),
-        Actor::Member(MemberId::Agent(id)) => id
+        Actor::Member(MemberId::Agent { id, .. }) => id
             .strip_prefix(SCENARIO)
             .map_or_else(|| names.agent(id), str::to_owned),
         Actor::Member(MemberId::Bot(id)) => names.person(id).unwrap_or_else(|| name_words(id)),
@@ -179,7 +179,7 @@ mod tests {
     }
 
     fn agent(id: &str) -> Actor {
-        MemberId::agent(id).into()
+        MemberId::agent(id, "ada").into()
     }
 
     fn app(id: &str) -> Actor {
@@ -289,7 +289,7 @@ mod tests {
             vec![(MemberId::person("ben-id"), "Ben".to_owned())],
             vec![
                 (MemberId::person("ben-id"), 1),
-                (MemberId::agent("planner"), 9),
+                (MemberId::agent("planner", "ben-id"), 9),
                 (MemberId::person("ada-id"), 4),
             ],
             Vec::new(),
@@ -318,7 +318,7 @@ mod picture_tests {
     }
 
     fn agent(id: &str) -> Actor {
-        MemberId::agent(id).into()
+        MemberId::agent(id, "ada").into()
     }
 
     /// A member's face draws the picture the member list gives them, and shows initials until

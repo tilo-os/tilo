@@ -161,17 +161,17 @@ mod tests {
 
         phase an_agent_gets_no_presence_from_the_envelope;
         {
-            let actor = BrokerActor::agent("alpha");
+            let actor = BrokerActor::agent("alpha", "owner");
             let context = host_set_invoker(Some(forged()), None, &actor, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 context.invoker,
-                Some(tilo_actions::ActionInvoker::agent("alpha"))
+                Some(tilo_actions::ActionInvoker::agent("alpha", "owner"))
             );
             assert_eq!(invoker_presence(Some(&context)), None);
             // An agent acting for a person names them, with no caller to say so.
-            let started = BrokerActor::agent("alpha").for_person("owner");
+            let started = BrokerActor::agent("alpha", "owner").for_person("owner");
             let context = host_set_invoker(Some(forged()), None, &started, None, None).unwrap();
             let invoker = context.and_then(|context| context.invoker).unwrap();
             assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
@@ -184,7 +184,7 @@ mod tests {
 
         phase an_agent_acting_for_a_person_is_recorded_as_such;
         {
-            let caller = tilo_actions::remote::Caller::local_agent("alpha").acting_for("owner");
+            let caller = tilo_actions::remote::Caller::local_agent("alpha", "owner");
             let actor = BrokerActor::for_caller(&caller);
             let context = host_set_invoker(
                 Some(tilo_actions::ActionContext::default()),
@@ -198,7 +198,7 @@ mod tests {
             assert_eq!(
                 context.invoker,
                 Some(
-                    tilo_actions::ActionInvoker::agent("alpha")
+                    tilo_actions::ActionInvoker::agent("alpha", "owner")
                         .acting_for("owner")
                 )
             );
@@ -212,7 +212,7 @@ mod tests {
             assert_eq!(
                 context.invoker,
                 Some(
-                    tilo_actions::ActionInvoker::agent("alpha")
+                    tilo_actions::ActionInvoker::agent("alpha", "owner")
                         .acting_for("owner")
                         .named(Some("Helper".into()))
                 )
@@ -262,7 +262,7 @@ mod tests {
                 wait_ms: None,
                 signed: None,
             };
-            let actor = BrokerActor::agent("alpha");
+            let actor = BrokerActor::agent("alpha", "owner");
             // An approve the caller wrote into its own context is no approve.
             let written = tilo_actions::ActionContext {
                 approval: Some(approve("invocations/forged")),
@@ -294,7 +294,7 @@ mod tests {
                 ExecutionScope::for_call(&caller, tilo_actions::InvocationId::new()).unwrap();
             for actor in [
                 BrokerActor::person("other"),
-                BrokerActor::agent("owner"),
+                BrokerActor::agent("owner", "owner"),
             ] {
                 assert!(host_set_invoker(Some(forged()), None, &actor, None, Some(&execution)).is_err());
             }
@@ -316,13 +316,13 @@ mod tests {
         {
             let laptop = tilo_actions::InvokerDevice::certified([0x5c; 32], "Studio laptop");
             let elsewhere = tilo_actions::InvokerDevice::certified([0x66; 32], "Somewhere else");
-            let actor = BrokerActor::agent("alpha");
+            let actor = BrokerActor::agent("alpha", "owner");
             let said = || {
                 Some(
                     tilo_actions::ActionContext::default()
                         .with_group("issue:42", "Prepare launch", "issue")
                         .with_invoker(
-                            tilo_actions::ActionInvoker::agent("alpha")
+                            tilo_actions::ActionInvoker::agent("alpha", "owner")
                                 .from_device(Some(elsewhere.clone())),
                         ),
                 )

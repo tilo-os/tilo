@@ -559,7 +559,7 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         matches!(
             folders(
                 &ada_laptop.own,
-                &Caller::local_agent("helper"),
+                &Caller::local_agent("helper", "ada"),
                 &own_workspace
             )
             .await,

@@ -130,7 +130,7 @@ impl<'a> AvatarFace<'a> {
         use tilo_actions::MemberId;
         let face = Self::new(name, member.id()).hue(PresenceHue::of_member(member));
         match member {
-            MemberId::Agent(_) => face.agent(),
+            MemberId::Agent { .. } => face.agent(),
             MemberId::Bot(_) => face.square(),
             MemberId::Person(_) => face,
         }
@@ -1141,7 +1141,7 @@ mod tests {
     fn a_member_wears_one_face_on_every_surface() {
         use crate::component::{Described, Person};
         let theme = Theme::dark();
-        let agent = Person::new(tilo_actions::MemberId::agent("helper"), "Helper");
+        let agent = Person::new(tilo_actions::MemberId::agent("helper", "ada"), "Helper");
         let mark = drawn(&paint_face(
             AvatarFace::new("Helper", "helper").hue(agent.hue).agent(),
             &theme,

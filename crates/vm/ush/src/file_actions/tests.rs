@@ -831,7 +831,7 @@ tilo_test_env::scenario! {
         let invoker = moves[0].invoker.as_ref().unwrap();
         assert_eq!(
             invoker.acting.by,
-            tilo_actions::Actor::Member(tilo_actions::MemberId::agent("agent-claude"))
+            tilo_actions::Actor::Member(tilo_actions::MemberId::agent("agent-claude", "ada"))
         );
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some(state.person.as_str()));

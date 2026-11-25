@@ -262,8 +262,8 @@ tilo_test_env::scenario! {
             &mut app,
             1,
             "mark",
-            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "guest")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe", "guest"), Some(presence()))),
         );
         assert_eq!(
             who(&app).as_deref(),
@@ -285,11 +285,11 @@ tilo_test_env::scenario! {
             .expect("attributed change");
         assert_eq!(
             context.invoker,
-            Some(tilo_actions::ActionInvoker::agent("scribe").with_presence(presence()))
+            Some(tilo_actions::ActionInvoker::agent("scribe", "guest").with_presence(presence()))
         );
 
         // Without a presence the same address resolves in this window's view.
-        deliver(&mut app, 2, "mark", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")), None);
+        deliver(&mut app, 2, "mark", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "guest")), None);
         assert_eq!(who(&app).as_deref(), Some("own"));
     }
 
@@ -304,7 +304,7 @@ tilo_test_env::scenario! {
             3,
             "mark",
             &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
+            Some(host_context(&tilo_actions::Acting::agent("scribe", "guest"), Some(presence()))),
         );
         assert_eq!(who(&app).as_deref(), Some("own"));
         let changes = app.state.doc.get_changes(&[]);
@@ -327,8 +327,8 @@ tilo_test_env::scenario! {
             &mut app,
             4,
             "move-caret",
-            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "guest")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe", "guest"), Some(presence()))),
         );
         assert_eq!(
             probe.borrow().view_ops,
@@ -340,11 +340,11 @@ tilo_test_env::scenario! {
             &mut app,
             5,
             "zoom",
-            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "guest")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe", "guest"), Some(presence()))),
         );
         // A remote actor without its own presence cannot move any view.
-        deliver(&mut app, 6, "move-caret", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")), None);
+        deliver(&mut app, 6, "move-caret", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "guest")), None);
         assert_eq!(
             probe.borrow().view_ops.len(),
             1,
@@ -470,7 +470,7 @@ tilo_test_env::scenario! {
         // Resolution of a component target also rebuilds the invoker's tree.
         let snapshots = {
             let _scope = crate::invocation_scope::InvokerScope::enter(
-                tilo_actions::ActionInvoker::agent("scribe").with_presence(presence()),
+                tilo_actions::ActionInvoker::agent("scribe", "guest").with_presence(presence()),
             );
             crate::bound_dispatch::discover_bound_resources(
                 app.root_widget.as_ref(),

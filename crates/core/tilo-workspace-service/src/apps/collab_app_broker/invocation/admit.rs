@@ -90,7 +90,13 @@ impl AppBrokerState {
             // for them (an MCP session their device handed over): never
             // another actor.
             let admitted_actor = match &admitted.agent_id {
-                Some(agent) => actor.actor().agent_id() == Some(delegated_agent_name(agent)),
+                Some(agent) => {
+                    actor.actor().member_id()
+                        == Some(&tilo_action_policy::MemberId::agent(
+                            delegated_agent_name(agent),
+                            admitted.actor_key.clone(),
+                        ))
+                }
                 None => actor.actor().person_id() == Some(admitted.actor_key.as_str()),
             };
             if caller.workspace != offered.0.route.cluster_id || !admitted_actor {

@@ -92,7 +92,7 @@ mod tests {
                 automatic: true,
             }),
             session: Some(9),
-            ..Present::of(MemberId::agent("helper"))
+            ..Present::of(MemberId::agent("helper", "ada"))
         };
         let json = serde_json::to_string(&row).unwrap();
         assert_eq!(serde_json::from_str::<Present>(&json).unwrap(), row);

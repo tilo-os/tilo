@@ -274,14 +274,14 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
         let mut policy = base();
         policy.grants.push(agent_answers::grant(
             &id,
-            SCOUT,
+            (SCOUT, owner.as_str()),
             (&AnswerScope::kind(CHAT, CHANNEL), ActionKind::Undoable),
             Answer::Allow,
             Grantee::person(owner.clone()),
         ));
         policy.grants.push(agent_answers::grant(
             &id,
-            SCOUT,
+            (SCOUT, owner.as_str()),
             (
                 &AnswerScope::kind(CHAT, APP_MODERATION),
                 ActionKind::Undoable,
@@ -395,7 +395,7 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
     let mut refusing = with_agent();
     refusing.grants.push(agent_answers::grant(
         &id,
-        SCOUT,
+        (SCOUT, owner.as_str()),
         (&AnswerScope::kind(CHAT, CHANNEL), ActionKind::Undoable),
         Answer::Deny,
         Grantee::person(owner.clone()),

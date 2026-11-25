@@ -456,7 +456,8 @@ fn the_assignee_offers_the_workspaces_people_and_agents() {
                 "Mia"
             ))),
             Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-                "scenario:Scout"
+                "scenario:Scout",
+                "ada"
             ))),
         ])),
         "the list offers the workspace's people and agents"

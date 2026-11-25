@@ -568,7 +568,7 @@ async fn nobody_else_reaches_a_persons_rule() {
     let strangers = [
         (
             "an agent no device stands behind",
-            Caller::local_agent(ASSISTANT),
+            Caller::local_agent(ASSISTANT, "ada"),
         ),
         ("an app", Caller::local_app("so.tilo.chat")),
         (

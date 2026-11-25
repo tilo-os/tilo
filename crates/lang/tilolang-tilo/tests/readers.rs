@@ -116,10 +116,10 @@ fn person(name: &str) -> Actor {
     Actor::from(MemberId::person(name))
 }
 
-/// The caller an agent of `person` works as, through the app's published action API.
+/// The caller Ada's agent works as, acting for `person`, through the app's published action API.
 fn agent(person: Option<&str>) -> Caller {
     Caller {
-        actor: Actor::from(MemberId::agent("helper")),
+        actor: Actor::from(MemberId::agent("helper", "ada")),
         agent: true,
         on_behalf_of: person.map(str::to_owned),
         handed: false,
@@ -301,7 +301,7 @@ fn a_record_an_agent_makes_is_the_person_it_acts_for() {
     let versions = ada.host.runtime().versions(draft).unwrap();
     assert_eq!(
         versions.first().and_then(|made| made.who.clone()),
-        Some(Actor::from(MemberId::agent("helper"))),
+        Some(Actor::from(MemberId::agent("helper", "ada"))),
         "who made it is the agent"
     );
     for other in [&laptop, &ben] {

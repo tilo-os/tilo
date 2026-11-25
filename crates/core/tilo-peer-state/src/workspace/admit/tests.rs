@@ -521,7 +521,10 @@ tilo_test_env::scenario! {
             editor_root(),
             &[
                 effect(1, &tilo_actions::MemberId::person(person_id(editor_root())).into()),
-                effect(2, &tilo_actions::MemberId::agent("scribe").into()),
+                effect(
+                    2,
+                    &tilo_actions::MemberId::agent("scribe", person_id(editor_root())).into(),
+                ),
                 // An app on their device that acted by itself is the author of its own effect.
                 effect(6, &tilo_actions::Actor::App("so.tilo.discord".into())),
             ],

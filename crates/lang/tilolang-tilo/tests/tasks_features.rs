@@ -232,13 +232,13 @@ fn giving_a_task_to_an_agent_keeps_who_gave_it_and_when() {
     ada.host.runtime().set_members(
         vec![
             Member::person("ada", tilo_actions::policy::Role::Owner),
-            Member::agent("helper"),
+            Member::agent("helper", "ada"),
         ],
         None,
     );
     let one = task(&ada, &root, "Give me a hand");
     let helper = Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
-        "helper",
+        "helper", "ada",
     )));
     call(&ada, "assign", vec![one.clone(), some(helper)]);
     ada.commit();
@@ -505,7 +505,7 @@ fn a_piece_beyond_what_its_task_allows_is_not_given_to_an_agent() {
     ada.host.runtime().set_members(
         vec![
             Member::person("ada", tilo_actions::policy::Role::Owner),
-            tilolang_runtime::members::Member::agent("helper"),
+            tilolang_runtime::members::Member::agent("helper", "ada"),
         ],
         None,
     );
@@ -527,7 +527,7 @@ fn a_piece_beyond_what_its_task_allows_is_not_given_to_an_agent() {
     );
     call(&ada, "session_began", vec![one.clone()]);
     ada.commit();
-    let helper = MemberId::agent("helper");
+    let helper = MemberId::agent("helper", "ada");
     let give = |task: &Value| {
         vec![
             task.clone(),

@@ -223,10 +223,19 @@ impl Caller {
         self.system
     }
 
-    /// A delegated agent on a connection the provider admitted itself.
+    /// A delegated agent of `person` on a connection the provider admitted itself, acting for
+    /// them.
     #[must_use]
-    pub fn local_agent(agent_id: impl Into<String>) -> Self {
-        Self::admitted(Acting::agent(agent_id.into()), None)
+    #[track_caller]
+    pub fn local_agent(
+        agent_id: impl Into<String>,
+        person: impl Into<tilo_action_policy::PersonId>,
+    ) -> Self {
+        let person = person.into();
+        Self::admitted(
+            Acting::agent(agent_id, person.clone()).acting_for(Acting::person(person)),
+            None,
+        )
     }
 
     /// An installed bot on a connection the provider admitted itself, by its
@@ -275,7 +284,8 @@ impl Caller {
         device_public_key: [u8; 32],
     ) -> Self {
         Self::admitted(
-            Acting::agent(agent_id.into()).acting_for(Acting::person(hex::encode(user_public_key))),
+            Acting::agent(agent_id, hex::encode(user_public_key))
+                .acting_for(Acting::person(hex::encode(user_public_key))),
             Some((user_public_key, device_public_key)),
         )
     }
@@ -298,17 +308,17 @@ impl Caller {
         )
     }
 
-    /// An agent acting inside a turn: `person`'s message in `turn`'s conversation caused it, and
-    /// the agent takes part there. It may do exactly what that person may, held to the bound its
-    /// own record carries, and its reads are decided inside the turn, so a conversation's own
-    /// rules apply to them. Set only by the host that admitted the turn.
+    /// The agent `agent_id` of `own` acting inside a turn: `person`'s message in `turn`'s
+    /// conversation caused it, and the agent takes part there. It may do exactly what that person
+    /// may, held to the bound its own record carries, and its reads are decided inside the turn,
+    /// so a conversation's own rules apply to them. Set only by the host that admitted the turn.
     #[must_use]
     pub fn agent_turn(
-        agent_id: impl Into<String>,
+        (agent_id, own): (impl Into<String>, impl Into<tilo_action_policy::PersonId>),
         person: impl Into<tilo_action_policy::PersonId>,
         turn: tilo_action_policy::turn::Turn,
     ) -> Self {
-        let acting = Acting::agent(agent_id.into()).acting_for(Acting::person(person.into()));
+        let acting = Acting::agent(agent_id, own).acting_for(Acting::person(person));
         Self {
             turn: Some(turn),
             ..Self::admitted(acting, None)
@@ -467,9 +477,7 @@ impl Caller {
             return self;
         };
         self.session_delegated = true;
-        self.acting = Acting::agent(agent_id)
-            .handed()
-            .acting_for(Acting::person(person));
+        self.acting = Acting::handed_agent(agent_id, person);
         self
     }
 
@@ -611,7 +619,10 @@ impl Caller {
         if self.acting.acted_for_person().is_none() {
             return self;
         }
-        self.acting = self.acting.handed_on(agent_id);
+        let Some(acting) = self.acting.clone().handed_on(agent_id) else {
+            return self;
+        };
+        self.acting = acting;
         self.approved_as = Some(approved);
         self.agent_name = None;
         self.named(name)
@@ -717,8 +728,12 @@ impl Caller {
     /// session and no roster, and is offered nothing.
     #[must_use]
     pub fn certified(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
-        let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
-        else {
+        let (Some((agent, own)), Some(person)) = (
+            self.acting
+                .member_id()
+                .and_then(tilo_action_policy::MemberId::as_agent),
+            self.acting.acted_for_person(),
+        ) else {
             return Vec::new();
         };
         if self.device_public_key.is_none()
@@ -726,7 +741,7 @@ impl Caller {
         {
             return Vec::new();
         }
-        tilo_action_policy::roles::certified_agent(workspace, agent, person)
+        tilo_action_policy::roles::certified_agent(workspace, (agent, own.as_str()), person)
     }
 
     /// The grants made for this caller's software: its certificate's ([`Self::certified`]),
@@ -998,7 +1013,7 @@ mod tests {
         use tilo_action_policy::Grantee;
         let (ada, device) = ([1; 32], [3; 32]);
         let person = hex::encode(ada);
-        let expected = tilo_action_policy::roles::certified_agent("w", "scout", &person);
+        let expected = tilo_action_policy::roles::certified_agent("w", ("scout", &person), &person);
         assert!(!expected.is_empty());
         // An agent its workspace's roster bound carries the certificate's delegation.
         let bound = Caller::delegated_agent("scout", ada, device)
@@ -1009,7 +1024,7 @@ mod tests {
         assert!(
             expected
                 .iter()
-                .all(|grant| grant.grantee == Grantee::agent("scout"))
+                .all(|grant| grant.grantee == Grantee::agent("scout", person.as_str()))
         );
         assert!(
             expected
@@ -1035,14 +1050,18 @@ mod tests {
         );
         // A person, and an agent no certificate names, hold nothing of their own.
         assert!(Caller::local_person("ada").certified("w").is_empty());
-        assert!(Caller::local_agent("scout").certified("w").is_empty());
+        assert!(
+            Caller::local_agent("scout", "ada")
+                .certified("w")
+                .is_empty()
+        );
     }
 
     /// An agent goes by the name of the session its client named for the call, and by its own
     /// name where none was named; a person is named by no session.
     #[test]
     fn an_agent_goes_by_its_sessions_name() {
-        let claude = || Caller::local_agent("claude-code").named("Claude Code");
+        let claude = || Caller::local_agent("claude-code", "ada").named("Claude Code");
         let named = |caller: Caller, request| {
             caller
                 .in_session_of(&request)
@@ -1071,7 +1090,7 @@ mod tests {
     /// only, so both continue the same invocations. Another session borrows none of them.
     #[test]
     fn an_agents_session_name_does_not_change_who_continues_its_invocations() {
-        let caller = || Caller::local_agent("claude-code").named("Claude Code");
+        let caller = || Caller::local_agent("claude-code", "ada").named("Claude Code");
         let named = caller().in_session_of(&call_in(AGENT_SESSION_GROUP, Some("Release prep")));
         assert_eq!(named.agent_called(), Some("Release prep"));
         assert!(
@@ -1079,7 +1098,7 @@ mod tests {
             "the connection follows what it started"
         );
         assert!(named.continues(&caller()));
-        let another = Caller::local_agent("claude-code")
+        let another = Caller::local_agent("claude-code", "ada")
             .in_new_execution()
             .named("Claude Code");
         assert!(
@@ -1092,7 +1111,7 @@ mod tests {
     /// asked nothing.
     #[test]
     fn an_agent_sessions_label_is_what_it_was_asked_else_the_agents_name() {
-        let session = Caller::local_agent("claude-code")
+        let session = Caller::local_agent("claude-code", "ada")
             .in_new_execution()
             .named("Claude Code")
             .in_agent_session("visit-1");

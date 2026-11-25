@@ -1596,6 +1596,7 @@ fn narration_of(
     let event = tilo_session_client::narration::frame(
         &tilo_session_client::narration::Narrated {
             agent: "Claude Code",
+            person: "",
             invocation: tilo_actions::InvocationId::new(),
             app,
             action: &action,

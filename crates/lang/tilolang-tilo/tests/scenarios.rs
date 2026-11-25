@@ -273,7 +273,7 @@ fn only_a_seed_runs_a_scenario() {
     let kind = tilolang_tilo::meta::MetaExt::kind_of(meta, "Notebook");
     let args = serde_json::Map::new();
     let agent = tilolang_tilo::publish::Caller {
-        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1", "ada").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
         handed: false,

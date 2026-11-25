@@ -299,8 +299,9 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                     .unwrap()
                     .is_err()
             );
-            let agent = tilo_actions::remote::Caller::local_agent("native-origin-agent")
-                .in_workspace(env.route.cluster_id.clone());
+            let agent =
+                tilo_actions::remote::Caller::local_agent("native-origin-agent", "other-person")
+                    .in_workspace(env.route.cluster_id.clone());
             assert!(
                 rig.state
                     .action_invoke_local_person(&agent, &request)
@@ -440,7 +441,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
                 let workspace = &mut env.membership.write().workspaces[0];
                 workspace.allow_agent("display-agent", KindSet::ALL);
                 workspace.allow_app(
-                    Grantee::agent("display-agent"),
+                    Grantee::agent("display-agent", "other-person"),
                     &env.route.app_id,
                     KindSet::ALL,
                 );

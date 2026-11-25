@@ -544,7 +544,7 @@ impl Invocations {
         &self,
         caller: &Caller,
         workspace: &str,
-        agent: &str,
+        agent: &tilo_action_policy::MemberId,
         may_write_origin: &OriginWrites<'_>,
     ) -> Vec<Pending<Result<(), ActionCallError>>> {
         let ids: Vec<InvocationId> = {
@@ -555,7 +555,7 @@ impl Invocations {
                     let recorded = kept.by_id.get(id)?;
                     if recorded.workspace.as_deref() != Some(workspace)
                         || recorded.ended_ms.is_some()
-                        || recorded.caller.acting().agent_id() != Some(agent)
+                        || recorded.caller.acting().member_id() != Some(agent)
                     {
                         return None;
                     }
@@ -1181,7 +1181,7 @@ mod tests {
     fn an_invocations_person_takes_back_a_run_of_its_agents() {
         let invocations = Arc::new(Invocations::default());
         let never = |_: &Caller, _: &Origin| false;
-        let agent = Caller::local_agent("scout").acting_for("ada");
+        let agent = Caller::local_agent("scout", "ada");
         let request = request();
         let id = request.invocation;
         let runs = Arc::new(Runs::default());
@@ -1214,7 +1214,7 @@ mod tests {
         invocations.record(&asked, &asked, &request, Some("w1"), (here, asked.clone()));
         // Handed on to the workspace's host, which runs it as the workspace's caller.
         let there: Arc<Runs> = Arc::default();
-        let runs_as = Caller::local_agent("host");
+        let runs_as = Caller::local_agent("host", "ada");
         invocations.record(
             &asked,
             &asked,

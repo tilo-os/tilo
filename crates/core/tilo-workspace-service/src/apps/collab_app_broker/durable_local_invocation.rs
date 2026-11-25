@@ -103,7 +103,12 @@ impl AppBrokerState {
                     .as_ref()
                     .map_or_else(
                         || MemberId::person(super::person_id_for_root(certificate.user_public_key)),
-                        |agent| MemberId::agent(super::delegated_agent_name(agent)),
+                        |agent| {
+                            MemberId::agent(
+                                super::delegated_agent_name(agent),
+                                super::person_id_for_root(certificate.user_public_key),
+                            )
+                        },
                     )
                     .into();
                 if *actor.actor() == expected {

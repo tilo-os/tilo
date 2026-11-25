@@ -48,7 +48,7 @@ struct AclArgs {
     /// The identity this mount acts as: 64 hex chars (Ed25519 public key). Defaults to the certified human root.
     #[arg(long, value_name = "HEX")]
     identity: Option<String>,
-    /// A member this mount acts for beyond its own key (`person:<id>`, `agent:<id>`, `bot:<id>`); repeatable.
+    /// A member this mount acts for beyond its own key (`person:<id>`, `agent:<person>/<id>`, `bot:<id>`); repeatable.
     #[arg(long = "member", value_name = "KIND:ID")]
     members: Vec<String>,
     /// Read `--acl` once, at mount time, instead of on every change.
@@ -426,7 +426,17 @@ fn parse_member(spec: &str) -> Result<MemberId> {
             collab_types::PersonId::parse(&id)
                 .with_context(|| format!("{id:?} is not a person's root key"))?,
         ),
-        "agent" => MemberId::Agent(id),
+        // An agent is its id and the person it acts for: `agent:PERSON/ID`.
+        "agent" => {
+            let (person, agent) = id
+                .split_once('/')
+                .with_context(|| format!("agent {id:?} must be PERSON/ID"))?;
+            MemberId::agent(
+                agent,
+                collab_types::PersonId::parse(person)
+                    .with_context(|| format!("{person:?} is not a person's root key"))?,
+            )
+        }
         "bot" => MemberId::Bot(id),
         other => bail!("unknown member kind {other:?} (person|agent|bot)"),
     })

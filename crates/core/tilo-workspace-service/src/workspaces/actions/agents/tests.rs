@@ -83,7 +83,7 @@ async fn answer_moving(
     );
     let grant = agent_answers::grant(
         workspace,
-        "claude",
+        ("claude", &hex::encode(owner.user_public_key)),
         (&scope, ActionKind::Outside),
         answer,
         Grantee::person(hex::encode(owner.user_public_key)),
@@ -280,13 +280,13 @@ async fn set_under_agents(
     let person = hex::encode(owner.user_public_key);
     let grant = agent_answers::grant(
         workspace,
-        "claude",
+        ("claude", &person),
         (
             &AnswerScope::app(app),
             tilo_action_policy::ActionKind::Outside,
         ),
         tilo_action_policy::Answer::parse(answer).expect("an answer"),
-        tilo_action_policy::Grantee::person(person),
+        tilo_action_policy::Grantee::person(person.clone()),
     );
     crate::workspaces::fixtures::record_grants(workspaces, workspace, &[grant]).await;
 }

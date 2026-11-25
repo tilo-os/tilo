@@ -332,7 +332,7 @@ impl<'a> Team<'a> {
                 .digest;
         let grant = Grant::new(
             format!("test:always:{SCOUT}:{id}:{command}"),
-            Grantee::agent(SCOUT),
+            Grantee::agent(SCOUT, self.ada_id.clone()),
             command_node(&self.workspace, id, (command, &digest)),
             KindSet::OUTSIDE,
             Answer::Allow,

@@ -75,7 +75,7 @@ fn hold(content: &AppContentIndex, workspace: &str) {
         }
     }
     let aria = person("Aria", "chat.workspace/people/u_aria", "u_aria", false);
-    let ada = person("Ada", "chat.agent/agents/a_ada", "agent:a_ada", true);
+    let ada = person("Ada", "chat.agent/agents/a_ada", "agent:u_aria/a_ada", true);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));

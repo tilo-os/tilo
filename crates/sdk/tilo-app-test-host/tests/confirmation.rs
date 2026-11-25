@@ -206,7 +206,7 @@ impl Widget for Remover {
             Now::IrreversibleVerb => dispatch.submit_now(edits, Notes::FORGET.with(())),
             Now::InvokedGesture => {
                 let _agent = tilo_app::invocation_scope::InvokerScope::enter(
-                    tilo_actions::ActionInvoker::agent("helper"),
+                    tilo_actions::ActionInvoker::agent("helper", "ada"),
                 );
                 dispatch.submit_gesture(edits, Notes::REMOVE.with(first))
             }

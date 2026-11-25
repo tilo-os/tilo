@@ -276,7 +276,7 @@ mod tests {
             version: tilo_actions::INTERACTION_VERSION,
             invocation: tilo_actions::InvocationId::new(),
             sequence: 1,
-            actor: tilo_actions::Acting::agent("scout"),
+            actor: tilo_actions::Acting::agent("scout", "ada"),
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {
                 id: "check".into(),
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn an_agents_step_on_the_apps_resource_and_the_members_reach_the_window() {
         let mut presence = Presence::new(APP, "bo");
-        let mut member = collaboration::Member::named(MemberId::agent("scout"), "Scout");
+        let mut member = collaboration::Member::named(MemberId::agent("scout", "ada"), "Scout");
         member.avatar = Some(collab_types::AvatarBytes(vec![1, 2, 3]));
         presence.take(&CollabEvent::Context {
             members: vec![member],
@@ -326,7 +326,7 @@ mod tests {
         for (app, resource) in [(APP, "channel-1"), ("so.tilo.tasks", "task-1")] {
             let (key, payload) = step(app, resource, "TextChannel");
             assert!(presence.take(&CollabEvent::RemotePresenceUpdate {
-                member: MemberId::agent("scout"),
+                member: MemberId::agent("scout", "ada"),
                 key,
                 payload,
             }));

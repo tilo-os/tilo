@@ -324,7 +324,7 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
 
 /// The colour the agent `key` wears everywhere, as a row's avatar wears it.
 fn colour_of(key: &str) -> Color {
-    let hue = PresenceHue::of_member(&ui::permissions::MemberId::agent(key));
+    let hue = PresenceHue::of_member(&ui::permissions::MemberId::agent(key, "ada"));
     ui::Theme::dark().tokens.colors.presence.hue(hue)
 }
 

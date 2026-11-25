@@ -995,7 +995,7 @@ mod tests {
         workspace.policy.owner = Some(person_id.to_owned());
         workspace.policy.grants.push(tilo_action_policy::Grant::new(
             "agent-member:scribe:session",
-            tilo_action_policy::Grantee::agent("scribe"),
+            tilo_action_policy::Grantee::agent("scribe", person_id.to_owned()),
             workspace.policy.node(),
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,

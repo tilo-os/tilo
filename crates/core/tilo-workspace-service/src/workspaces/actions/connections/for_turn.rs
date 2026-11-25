@@ -127,7 +127,7 @@ fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
         .action(person_connections::CALL);
     let decision = crate::workspaces::hosted_use::agent_decision(policy, (agent, &person), &node);
     // An answer for every connection names none of them.
-    let named = policy.grants_of_agent(agent, &person).any(|grant| {
+    let named = policy.grants_of_agent(agent, person).any(|grant| {
         grant.node.segments().iter().any(|segment| {
             matches!(
                 segment,

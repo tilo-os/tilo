@@ -23,7 +23,7 @@ pub(crate) const RUN: &str = "issue-7@8000000000000001";
 
 /// The agent that tidies: [`AGENT`] as the runtime names it.
 pub(crate) fn helper() -> tilolang_tilo::runtime::Actor {
-    tilolang_tilo::runtime::ids::MemberId::agent(AGENT).into()
+    tilolang_tilo::runtime::ids::MemberId::agent(AGENT, "phone").into()
 }
 
 /// What is written from now on in `replica` is a step of the agent's run [`RUN`], titled
