@@ -215,6 +215,7 @@ pub fn admit_invocation(
         Invoked {
             answer,
             attended: invocation.attended,
+            outside: invocation.kind == crate::ActionKind::Outside,
             resource,
         },
         asker,

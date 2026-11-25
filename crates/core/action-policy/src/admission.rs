@@ -4,8 +4,9 @@
 //! [`decide`](crate::decide) answers whether a party may take an action of
 //! some kind at some node. Running one invocation weighs that answer with
 //! who asks and how: someone acting for a person is asked before an action
-//! its person attends, an ask goes to the person only where they can be
-//! reached, and a resource's own grants can ask or refuse as well.
+//! its person attends or one that changes something outside Tilo, an ask
+//! goes to the person only where they can be reached, and a resource's own
+//! grants can ask or refuse as well.
 //! [`admit`] is that weighing, so a broker admitting a caller's invocation,
 //! a window checking its own and a page admitting its person's agree on
 //! every answer.
@@ -66,6 +67,9 @@ pub struct Invoked {
     pub answer: Answer,
     /// Whether the action needs its person attending.
     pub attended: bool,
+    /// Whether the action changes something outside Tilo (sends a message, calls a service):
+    /// what someone acting for its person never does unasked.
+    pub outside: bool,
     /// The answer for the resource the invocation changes, where it is one.
     pub resource: Option<Answer>,
 }
@@ -90,11 +94,17 @@ pub enum Refused {
 
 /// Admit `invoked` for `asker`.
 ///
+/// Someone acting for a person is asked before an action its person attends and before one
+/// that changes something outside Tilo: what they allow is what they were shown. A person's own
+/// call of the same action asks nothing.
+///
 /// # Errors
 /// Whose answer refused it.
 pub const fn admit(invoked: Invoked, asker: Asker) -> Result<Admission, Refused> {
     let mut asks = match invoked.answer {
-        Answer::Allow => asker.delegated && invoked.attended,
+        // Someone acting for a person never leaves the system, or does what its person
+        // attends, unasked: what they allow is what they were shown.
+        Answer::Allow => asker.delegated && (invoked.attended || invoked.outside),
         Answer::Ask if asker.reachable => true,
         Answer::Ask | Answer::Deny => return Err(Refused::Action),
     };
@@ -120,6 +130,7 @@ mod tests {
         Invoked {
             answer,
             attended: false,
+            outside: false,
             resource: None,
         }
     }
@@ -196,6 +207,37 @@ mod tests {
                 ..delegate
             };
             assert_eq!(admit(attended, person), Ok(Admission::Runs));
+        }
+
+        phase whoever_acts_for_the_person_asks_before_what_leaves_the_system;
+        {
+            let delegate = Asker {
+                reachable: true,
+                delegated: true,
+            };
+            let outside = Invoked {
+                outside: true,
+                ..invoked(Answer::Allow)
+            };
+            assert_eq!(
+                admit(outside, delegate),
+                Ok(Admission::AsksFirst),
+                "an agent's send is its person's to allow"
+            );
+            assert_eq!(
+                admit(invoked(Answer::Allow), delegate),
+                Ok(Admission::Runs),
+                "a change that stays in the workspace runs unasked"
+            );
+            let person = Asker {
+                delegated: false,
+                ..delegate
+            };
+            assert_eq!(
+                admit(outside, person),
+                Ok(Admission::Runs),
+                "a person's own press asks nothing"
+            );
         }
 
         phase a_resource_answer_asks_or_refuses_on_top;
