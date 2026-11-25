@@ -218,6 +218,128 @@ fn thousands_of_items_are_written_fast_and_listed() {
     assert_eq!(titles(view.tree()).len(), total);
 }
 
+/// A batch an action makes asks the store as often as one item does: where its new items stand
+/// in the listings it changed is one read for all of them, never one for each. An app runs apart
+/// from the store, so each read is a trip there: a list of 200 tasks that asked for each one's
+/// place two times took the trip 401 times.
+#[test]
+fn a_batch_asks_the_store_as_often_however_many_items_it_makes() {
+    let source = r#"app so.tilo.batch "Batch"
+
+type Item {
+    number: Int = 0
+    title: Text
+    done: Bool = false
+}
+
+type Items {
+    numbers: Int merge counter
+    items: Collection<Item>
+}
+
+action add_all(list: Items, titles: List<Text>) -> List<Item> {
+    let made: List<Item> = []
+    for title in titles {
+        list.numbers += 1
+        let one = list.items.insert(Item(number: list.numbers, title: title))
+        made = [made, [one]].flat_map(x -> x)
+    }
+    made
+}
+
+view items(list: Items) {
+    stack {
+        for item in list.items {
+            checkbox(item.title, bind: item.done)
+        }
+    }
+}
+"#;
+    /// A store held in this process that counts the commands it is sent.
+    struct Asked(tilo_resource_store::LocalPort, std::cell::Cell<usize>);
+    impl tilo_resource_store::Port for Asked {
+        fn command(
+            &self,
+            command: collab_types::store::wire::Command,
+        ) -> Result<collab_types::store::wire::Reply, String> {
+            self.1.set(self.1.get().saturating_add(1));
+            tilo_resource_store::Port::command(&self.0, command)
+        }
+        fn declare(&self, schema: tilo_resource_store::Schema) {
+            tilo_resource_store::Port::declare(&self.0, schema);
+        }
+        fn set_record_reader(&self, reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>) {
+            tilo_resource_store::Port::set_record_reader(&self.0, reader);
+        }
+    }
+    let compiled = tilolang::compile_package(source, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"));
+    let port = std::rc::Rc::new(Asked(
+        tilo_resource_store::LocalPort::in_memory(),
+        std::cell::Cell::new(0),
+    ));
+    let store = ResourceStore::new(port.clone());
+    store.declare(&compiled.meta);
+    let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+    rt.load_compiled(&compiled).unwrap();
+    let list = rt.create("Items").unwrap();
+    let find = |name: &str, of: &[(String, String)]| {
+        of.iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, id)| id.clone())
+            .unwrap()
+    };
+    let actions: Vec<(String, String)> = compiled
+        .meta
+        .actions
+        .iter()
+        .map(|action| (action.name.clone(), action.id.clone()))
+        .collect();
+    let views: Vec<(String, String)> = compiled
+        .meta
+        .views
+        .iter()
+        .map(|view| (view.name.clone(), view.id.clone()))
+        .collect();
+    let add_all = find("add_all", &actions);
+    // A person looks at the list while it fills, as the import's person does.
+    let mut view = rt
+        .open_view(&me(), &find("items", &views), vec![Value::resource(&list)])
+        .unwrap();
+    let mut asked = |count: usize, round: usize| {
+        let titles = (0..count)
+            .map(|at| Value::text(&format!("item {round}-{at}")))
+            .collect();
+        port.1.set(0);
+        let made = rt
+            .invoke_action(
+                &me(),
+                (
+                    add_all.as_str(),
+                    vec![Value::resource(&list), Value::List(titles)],
+                ),
+            )
+            .unwrap();
+        let InvokeOutcome::Done(Value::List(made)) = made else {
+            panic!("add_all answered {made:?}");
+        };
+        assert_eq!(made.len(), count, "every item of the batch is made");
+        // What the view reads to show them is its own: a page of rows at a time.
+        let action = port.1.get();
+        view.poll_patches().unwrap();
+        action
+    };
+    let two = asked(2, 0);
+    let many = asked(200, 1);
+    let again = asked(200, 2);
+    assert_eq!(
+        (many, again),
+        (two, two),
+        "a batch of 200 asks the store as often as one of two, however full the list"
+    );
+    assert_eq!(titles(view.tree()).len(), 402, "the view shows every item");
+}
+
 /// A tilolang app's writes land in a workspace whose other apps declare their own types: what
 /// each app's surface declares judges that app's kinds, and none refuses another app's.
 #[test]

@@ -218,7 +218,7 @@ fn write_into(
         | Command::Count { .. }
         | Command::Content { .. }
         | Command::Newest { .. }
-        | Command::Position { .. }
+        | Command::Positions { .. }
         | Command::PageAt { .. }
         | Command::Versions { .. }
         | Command::VersionEnd { .. }
@@ -329,7 +329,11 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             let (versions, more) = store.newest(within, *limit, may_read);
             Reply::Newest { versions, more }
         }
-        Command::Position { query, id } => Reply::Position(store.position(query, id, may_read)),
+        Command::Positions { query, ids } => Reply::Positions(
+            ids.iter()
+                .map(|id| store.position(query, id, may_read))
+                .collect(),
+        ),
         Command::PageAt { query, at } => Reply::Page(store.at(query, *at, may_read)),
         Command::ChildrenAt {
             parent,

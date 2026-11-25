@@ -72,10 +72,10 @@ pub enum Command {
     /// The newest version of each resource `within` names (it, and those whose ids are under
     /// it), of at most `limit` of them, most recent first.
     Newest { within: String, limit: usize },
-    /// Where the resource `id` stands in the listing of `query`, read from the index's order
-    /// rather than by paging to it: where a reader showing the listing puts a row that came,
-    /// and finds one that left.
-    Position { query: Query, id: String },
+    /// Where each resource `ids` names stands in the listing of `query`, in their order, read
+    /// from the index's order rather than by paging to it: where a reader showing the listing
+    /// puts the rows that came, and finds the ones that left, in one read however many moved.
+    Positions { query: Query, ids: Vec<String> },
     /// The page of `query` that starts at `at` in its listing, its cursor ignored: the rows a
     /// reader shows far down a listing, read from the index's counts rather than by paging to
     /// them.
@@ -275,9 +275,9 @@ pub enum Reply {
         versions: Vec<(String, String, Version)>,
         more: bool,
     },
-    /// Where a resource stands in a listing, `None` where the listing holds none the person may
-    /// read.
-    Position(Option<usize>),
+    /// Where each resource asked for stands in a listing, in the order asked, `None` for one
+    /// the listing holds none of that the person may read.
+    Positions(Vec<Option<usize>>),
     /// The content of each resource asked for, in the order asked: as [`Self::Content`] answers
     /// one.
     Contents(Vec<Option<Json>>),

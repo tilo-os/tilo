@@ -2,9 +2,9 @@
 //! stands now, and where each one that left it stood. A view showing the collection takes them
 //! as they are, a row in and a row out, rather than reading the whole list again.
 //!
-//! The store says where a resource stands in a listing from its index ([`Command::Position`]):
-//! one read for each item that moved, however long the collection is. What left is read before
-//! the write reaches the store and what came after it.
+//! The store says where resources stand in a listing from its index ([`Command::Positions`]):
+//! one read for every item that moved, however many moved and however long the collection is.
+//! What left is read before the write reaches the store and what came after it.
 
 use collab_types::store::wire::{Command, Reply};
 use collab_types::store::{Filter, PARENT, Query, Value};
@@ -116,12 +116,12 @@ impl ResourceStore {
         let local = self.inner.local.borrow();
         let mut left = Vec::new();
         let mut came = Vec::new();
-        for id in order {
+        let stood_at = self.positions(&query, order)?;
+        for (id, stood) in order.iter().zip(stood_at) {
             let now = local
                 .get(id)
                 .and_then(Option::as_ref)
                 .filter(|held| held.kind == *kind && held.parent.as_deref() == Some(&key.resource));
-            let stood = self.position(&query, id)?;
             let was = match stood {
                 Some(at) => {
                     let Reply::Resource(Some(indexed)) = self
@@ -181,9 +181,12 @@ impl ResourceStore {
                     item: item_of(&id),
                 })
                 .collect();
+            let Some(stand) = self.positions(&query, &came) else {
+                continue 'collections;
+            };
             let mut placed = Vec::with_capacity(came.len());
-            for id in came {
-                let Some(Some(at)) = self.position(&query, &id) else {
+            for (id, at) in came.into_iter().zip(stand) {
+                let Some(at) = at else {
                     continue 'collections;
                 };
                 placed.push((at, id));
@@ -198,18 +201,17 @@ impl ResourceStore {
         out
     }
 
-    /// Where `id` stands in the listing of `query`, `Some(None)` where it holds none; `None`
-    /// where the store could not be asked.
-    #[allow(
-        clippy::option_option,
-        reason = "standing nowhere is an answer the store gives; not asking it is none"
-    )]
-    fn position(&self, query: &Query, id: &str) -> Option<Option<usize>> {
-        match self.command(Command::Position {
+    /// Where each of `ids` stands in the listing of `query`, in their order, `None` for one it
+    /// holds none of: one read for all of them. `None` where the store could not be asked.
+    fn positions(&self, query: &Query, ids: &[String]) -> Option<Vec<Option<usize>>> {
+        if ids.is_empty() {
+            return Some(Vec::new());
+        }
+        match self.command(Command::Positions {
             query: query.clone(),
-            id: id.to_owned(),
+            ids: ids.to_vec(),
         }) {
-            Ok(Reply::Position(at)) => Some(at),
+            Ok(Reply::Positions(at)) if at.len() == ids.len() => Some(at),
             _ => None,
         }
     }

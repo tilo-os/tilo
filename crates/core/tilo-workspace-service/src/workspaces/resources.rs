@@ -2512,7 +2512,7 @@ fn stamp_resource_invoker(
         | Command::Removed { .. }
         | Command::MadeFrom { .. }
         | Command::Newest { .. }
-        | Command::Position { .. }
+        | Command::Positions { .. }
         | Command::PageAt { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }

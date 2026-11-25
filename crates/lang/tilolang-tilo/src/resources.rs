@@ -4700,18 +4700,22 @@ impl Pages {
     fn freeze(&self, ids: &BTreeSet<String>) {
         let _ = PagedItems::len(self);
         let mut before = HashMap::with_capacity(ids.len());
-        if let Some(inner) = self.store.upgrade() {
-            for id in ids {
-                // A resource nested in another document is no item of this listing's.
-                if !id.starts_with(&format!("{}/", self.doc)) {
-                    continue;
-                }
-                if let Ok(Reply::Position(at)) = inner.port.command(Command::Position {
-                    query: self.query.clone(),
-                    id: id.clone(),
-                }) {
-                    before.insert(item_of(id), at);
-                }
+        // A resource nested in another document is no item of this listing's.
+        let mine: Vec<String> = ids
+            .iter()
+            .filter(|id| id.starts_with(&format!("{}/", self.doc)))
+            .cloned()
+            .collect();
+        if let Some(inner) = self.store.upgrade()
+            && !mine.is_empty()
+            && let Ok(Reply::Positions(at)) = inner.port.command(Command::Positions {
+                query: self.query.clone(),
+                ids: mine.clone(),
+            })
+            && at.len() == mine.len()
+        {
+            for (id, at) in mine.iter().zip(at) {
+                before.insert(item_of(id), at);
             }
         }
         *self.before.borrow_mut() = Some(before);
@@ -4868,11 +4872,11 @@ impl PagedItems for Pages {
         }
         // Read from the store's index, however far down the listing the item stands.
         let inner = self.store.upgrade()?;
-        match inner.port.command(Command::Position {
+        match inner.port.command(Command::Positions {
             query: self.query.clone(),
-            id: self.id_of(id),
+            ids: vec![self.id_of(id)],
         }) {
-            Ok(Reply::Position(at)) => Some(at),
+            Ok(Reply::Positions(at)) => at.into_iter().next(),
             _ => None,
         }
     }
