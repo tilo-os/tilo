@@ -104,12 +104,11 @@ impl Cx<'_> {
     /// It could not be reached.
     pub fn open(&self) -> Result<RefMut<'_, dyn Workspace>> {
         let mut held = self.held.borrow_mut();
-        if held.is_none() {
-            *held = Some((self.open)()?);
-        }
-        Ok(RefMut::map(held, |held| {
-            &mut **held.as_mut().expect("the workspace was reached just above")
-        }))
+        let workspace = match held.take() {
+            Some(workspace) => workspace,
+            None => (self.open)()?,
+        };
+        Ok(RefMut::map(held, |held| &mut **held.insert(workspace)))
     }
 
     /// A secret the person types after `prompt`, or reads from `file`.

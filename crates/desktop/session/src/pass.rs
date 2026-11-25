@@ -774,10 +774,9 @@ impl Session {
             studio.serve(&mut self.compositor);
         }
         if let Some(portal) = &mut self.portal {
-            let documents_served = self
-                .desktop
-                .as_ref()
-                .is_some_and(|desktop| desktop.documents().is_some());
+            // A choice is answered with its reference whether or not the app was started in a
+            // sandbox: the session keeps one table of them either way.
+            let documents_served = self.desktop.is_some();
             portal.serve(
                 &mut self.compositor,
                 &self.shared.handle,

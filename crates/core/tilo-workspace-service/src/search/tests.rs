@@ -54,7 +54,7 @@ fn a_person_finds_what_an_app_published_and_opens_it_at_the_app() {
         "notes:1",
         vec![entry("n1", "Groceries for the weekend")],
     );
-    let search = IndexSearch::new(Arc::clone(&index), Arc::new(|_, _| true));
+    let search = IndexSearch::new(Arc::clone(&index), super::deciding(|_, _| true));
 
     let found = search.found(
         &Caller::local_person("ada"),
@@ -110,7 +110,7 @@ fn a_caller_finds_only_what_it_may_read_now() {
     let revoked = Arc::new(AtomicBool::new(false));
     let search = IndexSearch::new(Arc::clone(&index), {
         let revoked = Arc::clone(&revoked);
-        Arc::new(move |caller: &Caller, key: &IndexKey| {
+        super::deciding(move |caller: &Caller, key: &IndexKey| {
             key.record != "review"
                 || (caller.acting().is_person() && !revoked.load(Ordering::Acquire))
         })
@@ -151,7 +151,7 @@ fn ten_thousand_entries_are_searched_at_once() {
         .chain([entry("needle", "Zanzibar itinerary")])
         .collect();
     publish(&index, NOTES, WORKSPACE, "people", people);
-    let search = IndexSearch::new(Arc::clone(&index), Arc::new(|_, _| true));
+    let search = IndexSearch::new(Arc::clone(&index), super::deciding(|_, _| true));
     let ada = Caller::local_person("ada");
 
     let started = Instant::now();
@@ -210,7 +210,7 @@ fn a_described_picture_is_one_result_found_by_what_it_shows() {
     );
     let search = IndexSearch::new(
         Arc::clone(&index),
-        Arc::new(|_, key: &IndexKey| key.record != "private"),
+        super::deciding(|_, key: &IndexKey| key.record != "private"),
     );
     let ada = Caller::local_person("ada");
 

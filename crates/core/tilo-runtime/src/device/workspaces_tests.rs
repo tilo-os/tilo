@@ -104,6 +104,10 @@ async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one login, the workspace it holds and the records that open here, read top to bottom"
+)]
 async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_server_sealed() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
@@ -275,10 +279,6 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
 /// workspace, so this device's service takes it in as a member copy and the records sealed there
 /// open here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one login, one join and the records it brings, read top to bottom"
-)]
 async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());

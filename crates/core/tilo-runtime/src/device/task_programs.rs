@@ -580,6 +580,10 @@ mod tests {
     /// would do, and nothing of it ran. The agent cannot answer it. The person's approve runs it
     /// in the same session, which still has the `let`s made before it; a decline runs nothing.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one deleting program, from its ask to the person's yes, read top to bottom"
+    )]
     fn an_agents_program_that_deletes_waits_for_its_persons_yes_here() {
         use super::super::asked::{Admits, DeviceAsked, Run};
         use tilo_actions::remote::asked::{self, AskedStore, Fact, Offer, Resolve};

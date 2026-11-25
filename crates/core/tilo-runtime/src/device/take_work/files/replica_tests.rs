@@ -238,6 +238,10 @@ macro_rules! require_fuse {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one file, from the host that makes it to the edit that returns, read top to bottom"
+)]
 fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_the_vm_host() {
     require_fuse!();
     // The person's device: a runtime of its own that joins the workspace and
@@ -363,6 +367,25 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
     run(server.shutdown());
 }
 
+/// Keep this process's logs at the channels these tests read.
+fn keep_logs() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+/// In the helper process the test starts: join the workspace and hold its files until the test
+/// stops this process.
+fn join_as_the_device_that_joins_last(invitation: &std::ffi::OsStr) {
+    let profile = isolated_root(KEPT_TEST).unwrap();
+    let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
+    join(&device, invitation.to_str().unwrap());
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
 /// The files a server keeps reach a device that joins after the member that
 /// wrote them left.
 ///
@@ -374,17 +397,9 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     require_fuse!();
     // The device that joins last: a runtime of its own that joins the
     // workspace and holds its files until the test stops it.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
-        .with_writer(std::io::stderr)
-        .try_init();
+    keep_logs();
     if let Some(invitation) = std::env::var_os(JOINER_INVITATION) {
-        let profile = isolated_root(KEPT_TEST).unwrap();
-        let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
-        join(&device, invitation.to_str().unwrap());
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-        }
+        join_as_the_device_that_joins_last(&invitation);
     }
     let Some(profile) = isolated_root(KEPT_TEST) else {
         return;

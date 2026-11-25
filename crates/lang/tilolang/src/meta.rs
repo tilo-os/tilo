@@ -744,7 +744,8 @@ pub struct ActionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settles: Option<String>,
     /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard, and
-    /// while its item is selected. One spelling: the modifiers in one order, then the key's token.
+    /// while its item is selected. A control writes the same `key:` for the press it answers. One
+    /// spelling: the modifiers in one order, then the key's token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// `group: "Reply"`: the run of the resource's actions this one stands in. A surface draws the

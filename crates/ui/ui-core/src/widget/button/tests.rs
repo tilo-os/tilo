@@ -2040,3 +2040,35 @@ fn a_persons_face_leads_a_chip_a_step_larger_than_an_icon() {
         "the face is {step} px wider than an icon: {with_face:?} against {with_icon:?}"
     );
 }
+
+#[test]
+fn a_view_declared_key_shows_as_the_buttons_shortcut_hint() {
+    use super::component::ButtonProps;
+    use crate::component::Described;
+    let button = Button::from_props(
+        "go",
+        ButtonProps {
+            label: "Run".into(),
+            key: Some("Ctrl+Enter".into()),
+            ..ButtonProps::default()
+        },
+    );
+    assert_eq!(
+        button.declared_key(),
+        Some(crate::platform::Shortcut::from("Ctrl+Enter")),
+        "the prop the view set is the hint the face draws"
+    );
+    let none = Button::from_props(
+        "go",
+        ButtonProps {
+            label: "Run".into(),
+            key: Some(String::new()),
+            ..ButtonProps::default()
+        },
+    );
+    assert_eq!(
+        none.declared_key(),
+        None,
+        "a key the view computed to nothing draws no hint"
+    );
+}

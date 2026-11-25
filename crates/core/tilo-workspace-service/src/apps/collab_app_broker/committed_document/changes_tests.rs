@@ -75,22 +75,24 @@ impl NativeDocumentReads for Service {
         known: Option<[u8; 32]>,
         _: usize,
     ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
-        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
-        self.authorize(context)?;
-        self.whole.fetch_add(1, Ordering::AcqRel);
-        if self.pending.load(Ordering::Acquire) {
-            return Ok(NativeDocumentRead::Pending);
-        }
-        let (revision, tip) = self.at();
-        if Some(revision) == known {
-            return Ok(NativeDocumentRead::Unchanged(revision));
-        }
-        Ok(NativeDocumentRead::Captured {
-            revision,
-            heads: vec![tip],
-            body: Box::new(Bytes(vec![1; self.bytes])),
-        })
-    })()))
+        Box::pin(std::future::ready(
+            (|| -> Result<NativeDocumentRead, String> {
+                self.authorize(context)?;
+                self.whole.fetch_add(1, Ordering::AcqRel);
+                if self.pending.load(Ordering::Acquire) {
+                    return Ok(NativeDocumentRead::Pending);
+                }
+                let (revision, tip) = self.at();
+                if Some(revision) == known {
+                    return Ok(NativeDocumentRead::Unchanged(revision));
+                }
+                Ok(NativeDocumentRead::Captured {
+                    revision,
+                    heads: vec![tip],
+                    body: Box::new(Bytes(vec![1; self.bytes])),
+                })
+            })(),
+        ))
     }
     fn capture_since(
         &self,
@@ -101,28 +103,30 @@ impl NativeDocumentReads for Service {
         if !self.changes {
             return self.capture(context, Some(held.revision), maximum);
         }
-        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
-        self.authorize(context)?;
-        self.since.fetch_add(1, Ordering::AcqRel);
-        if self.pending.load(Ordering::Acquire) {
-            return Ok(NativeDocumentRead::Pending);
-        }
-        let (revision, tip) = self.at();
-        if revision == held.revision {
-            return Ok(NativeDocumentRead::Unchanged(revision));
-        }
-        let base = if self.wrong_base.load(Ordering::Acquire) {
-            vec![[99; 32]]
-        } else {
-            held.heads.clone()
-        };
-        Ok(NativeDocumentRead::Changes {
-            revision,
-            heads: vec![tip],
-            base,
-            body: Box::new(Bytes(vec![2; self.bytes])),
-        })
-    })()))
+        Box::pin(std::future::ready(
+            (|| -> Result<NativeDocumentRead, String> {
+                self.authorize(context)?;
+                self.since.fetch_add(1, Ordering::AcqRel);
+                if self.pending.load(Ordering::Acquire) {
+                    return Ok(NativeDocumentRead::Pending);
+                }
+                let (revision, tip) = self.at();
+                if revision == held.revision {
+                    return Ok(NativeDocumentRead::Unchanged(revision));
+                }
+                let base = if self.wrong_base.load(Ordering::Acquire) {
+                    vec![[99; 32]]
+                } else {
+                    held.heads.clone()
+                };
+                Ok(NativeDocumentRead::Changes {
+                    revision,
+                    heads: vec![tip],
+                    base,
+                    body: Box::new(Bytes(vec![2; self.bytes])),
+                })
+            })(),
+        ))
     }
 }
 
@@ -152,6 +156,7 @@ fn context(ownership: &Arc<AtomicBool>) -> NativeDocumentReadContext {
                 Err("committed read launcher ownership ended".into())
             }
         }),
+        still_reads: super::reads_still(),
     }
 }
 

@@ -2106,7 +2106,7 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     // message, with no window running a search of its own.
     let search = IndexSearch::new(
         std::sync::Arc::clone(&index),
-        std::sync::Arc::new(|_, _| true),
+        tilo_workspace_service::search::deciding(|_, _| true),
     );
     let content = IndexedContent::new(
         std::sync::Arc::new(search),

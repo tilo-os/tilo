@@ -87,21 +87,16 @@ async fn reads_of_one_record(host: &host::Host, address: ResourceAddress) -> u64
             address: address.clone(),
             joined: false,
         }];
-        let caller = caller.clone();
-        let reads = std::sync::Arc::clone(&reads);
         let before = host.daemon().metrics().documents_read;
         let since = after.take();
-        let readings = tokio::task::spawn_blocking(move || {
-            read_resources(
-                reads.as_ref(),
-                &caller,
-                &ask,
-                since.as_deref(),
-                tilo_clock::now(),
-            )
-        })
+        let readings = read_resources(
+            reads.as_ref(),
+            &caller,
+            &ask,
+            since.as_deref(),
+            tilo_clock::now(),
+        )
         .await
-        .expect("the read ends")
         .expect("the record reads");
         took.push(
             host.daemon()

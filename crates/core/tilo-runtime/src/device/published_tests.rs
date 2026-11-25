@@ -73,12 +73,7 @@ impl PublishedResources for Keeping {
         arguments: Vec<u8>,
     ) -> oneshot::Receiver<runtime_collab::wire::Receipt> {
         let (answer, answered) = oneshot::channel();
-        let receipt = if action != "set" {
-            runtime_collab::wire::Receipt::Refused {
-                code: "unknown_action".to_owned(),
-                message: format!("`{resource}` has no `{action}`"),
-            }
-        } else {
+        let receipt = if action == "set" {
             let value = String::from_utf8(arguments).unwrap();
             if let Some(reading) = self.readings.lock_recover().get_mut(resource) {
                 *reading = value;
@@ -88,6 +83,11 @@ impl PublishedResources for Keeping {
                     code: "unknown_resource".to_owned(),
                     message: format!("not keeping `{resource}`"),
                 }
+            }
+        } else {
+            runtime_collab::wire::Receipt::Refused {
+                code: "unknown_action".to_owned(),
+                message: format!("`{resource}` has no `{action}`"),
             }
         };
         let _ = answer.send(receipt);

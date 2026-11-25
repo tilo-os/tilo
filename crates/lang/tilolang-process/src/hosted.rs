@@ -670,6 +670,7 @@ impl passwords_engine::Device for EngineContent<'_> {
     }
 }
 
+#[cfg(feature = "app-launch")]
 /// What a stream running beside the host hands over as frames arrive: each is published where the
 /// window paints live pictures from, kept for the embedder that reads them, and the window is woken
 /// to draw it. Never polled.
@@ -678,12 +679,14 @@ struct StreamFrames {
     wake: Waker,
 }
 
+#[cfg(feature = "app-launch")]
 /// The frames of `stream`, handed to a loaded engine that makes them.
 fn frames_of(stream: &Arc<StreamFrames>) -> tilo_engine_loader::Frames {
     let context = Arc::as_ptr(stream).cast_mut().cast::<std::ffi::c_void>();
     tilo_engine_loader::Frames::new(context, pushed)
 }
 
+#[cfg(feature = "app-launch")]
 /// One frame a loaded engine made, shown by the window the stream belongs to.
 fn pushed(
     context: *mut std::ffi::c_void,
@@ -707,6 +710,7 @@ fn pushed(
     );
 }
 
+#[cfg(feature = "app-launch")]
 /// The streams loaded engines run, by the job's id: what their frames reach while they run.
 fn streams() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc<StreamFrames>>> {
     static STREAMS: std::sync::OnceLock<
@@ -715,6 +719,7 @@ fn streams() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc
     STREAMS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
 }
 
+#[cfg(feature = "app-launch")]
 impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
     fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
         ui_core::live_pictures::publish(
@@ -4982,6 +4987,27 @@ fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], loc
     }
 }
 
+/// The code a vault item's reading states: the digits, how long they last, and how the service
+/// makes them.
+fn vault_reading(text: &str) -> Option<tilolang_tilo::runtime::host_work::VaultCode> {
+    #[derive(serde::Deserialize)]
+    struct Reading {
+        code: String,
+        until: String,
+        period: i64,
+        digits: i64,
+        algorithm: String,
+    }
+    let reading: Reading = serde_json::from_str(text).ok()?;
+    Some(tilolang_tilo::runtime::host_work::VaultCode {
+        code: reading.code,
+        until: reading.until,
+        period: reading.period,
+        digits: reading.digits,
+        algorithm: reading.algorithm,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -5083,24 +5109,4 @@ mod tests {
         );
         assert_eq!(script.asked(), 3, "listed, then each read once");
     }
-}
-/// The code a vault item's reading states: the digits, how long they last, and how the service
-/// makes them.
-fn vault_reading(text: &str) -> Option<tilolang_tilo::runtime::host_work::VaultCode> {
-    #[derive(serde::Deserialize)]
-    struct Reading {
-        code: String,
-        until: String,
-        period: i64,
-        digits: i64,
-        algorithm: String,
-    }
-    let reading: Reading = serde_json::from_str(text).ok()?;
-    Some(tilolang_tilo::runtime::host_work::VaultCode {
-        code: reading.code,
-        until: reading.until,
-        period: reading.period,
-        digits: reading.digits,
-        algorithm: reading.algorithm,
-    })
 }

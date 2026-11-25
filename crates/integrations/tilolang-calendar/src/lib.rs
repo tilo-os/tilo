@@ -26,6 +26,10 @@ pub mod serve;
 mod shown;
 #[cfg(feature = "engine")]
 pub mod sign_ins;
+// A harness for the tests of this crate and of the programs that run its connector: a package's
+// records over a real store, the origin over the engine, and a calendar server on loopback.
+#[cfg(feature = "test-support")]
+pub mod test_support;
 // What a calendar holds between two times, and when its person is free: the
 // occurrences a reader asks for and the gaps between them, read by the
 // workspace's host and by whoever reads a calendar's entries.

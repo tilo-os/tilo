@@ -100,9 +100,16 @@ view player_bar(p: Player) {
   caller's changes. One that takes view state is expanded where it is called (a template, like a
   view taking a `View`), so what it reads is its caller's space — a sheet drawn in a list's row
   reads the row's, and the page above it reads the room the pages area has. Layout tells each
-  the size it gave it, as it gives it — a window being dragged, a rail folded away, a sidebar made
+  the room it offers it, as it changes — a window being dragged, a rail folded away, a sidebar made
   wider — so a view that fits something to the room it has (`fit width`, a page whole on screen)
   computes from what it reads and follows live, and nothing polls for it.
+- `space` is the room a view is offered, its layout constraint, as a CSS container query reads its
+  container; it is never the size of what the view drew. Where the parent decides a view's size
+  (a column stretches it across, a row grows it, a grid cell holds it, a size is set), that size
+  is its room. Where the view takes the size of what it holds (a part packed into a bar, an item
+  in a row that hugs its content), its room is the room its parent has for content. So a part
+  that folds when it reads little room never reads less because it folded: drawing less can't
+  shrink what it reads, and it unfolds as soon as the bar offers more.
 
 A view that sizes by the space it is given reads `space.width` and `space.height`: an image or a
 document page kept whole in the pane beside its tools is the pane's size, not a guessed one.

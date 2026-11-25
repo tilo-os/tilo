@@ -117,9 +117,6 @@ impl TurnProvider for TurnKept {
         if target.provider != person_accounts::PROVIDER {
             return false;
         }
-        if target.address.resource == hosted_use::CALENDARS {
-            return action == hosted_use::CALENDAR_ENTRIES;
-        }
         target.address.resource == person_accounts::RESOURCE
             && matches!(
                 action,

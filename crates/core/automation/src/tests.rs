@@ -16,8 +16,8 @@ use tilo_actions::remote::asked::{Approval, RecordRef};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, Completer, Confirmation, InvocationLog, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, ResourceAddress, ResourceCopy, ResourceReads,
-    ResourceWake, pending,
+    InvokeArgument, InvokeRequest, Pending, ReadsAnswer, ResourceAddress, ResourceCopy,
+    ResourceReads, ResourceWake, pending, reads_answer,
 };
 
 use crate::{
@@ -1515,31 +1515,28 @@ tilo_test_env::scenario! {
 struct NoteReads;
 
 impl ResourceReads for NoteReads {
-    fn answer_read(
-        self: std::sync::Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            if address.record == "private" {
+                return Err(ActionCallError::Refused {
+                    reason: "not yours".into(),
+                });
+            }
+            Ok(ResourceCopy::Absent)
+        })
     }
 
-    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
-        if address.record == "private" {
-            return Err(ActionCallError::Refused {
-                reason: "not yours".into(),
-            });
-        }
-        Ok(ResourceCopy::Absent)
-    }
-
-    fn watch(
-        &self,
-        _: &Caller,
-        _: &ResourceAddress,
-        _: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a ResourceAddress,
+        _: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
     }
 }
 

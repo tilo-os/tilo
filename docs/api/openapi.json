@@ -4158,386 +4158,6 @@
         "required": [],
         "description": ""
       },
-      "tilo.accounts.publish-browser-identity.Arguments": {
-        "type": "object",
-        "properties": {
-          "root": {
-            "type": "string"
-          },
-          "origin": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "root",
-          "origin",
-          "display_name"
-        ],
-        "description": ""
-      },
-      "tilo.accounts.save-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "type_id": {
-            "type": "string"
-          },
-          "display_name": {
-            "type": "string"
-          },
-          "config": {},
-          "enabled": {
-            "type": "boolean"
-          },
-          "tint": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "type_id",
-          "display_name",
-          "config",
-          "enabled",
-          "tint"
-        ],
-        "description": ""
-      },
-      "tilo.accounts.report-sync.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          },
-          "device": {
-            "type": "string"
-          },
-          "health": {
-            "oneOf": [
-              {
-                "const": "never",
-                "type": "string"
-              },
-              {
-                "const": "syncing",
-                "type": "string"
-              },
-              {
-                "const": "healthy",
-                "type": "string"
-              },
-              {
-                "const": "offline",
-                "type": "string"
-              },
-              {
-                "const": "needs_sign_in",
-                "type": "string"
-              },
-              {
-                "const": "error",
-                "type": "string"
-              }
-            ]
-          },
-          "at_ms": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "signed_in": {
-            "type": "boolean"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account",
-          "device",
-          "health",
-          "at_ms",
-          "signed_in",
-          "message"
-        ],
-        "description": ""
-      },
-      "tilo.accounts.remove-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-contact.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "label"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.remove-contact.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.confirm-endpoint.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "endpoint",
-          "service",
-          "recipient"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.confirm-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "scope": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "endpoint",
-          "service",
-          "scope",
-          "recipient",
-          "revision"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.replace-endpoint.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "previous": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "previous",
-          "endpoint",
-          "service",
-          "recipient"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.replace-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "previous": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          },
-          "service": {
-            "type": "string"
-          },
-          "scope": {
-            "type": "string"
-          },
-          "recipient": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "previous",
-          "endpoint",
-          "service",
-          "scope",
-          "recipient",
-          "revision"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-phones.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "phones": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "person",
-          "phones"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-emails.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "emails": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "person",
-          "emails"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.project-contacts.Arguments": {
-        "type": "object",
-        "properties": {
-          "people": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "emails": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "person": {
-                  "type": "string"
-                },
-                "phones": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "photo": {
-                  "type": "string"
-                },
-                "photo_size": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "person",
-                "label",
-                "phones",
-                "emails"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "removed": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "people",
-          "removed"
-        ],
-        "description": ""
-      },
-      "tilo.contacts.identities.forget-endpoint.Arguments": {
-        "type": "object",
-        "properties": {
-          "person": {
-            "type": "string"
-          },
-          "endpoint": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "person",
-          "endpoint"
-        ],
-        "description": ""
-      },
       "osk.keyboard.set-layout.Arguments": {
         "type": "object",
         "properties": {
@@ -4828,1074 +4448,6 @@
           "connection",
           "at_ms"
         ],
-        "description": ""
-      },
-      "slides.deck.add-slide.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "body": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "layout": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "enum": [
-                  "title",
-                  "title_content",
-                  "two_column",
-                  "section",
-                  "blank"
-                ],
-                "type": "string"
-              }
-            ]
-          },
-          "after": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [],
-        "description": ""
-      },
-      "slides.deck.add-slide.Result": {
-        "type": "object"
-      },
-      "slides.deck.add-slides.Arguments": {
-        "type": "object",
-        "properties": {
-          "slides": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "body": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "layout": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "enum": [
-                        "title",
-                        "title_content",
-                        "two_column",
-                        "section",
-                        "blank"
-                      ],
-                      "type": "string"
-                    }
-                  ]
-                },
-                "notes": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "title": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "after": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "slides"
-        ],
-        "description": ""
-      },
-      "slides.deck.add-slides.Result": {
-        "type": "object"
-      },
-      "slides.deck.insert-slide.Arguments": {
-        "type": "object",
-        "properties": {
-          "at": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "slide": {
-            "additionalProperties": false,
-            "properties": {
-              "background": {
-                "enum": [
-                  "surface",
-                  "accent",
-                  "deep"
-                ],
-                "type": "string"
-              },
-              "elements": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "align": {
-                      "enum": [
-                        "left",
-                        "center",
-                        "right",
-                        "justify"
-                      ],
-                      "type": "string"
-                    },
-                    "blocks": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "align": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "attrs": {
-                            "type": "object"
-                          },
-                          "kind": {
-                            "type": "string"
-                          },
-                          "level": {
-                            "type": [
-                              "integer",
-                              "null"
-                            ]
-                          },
-                          "marks": {
-                            "items": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "end": {
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                "name": {
-                                  "type": "string"
-                                },
-                                "start": {
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                "value": {
-                                  "oneOf": [
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "Bool": {
-                                          "type": "boolean"
-                                        }
-                                      },
-                                      "required": [
-                                        "Bool"
-                                      ],
-                                      "type": "object"
-                                    },
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "Int": {
-                                          "type": "integer"
-                                        }
-                                      },
-                                      "required": [
-                                        "Int"
-                                      ],
-                                      "type": "object"
-                                    },
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "Str": {
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": [
-                                        "Str"
-                                      ],
-                                      "type": "object"
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "start",
-                                "end",
-                                "name",
-                                "value"
-                              ],
-                              "type": "object"
-                            },
-                            "type": "array"
-                          },
-                          "ordered": {
-                            "type": [
-                              "boolean",
-                              "null"
-                            ]
-                          },
-                          "text": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "text",
-                          "marks"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "bold": {
-                      "type": "boolean"
-                    },
-                    "fill": {
-                      "type": "string"
-                    },
-                    "font_size": {
-                      "type": "number"
-                    },
-                    "h": {
-                      "type": "number"
-                    },
-                    "id": {
-                      "type": "string"
-                    },
-                    "italic": {
-                      "type": "boolean"
-                    },
-                    "kind": {
-                      "enum": [
-                        "text",
-                        "rect",
-                        "ellipse",
-                        "line",
-                        "image"
-                      ],
-                      "type": "string"
-                    },
-                    "radius": {
-                      "type": "number"
-                    },
-                    "src": {
-                      "type": "string"
-                    },
-                    "stroke": {
-                      "type": "string"
-                    },
-                    "stroke_width": {
-                      "type": "number"
-                    },
-                    "w": {
-                      "type": "number"
-                    },
-                    "x": {
-                      "type": "number"
-                    },
-                    "y": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "kind",
-                    "x",
-                    "y",
-                    "w",
-                    "h",
-                    "fill",
-                    "stroke",
-                    "stroke_width",
-                    "font_size",
-                    "align",
-                    "radius"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "id": {
-                "type": "string"
-              },
-              "layout": {
-                "enum": [
-                  "title",
-                  "title_content",
-                  "two_column",
-                  "section",
-                  "blank"
-                ],
-                "type": "string"
-              },
-              "notes": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "layout",
-              "background"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "at",
-          "slide"
-        ],
-        "description": ""
-      },
-      "slides.deck.duplicate-slide.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "slide"
-        ],
-        "description": ""
-      },
-      "slides.deck.delete-slide.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "slide"
-        ],
-        "description": ""
-      },
-      "slides.deck.move-slide.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "position": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "slide",
-          "position"
-        ],
-        "description": ""
-      },
-      "slides.deck.move-slide.Result": {
-        "type": "object"
-      },
-      "slides.deck.set-text.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "title": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "body": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "slide"
-        ],
-        "description": ""
-      },
-      "slides.deck.set-text.Result": {
-        "type": "object"
-      },
-      "slides.deck.add-element.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "element": {
-            "additionalProperties": false,
-            "properties": {
-              "align": {
-                "oneOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "enum": [
-                      "left",
-                      "center",
-                      "right",
-                      "justify"
-                    ],
-                    "type": "string"
-                  }
-                ]
-              },
-              "bold": {
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "fill": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "font_size": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "h": {
-                "type": "number"
-              },
-              "italic": {
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "kind": {
-                "enum": [
-                  "text",
-                  "rect",
-                  "ellipse",
-                  "line",
-                  "image"
-                ],
-                "type": "string"
-              },
-              "radius": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "src": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "stroke": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "stroke_width": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "text": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "text_color": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "w": {
-                "type": "number"
-              },
-              "x": {
-                "type": "number"
-              },
-              "y": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "kind",
-              "x",
-              "y",
-              "w",
-              "h"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "slide",
-          "element"
-        ],
-        "description": ""
-      },
-      "slides.deck.add-element.Result": {
-        "type": "object"
-      },
-      "slides.deck.insert-element.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "element": {
-            "additionalProperties": false,
-            "properties": {
-              "align": {
-                "enum": [
-                  "left",
-                  "center",
-                  "right",
-                  "justify"
-                ],
-                "type": "string"
-              },
-              "blocks": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "align": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "attrs": {
-                      "type": "object"
-                    },
-                    "kind": {
-                      "type": "string"
-                    },
-                    "level": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "marks": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "end": {
-                            "minimum": 0,
-                            "type": "integer"
-                          },
-                          "name": {
-                            "type": "string"
-                          },
-                          "start": {
-                            "minimum": 0,
-                            "type": "integer"
-                          },
-                          "value": {
-                            "oneOf": [
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "Bool": {
-                                    "type": "boolean"
-                                  }
-                                },
-                                "required": [
-                                  "Bool"
-                                ],
-                                "type": "object"
-                              },
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "Int": {
-                                    "type": "integer"
-                                  }
-                                },
-                                "required": [
-                                  "Int"
-                                ],
-                                "type": "object"
-                              },
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "Str": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "Str"
-                                ],
-                                "type": "object"
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "start",
-                          "end",
-                          "name",
-                          "value"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "ordered": {
-                      "type": [
-                        "boolean",
-                        "null"
-                      ]
-                    },
-                    "text": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "text",
-                    "marks"
-                  ],
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "bold": {
-                "type": "boolean"
-              },
-              "fill": {
-                "type": "string"
-              },
-              "font_size": {
-                "type": "number"
-              },
-              "h": {
-                "type": "number"
-              },
-              "id": {
-                "type": "string"
-              },
-              "italic": {
-                "type": "boolean"
-              },
-              "kind": {
-                "enum": [
-                  "text",
-                  "rect",
-                  "ellipse",
-                  "line",
-                  "image"
-                ],
-                "type": "string"
-              },
-              "radius": {
-                "type": "number"
-              },
-              "src": {
-                "type": "string"
-              },
-              "stroke": {
-                "type": "string"
-              },
-              "stroke_width": {
-                "type": "number"
-              },
-              "w": {
-                "type": "number"
-              },
-              "x": {
-                "type": "number"
-              },
-              "y": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "id",
-              "kind",
-              "x",
-              "y",
-              "w",
-              "h",
-              "fill",
-              "stroke",
-              "stroke_width",
-              "font_size",
-              "align",
-              "radius"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "slide",
-          "element"
-        ],
-        "description": ""
-      },
-      "slides.deck.delete-element.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "element": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "slide",
-          "element"
-        ],
-        "description": ""
-      },
-      "slides.deck.bring-to-front.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "element": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "slide",
-          "element"
-        ],
-        "description": ""
-      },
-      "slides.deck.send-to-back.Arguments": {
-        "type": "object",
-        "properties": {
-          "slide": {
-            "type": "string"
-          },
-          "element": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "slide",
-          "element"
-        ],
-        "description": ""
-      },
-      "slides.deck.replace-deck.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string"
-          },
-          "palette": {
-            "enum": [
-              "indigo",
-              "emerald",
-              "amber",
-              "rose",
-              "sky"
-            ],
-            "type": "string"
-          },
-          "look": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "enum": [
-                  "light",
-                  "dark"
-                ],
-                "type": "string"
-              }
-            ]
-          },
-          "slides": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "background": {
-                  "enum": [
-                    "surface",
-                    "accent",
-                    "deep"
-                  ],
-                  "type": "string"
-                },
-                "elements": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "align": {
-                        "enum": [
-                          "left",
-                          "center",
-                          "right",
-                          "justify"
-                        ],
-                        "type": "string"
-                      },
-                      "blocks": {
-                        "items": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "align": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "attrs": {
-                              "type": "object"
-                            },
-                            "kind": {
-                              "type": "string"
-                            },
-                            "level": {
-                              "type": [
-                                "integer",
-                                "null"
-                              ]
-                            },
-                            "marks": {
-                              "items": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "end": {
-                                    "minimum": 0,
-                                    "type": "integer"
-                                  },
-                                  "name": {
-                                    "type": "string"
-                                  },
-                                  "start": {
-                                    "minimum": 0,
-                                    "type": "integer"
-                                  },
-                                  "value": {
-                                    "oneOf": [
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "Bool": {
-                                            "type": "boolean"
-                                          }
-                                        },
-                                        "required": [
-                                          "Bool"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "Int": {
-                                            "type": "integer"
-                                          }
-                                        },
-                                        "required": [
-                                          "Int"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "Str": {
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": [
-                                          "Str"
-                                        ],
-                                        "type": "object"
-                                      }
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "start",
-                                  "end",
-                                  "name",
-                                  "value"
-                                ],
-                                "type": "object"
-                              },
-                              "type": "array"
-                            },
-                            "ordered": {
-                              "type": [
-                                "boolean",
-                                "null"
-                              ]
-                            },
-                            "text": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "text",
-                            "marks"
-                          ],
-                          "type": "object"
-                        },
-                        "type": "array"
-                      },
-                      "bold": {
-                        "type": "boolean"
-                      },
-                      "fill": {
-                        "type": "string"
-                      },
-                      "font_size": {
-                        "type": "number"
-                      },
-                      "h": {
-                        "type": "number"
-                      },
-                      "id": {
-                        "type": "string"
-                      },
-                      "italic": {
-                        "type": "boolean"
-                      },
-                      "kind": {
-                        "enum": [
-                          "text",
-                          "rect",
-                          "ellipse",
-                          "line",
-                          "image"
-                        ],
-                        "type": "string"
-                      },
-                      "radius": {
-                        "type": "number"
-                      },
-                      "src": {
-                        "type": "string"
-                      },
-                      "stroke": {
-                        "type": "string"
-                      },
-                      "stroke_width": {
-                        "type": "number"
-                      },
-                      "w": {
-                        "type": "number"
-                      },
-                      "x": {
-                        "type": "number"
-                      },
-                      "y": {
-                        "type": "number"
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "kind",
-                      "x",
-                      "y",
-                      "w",
-                      "h",
-                      "fill",
-                      "stroke",
-                      "stroke_width",
-                      "font_size",
-                      "align",
-                      "radius"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "layout": {
-                  "enum": [
-                    "title",
-                    "title_content",
-                    "two_column",
-                    "section",
-                    "blank"
-                  ],
-                  "type": "string"
-                },
-                "notes": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "layout",
-                "background"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "title",
-          "palette",
-          "slides"
-        ],
-        "description": ""
-      },
-      "slides.deck.read-deck.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "slides.deck.export-pptx-content.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
         "description": ""
       },
       "terminal.session.run.Arguments": {
@@ -10438,50 +8990,6 @@
         ],
         "description": "Send the element's form through the page's own validation."
       },
-      "tl.so.tilo.browser.Page.update_download.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer"
-          },
-          "state": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "retryable": {
-            "type": "boolean"
-          },
-          "received": {
-            "type": "integer"
-          },
-          "total": {
-            "type": "integer"
-          },
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "state",
-          "name",
-          "url",
-          "path",
-          "retryable",
-          "received",
-          "total",
-          "error"
-        ],
-        "description": "Writes what the page last said of one of its downloads into the page's record, as its window\nhands it over while the transfer moves. The window raises it, never a person, agent or script."
-      },
       "tl.so.tilo.browser.Page.open_from_page.Arguments": {
         "type": "object",
         "properties": {
@@ -10809,100 +9317,18 @@
         "properties": {
           "url": {
             "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
           }
         },
         "required": [
           "url"
         ],
-        "description": "Saves what an address serves into the browser's downloads."
-      },
-      "tl.so.tilo.browser.Page.cancel_download.Arguments": {
-        "type": "object",
-        "properties": {
-          "d": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.browser.Download",
-            "type": "object"
-          }
-        },
-        "required": [
-          "d"
-        ],
-        "description": "Stops a download that is still going."
-      },
-      "tl.so.tilo.browser.Page.retry_download.Arguments": {
-        "type": "object",
-        "properties": {
-          "d": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.browser.Download",
-            "type": "object"
-          }
-        },
-        "required": [
-          "d"
-        ],
-        "description": "Starts a failed download again from the beginning."
-      },
-      "tl.so.tilo.browser.Page.cancel_all_downloads.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": "Stops every download this page has going."
+        "description": "Downloads what an address serves into the person's Downloads, as a job of the Browser's own\nthat goes on when the window closes. A page's window raises it for a download the person\nsaved there, naming the handle its request waits under; a person or agent names an address."
       },
       "tl.so.tilo.browser.Page.developer_tools.Arguments": {
         "type": "object",
@@ -12277,11 +10703,9 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "state",
-              "name",
               "url",
-              "path",
-              "error"
+              "name",
+              "job"
             ],
             "type": "string"
           },
@@ -12299,9 +10723,7 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [
-              "retryable"
-            ],
+            "enum": [],
             "type": "string"
           },
           "value": {
@@ -12315,6 +10737,121 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.browser.Download.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.Download.cancel_download.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops a download that is still going: what it saved so far is removed."
+      },
+      "tl.so.tilo.browser.Download.retry_download.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Starts a download that failed or was cancelled again, from the beginning."
+      },
+      "tl.so.tilo.browser.DownloadJob.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.DownloadJob.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "state",
+              "path",
+              "name",
+              "error"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.DownloadJob.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.DownloadJob.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.browser.DownloadAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.browser.DownloadAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "url",
+              "name",
+              "request"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.DownloadAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.browser.DownloadAsk.$scenario.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -13298,6 +11835,12 @@
           "bundle"
         ],
         "description": "Imports the bookmarks another browser holds, from the bundle this app's own import hands\nover: the `ImportBundle` JSON with bookmark chunks (`{\"bookmarks\": [{\"url\": \"...\",\n\"title\": \"...\", \"folder\": \"Work\"}]}`). Importing the same file twice keeps one bookmark of\neach page."
+      },
+      "tl.so.tilo.browser.cancel_all_downloads.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops every download still going, from every window."
       },
       "tl.so.tilo.browser.open_download.Arguments": {
         "type": "object",
@@ -47070,6 +45613,22 @@
         ],
         "description": "Note what a drop target took, in the window's last answer."
       },
+      "tl.so.tilo.lang.gallery.note_hint.Arguments": {
+        "type": "object",
+        "properties": {
+          "last": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "last",
+          "hint"
+        ],
+        "description": "Note a hint the person learned or was shown, in the window's last answer."
+      },
       "tl.so.tilo.git-client.Hunk.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -56666,7 +55225,8 @@
               "home_state",
               "home_trouble",
               "trouble",
-              "player_trouble"
+              "player_trouble",
+              "player_retried"
             ],
             "type": "string"
           },
@@ -57065,7 +55625,7 @@
           "reason",
           "at"
         ],
-        "description": "Says why the player stopped, and where, so the notice names the place and continues there."
+        "description": "Says why the player stopped, and where, so the notice names the place and continues there.\nA stream that stopped partway is first asked for again by itself, once: a source that drops\na connection or an address that expired plays on without the person doing anything."
       },
       "tl.so.tilo.music.Library.retry_stream.Arguments": {
         "type": "object",
@@ -58585,7 +57145,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "favorite"
+              "favorite",
+              "noted"
             ],
             "type": "string"
           },
@@ -58599,13 +57160,58 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.Item.keep_facts.Arguments": {
+      "tl.so.tilo.passwords.Item.learn.Arguments": {
         "type": "object",
         "properties": {
-          "username": {
+          "listed": {}
+        },
+        "required": [
+          "listed"
+        ],
+        "description": "Writes what the vault says of an item (`listed`, one of what it lists) into its record, where\nit differs: its name, kind and tags, where it signs in, its fields' labels, whether it keeps a\nnote, when it changed and what is wrong with it."
+      },
+      "tl.so.tilo.passwords.Item.keep.Arguments": {
+        "type": "object",
+        "properties": {
+          "ask": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask"
+        ],
+        "description": "Asks the vault to keep `ask` (its add, as JSON) and writes what it answers into `item`.\nAnswers why it could not, or nothing."
+      },
+      "tl.so.tilo.passwords.Item.rewrite.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
             "type": "string"
           },
-          "origins": {
+          "kind": {
+            "choice_labels": {
+              "api_key": "A key an API takes",
+              "login": "A login: a username and a password for a site",
+              "note": "A note kept as a secret, with no address",
+              "secret": "Any other secret: a licence code, a recovery key",
+              "wifi": "The password of a Wi-Fi network"
+            },
+            "enum": [
+              "login",
+              "api_key",
+              "note",
+              "wifi",
+              "secret"
+            ],
+            "type": "string"
+          },
+          "places": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "more": {
             "items": {
               "type": "string"
             },
@@ -58613,10 +57219,12 @@
           }
         },
         "required": [
-          "username",
-          "origins"
+          "title",
+          "kind",
+          "places",
+          "more"
         ],
-        "description": "Writes what is safe to say of an item into its vault entry: who it signs in as and where,\nwith the item's name, kind and tags."
+        "description": "Writes the item as it is, with `title`, `kind` and `places` in place of its own and `more`\nbeside them. Answers why it could not, or nothing."
       },
       "tl.so.tilo.passwords.Item.set_username.Arguments": {
         "type": "object",
@@ -58681,7 +57289,7 @@
           }
         },
         "required": [],
-        "description": "Draws a strong password for the item where the vault is: 20 characters by default, with a\ncapital, a small letter, a digit and a symbol. Nobody types or sees it."
+        "description": "Draws a strong password for the login where the vault is: 20 characters by default, with a\ncapital, a small letter, a digit and a symbol. Nobody types or sees it."
       },
       "tl.so.tilo.passwords.Item.favorite.Arguments": {
         "type": "object",
@@ -58747,7 +57355,7 @@
         "required": [
           "title"
         ],
-        "description": "Renames an item, in its record and its vault entry."
+        "description": "Renames an item, in its record and in the vault."
       },
       "tl.so.tilo.passwords.Item.set_kind.Arguments": {
         "type": "object",
@@ -58779,13 +57387,25 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Copies the item's secret to the person's clipboard, which forgets it again after a while.\nCopying reads the vault and keeps nothing."
+        "description": "Puts the item's secret on the person's clipboard from the vault, which forgets it again after\na while. It never passes through Passwords, and the vault records the copy as a use."
       },
       "tl.so.tilo.passwords.Item.copy_identity.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Copies what identifies the person to the account: a login's username, an API key's account,\na Wi-Fi network's name."
+        "description": "Puts what identifies the person to the account on their clipboard from the vault: a login's\nusername, an API key's account."
+      },
+      "tl.so.tilo.passwords.Item.copy_part.Arguments": {
+        "type": "object",
+        "properties": {
+          "part": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "part"
+        ],
+        "description": "Asks the vault to put `part` of the item on the person's clipboard. Answers why it could not,\nor nothing."
       },
       "tl.so.tilo.passwords.Item.copy_origins.Arguments": {
         "type": "object",
@@ -58793,11 +57413,74 @@
         "required": [],
         "description": "Copies the addresses the item signs in to, one a line."
       },
-      "tl.so.tilo.passwords.Item.carry.Arguments": {
+      "tl.so.tilo.passwords.Item.shown_part.Arguments": {
+        "type": "object",
+        "properties": {
+          "part": {
+            "type": "string"
+          },
+          "how": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "part",
+          "how"
+        ],
+        "description": "Asks the vault to show `part` of the item for a while, where `how` says (`show` for the\nwindow, `hold` for the host): the name it is shown under, or nothing where the item keeps\nnone. The vault records each showing as a use."
+      },
+      "tl.so.tilo.passwords.Item.reveal.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Moves what an item's record keeps into the vault, once, and empties the record: an entry the\nvault already keeps under the item's id stays as it is."
+        "description": "Shows the item's secret, who it signs in as, its note and its fields in the window, for 30\nseconds at most: each part by a name only the window reads it under."
+      },
+      "tl.so.tilo.passwords.Item.access.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Reads who used the item, and the leaves its person gave: what the item's access page shows."
+      },
+      "tl.so.tilo.passwords.Item.take_back.Arguments": {
+        "type": "object",
+        "properties": {
+          "leave": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.passwords.Leave",
+            "type": "object"
+          }
+        },
+        "required": [
+          "leave"
+        ],
+        "description": "Takes back a leave the item's person gave: the agent or app it names asks again next time."
       },
       "tl.so.tilo.passwords.ImportRow.$create.Arguments": {
         "type": "object",
@@ -58890,6 +57573,18 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.passwords.Vault.add_new.Arguments": {
+        "type": "object",
+        "properties": {
+          "ask": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask"
+        ],
+        "description": "Adds a new item to the vault from `ask` (its add, as JSON) and lists it: the item, or nothing\nwhere the vault did not keep it, with why in the vault's notice."
+      },
       "tl.so.tilo.passwords.Vault.new_item.Arguments": {
         "type": "object",
         "properties": {
@@ -58898,7 +57593,7 @@
           }
         },
         "required": [],
-        "description": "Starts an item: an entry of the vault and the item that lists it, named by what is typed\nfirst. Its secret is typed on the system's card, never here."
+        "description": "Starts a login: an item of the vault named by what is typed first, with a strong password\ndrawn where the vault is, which nobody types or sees. The person changes it on the item."
       },
       "tl.so.tilo.passwords.Vault.save_login.Arguments": {
         "type": "object",
@@ -58924,7 +57619,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The vault's logins, by name and by the entry that holds each: what a script, an agent or\nanother device's window lists. The passwords are never part of it."
+        "description": "The vault's logins, by name and by the item that holds each: what a script, an agent or\nanother device's window lists. The passwords are never part of it."
       },
       "tl.so.tilo.passwords.Vault.delete.Arguments": {
         "type": "object",
@@ -58965,13 +57660,54 @@
         "required": [
           "item"
         ],
-        "description": "Deletes an item, and the entry it stands for, from the vault."
+        "description": "Deletes an item from the vault."
       },
       "tl.so.tilo.passwords.Vault.settle.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Brings the vault and its items together: an entry kept elsewhere (a mail account's password,\na connector's token, one another device added) gets an item, an item's name, kind and tags\nreach its entry, and what an older Passwords kept in its own records moves into the vault and\nleaves the record. Runs while Passwords is open, and changes nothing when all is settled."
+        "description": "Brings the vault and its items together: an item the vault keeps that is not listed (a mail\naccount's password, a connector's token, one another device added) gets a record, what the\nvault says of each listed one reaches its record, one the vault no longer keeps leaves the\nlist, and what an older Passwords kept in its own records moves into the vault and leaves the\nrecord. Runs while Passwords is open, and changes nothing when all is settled."
+      },
+      "tl.so.tilo.passwords.Vault.carry.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.passwords.Item",
+            "type": "object"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "description": "Moves what an item's record keeps into the vault, once, and empties the record. A record that\nnames an item the vault keeps changes that item; one that names none adds one."
       },
       "tl.so.tilo.passwords.Vault.preview_csv.Arguments": {
         "type": "object",
@@ -58983,11 +57719,52 @@
         ],
         "description": "Reads the browser's CSV the person chose into the vault's waiting rows, each marked when the\nvault already holds that login. The passwords stay in the file."
       },
+      "tl.so.tilo.passwords.Vault.add_read.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.passwords.HeldItem",
+            "type": "object"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "description": "Adds an item the host read from a file the person chose: `item`, its secrets each named by the\ntoken the host holds it under. Answers whether the vault kept it."
+      },
       "tl.so.tilo.passwords.Vault.apply_import.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Brings the rows the person agreed to into the vault, skipping the ones the vault holds. The\nvault reads their passwords from the file."
+        "description": "Brings the rows the person agreed to into the vault, skipping the ones the vault holds. The\nhost reads their passwords from the file and the vault takes them from the host."
       },
       "tl.so.tilo.passwords.Vault.clear_import.Arguments": {
         "type": "object",
@@ -59000,6 +57777,12 @@
         "properties": {},
         "required": [],
         "description": "Empties the vault's waiting rows."
+      },
+      "tl.so.tilo.passwords.Vault.held_items.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Every listed item with its secrets, each named by the token the host holds it under: what the\nhost writes into a file the person chose. The vault records each part handed over as a use."
       },
       "tl.so.tilo.passwords.Vault.export_csv.Arguments": {
         "type": "object",
@@ -59021,7 +57804,7 @@
         "required": [
           "file"
         ],
-        "description": "Brings the entries a backup holds into the vault with the password the person types on the\nsystem's card, and answers how many came in. An entry the vault already keeps is left as it\nis, so restoring twice adds nothing."
+        "description": "Brings the entries a backup holds into the vault with the password the person types on the\nsystem's card, and answers how many came in. An item the vault already lists under its name\nand address is left as it is, so restoring twice adds nothing."
       },
       "tl.so.tilo.passwords.Vault.absorb_device.Arguments": {
         "type": "object",
@@ -59114,20 +57897,21 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.TypedAsk.$create.Arguments": {
+      "tl.so.tilo.passwords.Shown.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.passwords.TypedAsk.edit-text.Arguments": {
+      "tl.so.tilo.passwords.Shown.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "id",
-              "part"
+              "secret",
+              "identity",
+              "notes"
             ],
             "type": "string"
           },
@@ -59140,7 +57924,269 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.passwords.Shown.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.ShownField.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.ShownField.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "label",
+              "value"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.ShownField.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.Access.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.Access.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "trouble"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.Access.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.Use.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.Use.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "by",
+              "what",
+              "places"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.Use.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.Leave.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.Leave.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "agent",
+              "for_app",
+              "by",
+              "using"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.Leave.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.TypedAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.TypedAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
       "tl.so.tilo.passwords.TypedAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.TokenAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.TokenAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "token"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.TokenAnswer.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -59330,18 +58376,25 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.CountAnswer.$create.Arguments": {
+      "tl.so.tilo.passwords.HeldItem.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.passwords.CountAnswer.edit-text.Arguments": {
+      "tl.so.tilo.passwords.HeldItem.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "id",
+              "kind",
+              "title",
+              "username",
+              "password",
+              "notes"
+            ],
             "type": "string"
           },
           "value": {
@@ -59353,7 +58406,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.CountAnswer.edit-flag.Arguments": {
+      "tl.so.tilo.passwords.HeldItem.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -59371,18 +58424,21 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.RestoredAnswer.$create.Arguments": {
+      "tl.so.tilo.passwords.HeldField.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.passwords.RestoredAnswer.edit-text.Arguments": {
+      "tl.so.tilo.passwords.HeldField.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "label",
+              "value"
+            ],
             "type": "string"
           },
           "value": {
@@ -59394,7 +58450,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.RestoredAnswer.edit-flag.Arguments": {
+      "tl.so.tilo.passwords.HeldField.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -59412,13 +58468,54 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.CarriedAnswer.$create.Arguments": {
+      "tl.so.tilo.passwords.HeldItems.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.passwords.CarriedAnswer.edit-text.Arguments": {
+      "tl.so.tilo.passwords.HeldItems.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.HeldItems.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.DeviceItems.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.DeviceItems.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -59437,7 +58534,91 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.passwords.CarriedAnswer.edit-flag.Arguments": {
+      "tl.so.tilo.passwords.DeviceItems.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.DeviceRemove.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.DeviceRemove.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.DeviceRemove.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.ToFile.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.passwords.ToFile.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "passphrase"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.passwords.ToFile.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -59497,22 +58678,6 @@
           "value"
         ],
         "description": "A bound control changes the field it shows."
-      },
-      "tl.so.tilo.passwords.keep_typed.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "part": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "part"
-        ],
-        "description": "Hands what the person typed on the system's card to the vault as `part` of the entry `id`:\nthe host passes it on, so it never becomes a value here. Answers why it could not, or nothing."
       },
       "tl.so.tilo.pdf-viewer.Document.$create.Arguments": {
         "type": "object",
@@ -62788,6 +61953,7 @@
               "picture",
               "thumb",
               "edited",
+              "picture_state",
               "captured_at",
               "folder",
               "location",
@@ -62831,6 +61997,12 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.photos.Photo.check_picture.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Looks at where this device stands on a photo's picture: whether it holds the bytes yet, and\nwhether what it holds is a picture it opens. A record reaches this device from another one\nbefore its picture's bytes do, so a photo says the picture is still arriving instead of\ndrawing nothing; the window looks again while it waits."
+      },
       "tl.so.tilo.photos.Photo.toggle_favorite.Arguments": {
         "type": "object",
         "properties": {
@@ -62845,7 +62017,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Turns the photograph a quarter clockwise, as its person sees it: the window draws the original\nturned, and a save writes what it draws."
+        "description": "Turns the photograph a quarter clockwise, as its person sees it."
       },
       "tl.so.tilo.photos.Photo.rotate_left.Arguments": {
         "type": "object",
@@ -62857,7 +62029,26 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Puts the photograph back as it came, taking the person's own turns off it."
+        "description": "Puts the photograph back as it came, taking every edit off it."
+      },
+      "tl.so.tilo.photos.Photo.develop.Arguments": {
+        "type": "object",
+        "properties": {
+          "rotation": {
+            "type": "integer"
+          },
+          "crop": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rotation",
+          "crop"
+        ],
+        "description": "Records an edit on the photograph and draws it: the device keeps the part the person chose,\nthen turns it, and keeps the result in the content store. Nothing is written over the\nphotograph, so every edit can be taken back and the person can see the picture as it came\nbeside the one they made."
       },
       "tl.so.tilo.photos.Photo.describe_photo.Arguments": {
         "type": "object",
@@ -62881,7 +62072,13 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The objects and pets the device's image model finds in a picture, added to what the photo\nalready lists."
+        "description": "What the device's image model finds in a picture, added to what the photo already lists: the\nobjects, and the pets apart from them."
+      },
+      "tl.so.tilo.photos.Photo.analyze_photo.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the photograph shows, as the device's model reads it in one go: the sentence search finds\nit by, the words in it, and the objects and pets it holds. It replaces what the photo said\nbefore, so analyzing again after the picture changed says what it shows now."
       },
       "tl.so.tilo.photos.Photo.crop_photo.Arguments": {
         "type": "object",
@@ -63193,7 +62390,10 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "import_job"
+              "import_job",
+              "notice",
+              "album_draft_id",
+              "album_draft_name"
             ],
             "type": "string"
           },
@@ -63212,7 +62412,8 @@
           "field": {
             "description": "The name of the field to set.",
             "enum": [
-              "import_stopped"
+              "import_stopped",
+              "album_draft_open"
             ],
             "type": "string"
           },
@@ -63646,6 +62847,83 @@
           "a"
         ],
         "description": "Deletes an album. Its photos stay in the library."
+      },
+      "tl.so.tilo.photos.Library.start_album_draft.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "Opens an album draft: the album `id` names as it stands now, or an empty one to start. The\nperson chooses its photos in the library and nothing about the album changes until they save\nthe draft, so a change another member makes meanwhile is reviewed, not overwritten unseen."
+      },
+      "tl.so.tilo.photos.Library.album_draft_toggle.Arguments": {
+        "type": "object",
+        "properties": {
+          "p": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.photos.Photo",
+            "type": "object"
+          }
+        },
+        "required": [
+          "p"
+        ],
+        "description": "Chooses a photo for the album draft, or takes it out of the draft when it is already in it."
+      },
+      "tl.so.tilo.photos.Library.cancel_album_draft.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Closes the album draft, saving nothing."
+      },
+      "tl.so.tilo.photos.Library.save_album.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Saves the album draft. A photo the draft names that the library no longer holds, or an album\nanother member deleted while it was open, is a change made first by someone else: the draft\nstays as it is and says so, so they review it and save again. What the save does add and take\naway merges with a change another member made meanwhile."
+      },
+      "tl.so.tilo.photos.Library.delete_album_draft.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Deletes the album the draft is of. Its photos stay in the library."
+      },
+      "tl.so.tilo.photos.Library.dismiss_notice.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes down what the library last had to say."
       },
       "tl.so.tilo.photos.Library.add_person.Arguments": {
         "type": "object",
@@ -76691,6 +75969,1686 @@
         "properties": {},
         "required": [],
         "description": "The actions a draft may use, one line each, as the agent is told about them."
+      },
+      "tl.so.tilo.slides.Deck.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.Deck.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "notice"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Deck.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "clock_paused"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Deck.add_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "layout": {
+            "choice_labels": {
+              "blank": "Blank",
+              "section": "Section",
+              "title": "Title",
+              "title_content": "Title content",
+              "two_column": "Two column"
+            },
+            "enum": [
+              "title",
+              "title_content",
+              "two_column",
+              "section",
+              "blank"
+            ],
+            "type": "string"
+          },
+          "after": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "description": "Adds a slide after `after`, or at the end, from the template its layout names."
+      },
+      "tl.so.tilo.slides.Deck.add_authored_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "layout": {
+            "choice_labels": {
+              "blank": "Blank",
+              "section": "Section",
+              "title": "Title",
+              "title_content": "Title content",
+              "two_column": "Two column"
+            },
+            "enum": [
+              "title",
+              "title_content",
+              "two_column",
+              "section",
+              "blank"
+            ],
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "fallback": {
+            "choice_labels": {
+              "blank": "Blank",
+              "section": "Section",
+              "title": "Title",
+              "title_content": "Title content",
+              "two_column": "Two column"
+            },
+            "enum": [
+              "title",
+              "title_content",
+              "two_column",
+              "section",
+              "blank"
+            ],
+            "type": "string"
+          },
+          "after": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          }
+        },
+        "required": [
+          "title",
+          "body",
+          "fallback"
+        ],
+        "description": "Adds a slide from the template its layout names, and answers it."
+      },
+      "tl.so.tilo.slides.Deck.add_slides.Arguments": {
+        "type": "object",
+        "properties": {
+          "outline": {
+            "type": "string"
+          },
+          "after": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          }
+        },
+        "required": [
+          "outline"
+        ],
+        "description": "Adds several slides in one step, in the order given: a deck written from an outline, as the\nJSON a person or an agent hands over."
+      },
+      "tl.so.tilo.slides.Deck.duplicate_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "description": "Copies a slide and everything on it, right after it."
+      },
+      "tl.so.tilo.slides.Deck.duplicate_current_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "showing": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "showing"
+        ],
+        "description": "Copies the slide the window shows, right after it."
+      },
+      "tl.so.tilo.slides.Deck.delete_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "description": "Deletes a slide. A deck keeps at least one."
+      },
+      "tl.so.tilo.slides.Deck.move_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          },
+          "at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "s",
+          "at"
+        ],
+        "description": "Moves a slide to `at`, the place among the slides a drag reports."
+      },
+      "tl.so.tilo.slides.Deck.reorder_slides.Arguments": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "description": "Moves the dragged slide where it was dropped: the slide's id and the id of the slide it was\ndropped on, as the rail's reorder carries them."
+      },
+      "tl.so.tilo.slides.Deck.set_text.Arguments": {
+        "type": "object",
+        "properties": {
+          "s": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Slide",
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "description": "Writes a slide's title and body: the first two text boxes, as the templates make them."
+      },
+      "tl.so.tilo.slides.Deck.set_palette.Arguments": {
+        "type": "object",
+        "properties": {
+          "palette": {
+            "choice_labels": {
+              "amber": "Amber",
+              "emerald": "Emerald",
+              "indigo": "Indigo",
+              "rose": "Rose",
+              "sky": "Sky"
+            },
+            "enum": [
+              "indigo",
+              "emerald",
+              "amber",
+              "rose",
+              "sky"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "palette"
+        ],
+        "description": "Sets the deck's accent hue."
+      },
+      "tl.so.tilo.slides.Deck.set_look.Arguments": {
+        "type": "object",
+        "properties": {
+          "look": {
+            "choice_labels": {
+              "dark": "Dark",
+              "light": "Light"
+            },
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "look"
+        ],
+        "description": "Sets the deck's light or dark surfaces."
+      },
+      "tl.so.tilo.slides.Deck.set_title.Arguments": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "description": "Names the deck."
+      },
+      "tl.so.tilo.slides.Deck.read_deck.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "A deck as text: its slides in order, each title, body and other elements with its id, and its\nspeaker notes. An agent reads a deck without the window."
+      },
+      "tl.so.tilo.slides.Deck.open_presentation.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Replaces the deck with the one a presentation file holds. The file is opened by the app that\nopens its kind."
+      },
+      "tl.so.tilo.slides.Deck.export_odp.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The deck as an OpenDocument presentation."
+      },
+      "tl.so.tilo.slides.Deck.export_pptx.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The deck as a PowerPoint presentation."
+      },
+      "tl.so.tilo.slides.Deck.adopt.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Reads a deck file into this deck: its slides replace what the deck holds."
+      },
+      "tl.so.tilo.slides.Deck.clear_notice.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Closes the message a deck shows about a file it could not open."
+      },
+      "tl.so.tilo.slides.Deck.import_file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "The deck a file holds, kept as this deck: its slides replace what it held."
+      },
+      "tl.so.tilo.slides.Deck.import_files.Arguments": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "description": "Opens the first presentation of a set dropped on the window."
+      },
+      "tl.so.tilo.slides.Deck.begin_presenting.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Starts the presentation clock: the speaker's elapsed time runs from now."
+      },
+      "tl.so.tilo.slides.Deck.end_presenting.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Stops the presentation clock."
+      },
+      "tl.so.tilo.slides.Deck.pause_clock.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Holds the clock where it stands, until the speaker starts it again."
+      },
+      "tl.so.tilo.slides.Deck.resume_clock.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Runs the clock on from where it was held."
+      },
+      "tl.so.tilo.slides.Deck.adopt_slide.Arguments": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.SlideFile",
+            "type": "object"
+          }
+        },
+        "required": [
+          "f"
+        ],
+        "description": "Keeps one slide a deck file brings."
+      },
+      "tl.so.tilo.slides.Slide.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.Slide.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "notes"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Slide.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Slide.edit-block.Arguments": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "description": "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: notes",
+            "type": "string"
+          },
+          "text": {
+            "description": "What the paragraph says, as Markdown.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block",
+          "text"
+        ],
+        "description": "Set one paragraph of a rich-text field to what a Markdown text says."
+      },
+      "tl.so.tilo.slides.Slide.insert-block.Arguments": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "description": "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: notes",
+            "type": "string"
+          },
+          "text": {
+            "description": "What the paragraph says, as Markdown.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block",
+          "text"
+        ],
+        "description": "Put a paragraph before the one the address names."
+      },
+      "tl.so.tilo.slides.Slide.delete-block.Arguments": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "description": "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: notes",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block"
+        ],
+        "description": "Remove the paragraph the address names, and the paragraphs it holds."
+      },
+      "tl.so.tilo.slides.Slide.duplicate_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Copies an element in place on its slide, a little down and across from it."
+      },
+      "tl.so.tilo.slides.Slide.add_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "choice_labels": {
+              "ellipse": "Ellipse",
+              "image": "Image",
+              "line": "Line",
+              "rect": "Rect",
+              "text": "Text"
+            },
+            "enum": [
+              "text",
+              "rect",
+              "ellipse",
+              "line",
+              "image"
+            ],
+            "type": "string"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          },
+          "w": {
+            "type": "integer"
+          },
+          "h": {
+            "type": "integer"
+          },
+          "text": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "src": {
+            "type": "string"
+          },
+          "fill": {
+            "type": "string"
+          },
+          "text_color": {
+            "type": "string"
+          },
+          "stroke": {
+            "type": "string"
+          },
+          "stroke_width": {
+            "type": "number"
+          },
+          "font_size": {
+            "type": "number"
+          },
+          "align": {
+            "choice_labels": {
+              "center": "Center",
+              "justify": "Justify",
+              "left": "Left",
+              "right": "Right"
+            },
+            "enum": [
+              "left",
+              "center",
+              "right",
+              "justify"
+            ],
+            "type": "string"
+          },
+          "bold": {
+            "type": "boolean"
+          },
+          "italic": {
+            "type": "boolean"
+          },
+          "radius": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "description": "Adds an element to a slide: what it is, where it stands, and any style it takes."
+      },
+      "tl.so.tilo.slides.Slide.insert_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "element": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "element"
+        ],
+        "description": "Inserts an element given whole, as the JSON another deck copied: a paste from anywhere."
+      },
+      "tl.so.tilo.slides.Slide.delete_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Deletes an element."
+      },
+      "tl.so.tilo.slides.Slide.delete_element_at.Arguments": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "description": "Deletes the element of `s` whose id is `target`, as the stage's delete names it."
+      },
+      "tl.so.tilo.slides.Slide.bring_to_front.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Brings an element to the front."
+      },
+      "tl.so.tilo.slides.Slide.send_to_back.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Sends an element to the back."
+      },
+      "tl.so.tilo.slides.Slide.move_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "e",
+          "x",
+          "y"
+        ],
+        "description": "Moves an element to a place on the slide, as a drag or the arrow keys place it."
+      },
+      "tl.so.tilo.slides.Slide.move_element_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "at": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "target",
+          "at"
+        ],
+        "description": "Moves the element `target` names to `at`, as a drag on the stage reports it."
+      },
+      "tl.so.tilo.slides.Slide.nudge_element_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "dx": {
+            "type": "integer"
+          },
+          "dy": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target",
+          "dx",
+          "dy"
+        ],
+        "description": "Nudges the element `target` names by `dx` and `dy` slide units."
+      },
+      "tl.so.tilo.slides.Slide.resize_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          },
+          "at": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "e",
+          "at"
+        ],
+        "description": "Sizes an element, as dragging its edge does."
+      },
+      "tl.so.tilo.slides.Slide.resize_element_to.Arguments": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "at": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "target",
+          "at"
+        ],
+        "description": "Sizes the element `target` names, as a drag on its edge reports it."
+      },
+      "tl.so.tilo.slides.Slide.set_layout.Arguments": {
+        "type": "object",
+        "properties": {
+          "layout": {
+            "choice_labels": {
+              "blank": "Blank",
+              "section": "Section",
+              "title": "Title",
+              "title_content": "Title content",
+              "two_column": "Two column"
+            },
+            "enum": [
+              "title",
+              "title_content",
+              "two_column",
+              "section",
+              "blank"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "layout"
+        ],
+        "description": "Sets a slide's layout."
+      },
+      "tl.so.tilo.slides.Slide.set_background.Arguments": {
+        "type": "object",
+        "properties": {
+          "background": {
+            "choice_labels": {
+              "accent": "Accent",
+              "deep": "Deep",
+              "surface": "Surface"
+            },
+            "enum": [
+              "surface",
+              "accent",
+              "deep"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "background"
+        ],
+        "description": "Sets what a slide stands on."
+      },
+      "tl.so.tilo.slides.Slide.set_notes.Arguments": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "notes"
+        ],
+        "description": "Writes what the speaker says over a slide."
+      },
+      "tl.so.tilo.slides.Slide.cut_element.Arguments": {
+        "type": "object",
+        "properties": {
+          "e": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.slides.Element",
+            "type": "object"
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "description": "Cuts the chosen element: its JSON to the clipboard as another deck pastes it, and the element\noff the slide."
+      },
+      "tl.so.tilo.slides.Slide.paste_element.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Pastes an element from the clipboard onto a slide, nudged clear of the one it came from."
+      },
+      "tl.so.tilo.slides.Slide.add_picture.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Puts a chosen picture on the slide."
+      },
+      "tl.so.tilo.slides.Element.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.Element.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "body",
+              "src",
+              "fill",
+              "stroke"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Element.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "bold",
+              "italic"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Element.edit-block.Arguments": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "description": "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: body",
+            "type": "string"
+          },
+          "text": {
+            "description": "What the paragraph says, as Markdown.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block",
+          "text"
+        ],
+        "description": "Set one paragraph of a rich-text field to what a Markdown text says."
+      },
+      "tl.so.tilo.slides.Element.insert-block.Arguments": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "description": "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: body",
+            "type": "string"
+          },
+          "text": {
+            "description": "What the paragraph says, as Markdown.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block",
+          "text"
+        ],
+        "description": "Put a paragraph before the one the address names."
+      },
+      "tl.so.tilo.slides.Element.delete-block.Arguments": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "description": "The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "block"
+        ],
+        "description": "Remove the paragraph the address names, and the paragraphs it holds."
+      },
+      "tl.so.tilo.slides.Element.set_style.Arguments": {
+        "type": "object",
+        "properties": {
+          "fill": {
+            "type": "string"
+          },
+          "stroke": {
+            "type": "string"
+          },
+          "stroke_width": {
+            "type": "number"
+          },
+          "font_size": {
+            "type": "number"
+          },
+          "align": {
+            "choice_labels": {
+              "center": "Center",
+              "justify": "Justify",
+              "left": "Left",
+              "right": "Right"
+            },
+            "enum": [
+              "left",
+              "center",
+              "right",
+              "justify"
+            ],
+            "type": "string"
+          },
+          "bold": {
+            "type": "boolean"
+          },
+          "italic": {
+            "type": "boolean"
+          },
+          "radius": {
+            "type": "number"
+          }
+        },
+        "required": [],
+        "description": "Sets what an element is painted with, as the inspector's swatches do."
+      },
+      "tl.so.tilo.slides.Element.copy_element.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Copies the chosen element to the clipboard as the JSON another deck pastes."
+      },
+      "tl.so.tilo.slides.DeckFile.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.DeckFile.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "palette",
+              "look"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.DeckFile.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.SlideFile.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.SlideFile.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "id",
+              "layout",
+              "background",
+              "notes"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.SlideFile.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.ElementFile.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.ElementFile.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "id",
+              "kind",
+              "text",
+              "src",
+              "fill",
+              "stroke",
+              "align"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.ElementFile.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "bold",
+              "italic"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Outline.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.Outline.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Outline.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Colours.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.slides.Colours.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "accent",
+              "accent_soft",
+              "accent_deep",
+              "surface",
+              "surface_dim",
+              "deep",
+              "text",
+              "text_dim",
+              "on_accent",
+              "success",
+              "warning",
+              "danger",
+              "info"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.Colours.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.slides.read_presentation.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Reads the deck a presentation file holds."
       },
       "tl.so.tilo.snippets.Snippet.$create.Arguments": {
         "type": "object",
@@ -93438,6 +94396,33 @@
         ],
         "description": ""
       },
+      "settings.input.set-keyboard-layout.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "settings.input.set-keyboard-layouts.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
       "settings.input.set-caps-lock.Arguments": {
         "type": "object",
         "properties": {
@@ -94994,90 +95979,6 @@
       "arguments": "#/components/schemas/tilo.messages.export-content.Arguments"
     },
     {
-      "app": "so.tilo.messages",
-      "resource": "tilo.accounts",
-      "action": "publish-browser-identity",
-      "arguments": "#/components/schemas/tilo.accounts.publish-browser-identity.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.accounts",
-      "action": "save-account",
-      "arguments": "#/components/schemas/tilo.accounts.save-account.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.accounts",
-      "action": "report-sync",
-      "arguments": "#/components/schemas/tilo.accounts.report-sync.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.accounts",
-      "action": "remove-account",
-      "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "project-contact",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "remove-contact",
-      "arguments": "#/components/schemas/tilo.contacts.identities.remove-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "confirm-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.confirm-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "confirm-account",
-      "arguments": "#/components/schemas/tilo.contacts.identities.confirm-account.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "replace-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.replace-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "replace-account",
-      "arguments": "#/components/schemas/tilo.contacts.identities.replace-account.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "project-phones",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-phones.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "project-emails",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-emails.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "project-contacts",
-      "arguments": "#/components/schemas/tilo.contacts.identities.project-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.contacts.identities",
-      "action": "forget-endpoint",
-      "arguments": "#/components/schemas/tilo.contacts.identities.forget-endpoint.Arguments"
-    },
-    {
       "app": "so.tilo.osk",
       "resource": "osk.keyboard",
       "action": "set-layout",
@@ -95208,96 +96109,6 @@
       "resource": "remote.connection-list",
       "action": "mark-used",
       "arguments": "#/components/schemas/remote.connection-list.mark-used.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "add-slide",
-      "arguments": "#/components/schemas/slides.deck.add-slide.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "add-slides",
-      "arguments": "#/components/schemas/slides.deck.add-slides.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "insert-slide",
-      "arguments": "#/components/schemas/slides.deck.insert-slide.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "duplicate-slide",
-      "arguments": "#/components/schemas/slides.deck.duplicate-slide.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "delete-slide",
-      "arguments": "#/components/schemas/slides.deck.delete-slide.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "move-slide",
-      "arguments": "#/components/schemas/slides.deck.move-slide.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "set-text",
-      "arguments": "#/components/schemas/slides.deck.set-text.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "add-element",
-      "arguments": "#/components/schemas/slides.deck.add-element.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "insert-element",
-      "arguments": "#/components/schemas/slides.deck.insert-element.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "delete-element",
-      "arguments": "#/components/schemas/slides.deck.delete-element.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "bring-to-front",
-      "arguments": "#/components/schemas/slides.deck.bring-to-front.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "send-to-back",
-      "arguments": "#/components/schemas/slides.deck.send-to-back.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "replace-deck",
-      "arguments": "#/components/schemas/slides.deck.replace-deck.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "read-deck",
-      "arguments": "#/components/schemas/slides.deck.read-deck.Arguments"
-    },
-    {
-      "app": "so.tilo.slides",
-      "resource": "slides.deck",
-      "action": "export-pptx-content",
-      "arguments": "#/components/schemas/slides.deck.export-pptx-content.Arguments"
     },
     {
       "app": "so.tilo.terminal",
@@ -97198,12 +98009,6 @@
     {
       "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.Page",
-      "action": "update_download",
-      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.update_download.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tl.so.tilo.browser.Page",
       "action": "open_from_page",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.open_from_page.Arguments"
     },
@@ -97350,24 +98155,6 @@
       "resource": "tl.so.tilo.browser.Page",
       "action": "download",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Page.download.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tl.so.tilo.browser.Page",
-      "action": "cancel_download",
-      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.cancel_download.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tl.so.tilo.browser.Page",
-      "action": "retry_download",
-      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.retry_download.Arguments"
-    },
-    {
-      "app": "so.tilo.browser",
-      "resource": "tl.so.tilo.browser.Page",
-      "action": "cancel_all_downloads",
-      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.cancel_all_downloads.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -97827,6 +98614,66 @@
     },
     {
       "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Download",
+      "action": "cancel_download",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Download.cancel_download.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Download",
+      "action": "retry_download",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Download.retry_download.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadJob",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadJob.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadJob",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadJob.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadJob",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadJob.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadJob",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadJob.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.DownloadAsk",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.DownloadAsk.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.SiteInfo",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.browser.SiteInfo.$create.Arguments"
@@ -98268,6 +99115,12 @@
       "resource": "tl.so.tilo.browser.Browser",
       "action": "import_bookmarks",
       "arguments": "#/components/schemas/tl.so.tilo.browser.Browser.import_bookmarks.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser",
+      "action": "cancel_all_downloads",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.cancel_all_downloads.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -110798,6 +111651,12 @@
       "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.dropped.Arguments"
     },
     {
+      "app": "so.tilo.lang.gallery",
+      "resource": "tl.so.tilo.lang.gallery",
+      "action": "note_hint",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.note_hint.Arguments"
+    },
+    {
       "app": "so.tilo.git-client",
       "resource": "tilolang.personal",
       "action": "view-state",
@@ -115636,8 +116495,20 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
-      "action": "keep_facts",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.keep_facts.Arguments"
+      "action": "learn",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.learn.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "keep",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.keep.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "rewrite",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.rewrite.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -115732,14 +116603,38 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
+      "action": "copy_part",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.copy_part.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
       "action": "copy_origins",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.copy_origins.Arguments"
     },
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Item",
-      "action": "carry",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.carry.Arguments"
+      "action": "shown_part",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.shown_part.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "reveal",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.reveal.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "access",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.access.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Item",
+      "action": "take_back",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Item.take_back.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -115780,6 +116675,12 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Vault",
+      "action": "add_new",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.add_new.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Vault",
       "action": "new_item",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.new_item.Arguments"
     },
@@ -115810,8 +116711,20 @@
     {
       "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.Vault",
+      "action": "carry",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.carry.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Vault",
       "action": "preview_csv",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.preview_csv.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Vault",
+      "action": "add_read",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.add_read.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -115830,6 +116743,12 @@
       "resource": "tl.so.tilo.passwords.Vault",
       "action": "clear_pending",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.clear_pending.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Vault",
+      "action": "held_items",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Vault.held_items.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -115893,6 +116812,96 @@
     },
     {
       "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Shown",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Shown.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Shown",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Shown.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Shown",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Shown.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.ShownField",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ShownField.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.ShownField",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ShownField.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.ShownField",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ShownField.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Access",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Access.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Access",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Access.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Access",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Access.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Use",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Use.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Use",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Use.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Use",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Use.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Leave",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Leave.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Leave",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Leave.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.Leave",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.Leave.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
       "resource": "tl.so.tilo.passwords.TypedAsk",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.TypedAsk.$create.Arguments"
@@ -115908,6 +116917,24 @@
       "resource": "tl.so.tilo.passwords.TypedAsk",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.TypedAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.TokenAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.TokenAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.TokenAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.TokenAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.TokenAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.TokenAnswer.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -115983,57 +117010,111 @@
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CountAnswer",
+      "resource": "tl.so.tilo.passwords.HeldItem",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CountAnswer.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldItem.$create.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CountAnswer",
+      "resource": "tl.so.tilo.passwords.HeldItem",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CountAnswer.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldItem.edit-text.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CountAnswer",
+      "resource": "tl.so.tilo.passwords.HeldItem",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CountAnswer.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldItem.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoredAnswer",
+      "resource": "tl.so.tilo.passwords.HeldField",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoredAnswer.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldField.$create.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoredAnswer",
+      "resource": "tl.so.tilo.passwords.HeldField",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoredAnswer.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldField.edit-text.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.RestoredAnswer",
+      "resource": "tl.so.tilo.passwords.HeldField",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.RestoredAnswer.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldField.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CarriedAnswer",
+      "resource": "tl.so.tilo.passwords.HeldItems",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CarriedAnswer.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldItems.$create.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CarriedAnswer",
+      "resource": "tl.so.tilo.passwords.HeldItems",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CarriedAnswer.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldItems.edit-text.Arguments"
     },
     {
       "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords.CarriedAnswer",
+      "resource": "tl.so.tilo.passwords.HeldItems",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.CarriedAnswer.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.HeldItems.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.DeviceItems",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItems.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.DeviceItems",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItems.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.DeviceItems",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceItems.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.DeviceRemove",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceRemove.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.DeviceRemove",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceRemove.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.DeviceRemove",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.DeviceRemove.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.ToFile",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ToFile.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.ToFile",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ToFile.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "tl.so.tilo.passwords.ToFile",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.passwords.ToFile.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -116052,12 +117133,6 @@
       "resource": "tl.so.tilo.passwords.UrlAnswer",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.passwords.UrlAnswer.edit-flag.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "tl.so.tilo.passwords",
-      "action": "keep_typed",
-      "arguments": "#/components/schemas/tl.so.tilo.passwords.keep_typed.Arguments"
     },
     {
       "app": "so.tilo.pdf-viewer",
@@ -116998,6 +118073,12 @@
     {
       "app": "so.tilo.photos",
       "resource": "tl.so.tilo.photos.Photo",
+      "action": "check_picture",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.check_picture.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
       "action": "toggle_favorite",
       "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.toggle_favorite.Arguments"
     },
@@ -117022,6 +118103,12 @@
     {
       "app": "so.tilo.photos",
       "resource": "tl.so.tilo.photos.Photo",
+      "action": "develop",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.develop.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
       "action": "describe_photo",
       "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.describe_photo.Arguments"
     },
@@ -117042,6 +118129,12 @@
       "resource": "tl.so.tilo.photos.Photo",
       "action": "tag_photo",
       "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.tag_photo.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Photo",
+      "action": "analyze_photo",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Photo.analyze_photo.Arguments"
     },
     {
       "app": "so.tilo.photos",
@@ -117294,6 +118387,42 @@
       "resource": "tl.so.tilo.photos.Library",
       "action": "remove_album",
       "arguments": "#/components/schemas/tl.so.tilo.photos.Library.remove_album.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "start_album_draft",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.start_album_draft.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "album_draft_toggle",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.album_draft_toggle.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "cancel_album_draft",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.cancel_album_draft.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "save_album",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.save_album.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "delete_album_draft",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.delete_album_draft.Arguments"
+    },
+    {
+      "app": "so.tilo.photos",
+      "resource": "tl.so.tilo.photos.Library",
+      "action": "dismiss_notice",
+      "arguments": "#/components/schemas/tl.so.tilo.photos.Library.dismiss_notice.Arguments"
     },
     {
       "app": "so.tilo.photos",
@@ -121464,6 +122593,498 @@
       "resource": "tl.so.tilo.shortcuts",
       "action": "catalogue_summary",
       "arguments": "#/components/schemas/tl.so.tilo.shortcuts.catalogue_summary.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.tilo.host.Notice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "add_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.add_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "add_authored_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.add_authored_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "add_slides",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.add_slides.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "duplicate_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.duplicate_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "duplicate_current_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.duplicate_current_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "delete_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.delete_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "move_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.move_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "reorder_slides",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.reorder_slides.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "set_text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.set_text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "set_palette",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.set_palette.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "set_look",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.set_look.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "set_title",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.set_title.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "read_deck",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.read_deck.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "open_presentation",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.open_presentation.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "export_odp",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.export_odp.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "export_pptx",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.export_pptx.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "adopt",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.adopt.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "clear_notice",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.clear_notice.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "import_file",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.import_file.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "import_files",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.import_files.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "begin_presenting",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.begin_presenting.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "end_presenting",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.end_presenting.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "pause_clock",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.pause_clock.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "resume_clock",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.resume_clock.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Deck",
+      "action": "adopt_slide",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Deck.adopt_slide.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "edit-block",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.edit-block.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "insert-block",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.insert-block.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "delete-block",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.delete-block.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "duplicate_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.duplicate_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "add_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.add_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "insert_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.insert_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "delete_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.delete_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "delete_element_at",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.delete_element_at.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "bring_to_front",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.bring_to_front.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "send_to_back",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.send_to_back.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "move_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.move_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "move_element_to",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.move_element_to.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "nudge_element_to",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.nudge_element_to.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "resize_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.resize_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "resize_element_to",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.resize_element_to.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "set_layout",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.set_layout.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "set_background",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.set_background.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "set_notes",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.set_notes.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "cut_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.cut_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "paste_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.paste_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Slide",
+      "action": "add_picture",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Slide.add_picture.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "edit-block",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.edit-block.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "insert-block",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.insert-block.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "delete-block",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.delete-block.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "set_style",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.set_style.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Element",
+      "action": "copy_element",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Element.copy_element.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.DeckFile",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.DeckFile.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.DeckFile",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.DeckFile.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.DeckFile",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.DeckFile.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.SlideFile",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.SlideFile.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.SlideFile",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.SlideFile.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.SlideFile",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.SlideFile.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.ElementFile",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.ElementFile.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.ElementFile",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.ElementFile.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.ElementFile",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.ElementFile.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Outline",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Outline.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Outline",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Outline.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Outline",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Outline.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Colours",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Colours.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Colours",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Colours.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides.Colours",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.Colours.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.slides",
+      "resource": "tl.so.tilo.slides",
+      "action": "read_presentation",
+      "arguments": "#/components/schemas/tl.so.tilo.slides.read_presentation.Arguments"
     },
     {
       "app": "so.tilo.snippets",
@@ -127926,6 +129547,18 @@
       "resource": "settings.input",
       "action": "set-layouts",
       "arguments": "#/components/schemas/settings.input.set-layouts.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.input",
+      "action": "set-keyboard-layout",
+      "arguments": "#/components/schemas/settings.input.set-keyboard-layout.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.input",
+      "action": "set-keyboard-layouts",
+      "arguments": "#/components/schemas/settings.input.set-keyboard-layouts.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

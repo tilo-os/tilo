@@ -165,7 +165,23 @@ pub(super) async fn run_mount(
         Some(root) => fs.with_kept_prefetch_history(root, workspace_id),
         None => fs,
     };
-    fs.resume_pending_evictions();
+    // Resuming the evictions a restart interrupted waits on this device's store through the
+    // hydrator's synchronous bridge, which a thread driving this runtime must not do: it runs on a
+    // thread of its own while the mount waits for it.
+    let fs = {
+        let (resumed, done) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("tilo-fs-evictions".into())
+            .spawn(move || {
+                fs.resume_pending_evictions();
+                let _ = resumed.send(fs);
+            })
+            .map_err(|error| {
+                anyhow::anyhow!("a thread to resume the mount's evictions: {error}")
+            })?;
+        done.await
+            .map_err(|_| anyhow::anyhow!("resuming the mount's pending evictions stopped"))?
+    };
     // Bytes accepted by fsync, or whose commit failed, are staged per workspace so they survive a
     // crash or unmount and are replayed here.
     let unsaved_dir = predictive_cache_root

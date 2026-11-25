@@ -31,8 +31,8 @@ use std::time::Duration;
 
 use collab_types::scope::Scope;
 use tilo_actions::remote::{
-    ActionCallError, Caller, Pending, RemoteActionMessage, ResourceAddress, ResourceCopy,
-    ResourceReadRequest, ResourceReads, ResourceWake,
+    ActionCallError, Caller, ReadsAnswer, ResourceAddress, ResourceCopy, ResourceReads,
+    ResourceWake, reads_answer,
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
@@ -265,6 +265,7 @@ fn bind(
 /// * This device's own scope admits its person's devices as the record of them keeps them, less
 ///   the ones they took back and the ones whose certificate ran out, and only in their own
 ///   workspace. `person` is that record, `own` this device's certificate.
+///
 /// The keys a workspace's live session seals under here, or why it holds none.
 enum SessionKeys {
     Ready(tilo_live::frame::LiveKeys),
@@ -1014,28 +1015,59 @@ impl Live {
                 .cloned()
         };
         if let Some(call) = kept {
-            match keys {
-                SessionKeys::Ready(keys) => {
-                    let gate = self.call_gate(workspace);
-                    call.refresh(keys, &devices, gate);
-                    call.hand_call_keys(self.shared.workspaces.copies()).await;
-                    self.shared.note_session(
-                        workspace,
-                        SessionState::Open {
-                            relay: serving,
-                            name: relay_name,
-                            epoch: call.epoch(),
-                        },
-                    );
-                }
-                SessionKeys::Waiting => self
-                    .shared
-                    .note_session(workspace, SessionState::WaitingForKeys),
-                SessionKeys::Keyless => self.shared.note_session(workspace, SessionState::Keyless),
-            }
+            self.refresh_call(workspace, &call, keys, &devices, serving, relay_name)
+                .await;
             return;
         }
         self.drop_call(workspace);
+        self.open_call(workspace, held, &devices, keys, serving, away, relay_name)
+            .await;
+    }
+
+    /// The call this device already holds for `workspace`, taken up as its keys, the workspace's
+    /// devices and its relay are now.
+    async fn refresh_call(
+        &self,
+        workspace: WorkspaceId,
+        call: &Arc<super::live_call::CallSession>,
+        keys: SessionKeys,
+        devices: &[Device],
+        serving: [u8; 32],
+        relay_name: String,
+    ) {
+        match keys {
+            SessionKeys::Ready(keys) => {
+                let gate = self.call_gate(workspace);
+                call.refresh(keys, devices, gate);
+                call.hand_call_keys(self.shared.workspaces.copies()).await;
+                self.shared.note_session(
+                    workspace,
+                    SessionState::Open {
+                        relay: serving,
+                        name: relay_name,
+                        epoch: call.epoch(),
+                    },
+                );
+            }
+            SessionKeys::Waiting => self
+                .shared
+                .note_session(workspace, SessionState::WaitingForKeys),
+            SessionKeys::Keyless => self.shared.note_session(workspace, SessionState::Keyless),
+        }
+    }
+
+    /// This device's call for `workspace`, joined where it holds none: its own relay serves it, or
+    /// the device that holds the workspace does.
+    async fn open_call(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        held: Held,
+        devices: &[Device],
+        keys: SessionKeys,
+        serving: [u8; 32],
+        away: Option<iroh::EndpointAddr>,
+        relay_name: String,
+    ) {
         let SessionKeys::Ready(keys) = keys else {
             self.shared.note_session(
                 workspace,
@@ -1046,6 +1078,7 @@ impl Live {
             );
             return;
         };
+        let own = self.shared.device;
         let gate = self.call_gate(workspace);
         let roster = Roster::new(devices.iter().map(|device| device.device));
         let local = matches!(held, Held::Governs).then_some(&self.relay);
@@ -1053,14 +1086,16 @@ impl Live {
         match super::live_call::CallSession::join(
             local,
             away,
-            &self.endpoint,
-            &certificate,
-            serving,
-            own,
-            workspace,
-            keys,
-            roster,
-            self.base_word(&devices),
+            super::live_call::Joining {
+                endpoint: &self.endpoint,
+                certificate: &certificate,
+                relay: serving,
+                device: own,
+                workspace,
+                keys,
+                roster,
+                base: self.base_word(devices),
+            },
         )
         .await
         {
@@ -1122,8 +1157,7 @@ impl Live {
     fn base_word(&self, devices: &[Device]) -> tilo_live::presence::Own {
         let cert = self.shared.workspaces.device_cert();
         let name = tilo_user_identity::device_name(&cert.device_label)
-            .map(str::to_owned)
-            .unwrap_or_else(|| name_of(devices, self.shared.device));
+            .map_or_else(|| name_of(devices, self.shared.device), str::to_owned);
         tilo_live::presence::Own {
             label: name.clone(),
             device: name,
@@ -1233,43 +1267,38 @@ impl link::Calls for Live {
 struct TurnedAwayReads(Arc<Shared>);
 
 impl ResourceReads for TurnedAwayReads {
-    fn read(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        if address.app != link::TURNED_AWAY || !address.record.is_empty() {
-            return Ok(ResourceCopy::Absent);
-        }
-        // The revision first: a refusal while the lists are read moves it past this one.
-        let revision = self.0.turned_revision.load(Ordering::Relaxed).to_string();
-        serde_json::to_value(self.0.turned_rows())
-            .map(|value| ResourceCopy::reading(value, Some(revision)))
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            if address.app != link::TURNED_AWAY || !address.record.is_empty() {
+                return Ok(ResourceCopy::Absent);
+            }
+            // The revision first: a refusal while the lists are read moves it past this one.
+            let revision = self.0.turned_revision.load(Ordering::Relaxed).to_string();
+            serde_json::to_value(self.0.turned_rows())
+                .map(|value| ResourceCopy::reading(value, Some(revision)))
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        let mut waiting = self.0.turned_waiting.lock_recover();
-        waiting.retain(ResourceWake::waiting);
-        waiting.push(wake.clone());
-        drop(waiting);
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        reads_answer(async move {
+            let mut waiting = self.0.turned_waiting.lock_recover();
+            waiting.retain(ResourceWake::waiting);
+            waiting.push(wake.clone());
+            drop(waiting);
+            Ok(())
+        })
     }
 }
 
@@ -1298,42 +1327,37 @@ impl SessionReads {
 }
 
 impl ResourceReads for SessionReads {
-    fn read(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        if address.app != link::SESSIONS || !address.record.is_empty() {
-            return Ok(ResourceCopy::Absent);
-        }
-        let revision = self.0.sessions_revision.load(Ordering::Relaxed).to_string();
-        serde_json::to_value(Self::rows(&self.0))
-            .map(|value| ResourceCopy::reading(value, Some(revision)))
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            if address.app != link::SESSIONS || !address.record.is_empty() {
+                return Ok(ResourceCopy::Absent);
+            }
+            let revision = self.0.sessions_revision.load(Ordering::Relaxed).to_string();
+            serde_json::to_value(Self::rows(&self.0))
+                .map(|value| ResourceCopy::reading(value, Some(revision)))
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        let mut waiting = self.0.sessions_waiting.lock_recover();
-        waiting.retain(ResourceWake::waiting);
-        waiting.push(wake.clone());
-        drop(waiting);
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        reads_answer(async move {
+            let mut waiting = self.0.sessions_waiting.lock_recover();
+            waiting.retain(ResourceWake::waiting);
+            waiting.push(wake.clone());
+            drop(waiting);
+            Ok(())
+        })
     }
 }
 

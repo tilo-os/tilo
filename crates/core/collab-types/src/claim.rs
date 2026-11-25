@@ -442,8 +442,12 @@ pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting,
         .ok_or(ClaimError::NoInvoker)?;
     Ok(match &stamp.acted_for {
         // The agent works for the person its stamp names, so every receiver
-        // decides it as that person's agent, never as a bare name.
-        Some(person) => acting.acting_for(tilo_action_policy::Acting::person(person.clone())),
+        // decides it as that person's agent, never as a bare name. An agent named beside its
+        // person had its session handed to it by a device of that person: an agent with a key of
+        // its own signs with that key and keeps the call it made.
+        Some(person) => acting
+            .handed()
+            .acting_for(tilo_action_policy::Acting::person(person.clone())),
         None => acting,
     })
 }

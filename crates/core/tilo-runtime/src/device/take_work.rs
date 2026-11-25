@@ -451,7 +451,7 @@ impl Member {
         key: &SigningKey,
         login: &tilo_device_identity::login::Device,
     ) -> Result<(), String> {
-        enter_from_login(&self.workspaces, key, login).await
+        Box::pin(enter_from_login(&self.workspaces, key, login)).await
     }
 }
 

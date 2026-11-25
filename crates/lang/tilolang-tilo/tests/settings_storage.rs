@@ -22,7 +22,8 @@ fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
-/// The app as it ships, with the platform's packages it reads through.
+/// The app as it ships, with the platform's packages it reads through and the fleet's native ones
+/// (the migration engine its account rows ask).
 fn settings() -> (Host, tilolang::Compiled) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
@@ -30,8 +31,9 @@ fn settings() -> (Host, tilolang::Compiled) {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
     )
     .expect("its ids parse");
-    let metas =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let fleet = vec![dir.parent().expect("apps/tl").to_path_buf()];
+    let metas = tilolang_tilo::catalogue::published_packages(&fleet)
+        .expect("the platform's and the fleet's packages read");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
     let host = Host::new(me(), || None).expect("a host");
@@ -495,7 +497,10 @@ fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
     );
     view.fire_with(&space, "change", Some(&Value::text("25 GB")))
         .expect("the space is chosen");
-    assert_eq!(sent.argument("set-cache-size", "size"), Value::text("25 GB"));
+    assert_eq!(
+        sent.argument("set-cache-size", "size"),
+        Value::text("25 GB")
+    );
 
     // A device that fetches nothing ahead says so on the same switch.
     let off = READING.replace("\"prefetch\": true", "\"prefetch\": false");
@@ -583,4 +588,69 @@ fn a_device_that_cannot_read_what_it_holds_says_why() {
         "{:?}",
         shown(&view)
     );
+}
+
+/// The key of the button the pane shows labelled `label`.
+fn button(view: &ViewInstance, label: &str) -> String {
+    view.tree()
+        .of_kind("ui.Button")
+        .into_iter()
+        .find(|button| button.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("the pane offers a `{label}` button: {:?}", shown(view)))
+        .key
+        .clone()
+}
+
+/// The tools a person manages disks and backups in open their own app through the session, as
+/// any other app is opened: the pane sends `open-app` for Disks and for Backups, in the order it
+/// offers them, and says what each tool holds.
+#[test]
+fn the_pane_opens_disks_and_backups_through_the_session() {
+    let (host, _) = settings();
+    let sent = Sent::default();
+    host.runtime().set_foreign_invoker(sent.clone());
+    let view = open_storage_pane(&host);
+
+    let disks = button(&view, "Open Disks");
+    view.press(&disks).expect("the Disks row opens Disks");
+    let backups = button(&view, "Open Backups");
+    view.press(&backups).expect("the Backups row opens Backups");
+
+    let opened: Vec<String> = sent
+        .0
+        .borrow()
+        .iter()
+        .filter_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "open-app" => {
+                args.first().and_then(|(_, app)| match app {
+                    Value::Text(app) => Some(app.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        ["so.tilo.disks", "so.tilo.backups"],
+        "each row asks the session to open its app: {:?}",
+        sent.0.borrow()
+    );
+
+    for expected in [
+        "Storage tools",
+        "Disks",
+        "Partitions, formatting, drive health, and removable media",
+        "Open Disks",
+        "Backups",
+        "Backup history, schedules, retention, and restore",
+        "Open Backups",
+        "Use Backups to protect files before making storage changes.",
+    ] {
+        assert!(
+            has(&view, expected),
+            "`{expected}` is shown: {:?}",
+            shown(&view)
+        );
+    }
 }

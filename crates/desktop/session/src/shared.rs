@@ -223,6 +223,14 @@ impl Shared {
             return None;
         };
         let followed = sync.own().following;
+        // What protected the view from the gesture that asked to follow — or to look at the person
+        // followed — holds until that gesture is over: a press whose frames straddle two passes is
+        // still that press, and does not take the view back between them. Once nothing is under
+        // way, the next thing the person does is their own work and may.
+        let working = self.underway.get().holds();
+        if !working {
+            sync.forget_follow_asked();
+        }
         if self.follow.borrow().idle(followed.as_deref()) {
             return None;
         }
@@ -240,13 +248,12 @@ impl Shared {
             .and_then(|id| tilo_session_core::desktop::here::followed_member(&people, id));
         let owed = self.follow.borrow_mut().owe(
             followed,
-            self.underway.get().holds(),
+            working,
             sync.follow_asked(),
             &places,
             member,
             &self.active_workspace_id(),
         )?;
-        sync.forget_follow_asked();
         if owed.ended {
             sync.stop_following();
         }

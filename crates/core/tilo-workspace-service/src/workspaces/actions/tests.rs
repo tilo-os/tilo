@@ -3006,14 +3006,11 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
             record: tilo_server_protocol::workspaces::member_record(&cert.user_public_key),
         };
         async move {
-            tokio::task::spawn_blocking(move || {
-                tilo_actions::remote::ResourceReads::read(&*reads, &caller, &address)
-            })
-            .await
-            .expect("the read ran")
-            .expect("the owner reads the workspace's memberships")
-            .readable()
-            .expect("a membership reads")
+            tilo_actions::remote::ResourceReads::read(&*reads, &caller, &address)
+                .await
+                .expect("the owner reads the workspace's memberships")
+                .readable()
+                .expect("a membership reads")
         }
     };
     assert_eq!(

@@ -194,12 +194,7 @@ impl Apps {
         // connection from it as the app it runs.
         let launched: Arc<Launched> = Arc::default();
         Self {
-            instances: instances::Instances::new(
-                profile,
-                &sockets,
-                finds_launcher,
-                Arc::clone(&launched),
-            ),
+            instances: instances::Instances::new(&sockets, finds_launcher, Arc::clone(&launched)),
             catalog,
             root: profile.to_path_buf(),
             sockets,
@@ -290,6 +285,12 @@ impl Apps {
     /// as, from now on.
     pub(crate) fn keep_person(&self, person: &str) {
         self.instances.keep_person(person.to_owned());
+    }
+
+    /// Keep the files people choose for hosted apps in the device's records from now on.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {
+        self.instances.keep_chosen_records(records);
     }
 
     /// This daemon's tilolang processes, which start every tilolang process it runs.
@@ -599,10 +600,8 @@ impl Apps {
                 &original,
                 (origin, socket.as_fd()),
             )?;
-            if let Some(pid) = connectors::pid(&child) {
-                self.record_started(pid, app_id, workspace);
-            }
-            return Ok(child);
+            self.record_started(connectors::pid(&child), app_id, workspace);
+            Ok(child)
         }
         #[cfg(target_os = "macos")]
         {
@@ -610,7 +609,7 @@ impl Apps {
             if let Some(pid) = connectors::pid(&child) {
                 self.record_started(pid, app_id, workspace);
             }
-            return Ok(child);
+            Ok(child)
         }
         #[cfg(target_os = "android")]
         {

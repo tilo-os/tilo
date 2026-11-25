@@ -28,9 +28,12 @@ pub struct Published {
     rest: Option<std::sync::Arc<dyn PublishedResources>>,
     /// The watches this table minted, and the provider each was asked of: the numbers are this
     /// table's, so watches of two providers never collide.
-    watches: Mutex<HashMap<u64, (std::sync::Arc<dyn PublishedResources>, ResourceWatch)>>,
+    watches: Mutex<Watches>,
     next_watch: AtomicU64,
 }
+
+/// The watches this table minted, by their number: the provider each was asked of, and its watch.
+type Watches = HashMap<u64, (std::sync::Arc<dyn PublishedResources>, ResourceWatch)>;
 
 impl Published {
     /// A table that serves nothing yet.
@@ -119,7 +122,8 @@ impl PublishedResources for Published {
     }
 
     fn unwatch(&self, watch: ResourceWatch) {
-        if let Some((provider, inner)) = self.watches.lock_recover().remove(&watch.id()) {
+        let watch = self.watches.lock_recover().remove(&watch.id());
+        if let Some((provider, inner)) = watch {
             provider.unwatch(inner);
         }
     }

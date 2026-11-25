@@ -235,7 +235,7 @@ tilo_test_env::scenario! {
     // A document a file opened in is named by the file's path, and kept under its storage key: its
     // write is noted by the record's route, and the notice opens that record.
     {
-        let file = DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let file = DocumentId::for_file("/run/tilo/chosen/records/0/Budget for Friday.txt");
         let route = file.route().to_owned();
         let written = notebook_at(&file, "Ask @Bea about the date", Some((4, 8, BEA)), ADA);
         let device = Device::holding(&[(NOTES, &route, &written)]);

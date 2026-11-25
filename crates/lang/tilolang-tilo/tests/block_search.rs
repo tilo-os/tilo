@@ -199,7 +199,10 @@ fn search_within(
             .expect("the index takes what the window publishes");
     }
     // The device's search, as its daemon answers the person, who may read all of it.
-    let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
+    let search = IndexSearch::new(
+        Arc::new(index),
+        tilo_workspace_service::search::deciding(|_, _| true),
+    );
     let content = IndexedContent::new(
         Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),

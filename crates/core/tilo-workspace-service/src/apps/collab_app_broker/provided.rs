@@ -24,6 +24,9 @@ enum RegisteredAdmission {
     Taken(InvocationReceipt),
     /// A call to take.
     Call(RegisteredCall),
+    /// The provider describes the action only once its listing answers, which it has not yet:
+    /// nothing is reserved, and the call is admitted again with what the listing describes.
+    Undescribed,
 }
 
 /// A call of a registered provider, admitted and not yet taken.
@@ -116,6 +119,15 @@ fn descriptor_of(
         .find(|action| &action.address == address)
 }
 
+/// The query that lists everything `registered` offers, from its first page.
+fn listing(registered: &Registered) -> tilo_actions::remote::CatalogueQuery {
+    tilo_actions::remote::CatalogueQuery {
+        provider: Some(registered.provider.to_string()),
+        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+        ..tilo_actions::remote::CatalogueQuery::default()
+    }
+}
+
 /// What `registered` lists for `caller`, as it answers at once: a registered provider lists what
 /// it holds, never what it must first go and ask.
 pub(super) fn rows_of(
@@ -123,11 +135,7 @@ pub(super) fn rows_of(
     caller: &Caller,
 ) -> Vec<tilo_actions::remote::CatalogueRow> {
     let mut rows = Vec::new();
-    let mut query = tilo_actions::remote::CatalogueQuery {
-        provider: Some(registered.provider.to_string()),
-        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
-        ..tilo_actions::remote::CatalogueQuery::default()
-    };
+    let mut query = listing(registered);
     loop {
         let mut listed = registered.answers.query(caller, query.clone());
         let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = listed.poll_ready() else {
@@ -265,9 +273,25 @@ impl AppBrokerState {
         registered: &Registered,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let admitted = match self.admit_registered(caller, origin, registered, request) {
+        self.invoke_described(caller, origin, registered, request, None)
+    }
+
+    /// [`Self::invoke_registered`], with the descriptor of the action it calls where the
+    /// provider's listing described it after the call came ([`RegisteredAdmission::Undescribed`]).
+    fn invoke_described(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        registered: &Registered,
+        request: &InvokeRequest,
+        described: Option<tilo_actions::ActionDescriptor>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let admitted = match self.admit_registered(caller, origin, registered, request, described) {
             Ok(RegisteredAdmission::Call(admitted)) => admitted,
             Ok(RegisteredAdmission::Taken(receipt)) => return Pending::ready(Ok(receipt)),
+            Ok(RegisteredAdmission::Undescribed) => {
+                return self.invoke_once_described(caller, origin, registered, request);
+            }
             Err(error) => return Pending::ready(Err(error)),
         };
         let asking = request.approval().is_none().then(|| {
@@ -305,14 +329,73 @@ impl AppBrokerState {
         })
     }
 
+    /// Admit `request` once `registered` describes the action it calls, asked for that one
+    /// action wherever it publishes it (the check a call makes of its row before it is invoked):
+    /// what a provider that reads its listing off the caller's thread answers (a built-in app's
+    /// record, which makes its root before it lists it). Unknown where it has no such action.
+    fn invoke_once_described(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        registered: &Registered,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let rows = registered.answers.query(
+            caller,
+            tilo_actions::remote::CatalogueQuery {
+                target: Some(request.target.address.clone()),
+                ..listing(registered)
+            },
+        );
+        let (done, answer) = tilo_actions::remote::pending();
+        let (state, caller, origin, registered, request) = (
+            Arc::clone(self),
+            caller.clone(),
+            origin.cloned(),
+            registered.clone(),
+            request.clone(),
+        );
+        rows.then(move |page| {
+            let address = &request.target.address;
+            let Some(descriptor) = page
+                .and_then(Result::ok)
+                .into_iter()
+                .flat_map(|page| page.rows)
+                .filter_map(|row| row.action)
+                .find(|action| &action.address == address)
+            else {
+                done.complete(Err(ActionCallError::UnknownAction));
+                return;
+            };
+            state
+                .invoke_described(
+                    &caller,
+                    origin.as_ref(),
+                    &registered,
+                    &request,
+                    Some(descriptor),
+                )
+                .then(move |answered| {
+                    if let Some(answered) = answered {
+                        done.complete(answered);
+                    }
+                });
+        });
+        answer
+    }
+
     /// Admit one call of a provider registered on this device for `caller`, before it is taken:
-    /// what [`Self::take_registered`] goes on with.
+    /// what [`Self::take_registered`] goes on with. `described` is the action's descriptor where
+    /// the provider's listing gave it after the call came; without it, a provider that describes
+    /// the action only once its listing answers leaves the call
+    /// [`RegisteredAdmission::Undescribed`].
     fn admit_registered(
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         registered: &Registered,
         request: &InvokeRequest,
+        described: Option<tilo_actions::ActionDescriptor>,
     ) -> Result<RegisteredAdmission, ActionCallError> {
         let abandon = |error: ActionCallError| {
             if let Ok(mut log) = self.remote_invocations.lock() {
@@ -334,9 +417,14 @@ impl AppBrokerState {
             return Err(abandon(ActionCallError::NotPermitted));
         };
         let argument = request.argument.to_slot();
-        let Some(descriptor) = descriptor_of(registered, caller, request, argument.as_deref())
+        let Some(descriptor) =
+            described.or_else(|| descriptor_of(registered, caller, request, argument.as_deref()))
         else {
-            return Err(abandon(ActionCallError::UnknownAction));
+            // Its listing has not answered yet: asked again once it does, nothing reserved.
+            if let Ok(mut log) = self.remote_invocations.lock() {
+                log.abandon(&request.invocation);
+            }
+            return Ok(RegisteredAdmission::Undescribed);
         };
         let app_id = &registered.app;
         let (workspace, policy, now) = self

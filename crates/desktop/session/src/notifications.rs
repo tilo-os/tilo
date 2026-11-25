@@ -27,10 +27,10 @@ use tilo_session_core::desktop::notifications::{
     Notification, NotificationIconKind, NotificationPerson, QuietReason, RemoteNotificationRoute,
     ScheduledNotificationTarget,
 };
-use tilo_workspace_service::workspaces::person_workspace::devices::SharedNotice;
 use tilo_session_core::desktop::state::banners::BannerAsk;
 use tilo_session_core::desktop::state::{DesktopNotifications, NotificationOutcome};
 use tilo_session_power::PowerLink;
+use tilo_workspace_service::workspaces::person_workspace::devices::SharedNotice;
 
 use crate::app_icons;
 use crate::i18n::{t, t_args};
@@ -113,13 +113,15 @@ impl KeptCentre {
         let Some(value) = self.arrived.take() else {
             return;
         };
-        let replaced = serde_json::to_vec(&value.unwrap_or_else(|| serde_json::json!({ "notifications": [] })))
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| {
-                desktop
-                    .replace_kept(&bytes, ui::time::wall())
-                    .map_err(|error| error.to_string())
-            });
+        let replaced = serde_json::to_vec(
+            &value.unwrap_or_else(|| serde_json::json!({ "notifications": [] })),
+        )
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            desktop
+                .replace_kept(&bytes, ui::time::wall())
+                .map_err(|error| error.to_string())
+        });
         if let Err(error) = replaced {
             tracing::warn!(%error, "the notification centre written elsewhere was not read");
         }

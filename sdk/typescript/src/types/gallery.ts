@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.gallery@afae45cb5fc2be55";
+export const SURFACE = "so.tilo.lang.gallery@089b6ee0f2c4841b";
 
 /** What a pinned app is, and the picture it shows on a dock. One of "notes", "tasks", "mail". */
 export type Kind = "notes" | "tasks" | "mail";
@@ -479,11 +479,16 @@ export interface LangGallery extends tilo.Resource {
     last: string;
     target: unknown;
   }): Promise<void>;
+  /** Note a hint the person learned or was shown, in the window's last answer. */
+  note_hint(args: {
+    last: string;
+    hint: string;
+  }): Promise<void>;
 }
 
 /** The actions `LangGallery` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LANGGALLERY_ACTIONS = ["note_item", "picked", "opened", "picked_node", "opened_node", "opened_card", "mark_chosen", "mark_edit", "mark_byte", "mark_key", "mark_wheel", "mark_row", "reverted", "opened_change", "picture_from", "mark_page", "mark_move", "mark_paint", "mark_files", "note_photo", "mark_moved", "dropped"] as const;
+export const LANGGALLERY_ACTIONS = ["note_item", "picked", "opened", "picked_node", "opened_node", "opened_card", "mark_chosen", "mark_edit", "mark_byte", "mark_key", "mark_wheel", "mark_row", "reverted", "opened_change", "picture_from", "mark_page", "mark_move", "mark_paint", "mark_files", "note_photo", "mark_moved", "dropped", "note_hint"] as const;
 
 /** The `tl.so.tilo.lang.gallery` kind at `path`. */
 export function langGallery(ws: tilo.Workspace, path: string): LangGallery {

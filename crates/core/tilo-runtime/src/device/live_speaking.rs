@@ -144,6 +144,7 @@ impl Speaking {
                     if let Some(word) = word.clone().filter(|word| *word != Payload::Left) {
                         words.push((route.app_id.clone(), key.clone(), word));
                     }
+                    drop(apps);
                 }
                 let speaker = speakers
                     .lock_recover()

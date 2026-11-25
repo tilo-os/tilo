@@ -884,6 +884,10 @@ fn base64(bytes: &[u8]) -> String {
 /// client finds the daemon at. An account that is a stranger to this daemon may not, and a device
 /// with a person starts no other.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one account founding a person, its refusals and the device it leaves alone, read top to bottom"
+)]
 fn a_device_founds_its_person_only_when_its_own_account_asks() {
     use io::{BufRead as _, Write as _};
     use serde_json::{Value, json};
@@ -1126,7 +1130,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     let answers = crate::device::unclaimed::DeviceOnly::at(
         key,
         tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
-        profile.clone(),
+        profile,
         DAEMON,
     );
     // The profile records that account for the identity check; this daemon's own admission
@@ -1848,6 +1852,10 @@ const NESTED_SHELL_TEST: &str = "daemon::tests::a_session_started_with_a_link_st
 /// reaches the daemon's workspaces: the link passes from the daemon to the shell it started.
 #[cfg(target_os = "linux")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sign-in, the shell it starts and the link that crosses the daemon, read top to bottom"
+)]
 fn a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_window() {
     use crate::RuntimeServices as _;
     use std::io::{BufRead as _, Write as _};
@@ -2194,11 +2202,11 @@ fn a_process_the_daemon_started_is_its_app_and_another_process_of_the_account_is
     /// The pid a test's next connection comes from, as the daemon reads it.
     static PID: AtomicU32 = AtomicU32::new(0);
 
-    fn peer(_: &UnixStream) -> io::Result<Peer> {
-        Ok(Peer {
+    fn peer(_: &UnixStream) -> Peer {
+        Peer {
             uid: rustix::process::geteuid().as_raw(),
             pid: Some(PID.load(Ordering::SeqCst)),
-        })
+        }
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -2210,7 +2218,7 @@ fn a_process_the_daemon_started_is_its_app_and_another_process_of_the_account_is
     let seats = Seats::new(
         admission,
         crate::device::unclaimed::DeviceOnly::new(key, place),
-        peer,
+        |stream| Ok(peer(stream)),
     );
     let started = 424_242;
     seats.follow_launches(std::sync::Arc::new(move |pid| {

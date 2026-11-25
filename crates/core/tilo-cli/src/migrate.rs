@@ -136,8 +136,11 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
     if let Some(named) = workspace {
         device.in_workspace(named)?;
     }
+    // The command's own runtime, on the process's main thread: a step awaits the device's
+    // answers, and this is where the command waits for its steps.
+    let runtime = crate::login::runtime()?;
     let call = |action: &str, args: Map<String, Value>, asks: Asks| {
-        step(&device, action, args, json, asks)?.map_err(failed)
+        step(&runtime, &device, action, args, json, asks)?.map_err(failed)
     };
     let answer = match cmd {
         MigrateCmd::Sources => call("sources", Map::new(), Asks::Leave)?,
@@ -158,7 +161,14 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             if let Some(file) = &secret_file {
                 args.insert("secret".into(), json!(*secret("", Some(file))?));
             }
-            match step(&device, "connect", args.clone(), json, Asks::Leave)? {
+            match step(
+                &runtime,
+                &device,
+                "connect",
+                args.clone(),
+                json,
+                Asks::Leave,
+            )? {
                 Ok(answer) => answer,
                 Err(failure) => match asked_secret(&failure) {
                     // The person types what it asks for, and it runs again with it.
@@ -294,6 +304,7 @@ fn reach() -> Result<Steps> {
 /// stderr unless `json`, and answering the questions it asks as `asks` says: its answer, or the
 /// failure it ran into.
 fn step(
+    runtime: &tokio::runtime::Runtime,
     device: &Steps,
     action: &str,
     args: Map<String, Value>,
@@ -306,7 +317,7 @@ fn step(
             eprintln!("{line}");
         }
     };
-    device.step(
+    runtime.block_on(device.step(
         action,
         args,
         &mut Answering {
@@ -314,7 +325,7 @@ fn step(
             prompt: &mut prompt,
             say: &mut say,
         },
-    )
+    ))
 }
 
 /// How `tilo migrate start` answers the questions its run asks, given its `--yes` and whether a

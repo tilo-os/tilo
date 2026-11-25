@@ -74,7 +74,7 @@ async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let portal = Portal::new(
         asks.clone(),
         authenticator,
-        tilo_documents::Documents::new(),
+        std::sync::Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
     )
     .with_capture(capture)
     .with_consents(crate::consent::Consents::new(
@@ -176,7 +176,7 @@ async fn a_file_chosen_in_the_sheet_reaches_the_app() {
     let uris: Vec<String> = results["uris"].clone().try_into().expect("uris");
     let answered = crate::file_chooser::path_of_uri(&uris[0]).expect("a file URI");
     assert!(
-        answered.starts_with(tilo_documents::SANDBOX_DIR),
+        answered.starts_with(tilo_dialogs::chosen::CHOSEN_ROOT),
         "the app is handed a reference in the store it has bound, not {uri}"
     );
 }

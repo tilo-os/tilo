@@ -8,9 +8,11 @@ use std::time::Instant;
 use tilo_audio_service::media::Media as Players;
 use tilo_audio_service::sound::{Sound, UseKind};
 use tilo_connectivity_service::model::{LinkKind, Network};
-use tilo_session_core::desktop::host::chrome::{ActiveMediaUse, LinkKind as BarLinkKind, LinkStatus, MediaKind, VolumeState};
 use tilo_power_mgmt::BatteryState;
 use tilo_service::Services;
+use tilo_session_core::desktop::host::chrome::{
+    ActiveMediaUse, LinkKind as BarLinkKind, LinkStatus, MediaKind, VolumeState,
+};
 use tilo_session_core::desktop::now_playing::NowPlaying;
 use tilo_session_power::{BATTERY, Battery};
 

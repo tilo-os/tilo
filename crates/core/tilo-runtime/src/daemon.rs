@@ -211,7 +211,9 @@ impl Person {
 
     /// The person's services once they run, waiting up to `within` for them to start.
     fn within(&self, within: Duration) -> io::Result<Arc<Daemon>> {
-        let deadline = Instant::now() + within;
+        let deadline = Instant::now()
+            .checked_add(within)
+            .unwrap_or_else(Instant::now);
         let mut services = self.services.lock_recover();
         loop {
             if let Some(services) = services.upgrade() {
@@ -292,7 +294,7 @@ impl Running {
             let (profile, stop, person) = (profile.to_owned(), stop.clone(), Arc::clone(&person));
             std::thread::Builder::new()
                 .name("tilo-daemon".into())
-                .spawn(move || serve_device(&profile, dev, device, &native, &stop, &person))?
+                .spawn(move || serve_device(&profile, dev, &device, &native, &stop, &person))?
         };
         Ok(Self {
             native: path,
@@ -452,11 +454,9 @@ impl ShellSession {
             .map_or_else(|| Path::new(""), Running::native_socket)
     }
 
-    /// The shell's process.
-    pub fn shell(&mut self) -> &mut std::process::Child {
-        self.shell
-            .as_mut()
-            .expect("the shell runs until the session stops")
+    /// The shell's process, while the session runs.
+    pub fn shell(&mut self) -> Option<&mut std::process::Child> {
+        self.shell.as_mut()
     }
 
     /// Stop the shell, then the daemon, and return once both ended.
@@ -493,7 +493,7 @@ impl Drop for ShellSession {
 fn serve_device(
     profile: &Path,
     dev: bool,
-    device: crate::device::unclaimed::ThisDevice,
+    device: &crate::device::unclaimed::ThisDevice,
     native: &Native,
     stop: &crate::device::serve::Stop,
     person: &Person,
@@ -766,7 +766,7 @@ fn app_take(session: &Arc<Daemon>) -> AppTake {
         let session = session
             .upgrade()
             .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-        serve_app(stream, slot, seated, &session, app)
+        serve_app(stream, slot, seated, &session, &app)
     })
 }
 
@@ -778,9 +778,9 @@ fn serve_app(
     slot: ConnectionSlot,
     _seated: Seated,
     session: &Arc<Daemon>,
-    app: AppAt,
+    app: &AppAt,
 ) -> io::Result<()> {
-    let frames = Frames::of_an_app(session, &app);
+    let frames = Frames::of_an_app(session, app);
     std::thread::Builder::new()
         .name("tilo-native-app".into())
         .spawn(move || {
@@ -1016,7 +1016,7 @@ impl Native {
         // person's endpoint: until it runs, the device's own actions answer them.
         if matches!(seated.seat.admitted, Admitted::Key { .. }) {
             let take = self.keys.lock_recover().clone();
-            return match (take, self.seats.key(seated.seat.clone())) {
+            return match (take, self.seats.key(&seated.seat)) {
                 (Some(take), Some((key, cert))) => take(stream, slot, seated, key, cert),
                 _ => self.device_only(stream, slot, seated),
             };
@@ -1388,7 +1388,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             &(self.status)(),
             &self.search,
             seated,
-            self.agents.clone(),
+            self.agents.as_ref(),
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
@@ -1417,7 +1417,8 @@ fn first_line(
     let mut line = read;
     let mut descriptors = Vec::new();
     let mut received = false;
-    while !line.contains(&b'\n') && line.len() < FIRST_LINE as usize {
+    let first_line = usize::try_from(FIRST_LINE).unwrap_or(usize::MAX);
+    while !line.contains(&b'\n') && line.len() < first_line {
         let (chunk, fds) = if received {
             (read_some(stream)?, Vec::new())
         } else {
@@ -1495,7 +1496,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     status: &Status,
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
-    agent: Option<Arc<Presence>>,
+    agent: Option<&Arc<Presence>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1716,7 +1717,7 @@ fn is_launch_request(request: &[u8]) -> bool {
 fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
     let session = Arc::downgrade(session);
     Arc::new(move |mut stream, request, descriptors| {
-        let reply = match start_requested(&session, request, descriptors) {
+        let reply = match start_requested(&session, request, &descriptors) {
             Ok(reply) => reply,
             Err(error) => json!({"error": error.to_string()}),
         };
@@ -1733,7 +1734,7 @@ fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
 fn start_requested(
     session: &std::sync::Weak<Daemon>,
     request: &[u8],
-    descriptors: Vec<runtime_portal::process_link::Descriptor>,
+    descriptors: &[runtime_portal::process_link::Descriptor],
 ) -> io::Result<Value> {
     let request: LaunchRequest = serde_json::from_slice(request)
         .map_err(|error| invalid(format!("the launch request: {error}")))?;

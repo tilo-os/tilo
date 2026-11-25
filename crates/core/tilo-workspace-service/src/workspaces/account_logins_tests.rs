@@ -547,117 +547,6 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
     );
 }
 
-/// A calendar account added in Settings keeps its password in the workspace's one vault, and the
-/// Calendar's sign-in is released it by the sign-ins route: decided for the device, at the
-/// account's server alone, and written down in the entry. No device vault keeps one.
-#[cfg(feature = "agents")]
-#[tokio::test]
-async fn a_calendar_account_added_in_settings_signs_in_with_the_workspaces_vault() {
-    use accounts::vault_items::Place;
-    use tilo_account_probe::{FindingAccountTester, imap::Reach};
-
-    const USER: &str = "ada@example.test";
-    const CALENDAR: &str = tilo_app_id::apps::CALENDAR;
-
-    let server = Arc::new(
-        tokio::task::spawn_blocking(|| {
-            let server = crate::workspaces::person_settings::calendars::fake_caldav::Server::start(
-                USER, PASSWORD,
-            );
-            server.add_calendar("work", "Work");
-            server
-        })
-        .await
-        .unwrap(),
-    );
-    let members = Members::new().await;
-    let workspace = members.workspace.clone();
-
-    // Settings keeps the account in the workspace's accounts record, naming its server and its
-    // user name, as the account form builds one.
-    let mut account = accounts::Account::new(
-        accounts::AccountId::from("caldav:ada@example.test"),
-        "caldav",
-    );
-    account.display_name = "Mine".into();
-    account.config = serde_json::json!({
-        "server_url": server.url(),
-        "username": USER,
-    });
-    members.keep_account(&account).await;
-
-    // The typed password is kept in the workspace's vault, bound to the account's server, and
-    // the account names the entry.
-    let places: Vec<Place> = accounts::typed_for::servers_of(&account)
-        .iter()
-        .map(|server| Place::parse(server).unwrap())
-        .collect();
-    let item = members
-        .owner
-        .keep_account_password(
-            &workspace,
-            (&members.owner_caller(), None),
-            None,
-            AccountLogin {
-                title: "Mine".into(),
-                username: USER.into(),
-                places,
-            },
-            Zeroizing::new(PASSWORD.into()),
-        )
-        .await
-        .unwrap();
-    members
-        .owner
-        .name_account_password(&workspace, "caldav:ada@example.test", &item)
-        .await
-        .unwrap();
-
-    // The password is the workspace's alone: the host keeps no vault of its own here.
-    assert!(
-        !accounts::vault_dir_in(&members.owner.workspace_root(&workspace)).exists(),
-        "the calendar password was written into a device vault"
-    );
-
-    // The Calendar's sign-in asks the route for the entry the account names: the release is
-    // decided for her own device, and it is the password her server takes.
-    let password = released(
-        &members.owner,
-        &workspace,
-        &members.owner_caller(),
-        CALENDAR,
-        &item,
-    )
-    .await
-    .expect("the workspace releases her calendar password");
-    let found = tokio::task::spawn_blocking(move || {
-        FindingAccountTester(Reach::any())
-            .discover_calendars(&account, &accounts::Secret::password(password.to_string()))
-    })
-    .await
-    .unwrap();
-    assert!(
-        matches!(&found, Ok(calendars) if !calendars.is_empty()),
-        "her calendar server did not take the released password: {found:?}"
-    );
-
-    // The release is written down in the entry, saying which app signed in to which account.
-    let opened = members.owner.open_vault(&workspace).await.unwrap();
-    let uses = opened
-        .entries()
-        .iter()
-        .find(|(entry, _)| entry.id.0 == item.id())
-        .map(|(_, uses)| uses.clone())
-        .unwrap();
-    assert!(
-        uses.iter().any(|used| {
-            used.using == "tilo.accounts/sign-in"
-                && used.what == format!("{CALENDAR} signed in to Mine")
-        }),
-        "the Calendar's release is written down with the app and the account: {uses:?}"
-    );
-}
-
 #[tokio::test]
 async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password() {
     let server = tokio::task::spawn_blocking(MailServer::start)
@@ -1386,11 +1275,11 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
     assert!(refused.contains(MAY_NOT_USE_PASSWORDS));
 }
 
-/// Every step the account and calendar actions declare they take in the accounts record is
+/// Every step the account actions declare they take in the accounts record is
 /// one of that record's own actions, in Settings' record of that kind.
 #[test]
 fn the_account_actions_declare_steps_the_accounts_record_takes() {
-    use tilo_actions::remote::person_accounts::{self, calendars};
+    use tilo_actions::remote::person_accounts;
     use tilo_resource::Resource as _;
     let verbs: Vec<_> = AccountList::declarations()
         .into_iter()
@@ -1407,9 +1296,6 @@ fn the_account_actions_declare_steps_the_accounts_record_takes() {
         (person_accounts::RESOURCE, person_accounts::RECONNECT),
         (person_accounts::RESOURCE, person_accounts::REMOVE),
         (person_accounts::RESOURCE, person_accounts::SET_SERVICES),
-        (calendars::RESOURCE, calendars::ADD),
-        (calendars::RESOURCE, calendars::ADD_WITH_ITEM),
-        (calendars::RESOURCE, calendars::REMOVE),
     ] {
         for effect in person_accounts::effects(resource, action)
             .into_iter()
@@ -1421,7 +1307,7 @@ fn the_account_actions_declare_steps_the_accounts_record_takes() {
         }
     }
     assert_eq!(
-        declared, 10,
+        declared, 7,
         "every account action that writes the record declares its step"
     );
     assert!(

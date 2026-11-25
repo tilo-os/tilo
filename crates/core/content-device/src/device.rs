@@ -235,7 +235,6 @@ pub(crate) fn store() -> Option<ContentStore> {
 /// references it, so a store here reads every scope the daemon gives it with
 /// [`SESSION_WORKSPACES`], the workspace in front first, and stays with the one an
 /// address was read through for the addresses drawn beside it.
-#[cfg(unix)]
 pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
     // One connection per socket, shared by every store a process opens over it: the driver
     // thread behind it serves many calls at once, and a picture drawn every frame is asked
@@ -289,12 +288,10 @@ pub(crate) fn session_store(workspace: &str) -> Option<ContentStore> {
 /// The workspaces the session's own process draws the content of: what a store it opens
 /// reads through, the workspace in front first. Set as the session starts, and again when
 /// the workspaces it holds change.
-#[cfg(unix)]
 static SESSION_WORKSPACES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Tell every store the session's process opens from here on which workspaces it draws,
 /// the one in front first.
-#[cfg(unix)]
 pub(crate) fn set_session_workspaces(workspaces: Vec<String>) {
     if let Ok(mut held) = SESSION_WORKSPACES.lock() {
         *held = workspaces;
@@ -303,14 +300,12 @@ pub(crate) fn set_session_workspaces(workspaces: Vec<String>) {
 
 /// Content of the several workspaces a session's process draws: a read asks each scope in
 /// turn, and an address one served is read through that scope from then on.
-#[cfg(unix)]
 pub struct SessionBackend {
     scopes: Vec<DeviceBackend>,
     cache: Arc<Mutex<Cache>>,
     held: Mutex<BTreeMap<String, usize>>,
 }
 
-#[cfg(unix)]
 impl SessionBackend {
     fn new(scopes: Vec<BlobClient>) -> Self {
         Self {
@@ -341,7 +336,6 @@ impl SessionBackend {
     }
 }
 
-#[cfg(unix)]
 impl ContentBackend for SessionBackend {
     fn put(&self, _: &mut dyn Read, _: &str) -> Result<Stored, ContentError> {
         // The session draws content; it never stores its own: what it shows is what an
@@ -421,13 +415,11 @@ impl ContentBackend for SessionBackend {
 
 /// The variable naming the socket a session serves its document media at
 /// (`fs serve-media`), the one the launcher reads to scope every app it starts.
-#[cfg(unix)]
 pub(crate) const SESSION_MEDIA_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
 
 /// The app the session's own content is kept under: the reachability index is per
 /// workspace, not per app, so a still one app's connector kept is read here under the
 /// session's name and serves every place that shows it.
-#[cfg(unix)]
 const SESSION_APP: &str = "so.tilo.session";
 
 #[cfg(test)]

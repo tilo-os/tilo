@@ -184,11 +184,13 @@ impl Daemon {
 
     /// Serve this device's migrations from now on.
     pub fn serve_migrations(self: &Arc<Self>) {
+        let Ok(workspace) = self.mcp_workspace(None) else {
+            tracing::warn!("this device names no own workspace, so nothing migrates over it");
+            return;
+        };
         let host = DaemonHost {
             daemon: Arc::downgrade(self),
-            workspace: self
-                .mcp_workspace(None)
-                .expect("the device's own workspace is the one it answers without asking"),
+            workspace,
             dir: self.dir(),
         };
         self.provide(

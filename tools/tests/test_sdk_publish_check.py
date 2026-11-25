@@ -35,10 +35,21 @@ def answer(document):
 OURS = {"tilo-example": {"repository": None, "description": "Our example."}}
 
 
+def crates_io_answers(crate, owners):
+    """A stand-in for crates.io answering a crate's metadata and its owners."""
+    def urlopen(request, timeout):
+        url = request.full_url if hasattr(request, "full_url") else request
+        if url.endswith("/owners"):
+            return answer({"users": [{"login": login} for login in owners]})
+        return answer({"crate": crate})
+    return urlopen
+
+
 class ForeignNamesTests(unittest.TestCase):
-    def test_a_crate_of_another_repository_is_foreign(self):
-        document = {"crate": {"name": "tilo-example", "repository": "https://example.com/other"}}
-        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
+    def test_a_crate_of_another_repository_and_owner_is_foreign(self):
+        crate = {"name": "tilo-example", "repository": "https://example.com/other"}
+        with patch.object(check.urllib.request, "urlopen",
+                          side_effect=crates_io_answers(crate, ["someone-else"])):
             self.assertEqual(check.foreign_names(OURS), {"tilo-example"})
 
     def test_a_crate_this_repository_published_is_ours(self):
@@ -47,25 +58,14 @@ class ForeignNamesTests(unittest.TestCase):
         with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
             self.assertEqual(check.foreign_names(OURS), set())
 
-    def test_a_fork_this_repository_published_is_ours(self):
-        # A fork's manifest credits its upstream's repository, and crates.io shows what the
-        # release published: the same repository and the same description are ours.
-        fork = {"tilo-example": {"repository": "https://example.com/upstream/",
-                                 "description": "upstream with one fix. Tilo's fork."}}
-        document = {"crate": {"name": "tilo-example", "repository": "https://example.com/upstream",
-                              "description": "upstream with one fix. Tilo's fork."}}
-        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
-            self.assertEqual(check.foreign_names(fork), set())
-
-    def test_another_project_of_a_forks_upstream_is_foreign(self):
-        # The upstream's own repository with a description our manifest does not declare is
-        # someone else's crate under the name.
-        fork = {"tilo-example": {"repository": "https://example.com/upstream",
-                                 "description": "upstream with one fix. Tilo's fork."}}
-        document = {"crate": {"name": "tilo-example", "repository": "https://example.com/upstream",
-                              "description": "Something else."}}
-        with patch.object(check.urllib.request, "urlopen", return_value=answer(document)):
-            self.assertEqual(check.foreign_names(fork), {"tilo-example"})
+    def test_a_fork_our_account_owns_is_ours(self):
+        # A fork's manifest credits its upstream's repository, and crates.io shows that once a
+        # release published it: the account that published it is what says it is ours.
+        crate = {"name": "tilo-example", "repository": "https://example.com/upstream"}
+        with patch.object(check.urllib.request, "urlopen",
+                          side_effect=crates_io_answers(crate, ["someone-else", "our-publisher"])):
+            self.assertEqual(check.foreign_names(OURS, frozenset({"our-publisher"})), set())
+            self.assertEqual(check.foreign_names(OURS, frozenset({"another"})), {"tilo-example"})
 
     def test_only_not_found_means_available(self):
         error = urllib.error.HTTPError("https://crates.io", 404, "Not Found", {}, None)
@@ -94,6 +94,61 @@ class ForeignNamesTests(unittest.TestCase):
         with patch.object(check.urllib.request, "urlopen", return_value=io.BytesIO(b"not json")):
             with self.assertRaises(json.JSONDecodeError):
                 check.foreign_names(OURS)
+
+
+class PublicationTests(unittest.TestCase):
+    def test_each_crate_comes_after_what_it_needs_and_the_products_come_first(self):
+        needs = {
+            "tilolang-lex": set(),
+            "tilolang": {"tilolang-lex", "tilo-shared"},
+            "tilo-shared": set(),
+            "tilo-ui": {"tilo-shared", "tilo-aaa-drawing"},
+            "tilo-aaa-drawing": set(),
+            "tilo-aaa-unrelated": set(),
+        }
+        order = check.publication_order(set(needs), needs)
+        for name, deps in needs.items():
+            for dep in deps:
+                self.assertLess(order.index(dep), order.index(name), f"{dep} before {name}")
+        # tilolang's closure is out before anything tilo-ui alone needs, and a crate no product
+        # needs goes last, though its name sorts first.
+        self.assertLess(order.index("tilolang"), order.index("tilo-aaa-drawing"))
+        self.assertEqual(order[-1], "tilo-aaa-unrelated")
+
+    def test_a_rate_limit_names_when_crates_io_takes_the_next(self):
+        output = ("error: failed to publish to registry at https://crates.io\n\nCaused by:\n"
+                  "  the remote server responded with an error (status 429 Too Many Requests): "
+                  "You have published too many new crates in a short period of time. Please try "
+                  "again after Tue, 25 Nov 2026 00:03:27 GMT and see "
+                  "https://crates.io/docs/rate-limits for more information on rate limits.")
+        self.assertEqual(check.retry_after(output), 1795565007.0)
+        self.assertIsNone(check.retry_after("error: some other failure"))
+
+    def test_a_run_waits_out_the_limit_and_stops_at_its_budget(self):
+        limited = ("the remote server responded with an error (status 429 Too Many Requests): "
+                   "Please try again after Tue, 25 Nov 2026 00:03:27 GMT and see")
+        calls = []
+
+        def cargo(command, **_):
+            calls.append(command[-1])
+            ok = len(calls) != 2
+            return check.subprocess.CompletedProcess(command, 0 if ok else 101,
+                                                     "" if ok else limited)
+
+        with (patch.object(check.subprocess, "run", side_effect=cargo),
+              patch.object(check.time, "time", return_value=1795565007.0 - 60),
+              patch.object(check.time, "sleep") as sleep):
+            self.assertEqual(check.publish_each(Path("."), ["a", "b", "c"], 5, "0.4.1", None), 0)
+        self.assertEqual(calls, ["a", "b", "b", "c"])
+        sleep.assert_called_once_with(65)
+
+        calls.clear()
+        with (patch.object(check.subprocess, "run", side_effect=cargo),
+              patch.object(check.time, "time", return_value=1795565007.0 - 60),
+              patch.object(check.time, "sleep") as sleep):
+            self.assertEqual(check.publish_each(Path("."), ["a", "b", "c"], 5, "0.4.1", 30), 1)
+        self.assertEqual(calls, ["a", "b"])
+        sleep.assert_not_called()
 
 
 class LocalRegistryChecksumTests(unittest.TestCase):

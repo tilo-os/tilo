@@ -1,6 +1,8 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::{AppReach, Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, Weak};
+use super::{
+    AdmittedJoinIdentity, AppReach, Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, Weak,
+};
 use crate::apps::workspace_keys::KeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
@@ -18,6 +20,19 @@ pub struct NativeDocumentReadContext {
     certificate: tilo_user_identity::DeviceCert,
     resource_type: Option<String>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    still_reads: StillReads,
+}
+
+/// Whether the device's one reader still lets a read's caller read its record, once it decided.
+type StillReads = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// What a read whose record its reader need not decide again answers.
+fn reads_still() -> StillReads {
+    Arc::new(|| Box::pin(std::future::ready(Ok(()))))
 }
 
 #[cfg(test)]
@@ -40,6 +55,7 @@ impl NativeDocumentReadContext {
             certificate,
             resource_type: None,
             revalidate: Arc::new(|| Ok(())),
+            still_reads: reads_still(),
         }
     }
     /// A read of `route` by `certificate`'s device that this device's broker admitted, as the
@@ -56,6 +72,7 @@ impl NativeDocumentReadContext {
             certificate,
             resource_type,
             revalidate: Arc::new(|| Ok(())),
+            still_reads: reads_still(),
         }
     }
     pub fn route(&self) -> &CrdtRoute {
@@ -70,6 +87,13 @@ impl NativeDocumentReadContext {
     /// Re-checks the admitted channel's live ownership and admission.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
+    }
+    /// [`Self::revalidate`], and whether the device's one reader still lets the caller read the
+    /// record: a channel that joined another app's record to read is decided again at every read,
+    /// awaited where the read is.
+    pub async fn revalidate_read(&self) -> Result<(), String> {
+        self.revalidate()?;
+        (self.still_reads)().await
     }
 }
 /// A revision a committed read on this channel handed out (its last piece
@@ -491,6 +515,10 @@ impl JoinedChannel {
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
         let read_only = self.reach() == Ok(AppReach::Reads);
+        let still_reads = match local.as_ref() {
+            Some(local) if read_only => self.still_reads(&admitted, &route, local.app_id.as_str()),
+            _ => reads_still(),
+        };
         let revalidate = Arc::new(move || {
             let state = state.upgrade().ok_or("committed read broker ended")?;
             if !state.is_accepting() {
@@ -506,23 +534,6 @@ impl JoinedChannel {
                 {
                     return Err("committed read launcher ownership ended".into());
                 }
-                // Another app's record is read as the device's one reader lets
-                // the person read it, as the join decided, and again at every read:
-                // one it would ask about, the person allowed when it was joined.
-                let address = super::session::route_address(&checked_route);
-                let reads = |reads: Arc<dyn tilo_actions::remote::ResourceReads>| {
-                    use tilo_actions::remote::ActionCallError::ConfirmationRequired;
-                    let caller = admitted
-                        .certified_caller(&address.workspace, false)
-                        .through_app(local.app_id.as_str());
-                    let decided = reads
-                        .may_read(&caller, &address)
-                        .wait_timeout(Duration::MAX);
-                    matches!(decided, Ok(Some(Ok(()) | Err(ConfirmationRequired(_)))))
-                };
-                if read_only && !state.records().is_some_and(reads) {
-                    return Err("committed read of another app's record ended".into());
-                }
             } else if !sealed || admitted.agent_id.is_some() {
                 return Err("committed read requires launcher ownership".into());
             }
@@ -536,9 +547,40 @@ impl JoinedChannel {
             certificate,
             resource_type: self.resource_type.clone(),
             revalidate,
+            still_reads,
         };
         context.revalidate()?;
         Ok(context)
+    }
+    /// Another app's record is read as the device's one reader lets the person read it, as the
+    /// join decided, and again at every read: one it would ask about, the person allowed when it
+    /// was joined.
+    fn still_reads(
+        &self,
+        admitted: &AdmittedJoinIdentity,
+        route: &CrdtRoute,
+        app: &str,
+    ) -> StillReads {
+        let state = Arc::downgrade(&self.state);
+        let address = super::session::route_address(route);
+        let caller = admitted
+            .certified_caller(&address.workspace, false)
+            .through_app(app);
+        Arc::new(move || {
+            let (state, address, caller) = (state.clone(), address.clone(), caller.clone());
+            Box::pin(async move {
+                use tilo_actions::remote::ActionCallError::ConfirmationRequired;
+                let ended = || "committed read of another app's record ended".to_owned();
+                let reads = state
+                    .upgrade()
+                    .and_then(|state| state.records())
+                    .ok_or_else(ended)?;
+                match reads.may_read(&caller, &address).await {
+                    Ok(()) | Err(ConfirmationRequired(_)) => Ok(()),
+                    Err(_) => Err(ended()),
+                }
+            })
+        })
     }
     /// The private window instance this route's launch shows: none. A committed document kept one
     /// for a workspace whose documents its owner committed in the clear, and every workspace seals
@@ -789,6 +831,7 @@ async fn open_read(
         slot.opens = slot.opens.wrapping_add(1);
         (reservation, slot.opens)
     };
+    context.revalidate_read().await?;
     service.authorize(&context)?;
     let read = match held {
         Some(held) => {
@@ -802,7 +845,7 @@ async fn open_read(
                 .await?
         }
     };
-    context.revalidate()?;
+    context.revalidate_read().await?;
     service.authorize(&context)?;
     let mut slot = slot.borrow_mut();
     if slot.opens != open || slot.closed || slot.active.is_some() {
@@ -867,12 +910,13 @@ async fn read_unchanged(
         return None;
     }
     let context = context().ok()?;
+    context.revalidate_read().await.ok()?;
     service.authorize(&context).ok()?;
     let unchanged = match service.unchanged(&context, known_revision).await.ok()? {
         Some(unchanged) => unchanged,
         None => captured_unchanged(service, &context, budget, known_revision, absent).await?,
     };
-    context.revalidate().ok()?;
+    context.revalidate_read().await.ok()?;
     service.authorize(&context).ok()?;
     unchanged.then_some(context)
 }
@@ -1062,12 +1106,11 @@ impl JoinedChannel {
                     return Err("committed read wait was replaced".into());
                 }
                 let _ = watch.arm();
-                if granted.borrow().is_some()
-                    || self
-                        .document_read_context()
-                        .and_then(|context| context.revalidate())
-                        .is_err()
-                {
+                let ended = match self.document_read_context() {
+                    Ok(context) => context.revalidate_read().await.is_err(),
+                    Err(_) => true,
+                };
+                if ended || granted.borrow().is_some() {
                     return self.answer_wait(known_revision).await;
                 }
                 tokio::select! {

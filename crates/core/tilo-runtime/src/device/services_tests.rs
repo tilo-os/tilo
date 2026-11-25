@@ -1836,6 +1836,10 @@ const AGENT_TICKET_ANSWER_TEST: &str = "device::services::tests::a_ticket_an_age
 /// keeps their root: only their yes issues it, a no ends it with none, and stopping it withdraws
 /// the question.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one agent's ticket, from the ask to the person's yes and no, read top to bottom"
+)]
 fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::asked::{AskedRecords as _, Offer, Resolve};

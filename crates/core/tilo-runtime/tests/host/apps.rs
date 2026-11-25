@@ -5,10 +5,11 @@
 //! sandbox shim load), from a publisher the device's launcher trusts, and a view of one starts as
 //! on a computer: the daemon starts `tilo-launcher tilolang-process` under bubblewrap, on those
 //! bundles. On macOS the tilolang runtime is the signed runtime package Tilo.app carries,
-//! installed into the same store (`tilolang-process` and the GStreamer it loads, relocated beside
+//! installed into the same store (`tilolang-process` and the `GStreamer` it loads, relocated beside
 //! it as `dist/macos` ships them), and the daemon starts its binary in a Seatbelt sandbox.
 
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -140,7 +141,7 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
         version(package::DEFAULT_TILOLANG_RUNTIME),
         &signer,
         &[],
-        &[host.clone()],
+        std::slice::from_ref(&host),
     );
     // The Tilo runtime carries the pinned font catalog the product's bundles carry, at the
     // `lib/fonts` the launcher binds where a sandboxed app sets text. Without it every app a
@@ -387,7 +388,8 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
     )
     .unwrap();
     let mut registry = std::fs::read_to_string(store.registry()).unwrap_or_default();
-    registry.push_str(&format!(
+    write!(
+        registry,
         "[[entry]]\nid = {:?}\nversion = {:?}\npackage_id_hex = {:?}\npayload_root = {:?}\n\
          manifest_path = {:?}\npublisher_key_hex = {:?}\nruntime = {:?}\n\n",
         parsed.package.id,
@@ -397,6 +399,7 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
         store.manifest(meta.id).display().to_string(),
         hex::encode(publisher.public_key_bytes()),
         parsed.package.runtime.clone().unwrap_or_default(),
-    ));
+    )
+    .unwrap();
     std::fs::write(store.registry(), registry).unwrap();
 }

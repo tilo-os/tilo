@@ -70,11 +70,16 @@ pub use tilo_resource::surface::file::{FORMAT, filed};
 pub struct Committed {
     pub format: u64,
     pub resources: Vec<Value>,
+    /// The kinds of other apps' records the app reads (`reads = [kind]`).
+    pub reads: Vec<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct SurfaceReport {
     pub resources: Vec<Value>,
+    /// The app that owns each resource kind, as the app's framework reported it:
+    /// a kind owned by another app is one this app reads, not one of its own.
+    pub owners: BTreeMap<String, String>,
     /// Controls bound to something the resource does not publish.
     pub unbound: Vec<String>,
     /// Why the view could not be built headless, if it could not.
@@ -129,12 +134,23 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
             .unwrap_or_default()
     };
     let unbound = strings("unbound");
+    let owners = report
+        .get("owners")
+        .and_then(Value::as_object)
+        .map(|owners| {
+            owners
+                .iter()
+                .filter_map(|(kind, app)| Some((kind.clone(), app.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
     let view = report
         .get("view")
         .and_then(Value::as_str)
         .map(str::to_owned);
     Ok(SurfaceReport {
         resources,
+        owners,
         unbound,
         view,
         effects: strings("effects"),
@@ -441,22 +457,101 @@ pub fn keep_report(app: &Path, executable: &Path, dir: &Path) -> Result<PathBuf>
 ///
 /// # Errors
 /// A resource that is no table, or holds a null.
-pub fn render(resources: &[Value]) -> Result<String> {
-    render_with(resources, HEADER)
+pub fn render(resources: &[Value], reads: &[String]) -> Result<String> {
+    render_with(resources, reads, HEADER)
 }
 
 /// [`render`] under `header`, the line that says what wrote the file: a
 /// surface a test writes beside the code that publishes it names its test.
-pub fn render_with(resources: &[Value], header: &str) -> Result<String> {
-    tilo_resource::surface::file::render(header, resources).map_err(anyhow::Error::msg)
+pub fn render_with(resources: &[Value], reads: &[String], header: &str) -> Result<String> {
+    tilo_resource::surface::file::render(header, resources, reads).map_err(anyhow::Error::msg)
 }
 
-/// Write `resources` to the app's [`FILE`]. Returns its path.
-pub fn write(app_dir: &Path, resources: &[Value]) -> Result<PathBuf> {
+/// Write `resources` to the app's [`FILE`], the kinds it reads of other apps
+/// under `reads`. Returns its path.
+///
+/// # Errors
+/// A read kind the app's manifest does not declare (see [`declared_reads`]).
+pub fn write(
+    app_dir: &Path,
+    resources: &[Value],
+    owners: &BTreeMap<String, String>,
+) -> Result<PathBuf> {
+    let (app, kinds) = manifest_resource_kinds(app_dir)?;
+    let (own, reads) = split_resources(resources, owners, &app);
+    declared_reads(app_dir, &app, &kinds, &reads)?;
     let path = app_dir.join(FILE);
-    std::fs::write(&path, render(resources)?)
+    std::fs::write(&path, render(&own, &reads)?)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
+}
+
+/// The app's package id and the record kinds its manifest declares in
+/// `[resources] kinds`: what a person sees as the app's grant.
+fn manifest_resource_kinds(app_dir: &Path) -> Result<(String, Vec<String>)> {
+    let path = app_dir.join("tilo-app.toml");
+    // A surface a test writes beside code with no package of its own: it names no app and
+    // grants nothing, so only a read it does list is refused.
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok((String::new(), Vec::new()));
+    };
+    let table: toml::Table =
+        toml::from_str(&text).with_context(|| format!("{} is not TOML", path.display()))?;
+    let app = table
+        .get("package")
+        .and_then(|package| package.get("id"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let kinds = table
+        .get("resources")
+        .and_then(|resources| resources.get("kinds"))
+        .and_then(toml::Value::as_array)
+        .map(|kinds| {
+            kinds
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((app, kinds))
+}
+
+/// The resources the app keeps itself and the kinds of other apps' records it
+/// reads, by the app that owns each resource: a kind another app owns is a read,
+/// never a resource of this app's.
+fn split_resources(
+    resources: &[Value],
+    owners: &BTreeMap<String, String>,
+    app: &str,
+) -> (Vec<Value>, Vec<String>) {
+    let mut own = Vec::new();
+    let mut reads = Vec::new();
+    for resource in resources {
+        let kind = text(resource, "kind");
+        match owners.get(kind).map(String::as_str) {
+            Some(owner) if owner != app => reads.push(kind.to_owned()),
+            _ => own.push(resource.clone()),
+        }
+    }
+    reads.sort_unstable();
+    reads.dedup();
+    (own, reads)
+}
+
+/// Refuse a read kind the app's manifest does not declare: the manifest is what
+/// a person sees as the app's grant.
+fn declared_reads(app_dir: &Path, app: &str, kinds: &[String], reads: &[String]) -> Result<()> {
+    for kind in reads {
+        if !kinds.iter().any(|declared| declared == kind) {
+            bail!(
+                "{app} reads {kind}, and {} does not declare it in [resources] kinds; the manifest is what people see as the app's grant",
+                app_dir.join("tilo-app.toml").display()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn committed(app_dir: &Path) -> Result<Option<Committed>> {
@@ -473,6 +568,17 @@ pub fn committed(app_dir: &Path) -> Result<Option<Committed>> {
             .get("resources")
             .and_then(Value::as_array)
             .map(|resources| resources.iter().map(normalized).collect())
+            .unwrap_or_default(),
+        reads: json
+            .get("reads")
+            .and_then(Value::as_array)
+            .map(|reads| {
+                reads
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default(),
     }))
 }
@@ -815,6 +921,7 @@ pub fn findings(
         message,
     };
     let mut out = ContractReport::default();
+    let (own, reads) = split_resources(&report.resources, &report.owners, app);
     if let Some(view) = &report.view {
         out.findings.push(finding(
             Level::Error,
@@ -826,7 +933,7 @@ pub fn findings(
         out.findings
             .push(finding(Level::Error, "binding", unbound.clone()));
     }
-    for (what, id) in own_action_ids(report) {
+    for (what, id) in own_action_ids(&own, report) {
         if report.reserved.contains(&id) {
             out.findings.push(finding(
                 Level::Error,
@@ -847,8 +954,19 @@ pub fn findings(
         )),
         Some(committed) => {
             let before_format = committed.format;
+            let before_reads = committed.reads.clone();
             let committed: Vec<Value> = committed.resources.iter().map(filed).collect();
-            let reported: Vec<Value> = report.resources.iter().map(filed).collect();
+            let reported: Vec<Value> = own.iter().map(filed).collect();
+            if before_reads != reads {
+                out.findings.push(finding(
+                    Level::Error,
+                    "surface",
+                    format!(
+                        "the code reads {:?} of other apps' resources and {FILE} reads {:?}; review it and write it with `tilolang surface`",
+                        reads, before_reads
+                    ),
+                ));
+            }
             let old = keyed(&committed, "kind");
             let new = keyed(&reported, "kind");
             let mut changes = Vec::new();
@@ -888,8 +1006,7 @@ pub fn findings(
         }
     }
     if let Some(catalog) = catalog {
-        let missing: Vec<String> = report
-            .resources
+        let missing: Vec<String> = own
             .iter()
             .flat_map(|resource| history_messages(app, resource))
             .filter(|key| !catalog.contains(key))
@@ -910,8 +1027,8 @@ pub fn findings(
 
 /// Every id the app publishes an action or view under itself: its
 /// resources' verbs, its effects and its named views, each with what it is.
-fn own_action_ids(report: &SurfaceReport) -> Vec<(&'static str, String)> {
-    let verbs = report.resources.iter().flat_map(|resource| {
+fn own_action_ids(own: &[Value], report: &SurfaceReport) -> Vec<(&'static str, String)> {
+    let verbs = own.iter().flat_map(|resource| {
         resource
             .get("verbs")
             .and_then(Value::as_array)
@@ -941,7 +1058,7 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
         report_of(&app_dir, &executable)?
     };
     ensure_view_built(&report, &app_dir)?;
-    let path = write(&app_dir, &report.resources)?;
+    let path = write(&app_dir, &report.resources, &report.owners)?;
     write_offers(&app_dir, &report.offers)?;
     sync_resource_kinds(&app_dir)?;
     Ok((path, report))
@@ -1374,6 +1491,7 @@ mod tests {
     fn report(resources: &[Value]) -> SurfaceReport {
         SurfaceReport {
             resources: resources.iter().map(normalized).collect(),
+            owners: BTreeMap::new(),
             unbound: Vec::new(),
             view: None,
             effects: Vec::new(),
@@ -1388,7 +1506,47 @@ mod tests {
         Committed {
             format: FORMAT,
             resources,
+            reads: Vec::new(),
         }
+    }
+
+    /// A resource whose kind another app owns is one the app reads: it goes
+    /// under `reads`, never among the app's own resources, and the manifest must
+    /// declare it or the write is refused naming the app and the kind.
+    #[test]
+    fn a_resource_owned_by_another_app_is_a_read() {
+        let app = "so.tilo.test.reader";
+        let mut mine = resource(1, "String", &["rename"]);
+        mine["kind"] = serde_json::json!("reader.book");
+        let mut theirs = resource(1, "String", &["browse"]);
+        theirs["kind"] = serde_json::json!("other.book");
+        let owners = BTreeMap::from([
+            ("reader.book".to_owned(), app.to_owned()),
+            ("other.book".to_owned(), "so.tilo.other".to_owned()),
+        ]);
+        let (own, reads) = split_resources(&[mine, theirs], &owners, app);
+        assert_eq!(own.len(), 1, "{own:?}");
+        assert_eq!(own[0]["kind"], "reader.book");
+        assert_eq!(reads, ["other.book"]);
+        let text = render_with(&own, &reads, HEADER).unwrap();
+        assert!(text.contains("reads = [\"other.book\"]"), "{text}");
+        assert!(!text.contains("kind = \"other.book\""), "{text}");
+
+        let dir = Path::new("apps/reader");
+        let declared = |kinds: &[&str]| {
+            kinds
+                .iter()
+                .map(|kind| (*kind).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let refused = declared_reads(dir, app, &declared(&["reader.book"]), &reads).unwrap_err();
+        let message = refused.to_string();
+        assert!(
+            message.contains(app) && message.contains("other.book"),
+            "{message}"
+        );
+        declared_reads(dir, app, &declared(&["reader.book", "other.book"]), &reads)
+            .expect("a declared read is granted");
     }
 
     fn rules(found: &ContractReport) -> Vec<(&'static str, Level)> {
@@ -1413,7 +1571,7 @@ mod tests {
             "name": "Renamed",
             "fields": [{"name": "title", "type": "text"}],
         }]);
-        let text = render(&[book]).unwrap();
+        let text = render(&[book], &[]).unwrap();
         assert!(!text.contains("The title"), "{text}");
         let value: Value =
             serde_json::to_value(toml::from_str::<toml::Value>(&text).unwrap()).unwrap();
@@ -1435,7 +1593,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let now = report(&[resource(1, "String", &["rename"])]);
-            write(temp.path(), &now.resources).unwrap();
+            write(temp.path(), &now.resources, &now.owners).unwrap();
             let committed = committed(temp.path()).unwrap().unwrap();
             assert_eq!(committed.format, FORMAT);
             let filed_now: Vec<Value> = now.resources.iter().map(filed).collect();
@@ -1461,7 +1619,7 @@ mod tests {
             let mut book = resource(1, "String", &["rename"]);
             book["fields"][1]["ops"] = serde_json::json!({"type": "object", "title": "Text ops"});
             book["verbs"][0]["params"][0]["schema"]["description"] = "The new title".into();
-            let text = render(&[book.clone()]).unwrap();
+            let text = render(&[book.clone()], &[]).unwrap();
             assert!(!text.contains("title = \"Title\""), "{text}");
             assert!(!text.contains("label = \"rename\""), "{text}");
             assert!(!text.contains("The new title"), "{text}");
@@ -1478,7 +1636,7 @@ mod tests {
             assert!(ops.as_str().unwrap().starts_with("sha256:"));
             book["fields"][1]["ops"]["title"] = "Other ops".into();
             assert_ne!(filed(&book)["fields"][1]["ops"], ops);
-            assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
+            assert_eq!(render(&[value["resources"][0].clone()], &[]).unwrap(), text);
         }
 
         phase a_file_written_before_read_actions_takes_them_when_written_again;
@@ -1497,12 +1655,13 @@ mod tests {
             let older = Committed {
                 format: 1,
                 resources: before,
+                reads: Vec::new(),
             };
             let found = findings("so.tilo.notes", &now, Some(&older), None, Level::Warning);
             assert!(found.findings.is_empty(), "{}", found.render());
 
             let temp = tempfile::tempdir().unwrap();
-            write(temp.path(), &now.resources).unwrap();
+            write(temp.path(), &now.resources, &now.owners).unwrap();
             let committed = committed(temp.path()).unwrap().unwrap();
             let found = findings(
                 "so.tilo.notes",

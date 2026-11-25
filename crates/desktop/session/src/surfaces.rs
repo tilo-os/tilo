@@ -1051,8 +1051,8 @@ impl Surfaces {
         // The process that will connect the session's services is the one started here: its launch
         // is written before the app has anything to say, as it is for any app the session starts.
         if let Some(launches) = &self.launches {
-            // A surface app is the session's own program, run in its own place: no package sandbox
-            // has the documents store bound in.
+            // A surface app is the session's own program, run in its own place: it is no package
+            // in the launcher's sandbox.
             launches.started(child.id(), &surface.app_id, workspace, false);
         }
         // The record exists: the app may reach what it published.

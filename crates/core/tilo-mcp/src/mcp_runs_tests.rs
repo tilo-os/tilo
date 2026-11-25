@@ -77,46 +77,39 @@ struct RunsRead {
 
 impl tilo_actions::remote::ResourceReads for RunsRead {
     // Each run is noted as the call is taken, so the next read sees it without a wake.
-    fn watch(
-        &self,
-        _: &Caller,
-        _: &tilo_actions::remote::ResourceAddress,
-        _: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a tilo_actions::remote::ResourceAddress,
+        _: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
     }
 
-    fn read(
-        &self,
-        _: &Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
-        let mut runs = self.runs.lock().unwrap().clone();
-        runs.sort_by_key(|run| std::cmp::Reverse(run.started_ms));
-        if address.record.is_empty() {
-            return Ok(tilo_actions::remote::ResourceCopy::reading(
-                serde_json::json!({"items": runs, "total": runs.len(), "waiting": 0}),
-                None,
-            ));
-        }
-        Ok(runs
-            .into_iter()
-            .find(|run| run.id.as_deref() == Some(address.record.as_str()))
-            .map_or(tilo_actions::remote::ResourceCopy::Absent, |one| {
-                tilo_actions::remote::ResourceCopy::reading(
-                    serde_json::to_value(one).unwrap_or_default(),
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move {
+            let mut runs = self.runs.lock().unwrap().clone();
+            runs.sort_by_key(|run| std::cmp::Reverse(run.started_ms));
+            if address.record.is_empty() {
+                return Ok(tilo_actions::remote::ResourceCopy::reading(
+                    serde_json::json!({"items": runs, "total": runs.len(), "waiting": 0}),
                     None,
-                )
-            }))
-    }
-
-    fn answer_read(
-        self: std::sync::Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+                ));
+            }
+            Ok(runs
+                .into_iter()
+                .find(|run| run.id.as_deref() == Some(address.record.as_str()))
+                .map_or(tilo_actions::remote::ResourceCopy::Absent, |one| {
+                    tilo_actions::remote::ResourceCopy::reading(
+                        serde_json::to_value(one).unwrap_or_default(),
+                        None,
+                    )
+                }))
+        })
     }
 }
 

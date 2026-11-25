@@ -383,7 +383,7 @@ mod tests {
 
     /// An app the frontend could not name (no desktop entry of its id is installed) and its
     /// process names is placed as the session places it: a sandboxed app's chosen file is then
-    /// answered with a path in its own documents store, not a path its sandbox lacks.
+    /// answered with its own reference, not a path its sandbox lacks.
     #[tokio::test]
     async fn an_app_named_by_its_process_is_placed_in_its_workspace_and_sandbox() {
         const HANDLE: &str = "/org/freedesktop/portal/desktop/request/1_42/t";

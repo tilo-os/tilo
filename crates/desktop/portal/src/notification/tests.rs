@@ -314,7 +314,7 @@ async fn bed() -> Bed {
     let portal = Portal::new(
         asks.clone(),
         authenticator,
-        tilo_documents::Documents::new(),
+        std::sync::Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
     )
     .with_consents(crate::consent::Consents::new(
         asks,

@@ -13,11 +13,11 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use tilo_actions::remote::{ResourceAddress, ResourceReads as _};
+use tilo_actions::remote::{Caller, ResourceAddress, ResourceReads as _};
 use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_service::apps::services::SearchIndexServices;
 use tilo_workspace_service::search::records::{RecordIndex, RecordReader, StoreReader};
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
+use tilo_workspace_service::search::{AppContentIndex, IndexKey, IndexSearch, ReadDecision};
 use tilo_workspace_service::workspaces::{RecordReads, Workspaces};
 
 /// Where under the daemon's profile the index is kept.
@@ -54,7 +54,7 @@ impl DeviceSearch {
                 match writes.recv().await {
                     Ok(write) => match following.upgrade() {
                         Some(records) => {
-                            records.changed(&write.workspace, &write.app, &write.record)
+                            records.changed(&write.workspace, &write.app, &write.record);
                         }
                         None => return,
                     },
@@ -83,19 +83,16 @@ impl DeviceSearch {
     pub(crate) fn serve(&self, reads: Arc<RecordReads>) {
         let _ = self.search.set(Arc::new(IndexSearch::new(
             Arc::clone(&self.index),
-            Arc::new(move |caller, key| {
+            Arc::new(move |caller: &Caller, key: &IndexKey| -> ReadDecision {
                 let address = ResourceAddress {
                     workspace: key.workspace.clone(),
                     app: key.app.clone(),
                     record: key.record.clone(),
                 };
-                // The device's reader decides as it is asked; a hit it would ask about is left out.
-                matches!(
-                    reads
-                        .may_read(caller, &address)
-                        .wait_timeout(std::time::Duration::MAX),
-                    Ok(Some(Ok(())))
-                )
+                // The device's reader decides as it is asked, awaited; a hit it would ask about is
+                // left out.
+                let (reads, caller) = (Arc::clone(&reads), caller.clone());
+                Box::pin(async move { reads.may_read(&caller, &address).await.is_ok() })
             }),
         )));
     }

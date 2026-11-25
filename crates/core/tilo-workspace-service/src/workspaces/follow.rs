@@ -37,6 +37,9 @@ pub(super) struct Followed {
     /// The write is a sealed compaction this copy refused because it is behind in it, and why
     /// it could not take it yet ([`BehindRefusal`]).
     pub(super) behind: Option<BehindRefusal>,
+    /// A sealed compaction this copy was behind in and took as the record's base, checked
+    /// against every write the copy holds that it covers: the check this host keeps of it.
+    pub(super) taken_behind: Option<collab_types::SignedOp>,
 }
 
 /// What taking a refused compaction came to, when it could not be taken.
@@ -272,6 +275,7 @@ impl GovernedWorkspace {
                 replay_wanted: outcome.replay_wanted,
                 refused: None,
                 behind: None,
+                taken_behind: None,
             },
             // This device could not decide the write: no verdict of its says
             // anything about it, and the write stays in the server's ownership
@@ -328,6 +332,7 @@ impl GovernedWorkspace {
         {
             Ok(true) => Followed {
                 changed: true,
+                taken_behind: Some(envelope.as_ref().clone()),
                 ..Followed::default()
             },
             Ok(false) => followed,
@@ -1225,9 +1230,30 @@ impl Workspaces {
                 replay_wanted,
                 refused,
                 behind,
+                taken_behind,
             } = followed;
             changed |= took;
             again |= replay_wanted;
+            // A compaction this copy took behind was checked as it was taken: its check is kept
+            // now, as no later read can check it against writes only it holds.
+            #[cfg(feature = "device-keys")]
+            if let (
+                Some(compaction),
+                neighbour_wire::NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    ..
+                },
+            ) = (&taken_behind, &message)
+                && let Err(error) = self
+                    .keep_checkpoint_check(workspace, (app_id, document_id), compaction)
+                    .await
+            {
+                tracing::warn!(workspace = %workspace.workspace(), %app_id, %document_id, %error,
+                    "this host's check of a compaction it took was not kept");
+            }
+            #[cfg(not(feature = "device-keys"))]
+            let _ = taken_behind;
             if took
                 && let neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,

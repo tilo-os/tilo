@@ -28,8 +28,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@48"
-tilo-fs = "optional@48"
+collab = "optional@49"
+tilo-fs = "optional@49"
 
 [entrypoint]
 bin = "bin/example-background-task"

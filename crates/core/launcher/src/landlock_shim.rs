@@ -331,7 +331,10 @@ fn spawn_udp_relay(fd: i32, port: u16) {
             unsafe { libc::close(fd) };
         }
         0 => {
-            if let Err(e) = crate::egress_proxy::run_udp_relay(fd, port) {
+            // SAFETY: the launcher passed this descriptor to this process alone, and the
+            // relay takes it over here.
+            let host = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+            if let Err(e) = crate::egress_proxy::run_udp_relay(&host.into(), port) {
                 eprintln!("tilo-sandbox-exec: calls relay stopped: {e}");
             }
             std::process::exit(0);

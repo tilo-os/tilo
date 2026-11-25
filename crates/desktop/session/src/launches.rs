@@ -35,17 +35,15 @@ const LAUNCH_ANSWER_WAIT: Duration = Duration::from_secs(10);
 const MAX_WAITING_LAUNCHES: usize = 64;
 
 /// One launch the session made: which app it started, in which workspace,
-/// the process that runs it, and whether the launch bound the documents store
-/// into it.
+/// the process that runs it, and whether it runs in the launcher's own sandbox.
 #[derive(Clone)]
 struct Launch {
     app: String,
     workspace: String,
     /// The process's start time, in clock ticks since boot.
     start: u64,
-    /// The launch bound the session's documents store into the app, where the app opens the files
-    /// the person chose for it: the launcher does that for a package, whose sandbox holds nothing
-    /// else of the host, and for no other kind.
+    /// The launch runs in the launcher's own sandbox, as a package does: the files the person
+    /// chose for it are answered with references its launcher binds, and no host path reaches it.
     sandboxed: bool,
     /// The launch runs with no window: it takes the app's actions on its records and is never
     /// handed an `open`. An app the session started so shows a window once the shell asks its
@@ -229,8 +227,8 @@ impl Launches {
     /// Record that `pid` runs `app` in `workspace` , as this session started it: the app's
     /// connection is admitted from here. A pid whose process cannot be read is recorded by nothing
     /// and starts an app that reaches no service.
-    /// `sandboxed` is whether the launch bound the session's documents store into it, which only a
-    /// package's sandbox is given.
+    /// `sandboxed` is whether the launch runs in the launcher's own sandbox, which only a
+    /// package's is.
     pub fn started(&self, pid: u32, app: &str, workspace: &str, sandboxed: bool) {
         self.record(pid, app, workspace, sandboxed, false);
     }
@@ -341,8 +339,8 @@ impl Launches {
         Some((launcher, instance))
     }
 
-    /// The apps this session started with the documents store bound into them, and that still run:
-    /// the ones a portal answer can name a store path for.
+    /// The apps this session started in the launcher's sandbox, and that still run: the ones a
+    /// portal answer can name a reference for.
     #[must_use]
     pub fn sandboxed_apps(&self) -> Vec<String> {
         let mut apps: Vec<String> = self

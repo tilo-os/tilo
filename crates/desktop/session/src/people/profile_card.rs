@@ -392,8 +392,7 @@ impl Widget for PictureButton {
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         let (scene, transform, text, theme, env) = ctx.parts();
-        self.face
-            .draw_child(scene, transform, text, theme, &env);
+        self.face.draw_child(scene, transform, text, theme, &env);
         if self.pressing == Pressing::Resting {
             return;
         }

@@ -232,8 +232,9 @@ pub struct Presentation {
     /// `on: n.pinned`: whether the state it toggles is on, read where the action is applied.
     pub on: Option<Expr>,
     /// `key: "Ctrl+Enter"`: the shortcut that runs the action while its window has the keyboard, and
-    /// (on an item's action) while that item is selected. One spelling (`Ctrl+Shift+enter`), read
-    /// through the person's keymap, never as a key code.
+    /// (on an item's action) while that item is selected. A control writes the same `key:` for the
+    /// press it answers, so a view's own state is as reachable from the keyboard as an action. One
+    /// spelling (`Ctrl+Shift+enter`), read through the person's keymap, never as a key code.
     pub key: Option<String>,
     /// `group: "Reply"`: the run of the resource's actions this one stands in, as the app names it. A
     /// surface draws the runs in the order the app declared them.
@@ -262,21 +263,25 @@ pub struct Presentation {
     pub settles: Option<String>,
 }
 
-/// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in one
-/// order and the key's own token (`Ctrl+Shift+enter`), so `Ctrl+Enter` and `control+Return` are one
-/// shortcut.
-pub(super) fn declared_key(e: &Expr) -> Result<String, String> {
-    let text = plain_text(e).unwrap_or_default();
-    let chord = tilo_ui_graph::keys::Chord::parse(&text)
+/// The shortcut an action's or a control's `key:` declares, as it is published and compared: the
+/// modifiers in one order and the key's own token (`Ctrl+Shift+enter`), so `Ctrl+Enter` and
+/// `control+Return` are one shortcut.
+pub(crate) fn shortcut_text(text: &str) -> Result<String, String> {
+    let chord = tilo_ui_graph::keys::Chord::parse(text)
         .map_err(|said| format!("`key:` takes a shortcut: {said}"))?;
     // F1 names every key the desktop answers, so nothing may be bound to it.
     if chord.key == "f1" {
         return Err(format!(
-            "`{}` is the desktop's own key, which names every shortcut: no action can answer it",
+            "`{}` is the desktop's own key, which names every shortcut: nothing can answer it",
             chord.text()
         ));
     }
     Ok(chord.text())
+}
+
+/// [`shortcut_text`] of the text a `key:` is written with, or its error when it is not a string.
+pub(super) fn declared_key(e: &Expr) -> Result<String, String> {
+    shortcut_text(&plain_text(e).unwrap_or_default())
 }
 
 pub fn sentence_case(name: &str) -> String {

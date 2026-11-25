@@ -188,7 +188,7 @@ impl Checks {
                         };
                         match next {
                             Step::Stopped => return End::Cancelled,
-                            Step::Ended(Ok(observed)) => return End::Observed(Box::new(observed)),
+                            Step::Ended(Ok(observed)) => return End::Observed(observed),
                             Step::Ended(Err(why)) => return End::Failed(why),
                             Step::Reported(false) => open = false,
                             Step::Reported(true) => {
@@ -381,7 +381,7 @@ where
         return Poll::Ready(Step::Reported(said.is_ok()));
     }
     match Pin::new(receipt).poll(cx) {
-        Poll::Ready(Ok(ended)) => Poll::Ready(Step::Ended(ended)),
+        Poll::Ready(Ok(ended)) => Poll::Ready(Step::Ended(ended.map(Box::new))),
         Poll::Ready(Err(_)) => Poll::Ready(Step::Ended(Err(
             "The check's host stopped answering".to_owned()
         ))),
@@ -494,7 +494,7 @@ fn stop(shared: &Shared) -> bool {
 /// What one wait for a check came to.
 enum Step {
     Reported(bool),
-    Ended(Result<Receipt, String>),
+    Ended(Result<Box<Receipt>, String>),
     Stopped,
 }
 

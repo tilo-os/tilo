@@ -138,6 +138,7 @@ impl Checker<'_> {
         let span = c.call.span;
         let key = self.node_key(c);
         let n = self.new_node(&toolkit::kind(&d.name), key);
+        self.last_shortcut = None;
         let positional: Vec<&str> = d.positional().map(|p| p.name.as_str()).collect();
         let mut given: HashSet<String> = HashSet::new();
         let mut at = 0usize;
@@ -191,6 +192,13 @@ impl Checker<'_> {
         if let Some(Ty::Enum(enum_key)) = &bound {
             self.enum_cases(n, d, c, enum_key);
         }
+        // The `key:` this control just read, matched to the action its block's press runs once
+        // that is lowered.
+        let shortcut = if given.contains("key") {
+            self.last_shortcut.take()
+        } else {
+            None
+        };
         if let Some(value) = placement {
             self.placement_prop(n, d, value, args);
         }
@@ -221,6 +229,13 @@ impl Checker<'_> {
         let pressed = c.block.iter().flatten().find_map(|s| match &s.kind {
             UiKind::On { event, action, .. } if event.name == "press" => {
                 self.declared_action_of(action).filter(|action| action.own)
+            }
+            _ => None,
+        });
+        // What the control's key answers: its press or its choose, whichever runs an action.
+        let answered = c.block.iter().flatten().find_map(|s| match &s.kind {
+            UiKind::On { event, action, .. } if event.name == "press" || event.name == "choose" => {
+                Some(&**action)
             }
             _ => None,
         });
@@ -256,6 +271,11 @@ impl Checker<'_> {
         }
         if let Some(block) = &c.block {
             self.component_block(n, d, block, span);
+        }
+        // The key this control declares is no conflict when its press runs the very action that
+        // answers it, as a menu row for an action shows the action's own key.
+        if let Some((key, at)) = shortcut {
+            self.key_presses(&key, at, answered);
         }
         n
     }
@@ -586,6 +606,17 @@ impl Checker<'_> {
             return None;
         }
         if let Some(p) = d.prop(name) {
+            // `key:` on a control: a shortcut written as text is checked as an action's is; one
+            // computed where the view runs is typed as the prop below. A `key` that names the
+            // element itself (a navigation place's) is its identity, never a shortcut.
+            if name == "key"
+                && p.data
+                && !p.identity
+                && matches!(&p.ty, Type::Text | Type::Option(_))
+                && self.shortcut_prop(n, name, value)
+            {
+                return None;
+            }
             // The literals a prop of words shows are the view's messages.
             if !p.data && self.st.ctx == Ctx::View && shows_words(&p.ty) {
                 self.mark_shown(value);

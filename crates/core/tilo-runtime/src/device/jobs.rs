@@ -25,12 +25,11 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
-    ActionCallError, Caller, DEVICE_JOBS, Pending, RESOURCE_READ_REFUSED,
-    RESOURCE_READS_UNAVAILABLE, RemoteActionMessage, ResourceAddress, ResourceCopy,
+    ActionCallError, Caller, DEVICE_JOBS, RESOURCE_READ_REFUSED,
+    RESOURCE_READS_UNAVAILABLE, ReadingAnswer, ReadsAnswer, ResourceAddress, ResourceCopy,
     ResourceReadRequest, ResourceReads, ResourceWake, device_record_space,
 };
 use tilo_lock::MutexRecover as _;
@@ -410,16 +409,10 @@ impl DeviceJobs {
             .get()
             .and_then(std::sync::Weak::upgrade)
             .ok_or_else(refused)?;
-        match workspaces
-            .copies()
-            .resource_reads()
-            .may_read(caller, &address)
-            .wait_timeout(Duration::ZERO)
-        {
-            Ok(Some(Ok(()))) => Ok(()),
-            Ok(Some(Err(error))) => Err(error),
-            Ok(None) | Err(_) => Err(refused()),
-        }
+        // Decided now, never waited on: a decision still pending refuses.
+        let reads = workspaces.copies().resource_reads();
+        futures_util::FutureExt::now_or_never(reads.may_read(caller, &address))
+            .unwrap_or_else(|| Err(refused()))
     }
 
     /// Note that the set of job ids moved, waking a reader that followed one not yet made.
@@ -434,8 +427,9 @@ fn revision_of(revision: &tokio::sync::watch::Sender<u64>) -> u64 {
     *revision.borrow()
 }
 
-impl ResourceReads for DeviceJobs {
-    fn read(
+impl DeviceJobs {
+    /// Job `address` as `caller` may read it now.
+    fn read_job(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
@@ -447,19 +441,20 @@ impl ResourceReads for DeviceJobs {
         Ok(self.copy(&address.record))
     }
 
-    fn may_read(
+    /// Whether `caller` may read job `address` now.
+    fn may_read_job(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(if self.names(address) {
-            self.admits(caller, &address.record)
-        } else {
-            Err(unavailable())
-        })
+    ) -> Result<(), ActionCallError> {
+        if !self.names(address) {
+            return Err(unavailable());
+        }
+        self.admits(caller, &address.record)
     }
 
-    fn list(
+    /// The jobs of `workspace` `caller` may read.
+    fn list_jobs(
         &self,
         caller: &Caller,
         workspace: &str,
@@ -484,16 +479,8 @@ impl ResourceReads for DeviceJobs {
             .collect())
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
+    /// Wake `wake` once job `address` moves.
+    fn watch_job(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
@@ -520,6 +507,42 @@ impl ResourceReads for DeviceJobs {
     }
 }
 
+impl ResourceReads for DeviceJobs {
+    fn read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        Box::pin(std::future::ready(self.read_job(caller, address)))
+    }
+
+    fn may_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(self.may_read_job(caller, address)))
+    }
+
+    fn list<'a>(
+        &'a self,
+        caller: &'a Caller,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+        Box::pin(std::future::ready(self.list_jobs(caller, workspace, app)))
+    }
+
+    fn watch<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(self.watch_job(caller, address, wake)))
+    }
+}
+
 impl tilo_workspace_service::workspaces::DeviceJobReads for DeviceJobs {
     fn device(&self) -> [u8; 32] {
         self.device
@@ -534,14 +557,11 @@ impl tilo_workspace_service::workspaces::DeviceJobReads for DeviceJobs {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        ResourceReads::read(self, caller, address)
+        self.read_job(caller, address)
     }
 
     fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> Result<(), ActionCallError> {
-        if !self.names(address) {
-            return Err(unavailable());
-        }
-        self.admits(caller, &address.record)
+        self.may_read_job(caller, address)
     }
 
     fn list(
@@ -550,7 +570,7 @@ impl tilo_workspace_service::workspaces::DeviceJobReads for DeviceJobs {
         workspace: &str,
         app: &str,
     ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        ResourceReads::list(self, caller, workspace, app)
+        self.list_jobs(caller, workspace, app)
     }
 
     fn watch(
@@ -559,7 +579,7 @@ impl tilo_workspace_service::workspaces::DeviceJobReads for DeviceJobs {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        ResourceReads::watch(self, caller, address, wake)
+        self.watch_job(caller, address, wake)
     }
 
     fn answer_read(
@@ -567,8 +587,13 @@ impl tilo_workspace_service::workspaces::DeviceJobReads for DeviceJobs {
         caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    ) -> ReadingAnswer {
+        Box::pin(tilo_actions::remote::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
     }
 }
 

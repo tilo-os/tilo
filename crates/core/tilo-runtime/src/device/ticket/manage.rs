@@ -330,7 +330,8 @@ impl ActionProvider for OnThisDevice {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        if let Some(state) = self.0.0.calls.lock_recover().get(id).cloned() {
+        let state = self.0.0.calls.lock_recover().get(id).cloned();
+        if let Some(state) = state {
             return Some(state);
         }
         self.0.0.service.tickets().certified_observe(caller, id)

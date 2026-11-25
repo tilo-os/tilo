@@ -182,6 +182,7 @@ impl RemoteUse {
         let lease = (*held)?;
         if Instant::now() >= lease.until {
             *held = None;
+            drop(held);
             return Some(lease);
         }
         None
@@ -220,7 +221,7 @@ fn hold(remote: RemoteUse) {
                 }
                 continue;
             }
-            tokio::time::sleep(lease.until - now).await;
+            tokio::time::sleep(lease.until.saturating_duration_since(now)).await;
         }
     });
 }

@@ -275,7 +275,7 @@ fn a_branch_of_a_customers_workspace_is_the_persons_own() {
         assert_ne!(branch, source);
         assert_eq!(
             listed(&key, json!({"customer_id": "cus_0-branch"})).await,
-            [branch.clone()]
+            std::slice::from_ref(&branch)
         );
         let (status, read) = key.get(&format!("/v1/workspaces/{branch}/resources")).await;
         assert_eq!(status, 200, "the branch is served at once: {read}");
@@ -510,10 +510,7 @@ fn neither_a_minted_key_nor_a_member_deletes_a_workspace() {
         );
 
         // The workspace stays, and the customer's key still reads it.
-        assert_eq!(
-            host.daemon().workspace().expect("the workspace"),
-            workspace
-        );
+        assert_eq!(host.daemon().workspace().expect("the workspace"), workspace);
         let (status, read) = customer
             .get(&format!("/v1/workspaces/{workspace}/resources"))
             .await;

@@ -371,8 +371,8 @@ impl Command {
     }
 }
 
-/// A write the store refused partway: a batch keeps what it wrote before the refusal, which is
-/// in the store and is carried to the other devices as any write.
+/// A write the store refused partway: a store written directly ([`write`]) holds what the batch
+/// wrote before the refusal. A workspace keeps none of a refused batch's steps.
 #[derive(Debug)]
 pub struct Refused {
     pub error: StoreError,
@@ -416,8 +416,7 @@ fn placed_by_rules(store: &Store, command: Command) -> Result<Command, Box<Refus
     })
 }
 
-/// Draft the writes a command makes, keeping the live store untouched. A refused batch returns
-/// the same prefix as [`write`].
+/// Draft the writes a command makes, keeping the live store untouched.
 ///
 /// # Errors
 /// When the command is a read or the store refused a step.

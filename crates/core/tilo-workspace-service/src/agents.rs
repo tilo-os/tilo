@@ -1495,8 +1495,7 @@ impl ServerAgents {
             app: CHAT.to_owned(),
             record: triggered::published(CHAT, &place.record),
         };
-        let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address)).await;
-        let copy = read.ok()?.ok()?;
+        let copy = reads.read(&caller, &address).await.ok()?;
         match copy {
             tilo_actions::remote::ResourceCopy::Read(read) => field(&read, "summary")
                 .and_then(Value::as_str)
@@ -1835,16 +1834,11 @@ impl TurnScope {
             app: CHAT.to_owned(),
             record: triggered::published(CHAT, &place.record),
         };
-        let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address)).await;
-        match read {
-            Ok(Ok(tilo_actions::remote::ResourceCopy::Read(read))) => {
+        match reads.read(&caller, &address).await {
+            Ok(tilo_actions::remote::ResourceCopy::Read(read)) => {
                 recalled(&read, &place.item, &turn.agent.id.0)
             }
-            Ok(Ok(_)) => Vec::new(),
-            Ok(Err(error)) => {
-                tracing::debug!(workspace = %self.workspace, %error, "a turn's conversation did not read");
-                Vec::new()
-            }
+            Ok(_) => Vec::new(),
             Err(error) => {
                 tracing::debug!(workspace = %self.workspace, %error, "a turn's conversation did not read");
                 Vec::new()

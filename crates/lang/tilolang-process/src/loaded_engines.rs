@@ -360,6 +360,10 @@ fn behind<'a>(context: *mut c_void) -> &'a Context<'a> {
     unsafe { &*context.cast::<Context<'a>>() }
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the engine's device names every callback's answer as a Result"
+)]
 fn moment(context: *mut c_void) -> Result<(String, i64), String> {
     Ok(said_moment(&behind(context).0.moment()))
 }

@@ -42,6 +42,8 @@ mod gallery_sidebar;
 mod gallery_start;
 #[path = "interaction.rs"]
 mod interaction;
+#[path = "keymodes.rs"]
+mod keymodes;
 #[path = "mentions.rs"]
 mod mentions;
 #[path = "motion.rs"]

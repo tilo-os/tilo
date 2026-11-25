@@ -117,12 +117,12 @@ fn app_connection(socket: &std::path::Path, app: &str) -> ShellLink {
 }
 
 /// A session serving the chooser on a socket of its own, and an app connected to it as its
-/// launcher connects one, with the documents store the session serves its sandboxes.
+/// launcher connects one, with the session's table of chosen files.
 struct Rig {
     directory: tempfile::TempDir,
     socket: std::path::PathBuf,
     questions: tilo_service::AskReceiver,
-    documents: tilo_documents::Documents,
+    chosen: Arc<tilo_dialogs::chosen::ChosenTable>,
     served: Served,
     device: Device,
     link: ShellLink,
@@ -136,12 +136,12 @@ fn rig_with(files: Option<Arc<dyn WorkspaceFiles>>) -> Rig {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("chooser");
     let (asks, questions) = tilo_service::asks::channel();
-    let documents = tilo_documents::Documents::new();
+    let chosen = Arc::new(tilo_dialogs::chosen::ChosenTable::new());
     let served = serve_at(
         &socket,
         Serving {
             questions: Some(asks),
-            documents: documents.clone(),
+            chosen: std::sync::Arc::clone(&chosen),
             files,
             wake: Arc::new(|| {}),
         },
@@ -152,7 +152,7 @@ fn rig_with(files: Option<Arc<dyn WorkspaceFiles>>) -> Rig {
         directory,
         socket,
         questions,
-        documents,
+        chosen,
         served,
         device: Device::default(),
         link,
@@ -206,7 +206,7 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_reference() {
     let Rig {
         directory,
         questions,
-        documents,
+        chosen: table,
         served,
         device,
         link,
@@ -232,11 +232,11 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_reference() {
     let PortalOutcome::Opened(reference) = picking.recv_timeout(answer()).unwrap() else {
         panic!("the pick answered nothing");
     };
-    let (token, _) = tilo_documents::split_sandbox_path(&reference)
-        .expect("a sandboxed app is answered a path in its view of the documents store");
-    let key = tilo_documents::AppKey::new(WORKSPACE, APP).unwrap();
+    let (token, _) = tilo_dialogs::chosen::split_reference(&reference)
+        .expect("a sandboxed app is answered a reference into the chosen files");
+    let key = tilo_dialogs::chosen::AppKey::new(WORKSPACE, APP).unwrap();
     assert_eq!(
-        documents.document(&key, &token).unwrap().host,
+        table.document(&key, &token).unwrap().host,
         chosen.canonicalize().unwrap()
     );
 

@@ -9,9 +9,9 @@ fn apps() -> Apps {
     Apps::with_launcher(SessionEnvironment::default(), None, None)
 }
 
-/// A package opening a file of the person's is handed it where its sandbox reaches it: the
-/// path it is given is in its own view of the documents served to it, and reading it there
-/// gives the file's bytes. The device's own path never reaches it.
+/// A package opening a file of the person's is handed its choice's reference: the app opens it
+/// through the descriptor the chooser gave, never by the device's own path. Only the app that
+/// opened it reaches the choice, and reopening a reference it already holds opens it again.
 #[test]
 fn a_package_opening_a_file_reads_its_bytes_where_its_sandbox_holds_it() {
     use std::io::Read as _;
@@ -19,13 +19,13 @@ fn a_package_opening_a_file_reads_its_bytes_where_its_sandbox_holds_it() {
     let agenda = home.path().join("Agenda.docx");
     std::fs::write(&agenda, b"PK agenda").unwrap();
     let workspace = Workspace::new(WORKSPACE, home.path().join("capabilities"));
-    let documents = tilo_documents::Documents::new();
+    let chosen = std::sync::Arc::new(tilo_dialogs::chosen::ChosenTable::new());
     let launch = Launch::Package {
         app: "so.tilo.word-processor".to_owned(),
         open: Some(tilo_app_launch::Open::File(agenda.clone())),
     };
 
-    let given = handed(&launch, &workspace, Some(&documents)).unwrap();
+    let given = handed(&launch, &workspace, Some(&chosen)).unwrap();
     let Launch::Package {
         open: Some(tilo_app_launch::Open::File(opened)),
         ..
@@ -34,32 +34,27 @@ fn a_package_opening_a_file_reads_its_bytes_where_its_sandbox_holds_it() {
         panic!("the launch still opens a file: {given:?}");
     };
     assert!(
-        opened.starts_with(tilo_documents::SANDBOX_DIR),
+        opened.starts_with(tilo_dialogs::chosen::CHOSEN_ROOT),
         "{}",
         opened.display()
     );
     assert_eq!(opened.file_name(), agenda.file_name(), "named as it is");
-    let key = tilo_documents::AppKey::new(WORKSPACE, "so.tilo.word-processor").unwrap();
-    let target = tilo_documents::host::resolve(&documents, &key, opened).unwrap();
+    let key = tilo_dialogs::chosen::AppKey::new(WORKSPACE, "so.tilo.word-processor").unwrap();
+    let held = chosen.looked_up(&key, opened).expect("the app's choice");
     let mut bytes = Vec::new();
-    std::fs::File::from(
-        target
-            .open(rustix::fs::OFlags::RDONLY, rustix::fs::Mode::empty())
-            .unwrap(),
-    )
-    .read_to_end(&mut bytes)
-    .unwrap();
+    std::fs::File::open(&held.host)
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
     assert_eq!(bytes, b"PK agenda");
-    let other = tilo_documents::AppKey::new(WORKSPACE, "so.tilo.notes").unwrap();
+    let other = tilo_dialogs::chosen::AppKey::new(WORKSPACE, "so.tilo.notes").unwrap();
     assert!(
-        tilo_documents::host::resolve(&documents, &other, opened).is_none(),
+        chosen.looked_up(&other, opened).is_none(),
         "handed to the app that opens it alone"
     );
 
     assert_eq!(
-        handed(&given, &workspace, Some(&documents))
-            .unwrap()
-            .as_ref(),
+        handed(&given, &workspace, Some(&chosen)).unwrap().as_ref(),
         given.as_ref(),
         "reopening the app's own document, as its history names it, opens it again"
     );

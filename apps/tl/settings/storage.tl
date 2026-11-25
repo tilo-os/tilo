@@ -208,6 +208,35 @@ view storage_pane() {
             )
         }
     }
+    ui.Section("Storage tools") {
+        ui.ListRow(
+            "Disks",
+            secondary: "Partitions, formatting, drive health, and removable media",
+            icon: .hard_drive,
+        ) {
+            trailing: {
+                ui.Button("Open Disks", size: .small) {
+                    on press: session.open_app(app: "so.tilo.disks")
+                }
+            }
+        }
+        ui.ListRow(
+            "Backups",
+            secondary: "Backup history, schedules, retention, and restore",
+            icon: .archive,
+        ) {
+            trailing: {
+                ui.Button("Open Backups", size: .small) {
+                    on press: session.open_app(app: "so.tilo.backups")
+                }
+            }
+        }
+        ui.Text(
+            "Use Backups to protect files before making storage changes.",
+            role: .caption,
+            secondary: true,
+        )
+    }
     if let error = storage.read_error {
         ui.StatusLine(error, status: .warning)
     }

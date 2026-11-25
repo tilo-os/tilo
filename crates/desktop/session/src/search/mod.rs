@@ -2166,7 +2166,7 @@ mod tests {
                 index: index.map(|index| {
                     std::sync::Arc::new(tilo_workspace_service::search::IndexSearch::new(
                         index,
-                        std::sync::Arc::new(|_, _| true),
+                        tilo_workspace_service::search::deciding(|_, _| true),
                     ))
                         as std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>
                 }),
@@ -2407,7 +2407,7 @@ mod tests {
             SearchOptions {
                 index: Some(Arc::new(tilo_workspace_service::search::IndexSearch::new(
                     Arc::clone(&index),
-                    Arc::new(|_, _| true),
+                    tilo_workspace_service::search::deciding(|_, _| true),
                 ))),
                 ..SearchOptions::default()
             },

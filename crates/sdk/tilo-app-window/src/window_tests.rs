@@ -182,6 +182,108 @@ fn view_call(key: &str, fill: i64) -> UiNode {
     call
 }
 
+/// The window under `harness`.
+fn window_of(harness: &mut ui::headless::Driver) -> &mut AppWindow {
+    harness
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<AppWindow>())
+        .expect("the window")
+}
+
+/// A bar holding the people part, a view call packed by what it holds: the faces where it reads
+/// room for them, a count where it reads too little.
+fn people_bar(compact: bool) -> Vec<ToUi> {
+    let mut faces = UiNode::empty("ui.Text", "people~faces");
+    faces.props.insert(
+        "value".to_owned(),
+        Value::text(if compact { "3" } else { "Ada, Grace and Linus" }),
+    );
+    let mut body = UiNode::empty("row", "people~body");
+    body.children = vec![faces];
+    let mut people = UiNode::empty("fragment", "people");
+    people.children = vec![body];
+    let mut bar = UiNode::empty("row", "bar");
+    bar.children = vec![people];
+    vec![
+        ToUi::Open {
+            level: Level::Root,
+            target: doc(),
+            tree: bar,
+            front: None,
+            capture_protected: false,
+        },
+        ToUi::Spaces {
+            level: Level::Root,
+            keys: vec!["people".to_owned()],
+        },
+    ]
+}
+
+/// A few frames of the people part following what the window tells it, as a view that reads
+/// `space` is run again for each room it reads: whether it ends folded, with the last room it was
+/// told and the room the window's root was told, in rem.
+fn follow_people(
+    harness: &mut ui::headless::Driver,
+    app: &mut local::End,
+    compact: &mut bool,
+) -> (f32, f32) {
+    const COMPACT_BELOW: f32 = 30.0;
+    let (mut people, mut root) = (0.0, 0.0);
+    for _ in 0..4 {
+        window_of(harness).flush();
+        for (_, key, width, _) in spaces(app) {
+            if key.is_empty() {
+                root = width;
+            } else if key == "people" {
+                people = width;
+                let folds = width < COMPACT_BELOW;
+                if folds != *compact {
+                    *compact = folds;
+                    send(app, &people_bar(folds));
+                    window_of(harness).receive();
+                }
+            }
+        }
+        harness.relayout();
+    }
+    (people, root)
+}
+
+/// A view call packed by what it holds is told the room layout offers it, never the size of what
+/// it drew: the people part of a bar draws its faces where it reads room for them, and reading
+/// only the faces' own width would fold it, and keep it folded in a bar with room to spare.
+#[test]
+fn a_call_packed_by_its_content_is_told_the_room_it_is_offered_not_what_it_drew() {
+    let (mut app, mut window) = window();
+    send(&mut app, &people_bar(false));
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1200, 600));
+    let rem = ui::widget::arrange::rem_of(harness.theme());
+    let mut compact = false;
+    let (people, root) = follow_people(&mut harness, &mut app, &mut compact);
+    let drawn = widget_rects(window_of(&mut harness).body.as_ref())
+        .get("people~faces")
+        .map(|rect| rect.width() as f32 / rem)
+        .expect("the faces are drawn");
+    assert!(
+        drawn < 30.0,
+        "the faces take far less than the bar: {drawn} rem"
+    );
+    assert!(
+        !compact && (people - root).abs() < 4.0,
+        "the part reads the bar's room, {root} rem, not the {drawn} rem it drew: {people} rem"
+    );
+    // A narrow bar offers less room: the part folds, and stays folded.
+    harness.resize((400, 600)).expect("lays out");
+    let (people, root) = follow_people(&mut harness, &mut app, &mut compact);
+    assert!(compact, "a {root} rem bar folds the part: {people} rem");
+    // Wide again, it unfolds: what it drew while folded never held it there.
+    harness.resize((1200, 600)).expect("lays out");
+    let (people, root) = follow_people(&mut harness, &mut app, &mut compact);
+    assert!(!compact, "a {root} rem bar unfolds the part: {people} rem");
+}
+
 #[test]
 fn a_view_call_that_reads_its_space_is_told_the_size_layout_gave_it() {
     let (mut app, mut window) = window();

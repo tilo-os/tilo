@@ -176,7 +176,8 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "key",
                 "Option<Text>",
                 "The plain key that runs it while its window has the keyboard (and, on a row's \
-                 action, while that row is selected), when it declares one.",
+                 action, while that row is selected), when it declares one. A control declares \
+                 the key of its own press the same way.",
             ),
             (
                 "params",

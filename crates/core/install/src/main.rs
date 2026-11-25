@@ -10,7 +10,6 @@
 //! inspect, run, the trust lists) read the store directly.
 
 use std::fs;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -751,8 +750,24 @@ fn run(
         cmd.arg("--allow-missing-runtime");
     }
     // exec() replaces this process, so its exit code is the launcher's.
-    let err = cmd.exec();
-    Err(Error::Io(err))
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        Err(Error::Io(cmd.exec()))
+    }
+    // Windows replaces no process: the launcher runs to its end, and its failure is this one's.
+    #[cfg(not(unix))]
+    {
+        let status = cmd.status().map_err(Error::Io)?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(Error::Io(std::io::Error::other(format!(
+                "{} {status}",
+                launcher.display()
+            ))))
+        }
+    }
 }
 
 fn inspect(pkg_id: &str) -> Result<(), Error> {

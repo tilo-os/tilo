@@ -967,42 +967,64 @@ impl Workspaces {
         let Ok(Some(keys)) = workspace.document_keys(app, record).await else {
             return Ok(());
         };
+        let Some((checkpoint, holds)) = workspace
+            .peer()
+            .publication()
+            .check_leading_checkpoint((app, record), &mut keys.open())
+        else {
+            return Ok(());
+        };
+        if !holds {
+            tracing::warn!(
+                workspace = %workspace.workspace(),
+                %app,
+                %record,
+                "a checkpoint does not hold what the writes it stands in for merge to: its \
+                 readers read the writes instead"
+            );
+            return Ok(());
+        }
+        self.keep_checkpoint_check(workspace, (app, record), &checkpoint)
+            .await
+    }
+
+    /// Keep that this host checked `checkpoint`, the checkpoint leading `record`, as the
+    /// workspace's record of the checks every device with the record's keys makes. One this host
+    /// keeps already is kept once.
+    ///
+    /// # Errors
+    /// The workspace cannot be committed, or the check cannot be kept.
+    #[cfg(feature = "device-keys")]
+    pub(super) async fn keep_checkpoint_check(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        (app, record): (&str, &str),
+        checkpoint: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        let route = (app.to_owned(), record.to_owned());
+        if workspace.checked_checkpoints.get(&route) == Some(&checkpoint.signature.0) {
+            return Ok(());
+        }
         let host = &self.inner.host;
         let now = tilo_clock::wall();
-        let checked = workspace.change_held(
+        workspace.change_held(
             &host.key,
             now,
             |_, candidate| {
-                let Some((checkpoint, holds)) = candidate
-                    .publication()
-                    .check_leading_checkpoint((app, record), &mut keys.open())
-                else {
-                    return Ok((None, false));
-                };
-                if !holds {
-                    tracing::warn!(
-                        workspace = %candidate.workspace_id(),
-                        %app,
-                        %record,
-                        "a checkpoint does not hold what the writes it stands in for merge to: its \
-                         readers read the writes instead"
-                    );
-                    return Ok((None, false));
-                }
                 let filed = candidate.workspace_mut().record_checkpoint_check(
                     &host.cert,
                     (app, record),
-                    &checkpoint,
+                    checkpoint,
                     &host.key,
                     now,
                 )?;
-                Ok((Some(checkpoint.signature.0), filed))
+                Ok(((), filed))
             },
             |entry, _| Ok(entry.collaboration.clone()),
         )?;
-        if let Some(signature) = checked {
-            workspace.checked_checkpoints.insert(route, signature);
-        }
+        workspace
+            .checked_checkpoints
+            .insert(route, checkpoint.signature.0);
         Ok(())
     }
 

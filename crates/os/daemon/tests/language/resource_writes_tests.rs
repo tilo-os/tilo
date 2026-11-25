@@ -41,15 +41,42 @@ async fn test_host_holding(
     cert: &tilo_user_identity::DeviceCert,
     keys: Arc<TestGroupKeys>,
 ) -> TestHost {
-    let host = tilo_workspace_service::workspaces::fixtures::test_host_holding_mounting(
-        state_root,
-        key,
-        cert,
-        keys,
-        tilolang_workspace::host(),
+    mounted(
+        tilo_workspace_service::workspaces::fixtures::test_host_holding_mounting(
+            state_root,
+            key,
+            cert,
+            keys,
+            tilolang_workspace::host(),
+        )
+        .await,
     )
-    .await;
-    // The mounted records serve their workspace's reads, as the daemon's program has them.
+}
+
+/// [`test_host_holding`] opened as the device `key`/`cert` acts as, as every device's service is
+/// opened ([`tilo_workspace_service::own_device::open`]): what a start replays of its store is
+/// judged as the device it is, from the moment it opens, and never before it is known.
+async fn test_host_holding_as_member(
+    state_root: &std::path::Path,
+    key: &SigningKey,
+    cert: &tilo_user_identity::DeviceCert,
+    keys: Arc<TestGroupKeys>,
+) -> TestHost {
+    mounted(
+        tilo_workspace_service::workspaces::fixtures::test_host_holding_mounting_as_member(
+            state_root,
+            key,
+            cert,
+            keys,
+            tilolang_workspace::host(),
+        )
+        .await,
+    )
+}
+
+/// `host` with its mounted records serving their workspace's reads, as the daemon's program has
+/// them.
+fn mounted(host: TestHost) -> TestHost {
     if let Some(tilolang) = host.workspaces().tilolang() {
         tilolang.records.serve(host.workspaces());
     }
@@ -1491,12 +1518,10 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     drop(workspaces);
     server.shutdown().await;
 
-    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    // Opened as its device, as every device's service is: what it replays of the store it kept
+    // is judged as the device it is from the moment it opens.
+    let server = test_host_holding_as_member(dir.path(), &key, &cert, keys).await;
     let workspaces = server.workspaces().clone();
-    workspaces.set_member_device(Arc::new(MemberDevice {
-        cert: cert.clone(),
-        signer: Arc::new(key),
-    }));
     let history = workspaces
         .document_history(&workspace, APP, &document)
         .await

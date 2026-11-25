@@ -40,6 +40,7 @@
     reason = "in a test these are the assertion, not a hazard, and the times are printed for reading"
 )]
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -201,10 +202,7 @@ async fn open_app(host: &host::Host, app: &str) {
 fn made_address(answer: &Value, app: &str) -> String {
     for field in ["resources", "made"] {
         if let Some(entry) = answer[field].as_array().and_then(|made| made.first()) {
-            if let Some(address) = entry["address"]
-                .as_str()
-                .or_else(|| entry["path"].as_str())
-            {
+            if let Some(address) = entry["address"].as_str().or_else(|| entry["path"].as_str()) {
                 return address.to_owned();
             }
             if let Some(id) = entry.as_str().or_else(|| entry["id"].as_str()) {
@@ -334,7 +332,13 @@ fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
         // The channel the messages go into, made once as a person makes one; a read of it lists
         // what was sent there.
         let channel = {
-            let made = act(&agent, "so.tilo.chat", "new_channel", &json!({"name": "bench"})).await;
+            let made = act(
+                &agent,
+                "so.tilo.chat",
+                "new_channel",
+                &json!({"name": "bench"}),
+            )
+            .await;
             made_address(&made, CHAT_APP)
         };
         // Where one of each kind's actions goes, and where a read of what it made names it.
@@ -400,8 +404,11 @@ fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             let mut took = Vec::with_capacity(calls);
             for _ in 0..calls {
                 let began = Instant::now();
-                let (read, failed) =
-                    said(&agent.tool("tilo_read", &json!({"path": read_at[ISSUES]})).await);
+                let (read, failed) = said(
+                    &agent
+                        .tool("tilo_read", &json!({"path": read_at[ISSUES]}))
+                        .await,
+                );
                 took.push(began.elapsed());
                 assert!(!failed, "an MCP read runs: {read}");
             }
@@ -456,9 +463,7 @@ fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
                     act(&agent, &at[k], kind.action, &args).await;
                     took.push(began.elapsed());
                     let marker = marker(kind, index);
-                    if let Some(arrived) =
-                        heard(&other, &read_at[k], &marker, began).await
-                    {
+                    if let Some(arrived) = heard(&other, &read_at[k], &marker, began).await {
                         heard_latencies.push(arrived);
                     }
                 }
@@ -512,8 +517,7 @@ fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             // names the item, so the call costs its action, not a page of the listing.
             let (status, listed) = key
                 .get(&format!(
-                    "/v1/workspaces/{workspace}/resources?path={}&limit=1000",
-                    ISSUES_AT
+                    "/v1/workspaces/{workspace}/resources?path={ISSUES_AT}&limit=1000"
                 ))
                 .await;
             assert_eq!(status, 200, "{listed}");
@@ -617,7 +621,8 @@ fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
                 while at < bytes.len() {
                     let end = (at + piece).min(bytes.len());
                     // `bytes <from>-<to>/<size>`
-                    let content_range = format!("bytes {at}-{}/{size}", end - 1, size = bytes.len());
+                    let content_range =
+                        format!("bytes {at}-{}/{size}", end - 1, size = bytes.len());
                     let (status, answer) = key
                         .request(
                             "PUT",
@@ -700,33 +705,35 @@ fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
                     continue;
                 }
                 if row.kind.starts_with("mcp ") && row.single_p50_ms > 300.0 {
-                    failed.push_str(&format!(
-                        "{} at {}: single p50 {:.1} ms over 300 ms\n",
+                    let _ = writeln!(
+                        failed,
+                        "{} at {}: single p50 {:.1} ms over 300 ms",
                         row.kind, row.size, row.single_p50_ms
-                    ));
+                    );
                 }
                 // The kinds whose app takes no list call send nothing in bulk, and a file put and
                 // a delete by id are their own paths.
                 let bulk_kind = row.kind == "tasks issue";
                 if bulk_kind && row.bulk_per_s < 1000.0 {
-                    failed.push_str(&format!(
-                        "{} at {}: bulk {:.0}/s < 1000/s\n",
+                    let _ = writeln!(
+                        failed,
+                        "{} at {}: bulk {:.0}/s < 1000/s",
                         row.kind, row.size, row.bulk_per_s
-                    ));
+                    );
                 }
                 if let Some(first) = table
                     .iter()
                     .find(|other| other.kind == row.kind && other.size == smallest)
                     && row.single_p50_ms > first.single_p50_ms * 2.0 + 20.0
                 {
-                    failed.push_str(&format!(
-                        "{} at {}: single p50 {:.1} ms grew from {:.1} ms\n",
+                    let _ = writeln!(
+                        failed,
+                        "{} at {}: single p50 {:.1} ms grew from {:.1} ms",
                         row.kind, row.size, row.single_p50_ms, first.single_p50_ms
-                    ));
+                    );
                 }
             }
             assert!(failed.is_empty(), "targets missed:\n{failed}");
         }
     });
 }
-

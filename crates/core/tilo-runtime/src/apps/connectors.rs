@@ -50,25 +50,20 @@ struct Running {
 /// workspace.
 pub type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
 
-/// The pid a started connector runs as, as the launch record names it; `None` where the system
-/// does not say it in a pid this daemon records.
+/// The pid a started connector runs as, as the launch record names it: the system's own.
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
 #[cfg_attr(
     any(target_os = "android", windows),
     expect(dead_code, reason = "Android and Windows start no connector process")
 )]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "a Mac's launch record may name no pid this daemon records"
-)]
+pub(crate) fn pid(process: &Process) -> u32 {
+    process.id()
+}
+
+/// [`pid`] where the launcher reports its pid as an `i32`, which names one only where it fits.
+#[cfg(target_os = "macos")]
 pub(crate) fn pid(process: &Process) -> Option<u32> {
-    #[cfg(any(target_os = "linux", target_os = "android", windows))]
-    {
-        Some(process.id())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        u32::try_from(process.pid()).ok()
-    }
+    u32::try_from(process.pid()).ok()
 }
 
 /// The held connections this device runs, by app, kind and workspace.
@@ -152,6 +147,7 @@ impl Connectors {
                 child,
             },
         );
+        drop(running);
         Ok(())
     }
 }

@@ -168,6 +168,10 @@ pub struct PlanContext<'a> {
     /// The DRM render node the compositor renders on, so an app renders on
     /// the same GPU.
     pub render_node: Option<PathBuf>,
+    /// What the person gave the app a choice on in this workspace: workspace file nodes it
+    /// holds a grant on, and the files it chose outside one, each bound at the reference the app
+    /// was answered with.
+    pub granted: &'a [launcher::run::GrantedPath],
     /// A window of the app is already showing and it opens another on
     /// request ([`crate::Answer::Start`]): ask for the new one the way its
     /// entry declares, through its New Window action where it has one.
@@ -283,6 +287,18 @@ impl Planned {
                 app: package.id.to_owned(),
                 source,
             })?;
+        // What the person gave this app a choice on: bound into its sandbox at each reference,
+        // and nothing another app was given.
+        let granted = launcher::capabilities::write_granted_file(
+            &context.workspace.directory,
+            &context.workspace.id,
+            package.id,
+            context.granted,
+        )
+        .map_err(|source| PlanError::Grants {
+            app: package.id.to_owned(),
+            source,
+        })?;
         // What the person may do in this app here, published before the app
         // starts: it decides every action against it from its first frame.
         let authority = context
@@ -319,6 +335,10 @@ impl Planned {
         }
         if let Some(path) = &capabilities {
             args.push("--capabilities".to_owned());
+            args.push(path.display().to_string());
+        }
+        if let Some(path) = &granted {
+            args.push("--grants".to_owned());
             args.push(path.display().to_string());
         }
         if let Some(path) = &authority {
@@ -558,6 +578,7 @@ mod tests {
             identity: None,
             authority: None,
             render_node: None,
+            granted: &[],
             new_window: false,
             continuity_instance: None,
             connector: None,

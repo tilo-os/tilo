@@ -258,23 +258,30 @@ impl ResourceReads for LineClient {
         _caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
+    ) -> super::super::resource_read::ReadingAnswer {
         let ours = self.correlation();
-        self.ask(
-            Key::Correlation(ours),
-            RemoteActionMessage::ResourceRead {
-                correlation: ours,
-                on_behalf_of: None,
-                read,
-            },
-        )
-        .map(move |answer| RemoteActionMessage::ResourceReading {
-            correlation,
-            result: match answer {
-                Ok(RemoteActionMessage::ResourceReading { result, .. }) => result,
-                Ok(other) => Err(unexpected(&other)),
-                Err(error) => Err(error),
-            },
+        let asked = self
+            .ask(
+                Key::Correlation(ours),
+                RemoteActionMessage::ResourceRead {
+                    correlation: ours,
+                    on_behalf_of: None,
+                    read,
+                },
+            )
+            .map(move |answer| RemoteActionMessage::ResourceReading {
+                correlation,
+                result: match answer {
+                    Ok(RemoteActionMessage::ResourceReading { result, .. }) => result,
+                    Ok(other) => Err(unexpected(&other)),
+                    Err(error) => Err(error),
+                },
+            });
+        Box::pin(async move {
+            asked.await.unwrap_or(RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Err(ActionCallError::Unanswered),
+            })
         })
     }
 }

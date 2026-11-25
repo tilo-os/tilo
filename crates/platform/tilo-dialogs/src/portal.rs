@@ -1088,12 +1088,12 @@ pub fn open_directory_handle(_path: &Path) -> std::io::Result<File> {
     ))
 }
 
-/// Where a launcher mounts the documents an app was given: the chooser's references are paths
-/// under it, whatever host keeps them.
-pub const DOCUMENTS_DIR: &str = "/run/tilo/documents";
+/// Where the chooser names what it answers with: every reference is a path under it, whether the
+/// choice is a file of a workspace's tree or one kept in the device's records.
+pub const DOCUMENTS_DIR: &str = "/run/tilo/chosen";
 
 /// Whether `path` names a chosen document rather than a file on the host: what a sandboxed app
-/// is handed, and what a session holding the documents store can reopen after a restart.
+/// is handed, and what a session holding the choices can reopen after a restart.
 #[must_use]
 pub fn is_document_reference(path: &Path) -> bool {
     let Some(rest) = path.strip_prefix(DOCUMENTS_DIR).ok() else {

@@ -158,9 +158,9 @@ impl Standing {
         }
         let watching = standing.watching.remove(&id).unwrap_or_default();
         drop(standing);
-        watching
-            .into_iter()
-            .for_each(|watcher| watcher.complete(()));
+        for watcher in watching {
+            watcher.complete(());
+        }
     }
 
     /// `id` no longer stands here: it runs where it was sent, and is read there.
@@ -170,9 +170,9 @@ impl Standing {
         standing.order.retain(|kept| *kept != id);
         let watching = standing.watching.remove(&id).unwrap_or_default();
         drop(standing);
-        watching
-            .into_iter()
-            .for_each(|watcher| watcher.complete(()));
+        for watcher in watching {
+            watcher.complete(());
+        }
     }
 }
 
@@ -250,13 +250,13 @@ impl DeviceAsked {
         }
         let invocation = request.invocation;
         // The same call followed again under its id is the one that waits, or how it ended.
-        if let Some(receipt) = self
+        let receipt = self
             .standing
             .lock_recover()
             .by_id
             .get(&invocation)
-            .map(|(_, state)| state.receipt())
-        {
+            .map(|(_, state)| state.receipt());
+        if let Some(receipt) = receipt {
             return Ok(receipt);
         }
         let workspace = run.workspace();
@@ -665,18 +665,19 @@ impl AskedDispatch for DeviceAsked {
         }
         // What the run wrote before it asked is taken back, keyed by its invocation: the same
         // take-back `<record>#undo` runs, at the provider whose record holds it.
-        let _ = take_back_run(
+        drop(take_back_run(
             &waiting.route,
             &waiting.at,
             None,
             &invocation.0.to_string(),
             None,
-        );
+        ));
         Ok(())
     }
 
     fn withdrawn(&self, _: &Caller, invocation: InvocationId, message: &str) {
-        if let Some(waiting) = self.waiting.lock_recover().remove(&invocation) {
+        let waiting = self.waiting.lock_recover().remove(&invocation);
+        if let Some(waiting) = waiting {
             Standing::stand(
                 &self.standing,
                 &waiting.route.1,

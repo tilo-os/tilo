@@ -220,7 +220,7 @@ impl Peer {
                     *super::serve::NOT_IN.lock_recover() = Some(why);
                 }
             }
-            self.reconcile(&own, &login, &key).await;
+            Box::pin(self.reconcile(&own, &login, &key)).await;
             tokio::time::sleep(PEER_LOOK).await;
         }
     }
@@ -331,7 +331,20 @@ impl Peer {
             }
         }
         self.failed.lock().map(|mut failed| failed.clear()).ok();
-        for entry in &listed {
+        self.show_listed(own, &listed, &wanted, login, key).await;
+    }
+
+    /// Show each folder `listed` names: pause it as the person set it, enter the workspace where
+    /// it is kept, and say why one is not shown. A workspace with no folder waits for its name.
+    async fn show_listed(
+        &self,
+        own: &ServiceWorkspaces,
+        listed: &[Listed],
+        wanted: &folders::Folders,
+        login: &super::home::Home,
+        key: &SigningKey,
+    ) {
+        for entry in listed {
             let id = entry.workspace.to_string();
             let Some(folder) = wanted.workspaces.get(&id).filter(|folder| !folder.removed) else {
                 if entry.name.is_none() {
@@ -356,7 +369,7 @@ impl Peer {
             if shown {
                 continue;
             }
-            if let Err(why) = self.enter(own, entry, login, key).await {
+            if let Err(why) = Box::pin(self.enter(own, entry, login, key)).await {
                 self.not_shown(entry.workspace, &why);
                 continue;
             }
@@ -434,15 +447,15 @@ impl Peer {
                 let login = login.get().await.ok_or(
                     "this computer's login names nowhere to enter your workspaces from yet",
                 )?;
-                return super::take_work::enter_from_login(own, key, &login).await;
+                return Box::pin(super::take_work::enter_from_login(own, key, &login)).await;
             };
             own.copies()
                 .hold_as_member(workspace, &hint)
                 .await
                 .map(drop)
         };
-        let why = match tokio::time::timeout(ENTERING_ONE, entering).await {
-            Ok(Ok(_)) => {
+        let why = match tokio::time::timeout(ENTERING_ONE, Box::pin(entering)).await {
+            Ok(Ok(())) => {
                 self.unentered.lock_recover().remove(&workspace);
                 return Ok(());
             }

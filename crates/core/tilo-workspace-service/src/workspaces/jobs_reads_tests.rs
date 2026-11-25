@@ -4,8 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionCallError, Caller, DEVICE_JOBS, Pending, RemoteActionMessage, ResourceAddress,
-    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_job_address,
+    ActionCallError, Caller, DEVICE_JOBS, ReadingAnswer, ReadsAnswer, RemoteActionMessage,
+    ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, device_job_address,
     device_record_space,
 };
 
@@ -70,44 +70,49 @@ impl DeviceJobReads for OwnJobs {
         caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    ) -> ReadingAnswer {
+        Box::pin(tilo_actions::remote::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
     }
 }
 
 impl ResourceReads for OwnJobs {
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        DeviceJobReads::read(self, caller, address)
+    fn read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        Box::pin(std::future::ready(DeviceJobReads::read(self, caller, address)))
     }
 
-    fn may_read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(DeviceJobReads::may_read(self, caller, address))
+    fn may_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(DeviceJobReads::may_read(self, caller, address)))
     }
 
-    fn list(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        DeviceJobReads::list(self, caller, workspace, app)
+    fn list<'a>(
+        &'a self,
+        caller: &'a Caller,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
+        Box::pin(std::future::ready(DeviceJobReads::list(self, caller, workspace, app)))
     }
 
-    fn watch(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        DeviceJobReads::watch(self, caller, address, wake)
+    fn watch<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(DeviceJobReads::watch(self, caller, address, wake)))
     }
 
     fn answer_read(
@@ -115,7 +120,7 @@ impl ResourceReads for OwnJobs {
         caller: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
+    ) -> ReadingAnswer {
         DeviceJobReads::answer_read(self, caller, correlation, read)
     }
 }
@@ -127,11 +132,15 @@ struct OtherJobs {
 }
 
 impl ResourceReads for OtherJobs {
-    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
-        Ok(ResourceCopy::reading(
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        Box::pin(std::future::ready(Ok(ResourceCopy::reading(
             serde_json::json!({ "id": address.record, "state": "running", "device": "other" }),
             Some("other".to_owned()),
-        ))
+        ))))
     }
 
     fn answer_read(
@@ -139,16 +148,16 @@ impl ResourceReads for OtherJobs {
         _: &Caller,
         correlation: u64,
         read: ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
+    ) -> ReadingAnswer {
         self.asked.lock().expect("the asks").push(read);
-        Pending::ready(RemoteActionMessage::ResourceReading {
+        Box::pin(std::future::ready(RemoteActionMessage::ResourceReading {
             correlation,
             result: Ok(serde_json::json!({
                 "revision": "other",
                 "records": [ { "record": "j2", "value": { "id": "j2", "state": "running" } } ]
             })
             .to_string()),
-        })
+        }))
     }
 }
 
@@ -164,8 +173,8 @@ fn reader() -> (Arc<RecordReads>, Arc<OtherJobs>) {
     (Arc::new(reads), other)
 }
 
-#[test]
-fn a_jobs_read_goes_to_the_device_that_runs_it() {
+#[tokio::test]
+async fn a_jobs_read_goes_to_the_device_that_runs_it() {
     let (reads, _other) = reader();
     let caller = Caller::authenticated(PERSON, DEVICE);
     // This device's own jobs are answered here, by the daemon that runs them.
@@ -173,6 +182,7 @@ fn a_jobs_read_goes_to_the_device_that_runs_it() {
     assert_eq!(
         reads
             .read(&caller, &own)
+            .await
             .expect("this device reads its job"),
         ResourceCopy::reading(
             serde_json::json!({ "id": "own-job", "state": "running" }),
@@ -183,6 +193,7 @@ fn a_jobs_read_goes_to_the_device_that_runs_it() {
     let elsewhere = device_job_address(&OTHER, "j2");
     let copy = reads
         .read(&caller, &elsewhere)
+        .await
         .expect("the other device answers");
     assert_eq!(
         copy.readable().expect("a job reads as JSON")["device"],
@@ -190,7 +201,7 @@ fn a_jobs_read_goes_to_the_device_that_runs_it() {
     );
     // A device space no device answers is refused, never read here.
     let unknown = device_job_address(&[1; 32], "j3");
-    assert!(reads.read(&caller, &unknown).is_err());
+    assert!(reads.read(&caller, &unknown).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -208,8 +219,7 @@ async fn a_held_read_of_another_devices_job_is_forwarded_whole() {
     };
     let answer = Arc::clone(&reads)
         .answer_read(&caller, 3, request.clone())
-        .await
-        .expect("the other device answers the held read");
+        .await;
     assert!(
         matches!(
             answer,

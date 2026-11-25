@@ -694,6 +694,42 @@ pub fn write_capability_file(
     Ok(Some(path))
 }
 
+/// Write what the person gave a launch of `app` a choice on where `--grants`
+/// reads it, under `directory`: the file's path, or `None` when it was given
+/// nothing.
+///
+/// # Errors
+/// The directory or the file could not be written.
+pub fn write_granted_file(
+    directory: &Path,
+    workspace: &str,
+    app: &str,
+    granted: &[crate::run::GrantedPath],
+) -> std::io::Result<Option<PathBuf>> {
+    let named = |name: &str| {
+        !name.is_empty() && !name.contains('/') && !name.contains("..") && !name.contains('\\')
+    };
+    if granted.is_empty() {
+        return Ok(None);
+    }
+    if !named(app) || !named(workspace) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to write a grant file for {workspace:?} {app:?}"),
+        ));
+    }
+    tilo_files::native::private::directory(directory)?;
+    let json = serde_json::to_vec(granted).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("serialising what was chosen: {error}"),
+        )
+    })?;
+    let path = directory.join(format!("granted-{workspace}-{app}.json"));
+    tilo_files::native::atomic::write_regenerable_with_mode(&path, &json, 0o600)?;
+    Ok(Some(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

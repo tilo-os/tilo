@@ -65,10 +65,7 @@ impl TaskProgramHost {
     }
 
     /// The state the person's own line's calls are decided by, once the app wire serves one.
-    pub(crate) fn keep_state(
-        &self,
-        state: Arc<crate::mcp_server::Dispatch>,
-    ) {
+    pub(crate) fn keep_state(&self, state: Arc<crate::mcp_server::Dispatch>) {
         let _ = self.state.set(state);
     }
 
@@ -236,7 +233,6 @@ impl ActionProvider for Stopped {
         self.api.cancel(caller, id)
     }
 
-
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.api.content_puts()
     }
@@ -369,46 +365,43 @@ impl TurnRecords {
 impl tilo_actions::remote::ResourceReads for TurnRecords {
     /// Every app's resources are in the workspace's one store, the apps the session keeps
     /// included: the run's api answers.
-    fn store_read(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        address: &tilo_actions::remote::ResourceAddress,
+    fn store_read<'a>(
+        &'a self,
+        caller: &'a tilo_actions::remote::Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
         read: serde_json::Value,
-    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-        self.elsewhere()?.store_read(caller, address, read)
+    ) -> tilo_actions::remote::ReadsAnswer<'a, serde_json::Value> {
+        tilo_actions::remote::reads_answer(async move {
+            self.elsewhere()?.store_read(caller, address, read).await
+        })
     }
 
-    fn read(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, tilo_actions::remote::ActionCallError> {
-        if self.services.keeps(&address.app) {
-            return self.kept.read(caller, address);
-        }
-        self.elsewhere()?.read(caller, address)
+    fn read<'a>(
+        &'a self,
+        caller: &'a tilo_actions::remote::Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move {
+            if self.services.keeps(&address.app) {
+                return self.kept.read(caller, address).await;
+            }
+            self.elsewhere()?.read(caller, address).await
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &tilo_actions::remote::Caller,
-        correlation: u64,
-        read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        address: &tilo_actions::remote::ResourceAddress,
-        wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), tilo_actions::remote::ActionCallError> {
-        // The records the session keeps are read as they are on its pass: nothing to wait on.
-        if self.services.keeps(&address.app) {
-            return Ok(());
-        }
-        self.elsewhere()?.watch(caller, address, wake)
+    fn watch<'a>(
+        &'a self,
+        caller: &'a tilo_actions::remote::Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+        wake: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        tilo_actions::remote::reads_answer(async move {
+            // The records the session keeps are read as they are on its pass: nothing to wait on.
+            if self.services.keeps(&address.app) {
+                return Ok(());
+            }
+            self.elsewhere()?.watch(caller, address, wake).await
+        })
     }
 }
 
@@ -487,7 +480,6 @@ impl ActionProvider for Current {
         self.provider().cancel(caller, id)
     }
 
-
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.provider().content_puts()
     }
@@ -563,12 +555,6 @@ impl ActionProvider for Current {
 impl Programs for TaskProgramHost {
     fn run(&self, request: ProgramRequest<'_>) -> Result<Pending<Outcome>, String> {
         let api = self.session_of(&request)?;
-        tilo_mcp::task_runs::run(
-            api,
-            request.program,
-            request.go,
-            request.this,
-            request.stop,
-        )
+        tilo_mcp::task_runs::run(api, request.program, request.go, request.this, request.stop)
     }
 }

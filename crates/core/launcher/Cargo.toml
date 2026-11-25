@@ -51,7 +51,6 @@ tilo-paths.workspace = true
 # filter grants that same name (`dbus_proxy::media_player_name`).
 tilo-process = { path = "../../platform/tilo-process" }
 # Where the files a person chose for the app are served (the paths only).
-tilo-documents.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 # The egress proxy's socket on the runtime: a Unix socket, or a named pipe on Windows.

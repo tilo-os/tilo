@@ -233,7 +233,10 @@ impl Stamp {
                 Label::Continuation,
                 Self {
                     verb,
-                    invoker: invoker.as_ref().map(|acting| Self::by(&acting.by)).unwrap_or_default(),
+                    invoker: invoker
+                        .as_ref()
+                        .map(|acting| Self::by(&acting.by))
+                        .unwrap_or_default(),
                     ..Self::default()
                 },
             ));
@@ -267,7 +270,9 @@ impl Stamp {
         let acting = context.invoker.as_ref().map(|invoker| &invoker.acting);
         Self {
             verb: verb_of(context.what.as_ref()),
-            invoker: acting.map(|acting| Self::by(&acting.by)).unwrap_or_default(),
+            invoker: acting
+                .map(|acting| Self::by(&acting.by))
+                .unwrap_or_default(),
             acted_for: acting
                 .and_then(|acting| acting.acted_for.first())
                 .and_then(|person| match &person.by {
@@ -320,13 +325,22 @@ impl Stamp {
         if context.invoker.is_none()
             && let Some(by) = self.invoked_by()
         {
+            // An agent named beside the person it acted for had its session handed to it by a
+            // device of that person: an agent with a key of its own signs with that key and keeps
+            // the call it made, so a change reading as the device's own, naming both, is the
+            // device's agent acting for it, never an agent acting unsigned.
+            let handed = self.acted_for.is_some()
+                && matches!(
+                    by,
+                    tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::Agent(_))
+                );
             let acting = tilo_action_policy::Acting {
                 by,
                 app: None,
                 agent_session: None,
                 cause: None,
                 foreign_device: false,
-                handed: false,
+                handed,
                 acted_for: self
                     .acted_for
                     .iter()

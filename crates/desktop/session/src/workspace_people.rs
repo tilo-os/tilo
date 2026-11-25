@@ -4,9 +4,9 @@
 //! from them.
 
 use tilo_action_policy::Role;
-use tilo_session_core::desktop::workspace_settings::self as domain;
-use tilo_session_core::desktop::workspace_settings::people::PeopleContent;
 use tilo_session_core::desktop::i18n::t;
+use tilo_session_core::desktop::workspace_settings as domain;
+use tilo_session_core::desktop::workspace_settings::people::PeopleContent;
 use tilo_sheets::workspace_settings as sheet;
 
 /// The People tab as `content` (the workspace's members, in the viewer's words) shows it.

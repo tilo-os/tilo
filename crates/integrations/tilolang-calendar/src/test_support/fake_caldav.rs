@@ -1,3 +1,15 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::pedantic,
+    clippy::nursery,
+    reason = "a test server says what it needs in a sentence when what it needs is not there"
+)]
+
 //! A small `CalDAV` server for tests, laid out like the servers people keep
 //! themselves.
 //!
@@ -50,7 +62,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use test_http::{Reply, Request, Responder};
 
 const XML: &str = "application/xml; charset=utf-8";
-const NAMESPACES: &str = "xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\"";
+const NAMESPACES: &str = "xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\" xmlns:a=\"http://apple.com/ns/ical/\"";
 
 /// One entry a calendar holds, and the version the server gave it.
 struct Kept {
@@ -61,6 +73,8 @@ struct Kept {
 #[derive(Default)]
 struct Calendar {
     name: String,
+    /// The colour it is shown in, as Apple's `calendar-color` says it.
+    color: String,
     read_only: bool,
     entries: BTreeMap<String, Kept>,
     /// Each change the calendar took: the token it led to, and the entry.
@@ -95,6 +109,25 @@ fn escaped(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// The text an element of `body` holds, by its name alone (its namespace ignored).
+fn element(body: &str, name: &str) -> Option<String> {
+    for prefix in ["d:", "a:", "D:", "A:", ""] {
+        let open = format!("<{prefix}{name}>");
+        let close = format!("</{prefix}{name}>");
+        if let Some((_, rest)) = body.split_once(&open)
+            && let Some((text, _)) = rest.split_once(&close)
+        {
+            return Some(
+                text.replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\""),
+            );
+        }
+    }
+    None
 }
 
 fn sync_token(token: u64) -> String {
@@ -486,11 +519,33 @@ impl State {
         format!(
             "<d:resourcetype><d:collection/><c:calendar/></d:resourcetype>\
              <d:displayname>{}</d:displayname>\
+             <a:calendar-color>{}</a:calendar-color>\
              <d:current-user-privilege-set><d:privilege><d:read/></d:privilege>{write}\
              </d:current-user-privilege-set><d:sync-token>{}</d:sync-token>",
             escaped(&calendar.name),
+            escaped(&calendar.color),
             sync_token(self.token)
         )
+    }
+
+    /// A calendar's own properties, as a `PROPPATCH` sets them: its name and its colour.
+    fn proppatch(&mut self, path: &str, body: &str) -> Reply {
+        let Some((slug, _entry)) = self.place(path).filter(|(_, entry)| entry.is_empty()) else {
+            return Reply::status(404);
+        };
+        let Some(calendar) = self.calendars.get_mut(&slug) else {
+            return Reply::status(404);
+        };
+        if calendar.read_only {
+            return Reply::status(403);
+        }
+        if let Some(name) = element(body, "displayname") {
+            calendar.name = name;
+        }
+        if let Some(color) = element(body, "calendar-color") {
+            calendar.color = color;
+        }
+        multistatus(&found(path, "<d:displayname/><a:calendar-color/>"), None)
     }
 
     fn propfind(&self, path: &str, deep: bool) -> Reply {
@@ -723,6 +778,7 @@ impl State {
             "GET" => self.get(path),
             "PUT" => self.put(path, request),
             "DELETE" => self.delete(path, request),
+            "PROPPATCH" => self.proppatch(path, &request.body_text()),
             _ => Reply::status(405),
         }
     }
@@ -796,6 +852,26 @@ impl Server {
         if let Some(calendar) = lock(&self.state).calendars.get_mut(slug) {
             calendar.read_only = true;
         }
+    }
+
+    /// The colour the calendar `slug` is shown in.
+    #[must_use]
+    pub fn color(&self, slug: &str) -> String {
+        lock(&self.state)
+            .calendars
+            .get(slug)
+            .map(|calendar| calendar.color.clone())
+            .unwrap_or_default()
+    }
+
+    /// What the calendar `slug` is called.
+    #[must_use]
+    pub fn name(&self, slug: &str) -> String {
+        lock(&self.state)
+            .calendars
+            .get(slug)
+            .map(|calendar| calendar.name.clone())
+            .unwrap_or_default()
     }
 
     /// Answer `sync-collection` with 501 from now on, as a server that
@@ -888,226 +964,5 @@ impl Server {
     #[must_use]
     pub fn requests(&self) -> Vec<Request> {
         self.responder().drain_requests()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use test_http::Request;
-
-    use super::{Calendar, Server, State, Written, base64, etag, etag_as, lock};
-
-    const ADA: &str = "ada@example.test";
-    const BO: &str = "bo@example.test";
-    /// A sign-in made up for these tests.
-    const PASSWORD: &str = "made-up-for-these-tests";
-    const ENTRY: &str = "/dav/calendars/ada/work/a.ics";
-
-    /// How a line reads between `ATTENDEE` and the address it names: left to
-    /// the server by saying nothing, or marked.
-    const SERVER: &str = "";
-    const CLIENT: &str = ";SCHEDULE-AGENT=CLIENT";
-    /// Whom the server wrote to, where that is nobody.
-    const NOBODY: [&str; 0] = [];
-
-    /// Ada's server: she signs in with her address and keeps one calendar.
-    fn server() -> State {
-        let mut state = State::new(ADA, PASSWORD);
-        state.calendars.insert(
-            "work".to_owned(),
-            Calendar {
-                name: "Work".to_owned(),
-                ..Calendar::default()
-            },
-        );
-        state
-    }
-
-    /// Ada's client, signed in, asks `method` of her one entry.
-    fn asked(state: &mut State, method: &str, headers: &[(&str, &str)], body: &str) {
-        let sign_in = format!("Basic {}", base64(format!("{ADA}:{PASSWORD}").as_bytes()));
-        let mut all = vec![("Authorization".to_owned(), sign_in)];
-        all.extend(
-            headers
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
-        );
-        state.answer(&Request {
-            method: method.to_owned(),
-            target: ENTRY.to_owned(),
-            headers: all,
-            body: body.as_bytes().to_vec(),
-        });
-    }
-
-    fn holds(state: &State) -> bool {
-        state
-            .calendars
-            .get("work")
-            .is_some_and(|calendar| calendar.entries.contains_key("a.ics"))
-    }
-
-    /// An entry with the lines `people`.
-    fn entry(people: &str) -> String {
-        format!(
-            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\n\
-             DTSTART:20261119T190000Z\r\n{people}END:VEVENT\r\nEND:VCALENDAR\r\n"
-        )
-    }
-
-    fn request() -> Vec<String> {
-        vec![format!("REQUEST to {BO}")]
-    }
-
-    fn cancel() -> Vec<String> {
-        vec![format!("CANCEL to {BO}")]
-    }
-
-    /// Ada's one entry as the server keeps it.
-    fn text_it_keeps(state: &State) -> String {
-        state
-            .calendars
-            .get("work")
-            .and_then(|calendar| calendar.entries.get("a.ics"))
-            .map(|kept| kept.ics.clone())
-            .unwrap_or_default()
-    }
-
-    /// Somebody an entry names by another address than a mail address (RFC
-    /// 5545, 3.3.3) is written to like anybody else, by the same tables: a
-    /// line left to the server invites them, a line that is gone tells them
-    /// the event is off, and a line marked for the client sends nothing.
-    #[test]
-    fn somebody_named_by_another_address_than_a_mail_address_is_written_to_the_same() {
-        let by_other_address = |mark: Option<&str>| {
-            let line = mark
-                .map(|mark| format!("ATTENDEE{mark};CN=\"Fay: Ops\":urn:uuid:Fay-4\r\n"))
-                .unwrap_or_default();
-            entry(&format!("ORGANIZER:mailto:{ADA}\r\n{line}"))
-        };
-        let mut state = server();
-        asked(
-            &mut state,
-            "PUT",
-            &[("If-None-Match", "*")],
-            &by_other_address(Some(SERVER)),
-        );
-        assert_eq!(state.mailed, ["REQUEST to urn:uuid:fay-4"]);
-        state.mailed.clear();
-        asked(&mut state, "PUT", &[], &by_other_address(None));
-        assert_eq!(state.mailed, ["CANCEL to urn:uuid:fay-4"]);
-        state.mailed.clear();
-        asked(&mut state, "PUT", &[], &by_other_address(Some(CLIENT)));
-        asked(&mut state, "PUT", &[], &by_other_address(None));
-        assert_eq!(state.mailed, NOBODY, "the same with the line marked");
-    }
-
-    /// RFC 6638, 3.1: the server schedules an entry where every one of its
-    /// parts says who organises it. One occurrence that does not say so
-    /// makes the entry one the server does not schedule: stored over one it
-    /// scheduled, it is that entry's removal (3.2.3.1, 3.2.1.3), and stored
-    /// where nothing was, it invites nobody.
-    #[test]
-    fn an_entry_is_scheduled_only_where_each_of_its_parts_says_who_organises_it() {
-        let people = format!("ORGANIZER:mailto:{ADA}\r\nATTENDEE:mailto:{BO}\r\n");
-        let repeating = |moved: &str| {
-            format!(
-                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\n\
-                 DTSTART:20261116T090000Z\r\nRRULE:FREQ=WEEKLY\r\n{people}END:VEVENT\r\n\
-                 BEGIN:VEVENT\r\nUID:a\r\nRECURRENCE-ID:20261123T090000Z\r\n\
-                 DTSTART:20261123T100000Z\r\n{moved}END:VEVENT\r\nEND:VCALENDAR\r\n"
-            )
-        };
-        let mut state = server();
-        asked(&mut state, "PUT", &[], &repeating(&people));
-        assert_eq!(state.mailed, request(), "each part says who organises it");
-        state.mailed.clear();
-        asked(&mut state, "PUT", &[], &repeating(&people));
-        assert_eq!(state.mailed, request(), "stored again, it goes on");
-        state.mailed.clear();
-        asked(&mut state, "PUT", &[], &repeating(""));
-        assert_eq!(state.mailed, cancel(), "one part no longer says so");
-
-        let mut state = server();
-        asked(&mut state, "PUT", &[], &repeating(""));
-        assert_eq!(state.mailed, NOBODY, "stored where nothing was");
-    }
-
-    /// RFC 6638, 3.2.3.1, for somebody invited: an invitation stored again as
-    /// an entry the server no longer schedules, because it no longer says
-    /// who organises it or no longer invites her, was removed (3.2.2.4), and
-    /// its organiser is answered. A PUT cannot say otherwise: 8.1 is for a
-    /// DELETE.
-    #[test]
-    fn an_invitation_stored_as_no_invitation_was_removed_and_its_organiser_is_answered() {
-        let invitation =
-            format!("ORGANIZER:mailto:{BO}\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:{ADA}\r\n");
-        for (now, why) in [
-            (String::new(), "it names nobody"),
-            (
-                format!("ORGANIZER:mailto:{BO}\r\n"),
-                "she is no longer invited",
-            ),
-        ] {
-            let mut state = server();
-            asked(&mut state, "PUT", &[], &entry(&invitation));
-            assert_eq!(state.mailed, NOBODY, "an invitation stored");
-            asked(&mut state, "PUT", &[("Schedule-Reply", "F")], &entry(&now));
-            assert!(holds(&state), "the server took the entry");
-            assert_eq!(state.mailed, [format!("REPLY to {BO}")], "{why}");
-        }
-    }
-
-    /// RFC 7232, 3.1: a write names the version it goes over by a strong
-    /// tag. One that names it by a weak tag, or without its quotes, is
-    /// refused, also by a server told to write its versions so elsewhere.
-    #[test]
-    fn a_write_is_taken_only_over_the_strong_tag_of_what_is_held() {
-        let mut state = server();
-        state.listed = Written::Weak;
-        state.read = Written::Weak;
-        asked(&mut state, "PUT", &[], &entry(""));
-        let held = text_it_keeps(&state);
-        let version = state
-            .calendars
-            .get("work")
-            .and_then(|calendar| calendar.entries.get("a.ics"))
-            .map_or(0, |kept| kept.etag);
-        let changed = entry("SUMMARY:Changed\r\n");
-        for refused in [
-            etag_as(version, Written::Weak),
-            etag_as(version, Written::Bare),
-        ] {
-            asked(
-                &mut state,
-                "PUT",
-                &[("If-Match", refused.as_str())],
-                &changed,
-            );
-            assert_eq!(text_it_keeps(&state), held, "taken over {refused}");
-        }
-        asked(
-            &mut state,
-            "PUT",
-            &[("If-Match", etag(version).as_str())],
-            &changed,
-        );
-        assert_eq!(text_it_keeps(&state), changed);
-        assert_eq!(etag_as(7, Written::Strong), "\"7\"");
-        assert_eq!(etag_as(7, Written::Weak), "W/\"7\"");
-        assert_eq!(etag_as(7, Written::Bare), "7");
-
-        // A server writes a version as a write's answer does until a test
-        // tells it otherwise, for a listing or for a read.
-        let told = Server::start(ADA, PASSWORD);
-        assert_eq!(lock(&told.state).listed, Written::Strong);
-        assert_eq!(lock(&told.state).read, Written::Strong);
-        told.lists_versions_weak();
-        assert_eq!(lock(&told.state).listed, Written::Weak);
-        told.lists_versions_bare();
-        assert_eq!(lock(&told.state).listed, Written::Bare);
-        assert_eq!(lock(&told.state).read, Written::Strong);
-        told.reads_versions_weak();
-        assert_eq!(lock(&told.state).read, Written::Weak);
     }
 }

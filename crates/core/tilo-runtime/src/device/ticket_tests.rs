@@ -898,18 +898,18 @@ async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_a
     let founding = super::unclaimed::Founding::default();
     founding.serving(issuer_cert.user_public_key, Arc::new(tickets));
     // Asked for two, as a stack's first computers are: the first is spent after the second was
-    // issued, so it must still be served.
-    let issued = founding
+    // granted, so it must still be served.
+    let granted = founding
         .issue(
             issuer_cert.user_public_key,
             &["device".to_owned(), "device".to_owned()],
         )
         .await
         .expect("the founding issues the tickets its person asked for");
-    assert_eq!(issued[0]["kind"], "device", "{issued}");
-    assert_eq!(issued[1]["kind"], "device", "{issued}");
-    assert_ne!(issued[0]["ticket"], issued[1]["ticket"], "{issued}");
-    let text = issued[0]["ticket"]
+    assert_eq!(granted[0]["kind"], "device", "{granted}");
+    assert_eq!(granted[1]["kind"], "device", "{granted}");
+    assert_ne!(granted[0]["ticket"], granted[1]["ticket"], "{granted}");
+    let text = granted[0]["ticket"]
         .as_str()
         .expect("the founding answers a ticket")
         .to_owned();
@@ -1542,13 +1542,125 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
     server.shutdown().await;
 }
 
+/// The device's `action`, asked as its caller with `argument`.
+fn a_device_request(
+    action: &str,
+    argument: &serde_json::Map<String, Value>,
+    invocation: InvocationId,
+) -> InvokeRequest {
+    InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, action),
+        },
+        argument: InvokeArgument::Json(argument.clone()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// One of the device's actions that answers a secret: handed to the person once, in the answer to
+/// their call, and kept nowhere — neither in the provider's own cache nor in the dispatch's record
+/// of the invocation, which keeps nothing of what it was asked with either.
+async fn a_secret_handed_once(
+    action: &str,
+    args: &Value,
+    field: &str,
+    tickets: &Tickets,
+    invocations: &Arc<tilo_actions::remote::invocation_record::Invocations>,
+    person: &tilo_actions::remote::Caller,
+    someone_else: &tilo_actions::remote::Caller,
+) {
+    use tilo_actions::remote::ReceiptStatus;
+
+    let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
+    let listed = page
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|listed| listed.address.action == action)
+        .expect("the action is listed");
+    assert!(
+        listed.contract.answers_a_secret(),
+        "{action} says its answer is a secret"
+    );
+
+    let Value::Object(argument) = args else {
+        panic!("the arguments are an object");
+    };
+    let request = |invocation| a_device_request(action, argument, invocation);
+    let refused = super::services::device_action(
+        (invocations, None),
+        tickets,
+        someone_else,
+        request(InvocationId::new()),
+        "workspace",
+    )
+    .await
+    .expect("the action is answered");
+    assert!(
+        refused.is_err(),
+        "another person is handed {action}: {refused:?}"
+    );
+    let invocation = InvocationId::new();
+    let receipt = super::services::device_action(
+        (invocations, None),
+        tickets,
+        person,
+        request(invocation),
+        "workspace",
+    )
+    .await
+    .expect("the action is answered")
+    .expect("the action runs");
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("{action} was not answered at once: {:?}", receipt.status);
+    };
+    let secret = output.value.unwrap()[field]
+        .as_str()
+        .expect("the answer carries the secret")
+        .to_owned();
+    assert!(secret.len() > 32, "{action} answered {secret}");
+
+    let cached = tickets.observe(&invocation).expect("the call is known");
+    let cached = format!("{:?}", cached.update);
+    assert!(cached.contains("given"), "{cached}");
+    assert!(!cached.contains(&secret), "{action} cached its answer");
+    assert_eq!(
+        invocations
+            .observe(person, &invocation)
+            .map(|state| state.update),
+        Some(InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(json!({ "given": true })),
+                resources: Vec::new(),
+            },
+        }),
+        "{action}'s record says it was given"
+    );
+    let recorded = invocations
+        .get(person, &invocation)
+        .expect("the dispatch recorded the call");
+    let recorded = format!("{:?} {:?}", recorded.request, recorded.state);
+    assert!(!recorded.contains(&secret), "{action} recorded its answer");
+    assert!(
+        !recorded.contains("a passphrase of some length"),
+        "{action} recorded what sealed it"
+    );
+}
+
 /// The person's recovery words and a backup of their root are handed to them once, in the answer
 /// to their call: what the daemon keeps of each call says only that it was given, so following
 /// the call afterwards finds no secret, and both actions say so on their surface.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
-    use tilo_actions::remote::ReceiptStatus;
-
     let profile = tempfile::tempdir().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", profile.path())
@@ -1589,7 +1701,6 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     let invocations = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
     let person = tilo_actions::remote::Caller::authenticated(ada, [8; 32]);
     let someone_else = tilo_actions::remote::Caller::authenticated([7; 32], [8; 32]);
-    let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
     for (action, args, field) in [
         (
             tilo_device_identity::login::RECOVERY_WORDS,
@@ -1602,99 +1713,401 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
             "backup",
         ),
     ] {
-        let listed = page
-            .rows
-            .iter()
-            .filter_map(|row| row.action.as_ref())
-            .find(|listed| listed.address.action == action)
-            .expect("the action is listed");
-        assert!(
-            listed.contract.answers_a_secret(),
-            "{action} says its answer is a secret"
-        );
+        a_secret_handed_once(
+            action,
+            &args,
+            field,
+            &tickets,
+            &invocations,
+            &person,
+            &someone_else,
+        )
+        .await;
+    }
+    drop(env);
+}
 
-        let Value::Object(argument) = args else {
-            unreachable!("the arguments are an object");
-        };
-        let request = |invocation| InvokeRequest {
+/// The person's root as this account keeps it, and the two devices the revoke test runs with:
+/// one computer that does not keep it and asks, and one that does and runs the call.
+struct RevokeAtRoot {
+    account_dir: std::path::PathBuf,
+    issuer: Arc<super::workspaces::ServiceWorkspaces>,
+    /// The service's directory, which the devices' places are kept in.
+    _state: tempfile::TempDir,
+    cert: DeviceCert,
+    workspace: tilo_desktop_model::WorkspaceId,
+    /// The device that does not keep the root, its one dispatch, and the call it asked.
+    rootless_key: [u8; 32],
+    rootless: Tickets,
+    rootless_store: Arc<tilo_actions::remote::asked::AskedStore>,
+    rootless_invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
+    rootless_asked: Arc<super::asked::DeviceAsked>,
+    person: tilo_actions::remote::Caller,
+    invocation: InvocationId,
+    revoke: InvokeRequest,
+    /// The device that keeps the root, and its one dispatch.
+    holder: Tickets,
+    holder_store: Arc<tilo_actions::remote::asked::AskedStore>,
+    holder_asked: Arc<super::asked::DeviceAsked>,
+    /// The call's record as the workspace keeps it, and as the device that keeps the root
+    /// reads it.
+    kept: Option<tilo_actions::remote::asked::KeptAsk>,
+    holder_at: Option<tilo_actions::remote::asked::RecordRef>,
+}
+
+impl RevokeAtRoot {
+    /// The revoke of a key that is no device, as the person makes it from the device without
+    /// their root.
+    fn a_revoke_request(invocation: InvocationId) -> InvokeRequest {
+        let revoked = hex::encode([9; 32]);
+        InvokeRequest {
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(RESOURCE, action),
+                address: tilo_actions::ActionAddress::new(
+                    RESOURCE,
+                    tilo_device_identity::login::REVOKE,
+                ),
             },
-            argument: InvokeArgument::Json(argument.clone()),
+            argument: InvokeArgument::Json(json!({"device": revoked}).as_object().unwrap().clone()),
             context: None,
             confirmation: None,
             revision: None,
             wait_ms: None,
             appearance: None,
             signed: None,
+        }
+    }
+
+    /// Each device's one dispatch, keeping what waits in the person's workspace.
+    fn device(
+        copies: &tilo_workspace_service::workspaces::Workspaces,
+        key: [u8; 32],
+    ) -> (
+        Arc<tilo_actions::remote::asked::AskedStore>,
+        Arc<tilo_actions::remote::invocation_record::Invocations>,
+        Arc<super::asked::DeviceAsked>,
+    ) {
+        use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
+
+        let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
+        let store = AskedStore::opened(None, Some(keeping), Vec::new()).unwrap();
+        store.asks_on(&key);
+        let invocations: Arc<tilo_actions::remote::invocation_record::Invocations> = Arc::default();
+        let asked = super::asked::DeviceAsked::new(
+            Arc::clone(&store),
+            Arc::clone(&invocations),
+            Box::new(|_| Err("nothing waits here to be sent again".to_owned())),
+        );
+        (store, invocations, asked)
+    }
+
+    /// The person this account founded here, whose root is kept for this account alone, and both
+    /// devices, each with the one dispatch that keeps what waits in the person's workspace.
+    async fn new(
+        issuer: Arc<super::workspaces::ServiceWorkspaces>,
+        state: tempfile::TempDir,
+        key: &SigningKey,
+        cert: DeviceCert,
+        account_dir: std::path::PathBuf,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Self {
+        let copies = issuer.copies();
+        // The person's own workspace, where a call that only their root signs waits for a device
+        // that keeps it.
+        tilo_workspace_service::workspaces::person_workspace::found(copies)
+            .await
+            .expect("the person's own workspace is founded here");
+        let tickets = |root: RootSource, at: &str, cert: &DeviceCert| {
+            Tickets::new(
+                (key.clone(), cert.clone()),
+                issuer.endpoint(),
+                None,
+                root,
+                None,
+                Some(Arc::clone(&issuer)),
+                tilo_device_identity::login::Place::at(
+                    state.path().join(at),
+                    tilo_device_identity::IdentityPaths::under(
+                        state.path().join(format!("{at}-keys")),
+                    ),
+                ),
+                copies.action_service(),
+            )
         };
-        let refused = super::services::device_action(
-            (&invocations, None),
-            &tickets,
-            &someone_else,
-            request(InvocationId::new()),
-            "workspace",
+        let rootless_key = [8; 32];
+        // Another device of the person's, which their devices record does not mark.
+        let rootless_cert = DeviceCert {
+            device_public_key: rootless_key,
+            ..cert.clone()
+        };
+        let rootless = tickets(no_root(), "rootless", &rootless_cert);
+        let (rootless_store, rootless_invocations, rootless_asked) =
+            Self::device(copies, rootless_key);
+        let follows = Arc::downgrade(&rootless_asked);
+        copies.follow_asked_at_root(move |asks| {
+            if let Some(asked) = follows.upgrade() {
+                asked.kept_changed(asks);
+            }
+        });
+        let holder = tickets(root_in(account_dir.clone()), "holder", &cert);
+        let (holder_store, _, holder_asked) = Self::device(copies, cert.device_public_key);
+        // The person, on the device without their root, revokes a key.
+        let person =
+            tilo_actions::remote::Caller::authenticated(cert.user_public_key, rootless_key);
+        let invocation = InvocationId::new();
+        let revoke = Self::a_revoke_request(invocation);
+        Self {
+            account_dir,
+            issuer,
+            _state: state,
+            cert,
+            workspace,
+            rootless_key,
+            rootless,
+            rootless_store,
+            rootless_invocations,
+            rootless_asked,
+            person,
+            invocation,
+            revoke,
+            holder,
+            holder_store,
+            holder_asked,
+            kept: None,
+            holder_at: None,
+        }
+    }
+
+    /// The call is kept as its asked record in the person's own workspace, under way there, and
+    /// nothing asks the root for it: a device without it does not run what only it signs.
+    async fn the_call_waits_for_the_root(&mut self) {
+        use tilo_actions::remote::ActionProvider as _;
+        use tilo_actions::remote::asked::{Offer, Resolve};
+
+        let receipt = super::services::device_action(
+            (&self.rootless_invocations, Some(&self.rootless_asked)),
+            &self.rootless,
+            &self.person,
+            self.revoke.clone(),
+            &self.workspace.to_string(),
         )
         .await
-        .expect("the action is answered");
+        .expect("the call is taken")
+        .expect("the call is admitted");
+        assert!(
+            !matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "nothing runs on a device without the root: {:?}",
+            receipt.status
+        );
+        let at = self
+            .rootless_store
+            .record(&self.invocation.0.to_string())
+            .expect("the call is kept as its asked record");
+        // The record is written to the workspace by a task of its own, after the call is
+        // answered.
+        let copies = self.issuer.copies();
+        let deadline = tilo_test_env::hang_deadline();
+        let mut kept = copies.asked_kept().await;
+        while !kept.iter().any(|ask| ask.at == at) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            kept = copies.asked_kept().await;
+        }
+        let ask = kept
+            .iter()
+            .find(|ask| ask.at == at)
+            .expect("the record is in the person's workspace");
+        assert!(
+            ask.dispatch == tilo_actions::remote::asked::AT_ROOT
+                && ask.taken.is_none()
+                && ask.outcome.is_none()
+        );
+        assert!(
+            self.rootless_asked
+                .store()
+                .asked_of(&self.cert.user_public_key)
+                .is_empty(),
+            "a device without the root asks nothing of it"
+        );
+        let refused = self
+            .rootless_store
+            .resolve(
+                &at,
+                &self.person,
+                &Resolve {
+                    resolution: Offer::Approve,
+                    ..Resolve::default()
+                },
+            )
+            .await
+            .expect("the answer is decided at once");
         assert!(
             refused.is_err(),
-            "another person is handed {action}: {refused:?}"
+            "a device without the root does not run what only it signs"
         );
-        let invocation = InvocationId::new();
-        let receipt = super::services::device_action(
-            (&invocations, None),
-            &tickets,
-            &person,
-            request(invocation),
-            "workspace",
+        assert!(
+            self.rootless_asked
+                .observe(&self.person, &self.invocation)
+                .is_some_and(|state| !state.update.is_terminal()),
+            "the call waits under way"
+        );
+        self.kept = Some(ask.clone());
+    }
+
+    /// A device that keeps the root comes online and takes the record up: the person's own
+    /// workspace is founded, their devices record marks it, and it asks the person there once.
+    async fn the_root_holder_comes_online(&mut self) {
+        let copies = self.issuer.copies();
+        let root = root_in(self.account_dir.clone())().unwrap().unwrap();
+        // The person's own workspace keeps their devices record. A computer that keeps their root
+        // founds it, at the id their key names, the first time they need it, as it does now.
+        self.issuer
+            .found(
+                super::first_workspace::own_workspace(&self.cert.user_public_key),
+                super::first_workspace::FOUNDED_NAME,
+            )
+            .await
+            .expect("the person's workspace is founded");
+        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+            copies, &root, &self.cert,
         )
         .await
-        .expect("the action is answered")
-        .expect("the action runs");
-        let ReceiptStatus::Completed { output } = receipt.status else {
-            panic!("{action} was not answered at once: {:?}", receipt.status);
-        };
-        let secret = output.value.unwrap()[field]
-            .as_str()
-            .expect("the answer carries the secret")
-            .to_owned();
-        assert!(secret.len() > 32, "{action} answered {secret}");
-
-        // Following the call afterwards finds it given, and nothing of the secret: neither in
-        // the provider's own cache nor in the dispatch's record of the invocation, which keeps
-        // nothing of what it was asked with either.
-        let cached = tickets.observe(&invocation).expect("the call is known");
-        let cached = format!("{:?}", cached.update);
-        assert!(cached.contains("given"), "{cached}");
-        assert!(!cached.contains(&secret), "{action} cached its answer");
+        .expect("the root marks the device that keeps it");
+        self.holder_asked.serve_at_root(self.holder.clone());
+        let (taken, took) = tokio::sync::oneshot::channel();
+        let taken = std::sync::Mutex::new(Some(taken));
+        let follows = Arc::downgrade(&self.holder_asked);
+        let invocation = self.invocation;
+        copies.follow_asked_at_root(move |asks| {
+            let here = asks.iter().any(|ask| ask.request.invocation == invocation);
+            if let Some(asked) = follows.upgrade() {
+                asked.kept_changed(asks);
+            }
+            if here && let Some(taken) = taken.lock().unwrap().take() {
+                let _ = taken.send(());
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(30), took)
+            .await
+            .expect("the device that keeps the root reads the record")
+            .unwrap();
+        let at = self
+            .holder_store
+            .record(&self.invocation.0.to_string())
+            .expect("the record waits for the person there");
         assert_eq!(
-            invocations
-                .observe(&person, &invocation)
-                .map(|state| state.update),
-            Some(InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput {
-                    value: Some(json!({ "given": true })),
-                    resources: Vec::new(),
-                },
-            }),
-            "{action}'s record says it was given"
+            self.holder_asked
+                .store()
+                .asked_of(&self.cert.user_public_key)
+                .len(),
+            1,
+            "the person is asked there"
         );
-        let recorded = invocations
-            .get(&person, &invocation)
-            .expect("the dispatch recorded the call");
-        let recorded = format!("{:?} {:?}", recorded.request, recorded.state);
-        assert!(!recorded.contains(&secret), "{action} recorded its answer");
+        self.holder_at = Some(at);
+    }
+
+    /// The device that asked starts again and sends the call again under its id: it follows the
+    /// record the workspace keeps, which stays as it was, and the person is still asked once.
+    /// They answer once, there, and the device that asked shows how the call ended where it ran.
+    async fn the_answer_runs_under_the_root(&self) {
+        use tilo_actions::remote::ActionProvider as _;
+        use tilo_actions::remote::asked::{Offer, Resolve};
+
+        let copies = self.issuer.copies();
+        let at = self
+            .holder_at
+            .clone()
+            .expect("the device that keeps the root took the record up");
+        let (_, invocations, restarted) = Self::device(copies, self.rootless_key);
+        let again = super::services::device_action(
+            (&invocations, Some(&restarted)),
+            &self.rootless,
+            &self.person,
+            self.revoke.clone(),
+            &self.workspace.to_string(),
+        )
+        .await
+        .expect("the call is followed")
+        .expect("the call is admitted again");
+        assert!(!matches!(
+            again.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ));
+        let kept_again = copies.asked_kept().await;
+        assert_eq!(
+            kept_again.iter().find(|again| again.at == at),
+            self.kept.as_ref(),
+            "the record is not written again"
+        );
+        assert_eq!(
+            self.holder_asked
+                .store()
+                .asked_of(&self.cert.user_public_key)
+                .len(),
+            1
+        );
+
+        // The person answers once, there.
+        let answering = tilo_actions::remote::Caller::authenticated(
+            self.cert.user_public_key,
+            self.cert.device_public_key,
+        );
+        self.holder_store
+            .resolve(
+                &at,
+                &answering,
+                &Resolve {
+                    resolution: Offer::Approve,
+                    ..Resolve::default()
+                },
+            )
+            .await
+            .expect("the answer is decided at once")
+            .expect("the person's answer is taken at a device that keeps the root");
+
+        // The device that asked shows how the call ended where it ran.
+        let started = Instant::now();
+        let ended = loop {
+            let state = self
+                .rootless_asked
+                .observe(&self.person, &self.invocation)
+                .expect("the device that asked follows its call");
+            if state.update.is_terminal() {
+                break state.update;
+            }
+            let change = self
+                .rootless_asked
+                .next_change(&self.person, &self.invocation)
+                .expect("the call is followed while it waits");
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_secs(30).saturating_sub(started.elapsed()),
+                    change,
+                )
+                .await
+                .is_ok(),
+                "the call ends on the device that asked"
+            );
+        };
+        let InvocationUpdate::Failed { error, .. } = &ended else {
+            panic!("the revoke of a key that is no device ends failed: {ended:?}");
+        };
         assert!(
-            !recorded.contains("a passphrase of some length"),
-            "{action} recorded what sealed it"
+            error.message.contains("no device of yours"),
+            "it ran under the root, which found no such device: {}",
+            error.message
+        );
+        assert!(
+            self.rootless_store
+                .record(&self.invocation.0.to_string())
+                .is_none(),
+            "the device that asked forgets the record once it shows how it ended"
         );
     }
-    drop(env);
 }
 
 /// A device the person's devices record does not mark as keeping their root is asked to revoke a
@@ -1704,9 +2117,6 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
 /// record is gone from the workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_keeps_it() {
-    use tilo_actions::remote::ActionProvider as _;
-    use tilo_actions::remote::asked::{AskedKeeping, AskedStore, Offer, Resolve};
-
     // The person is the one this account founded here: their root is kept for this account
     // alone, where only a call arriving as it signs with it.
     let mut home = tilo_test_env::TestHome::new().unwrap();
@@ -1719,273 +2129,67 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     issuer.found(workspace, "Home").await.unwrap();
     let account_dir = super::services::account_identity_dir(account).unwrap();
     // The device without the root is another computer, whose identity store keeps no root of
-    // theirs: this one's store, until the device that keeps it comes online below.
+    // theirs: this one's store, until the device that keeps it comes online.
     let keeping_store = home.config().to_owned();
     let rootless_store_dir = home.root().join("rootless-config");
     std::fs::create_dir_all(&rootless_store_dir).unwrap();
     home.env().set("XDG_CONFIG_HOME", &rootless_store_dir);
-    let copies = issuer.copies();
-    // The person's own workspace, where a call that only their root signs waits for a device
-    // that keeps it.
-    tilo_workspace_service::workspaces::person_workspace::found(copies)
-        .await
-        .expect("the person's own workspace is founded here");
-    let tickets = |root: RootSource, at: &str, cert: &DeviceCert| {
-        Tickets::new(
-            (key.clone(), cert.clone()),
-            issuer.endpoint(),
-            None,
-            root,
-            None,
-            Some(Arc::clone(&issuer)),
-            tilo_device_identity::login::Place::at(
-                state.path().join(at),
-                tilo_device_identity::IdentityPaths::under(state.path().join(format!("{at}-keys"))),
-            ),
-            copies.action_service(),
-        )
-    };
-    // Each device's one dispatch, keeping what waits in the person's workspace.
-    let device = |key: [u8; 32]| {
-        let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
-        let store = AskedStore::opened(None, Some(keeping), Vec::new()).unwrap();
-        store.asks_on(&key);
-        let invocations: Arc<tilo_actions::remote::invocation_record::Invocations> = Arc::default();
-        let asked = super::asked::DeviceAsked::new(
-            Arc::clone(&store),
-            Arc::clone(&invocations),
-            Box::new(|_| Err("nothing waits here to be sent again".to_owned())),
-        );
-        (store, invocations, asked)
-    };
-    let rootless_key = [8; 32];
-    // Another device of the person's, which their devices record does not mark.
-    let rootless_cert = DeviceCert {
-        device_public_key: rootless_key,
-        ..cert.clone()
-    };
-    let rootless = tickets(no_root(), "rootless", &rootless_cert);
-    let (rootless_store, invocations, rootless_asked) = device(rootless_key);
-    let follows = Arc::downgrade(&rootless_asked);
-    copies.follow_asked_at_root(move |asks| {
-        if let Some(asked) = follows.upgrade() {
-            asked.kept_changed(asks);
-        }
-    });
-
-    // The person, on the device without their root, revokes a key.
-    let person = tilo_actions::remote::Caller::authenticated(cert.user_public_key, rootless_key);
-    let invocation = InvocationId::new();
-    let revoked = hex::encode([9; 32]);
-    let revoke = InvokeRequest {
-        on_behalf_of: None,
-        invocation,
-        target: RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(
-                RESOURCE,
-                tilo_device_identity::login::REVOKE,
-            ),
-        },
-        argument: InvokeArgument::Json(json!({"device": revoked}).as_object().unwrap().clone()),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    let receipt = super::services::device_action(
-        (&invocations, Some(&rootless_asked)),
-        &rootless,
-        &person,
-        revoke.clone(),
-        &workspace.to_string(),
-    )
-    .await
-    .expect("the call is taken")
-    .expect("the call is admitted");
-    assert!(
-        !matches!(
-            receipt.status,
-            tilo_actions::remote::ReceiptStatus::Completed { .. }
-        ),
-        "nothing runs on a device without the root: {:?}",
-        receipt.status
-    );
-    let at = rootless_store
-        .record(&invocation.0.to_string())
-        .expect("the call is kept as its asked record");
-    // The record is written to the workspace by a task of its own, after the call is answered.
-    let deadline = tilo_test_env::hang_deadline();
-    let mut kept = copies.asked_kept().await;
-    while !kept.iter().any(|ask| ask.at == at) && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        kept = copies.asked_kept().await;
-    }
-    let ask = kept
-        .iter()
-        .find(|ask| ask.at == at)
-        .expect("the record is in the person's workspace");
-    assert!(
-        ask.dispatch == tilo_actions::remote::asked::AT_ROOT
-            && ask.taken.is_none()
-            && ask.outcome.is_none()
-    );
-    assert!(
-        rootless_asked
-            .store()
-            .asked_of(&cert.user_public_key)
-            .is_empty(),
-        "a device without the root asks nothing of it"
-    );
-    let refused = rootless_store
-        .resolve(
-            &at,
-            &person,
-            &Resolve {
-                resolution: Offer::Approve,
-                ..Resolve::default()
-            },
-        )
-        .await
-        .expect("the answer is decided at once");
-    assert!(
-        refused.is_err(),
-        "a device without the root does not run what only it signs"
-    );
-    assert!(
-        rootless_asked
-            .observe(&person, &invocation)
-            .is_some_and(|state| !state.update.is_terminal()),
-        "the call waits under way"
-    );
-
-    // A device that keeps the root comes online and takes the record up.
+    let mut revoke = RevokeAtRoot::new(issuer, state, &key, cert, account_dir, workspace).await;
+    revoke.the_call_waits_for_the_root().await;
+    // A device that keeps the root comes online, in the identity store this computer keeps.
     home.env().set("XDG_CONFIG_HOME", &keeping_store);
-    let holder_key = cert.device_public_key;
-    let holder = tickets(root_in(account_dir.clone()), "holder", &cert);
-    let root = root_in(account_dir)().unwrap().unwrap();
-    // The person's own workspace keeps their devices record. A computer that keeps their root
-    // founds it, at the id their key names, the first time they need it, as it does now.
-    issuer
-        .found(
-            super::first_workspace::own_workspace(&cert.user_public_key),
-            super::first_workspace::FOUNDED_NAME,
-        )
-        .await
-        .expect("the person's workspace is founded");
-    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-        copies, &root, &cert,
-    )
-    .await
-    .expect("the root marks the device that keeps it");
-    let (holder_store, _, holder_asked) = device(holder_key);
-    holder_asked.serve_at_root(holder.clone());
-    let (taken, took) = tokio::sync::oneshot::channel();
-    let taken = std::sync::Mutex::new(Some(taken));
-    let follows = Arc::downgrade(&holder_asked);
-    copies.follow_asked_at_root(move |asks| {
-        let here = asks.iter().any(|ask| ask.request.invocation == invocation);
-        if let Some(asked) = follows.upgrade() {
-            asked.kept_changed(asks);
-        }
-        if here && let Some(taken) = taken.lock().unwrap().take() {
-            let _ = taken.send(());
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(30), took)
-        .await
-        .expect("the device that keeps the root reads the record")
-        .unwrap();
-    let at = holder_store
-        .record(&invocation.0.to_string())
-        .expect("the record waits for the person there");
-    assert_eq!(
-        holder_asked.store().asked_of(&cert.user_public_key).len(),
-        1,
-        "the person is asked there"
-    );
-
-    // The device that asked starts again and sends the call again under its id: it follows the
-    // record the workspace keeps, which stays as it was, and the person is still asked once.
-    let (_, invocations, restarted) = device(rootless_key);
-    let again = super::services::device_action(
-        (&invocations, Some(&restarted)),
-        &rootless,
-        &person,
-        revoke,
-        &workspace.to_string(),
-    )
-    .await
-    .expect("the call is followed")
-    .expect("the call is admitted again");
-    assert!(!matches!(
-        again.status,
-        tilo_actions::remote::ReceiptStatus::Completed { .. }
-    ));
-    let kept_again = copies.asked_kept().await;
-    assert_eq!(
-        kept_again.iter().find(|again| again.at == at),
-        Some(ask),
-        "the record is not written again"
-    );
-    assert_eq!(
-        holder_asked.store().asked_of(&cert.user_public_key).len(),
-        1
-    );
-
-    // The person answers once, there.
-    let answering = tilo_actions::remote::Caller::authenticated(cert.user_public_key, holder_key);
-    holder_store
-        .resolve(
-            &at,
-            &answering,
-            &Resolve {
-                resolution: Offer::Approve,
-                ..Resolve::default()
-            },
-        )
-        .await
-        .expect("the answer is decided at once")
-        .expect("the person's answer is taken at a device that keeps the root");
-
-    // The device that asked shows how the call ended where it ran.
-    let ends = Instant::now() + Duration::from_secs(30);
-    let ended = loop {
-        let state = rootless_asked
-            .observe(&person, &invocation)
-            .expect("the device that asked follows its call");
-        if state.update.is_terminal() {
-            break state.update;
-        }
-        let change = rootless_asked
-            .next_change(&person, &invocation)
-            .expect("the call is followed while it waits");
-        assert!(
-            tokio::time::timeout_at(tokio::time::Instant::from_std(ends), change)
-                .await
-                .is_ok(),
-            "the call ends on the device that asked"
-        );
-    };
-    let InvocationUpdate::Failed { error, .. } = &ended else {
-        panic!("the revoke of a key that is no device ends failed: {ended:?}");
-    };
-    assert!(
-        error.message.contains("no device of yours"),
-        "it ran under the root, which found no such device: {}",
-        error.message
-    );
-    assert!(
-        rootless_store.record(&invocation.0.to_string()).is_none(),
-        "the device that asked forgets the record once it shows how it ended"
-    );
+    revoke.the_root_holder_comes_online().await;
+    revoke.the_answer_runs_under_the_root().await;
 }
 
 const FIRST_APP_TEST: &str = "device::ticket_tests::the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed";
 /// The socket the helper process of [`FIRST_APP_TEST`] connects to as an app.
 const FIRST_APP_SOCKET: &str = "TILO_FIRST_APP_SOCKET";
+
+/// In the helper process [`the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed`]
+/// starts: connect to the daemon as an app, and stay until told to go. Answers whether this
+/// process is that helper.
+fn connect_as_the_launched_app() -> bool {
+    use std::io::Read as _;
+
+    let Some(socket) = std::env::var_os(FIRST_APP_SOCKET) else {
+        return false;
+    };
+    let _connection = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    let _ = std::io::stdin().read(&mut [0]);
+    true
+}
+
+/// The app's service connection, from a process of its own that runs the test as the app: the
+/// connection it makes, and the process to stop at the end.
+fn the_launched_app(
+    socket: &std::path::Path,
+) -> (std::os::unix::net::UnixStream, std::process::Child) {
+    let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+    let app = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", FIRST_APP_TEST, "--nocapture"])
+        .env(FIRST_APP_SOCKET, socket)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn_locked()
+        .unwrap();
+    let (daemon, _) = listener.accept().unwrap();
+    (daemon, app)
+}
+
+/// Whether the person's devices record, as the daemon reads it, has this device certified: the
+/// record itself, not the trust that reads it, since the daemon answers for its own device by
+/// its certificate whether or not the record has reached it.
+fn the_device_is_listed(
+    workspaces: &Arc<super::workspaces::ServiceWorkspaces>,
+    device: [u8; 32],
+) -> bool {
+    let workspaces = Arc::clone(workspaces);
+    std::thread::spawn(move || workspaces.copies().blocked_keys().certified(&device))
+        .join()
+        .unwrap()
+}
 
 /// On a computer with no login, the first app this daemon launched in the person's own workspace
 /// founds that workspace when its service connection names it, before the app signs anything,
@@ -1993,17 +2197,14 @@ const FIRST_APP_SOCKET: &str = "TILO_FIRST_APP_SOCKET";
 /// and an app it launched in another workspace, found nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed() {
-    use std::io::Read as _;
     use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
     use tilo_identity::sources::PersonResourceTypes as _;
 
+    const APP: &str = "dev.tilo.first";
     // Helper role: a process of its own that connects as an app, and stays until told to go.
-    if let Some(socket) = std::env::var_os(FIRST_APP_SOCKET) {
-        let _connection = std::os::unix::net::UnixStream::connect(socket).unwrap();
-        let _ = std::io::stdin().read(&mut [0]);
+    if connect_as_the_launched_app() {
         return;
     }
-    const APP: &str = "dev.tilo.first";
     let (workspaces, state, key, cert, _paths) =
         super::workspaces::ServiceWorkspaces::test_of_person().await;
     let copies = workspaces.copies().clone();
@@ -2057,27 +2258,8 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
     let elsewhere = tilo_desktop_model::WorkspaceId::new();
     // The app's service connection, from a process of its own.
     let socket = state.path().join("identity.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    let mut app = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", FIRST_APP_TEST, "--nocapture"])
-        .env(FIRST_APP_SOCKET, &socket)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn_locked()
-        .unwrap();
-    let (daemon, _) = listener.accept().unwrap();
-    let listed = || {
-        let workspaces = Arc::clone(&workspaces);
-        let device = cert.device_public_key;
-        std::thread::spawn(move || {
-            // The record itself, not the trust that reads it: the daemon answers for its own
-            // device by its certificate whether or not the record has reached it.
-            workspaces.copies().blocked_keys().certified(&device)
-        })
-        .join()
-        .unwrap()
-    };
+    let (daemon, mut app) = the_launched_app(&socket);
+    let listed = || the_device_is_listed(&workspaces, cert.device_public_key);
 
     // A process no launch here started names the person's workspace: nothing is founded.
     surfaces.connected(APP, &own, &daemon);
@@ -2110,10 +2292,7 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
     // The app the daemon launched in the person's own workspace founds it, with this device
     // listed in their devices before the app signs anything.
     apps.record_started(app.id(), APP, &own.to_string());
-    let founding = tokio::task::spawn_blocking({
-        let own = own;
-        move || surfaces.connected(APP, &own, &daemon)
-    });
+    let founding = tokio::task::spawn_blocking(move || surfaces.connected(APP, &own, &daemon));
     founding.await.unwrap();
     assert_eq!(first.get(), Some(own.to_string().as_str()));
     assert!(listed(), "the device is listed in the person's devices");

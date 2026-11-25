@@ -447,10 +447,7 @@ async fn dispatch(
                 workspaces.resource_reads()
             };
             let reader = person.in_workspace(read.workspace.clone());
-            reads
-                .answer_read(&reader, correlation, read)
-                .await
-                .ok_or("the read stopped before it answered")?
+            reads.answer_read(&reader, correlation, read).await
         }
         RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::is_resource_provider(&request.target.provider) =>

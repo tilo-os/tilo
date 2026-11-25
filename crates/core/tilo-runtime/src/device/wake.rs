@@ -29,8 +29,12 @@ pub(crate) struct Wake {
     cert: DeviceCert,
     /// Its interfaces as last read, the wakes it already took up, and the interfaces it last asked
     /// the record to keep, so a write still waiting for the person's workspace is asked once.
-    state: Mutex<(Vec<WakeRoute>, BTreeSet<(String, i64)>, String)>,
+    state: Mutex<Kept>,
 }
+
+/// The interfaces as last read, the wakes already taken up, and the interfaces last asked of the
+/// record.
+type Kept = (Vec<WakeRoute>, BTreeSet<(String, i64)>, String);
 
 impl Wake {
     /// Keep and answer this device's wakes in `personal`, as the device `cert` certifies, on the
@@ -56,7 +60,7 @@ impl Wake {
                 };
                 let wake = Arc::clone(&wake);
                 let passed = tokio::task::spawn_blocking(move || {
-                    wake.pass(rescan, tilo_clock::unix_now_ns())
+                    wake.pass(rescan, tilo_clock::unix_now_ns());
                 })
                 .await;
                 if let Err(error) = passed {

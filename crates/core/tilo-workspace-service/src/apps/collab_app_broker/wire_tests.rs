@@ -410,34 +410,31 @@ impl crate::apps::services::ResourceServices for KeptRecord {
 struct Decides(AtomicBool);
 
 impl Decides {
-    fn decided(
-        &self,
-        refusal: &str,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
-        tilo_actions::remote::Pending::ready(if self.0.load(Ordering::Relaxed) {
+    fn decided<'a>(&self, refusal: &str) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(if self.0.load(Ordering::Relaxed) {
             Ok(())
         } else {
             Err(tilo_actions::remote::ActionCallError::Refused {
                 reason: refusal.into(),
             })
-        })
+        }))
     }
 }
 
 impl tilo_actions::remote::ResourceReads for Decides {
-    fn may_read(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: &tilo_actions::remote::ResourceAddress,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+    fn may_read<'a>(
+        &'a self,
+        _: &'a tilo_actions::remote::Caller,
+        _: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
         self.decided(tilo_actions::remote::RESOURCE_READ_REFUSED)
     }
 
-    fn may_write(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: &tilo_actions::remote::ResourceAddress,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+    fn may_write<'a>(
+        &'a self,
+        _: &'a tilo_actions::remote::Caller,
+        _: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
         self.decided(tilo_actions::remote::RESOURCE_WRITE_REFUSED)
     }
 
@@ -446,15 +443,15 @@ impl tilo_actions::remote::ResourceReads for Decides {
         _: &tilo_actions::remote::Caller,
         correlation: u64,
         _: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::Pending::ready(
+    ) -> tilo_actions::remote::ReadingAnswer {
+        Box::pin(std::future::ready(
             tilo_actions::remote::RemoteActionMessage::ResourceReading {
                 correlation,
                 result: Err(tilo_actions::remote::ActionCallError::Unavailable {
                     reason: "the test decides alone".into(),
                 }),
             },
-        )
+        ))
     }
 }
 

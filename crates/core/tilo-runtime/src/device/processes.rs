@@ -519,33 +519,32 @@ impl Processes {
 
     /// What the instance `instance` of `key` plays now, told to whoever serves the media
     /// controls: its Playback's view, or the id of the one it stopped playing.
-    fn media(&self, key: &HostKey, instance: u64, view: Option<MediaView>) {
+    fn media(&self, key: &HostKey, instance: u64, view: Option<&MediaView>) {
         let change = {
             let mut playing = self.playing.lock_recover();
-            match &view {
-                Some(view) => {
-                    playing
-                        .where_played
-                        .insert(view.id.clone(), (key.clone(), instance));
-                    MediaChange::Playing(view.clone())
-                }
-                None => {
-                    let stopped = playing
-                        .where_played
-                        .iter()
-                        .find(|(_, (held, held_instance))| {
-                            held.workspace == key.workspace
-                                && held.app == key.app
-                                && *held_instance == instance
-                        })
-                        .map(|(id, _)| id.clone());
-                    let Some(stopped) = stopped else {
-                        return;
-                    };
-                    playing.where_played.remove(&stopped);
-                    MediaChange::Stopped(stopped)
-                }
-            }
+            let change = if let Some(view) = view {
+                playing
+                    .where_played
+                    .insert(view.id.clone(), (key.clone(), instance));
+                MediaChange::Playing(view.clone())
+            } else {
+                let stopped = playing
+                    .where_played
+                    .iter()
+                    .find(|(_, (held, held_instance))| {
+                        held.workspace == key.workspace
+                            && held.app == key.app
+                            && *held_instance == instance
+                    })
+                    .map(|(id, _)| id.clone());
+                let Some(stopped) = stopped else {
+                    return;
+                };
+                playing.where_played.remove(&stopped);
+                MediaChange::Stopped(stopped)
+            };
+            drop(playing);
+            change
         };
         let told = self.playing.lock_recover().told.clone();
         if let Some(told) = told {
@@ -625,14 +624,12 @@ impl Processes {
     /// Read every workspace's content again: what a daemon told of writes it missed does, so no
     /// process keeps a reading that moved without it hearing.
     pub(crate) fn content_refresh_all(&self) {
-        let workspaces: Vec<String> = {
+        let mut workspaces: Vec<String> = {
             let running = self.running();
-            let mut workspaces: Vec<String> =
-                running.keys().map(|key| key.workspace.clone()).collect();
-            workspaces.sort();
-            workspaces.dedup();
-            workspaces
+            running.keys().map(|key| key.workspace.clone()).collect()
         };
+        workspaces.sort();
+        workspaces.dedup();
         for workspace in workspaces {
             self.content_changed(&workspace);
         }
@@ -1272,7 +1269,7 @@ impl Processes {
         std::thread::Builder::new()
             .name("tilolang-process".into())
             .spawn(move || {
-                processes.follow(&key, generation, pid, &followed, started.wait, said)
+                processes.follow(&key, generation, pid, &followed, started.wait, said);
             })?;
         Ok(Host {
             socket,
@@ -1302,7 +1299,7 @@ impl Processes {
                 Ok(Some(FromProcess::Exiting(why))) => reason = Some(why),
                 Ok(Some(FromProcess::Serves)) => {}
                 Ok(Some(FromProcess::Media { instance, view })) => {
-                    self.media(key, instance, view);
+                    self.media(key, instance, view.as_ref());
                 }
                 Ok(Some(FromProcess::EngineStart(job))) => {
                     self.engine_start(key, generation, &job);
@@ -1376,11 +1373,14 @@ impl Processes {
             {
                 process.builds.remove(&app);
             }
-            process.instances.is_empty().then(|| {
+            let idle = process.instances.is_empty();
+            if idle {
                 process.idle_since = Some(Instant::now());
-            })
+            }
+            drop(processes);
+            idle
         };
-        if idle.is_some() {
+        if idle {
             self.idle_later();
         }
     }
@@ -1397,7 +1397,11 @@ impl Processes {
         if let Err(error) = spawned {
             // With no thread to end it later, it ends now: a process is never left for good.
             tracing::warn!(%error, "no thread to end an idle tilolang process later");
-            self.close_idle(Instant::now() + IDLE);
+            self.close_idle(
+                Instant::now()
+                    .checked_add(IDLE)
+                    .unwrap_or_else(Instant::now),
+            );
         }
     }
 
@@ -2012,7 +2016,7 @@ mod tests {
                 can_next: false,
                 can_prev: false,
             };
-            device.processes.media(&key, 7, Some(view.clone()));
+            device.processes.media(&key, 7, Some(&view));
             assert_eq!(
                 FromDevice::receive(&following).unwrap(),
                 Some(FromDevice::Media(MediaChange::Playing(view))),

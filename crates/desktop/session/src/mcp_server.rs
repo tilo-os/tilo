@@ -1291,6 +1291,21 @@ fn unanswered() -> ActionCallError {
     }
 }
 
+/// What the session's pass answers `answer` within `wait`, `None` when whoever asked dropped it,
+/// or [`unanswered`] once the wait passed: an ask made from a task parks for the pass rather than
+/// holding the thread the task runs on.
+async fn answered_within<T>(
+    answer: Pending<T>,
+    wait: Duration,
+) -> Result<Option<T>, ActionCallError> {
+    let answered = std::pin::pin!(answer);
+    let passed = std::pin::pin!(tilo_rt::sleep(wait));
+    match futures_util::future::select(answered, passed).await {
+        futures_util::future::Either::Left((answer, _)) => Ok(answer),
+        futures_util::future::Either::Right(..) => Err(unanswered()),
+    }
+}
+
 /// How long a service's `find` waits for its sources before answering with the rows that came: a
 /// source reading a disk, a mailbox or a service off the loop has its own time, and the find is
 /// answered with what is in rather than the loop or the caller waiting longer than this. The
@@ -1627,6 +1642,26 @@ impl SessionServices {
             .wait_timeout(WAIT)
             .map(Option::flatten)
             .map_err(|_| unanswered())
+    }
+
+    /// [`Self::reading`], awaited: a read asked of the loop's pass from a task parks for it rather
+    /// than holding the thread the task runs on for its wait.
+    ///
+    /// # Errors
+    ///
+    /// Why the session did not answer: it is frozen ([`unanswered`]).
+    pub(crate) async fn reading_awaited(
+        &self,
+        app: &str,
+        resource: &str,
+    ) -> Result<Option<Published>, ActionCallError> {
+        let (done, answered) = tilo_actions::remote::pending();
+        self.ask(ApiAsk::Reading {
+            app: app.to_owned(),
+            resource: resource.to_owned(),
+            done,
+        });
+        answered_within(answered, WAIT).await.map(Option::flatten)
     }
 
     /// The session's own actions these services hand a connection, once the session has them.

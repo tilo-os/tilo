@@ -59,7 +59,9 @@ impl BrowserServiceSessionServices for Items {
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
     ) -> ItemAnswering {
-        Box::pin(std::future::ready(Err("an item's use is never answered on the dispatch".into())))
+        Box::pin(std::future::ready(Err(
+            "an item's use is never answered on the dispatch".into(),
+        )))
     }
     fn item_use(
         &self,
@@ -138,7 +140,9 @@ impl BrowserServiceSessionServices for Service {
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
     ) -> ItemAnswering {
-        Box::pin(std::future::ready(Err("a website session is never answered on the dispatch".into())))
+        Box::pin(std::future::ready(Err(
+            "a website session is never answered on the dispatch".into(),
+        )))
     }
     fn answered_later(
         &self,
@@ -182,6 +186,7 @@ fn context(app: &str, live: Arc<AtomicBool>) -> BrowserServiceSessionRequestCont
                 .then_some(())
                 .ok_or_else(|| "synthetic-private-provider-error".into())
         }),
+        still_reads: super::reads_still(),
     };
     BrowserServiceSessionRequestContext::authenticated(41, "certified-person".into(), read)
 }
@@ -212,7 +217,9 @@ impl BrowserServiceSessionServices for AdminService {
         _: &BrowserServiceSessionRequestContext,
         _: BrowserServiceSessionCommand,
     ) -> ItemAnswering {
-        Box::pin(std::future::ready(Err("a website session is never answered on the dispatch".into())))
+        Box::pin(std::future::ready(Err(
+            "a website session is never answered on the dispatch".into(),
+        )))
     }
     fn answered_later(
         &self,
@@ -578,9 +585,9 @@ async fn a_seat_answer_over_the_asking_threads_socket_arrives() {
     providers.serve_seat(Arc::new(SeatOverSocket), None);
     let seat = crate::apps::seat::Seat::new(providers, tokio::runtime::Handle::current());
     let services = ProcessServices {
-        browser_service_sessions: Some(Arc::new(
-            crate::apps::seat::SeatBrowserServiceSessions(seat),
-        )),
+        browser_service_sessions: Some(Arc::new(crate::apps::seat::SeatBrowserServiceSessions(
+            seat,
+        ))),
         ..Default::default()
     };
     let command = BrowserServiceSessionCommand::ReportAccountSync {

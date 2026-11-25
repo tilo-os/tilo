@@ -155,13 +155,11 @@ fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
 }
 
 /// The store the windows this process draws read a content address from when the launcher handed the
-/// process no store of its own: the session's document media, which the session lends while it draws
-/// ([`lend_content`]).
-#[cfg(feature = "native")]
+/// process no store of its own: the session's document media, which the session lends while it draws,
+/// or the pictures an engine is handed while it renders a look outside any window ([`lend_content`]).
 static LENT_CONTENT: std::sync::RwLock<Option<tilo_content::ContentStore>> =
     std::sync::RwLock::new(None);
 
-#[cfg(feature = "native")]
 fn lent_content() -> Option<tilo_content::ContentStore> {
     LENT_CONTENT.read().ok().and_then(|lent| lent.clone())
 }
@@ -169,8 +167,8 @@ fn lent_content() -> Option<tilo_content::ContentStore> {
 /// Let the windows this process draws read their content addresses from `store`: what a session lends
 /// the windows it draws in its own process, once it knows the store the workspaces' content is read
 /// through. The pictures keep the store they were built with, so what this changes is where their bytes
-/// come from, read afresh each time a picture is asked for.
-#[cfg(feature = "native")]
+/// come from, read afresh each time a picture is asked for. A build that keeps no device store (the
+/// web, a portable engine) reads its content addresses from this store alone.
 pub fn lend_content(store: Option<tilo_content::ContentStore>) {
     let Ok(mut lent) = LENT_CONTENT.write() else {
         return;
@@ -217,12 +215,12 @@ fn remote_bytes(url: &str) -> Option<Vec<u8>> {
     fetch(url)
 }
 
-/// The bytes of the content at `hash`: a web page reads no content store, so a content address there
-/// resolves to nothing until its host serves it.
+/// The bytes of the content at `hash`: a build without a device store (the web, a portable engine)
+/// reads only what its host lends it ([`lend_content`]), so a content address resolves to nothing
+/// until the host serves it.
 #[cfg(not(feature = "native"))]
 fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
-    let _ = hash;
-    None
+    lent_content()?.read(hash)
 }
 
 /// The most a picture pasted or dropped into a document may hold: the size a document keeps a

@@ -155,6 +155,30 @@ impl ResourceCopy {
 /// ([`ResourceReads::may_read`], [`ResourceReads::may_write`]).
 pub type Decided = Result<(), ActionCallError>;
 
+/// What a reader answers, once it has it: a read may wait on a lock, a store or another device
+/// over its link, so it is awaited where it is asked and never holds the thread that asked.
+pub type ReadsAnswer<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, ActionCallError>> + Send + 'a>>;
+
+/// A read asked over the API, answered once its reader has it ([`ResourceReads::answer_read`]).
+pub type ReadingAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = super::RemoteActionMessage> + Send>>;
+
+/// `answer`, as a reader answers: its result's type is the one the reader answers, so a body
+/// that answers at once is written as an `async move` block, with `?` and `return` as usual.
+pub fn reads_answer<'a, T>(
+    answer: impl std::future::Future<Output = Result<T, ActionCallError>> + Send + 'a,
+) -> ReadsAnswer<'a, T> {
+    Box::pin(answer)
+}
+
+/// What a provider without record reads answers any of them.
+fn unavailable<'a, T: Send + 'a>() -> ReadsAnswer<'a, T> {
+    Box::pin(std::future::ready(Err(ActionCallError::Unavailable {
+        reason: RESOURCE_READS_UNAVAILABLE.into(),
+    })))
+}
+
 /// A provider's API for reading records outside their app.
 pub trait ResourceReads: Send + Sync {
     /// The record `address`, in the workspace it names, as `caller` may read it now: decided at
@@ -169,22 +193,24 @@ pub trait ResourceReads: Send + Sync {
     /// [`ActionCallError::Unavailable`] when the workspace's records cannot be read now (still
     /// arriving, or held nowhere on this device), or by a reader that answers only
     /// [`Self::answer_read`], the device on the other end of a session.
-    fn read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
+    fn read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
         let _ = (caller, address);
-        Err(ActionCallError::Unavailable {
-            reason: RESOURCE_READS_UNAVAILABLE.into(),
-        })
+        unavailable()
     }
 
     /// Whether `caller` may read `address` now, decided as [`Self::read`] is, without the copy:
     /// what a reader that keeps the record another way (an app's live route to it) asks first.
     /// [`ActionCallError::ConfirmationRequired`] where the person is to be asked first.
-    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> super::Pending<Decided> {
-        super::Pending::ready(self.read(caller, address).map(|_| ()))
+    fn may_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(async move { self.read(caller, address).await.map(|_| ()) })
     }
 
     /// Whether `caller` may change `address` now, decided there as a write is: what a reader that
@@ -192,13 +218,18 @@ pub trait ResourceReads: Send + Sync {
     /// changes its own records; another app's record it changes only where the caller's grants
     /// there allow a change, so a grant that reads alone answers [`ActionCallError::Refused`].
     /// [`ActionCallError::ConfirmationRequired`] where the person is to be asked first.
-    fn may_write(&self, caller: &Caller, address: &ResourceAddress) -> super::Pending<Decided> {
-        super::Pending::ready(self.read(caller, address).map(|_| ()))
+    fn may_write<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(async move { self.read(caller, address).await.map(|_| ()) })
     }
 
     /// Answer a read of one of this provider's records, asked as `correlation` over the API
     /// ([`super::RemoteActionMessage::ResourceRead`]), with what every reader of it is answered:
-    /// [`answer_read`], which every provider that reads records through this trait answers with.
+    /// [`answer_read`], from this provider's own reads, unless the provider answers reads another
+    /// way (the desktop answers its windows' reads on its own turn).
     ///
     /// The API posts a read here rather than to code of its own, so what a reading is made of —
     /// every copy as JSON, and the record format behind it — is reached only from the reader's
@@ -209,7 +240,12 @@ pub trait ResourceReads: Send + Sync {
         caller: &Caller,
         correlation: u64,
         read: super::ResourceReadRequest,
-    ) -> super::Pending<super::RemoteActionMessage>;
+    ) -> ReadingAnswer
+    where
+        Self: 'static,
+    {
+        Box::pin(answer_read(self, caller.clone(), correlation, read))
+    }
 
     /// Wake `wake` once the next write to `address` lands on this provider, or what it publishes
     /// of the resource moves, decided as a read is: what a reader holding a copy waits on before
@@ -219,16 +255,14 @@ pub trait ResourceReads: Send + Sync {
     ///
     /// As [`Self::read`]; a provider that cannot tell when a record changes answers
     /// [`ActionCallError::Unavailable`].
-    fn watch(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
+    fn watch<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
         let _ = (caller, address, wake);
-        Err(ActionCallError::Unavailable {
-            reason: RESOURCE_READS_UNAVAILABLE.into(),
-        })
+        unavailable()
     }
 
     /// The resources of `workspace` that `caller` may read now: `app`'s, or every app's where
@@ -238,16 +272,14 @@ pub trait ResourceReads: Send + Sync {
     /// # Errors
     ///
     /// As [`Self::read`]; a provider that lists nothing answers [`ActionCallError::Unavailable`].
-    fn list(
-        &self,
-        caller: &Caller,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
+    fn list<'a>(
+        &'a self,
+        caller: &'a Caller,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> ReadsAnswer<'a, Vec<ResourceAddress>> {
         let _ = (caller, workspace, app);
-        Err(ActionCallError::Unavailable {
-            reason: RESOURCE_READS_UNAVAILABLE.into(),
-        })
+        unavailable()
     }
 
     /// The device's store's answer to `read`, a read command of the store's wire (a resource, a
@@ -260,16 +292,14 @@ pub trait ResourceReads: Send + Sync {
     /// As [`Self::read`]; [`ActionCallError::InvalidRequest`] for a command that writes or does
     /// not parse. A provider whose resources are in no store answers
     /// [`ActionCallError::Unavailable`].
-    fn store_read(
-        &self,
-        caller: &Caller,
-        address: &ResourceAddress,
+    fn store_read<'a>(
+        &'a self,
+        caller: &'a Caller,
+        address: &'a ResourceAddress,
         read: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionCallError> {
+    ) -> ReadsAnswer<'a, serde_json::Value> {
         let _ = (caller, address, read);
-        Err(ActionCallError::Unavailable {
-            reason: RESOURCE_READS_UNAVAILABLE.into(),
-        })
+        unavailable()
     }
 }
 
@@ -287,41 +317,42 @@ impl HeldCopies {
     /// As [`read_resources`] and [`ResourceReadings::readable`].
     pub fn readable(
         &self,
-        caller: &Caller,
+        _caller: &Caller,
         asks: &[ResourceAsk],
     ) -> Result<serde_json::Value, String> {
-        read_resources(self, caller, asks, None, tilo_clock::now())
+        readings_of(asks, |address| Ok(self.held(address)))
             .map_err(|error| error.to_string())?
             .readable()
     }
 }
 
-impl ResourceReads for HeldCopies {
-    fn answer_read(
-        self: std::sync::Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: super::ResourceReadRequest,
-    ) -> super::Pending<super::RemoteActionMessage> {
-        answer_read(self, caller, correlation, read)
-    }
-
-    fn read(&self, _: &Caller, address: &ResourceAddress) -> Result<ResourceCopy, ActionCallError> {
-        Ok(self
-            .0
+impl HeldCopies {
+    /// The copy of `address` in hand, or absent.
+    fn held(&self, address: &ResourceAddress) -> ResourceCopy {
+        self.0
             .get(&address.record)
             .map_or(ResourceCopy::Absent, |bytes| {
                 ResourceCopy::Document(bytes.clone())
-            }))
+            })
+    }
+}
+
+impl ResourceReads for HeldCopies {
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        Box::pin(std::future::ready(Ok(self.held(address))))
     }
 
-    fn watch(
-        &self,
-        _: &Caller,
-        _: &ResourceAddress,
-        _: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        Ok(())
+    fn watch<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a ResourceAddress,
+        _: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
     }
 }
 
@@ -349,8 +380,8 @@ pub struct ResourceReadings {
 /// [`ActionCallError::Unavailable`] for is still arriving and reads as `None`. A provider that waits on
 /// writes watches a record inside `read`, before it reads it, so no write between the two is missed.
 ///
-/// Every provider answers a read with this pass, whatever it waits with: [`read_resources`] on a thread
-/// of its own, a desktop that serves its windows in process when its records next change.
+/// This walks records already in hand, which answer at once: the desktop's, which it reads on its
+/// own turn. A reader that awaits its records walks them with [`readings_from`].
 ///
 /// # Errors
 ///
@@ -359,6 +390,28 @@ pub fn readings_of(
     asks: &[ResourceAsk],
     mut read: impl FnMut(&ResourceAddress) -> Result<ResourceCopy, ActionCallError>,
 ) -> Result<ResourceReadings, ActionCallError> {
+    let walk = std::pin::pin!(readings_from(asks, |address| std::future::ready(read(
+        &address
+    ))));
+    match walk.poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+        std::task::Poll::Ready(readings) => readings,
+        std::task::Poll::Pending => unreachable!("records in hand answer at once"),
+    }
+}
+
+/// [`readings_of`], over records `read` answers once it has them.
+///
+/// # Errors
+///
+/// What `read` refuses a record with, other than [`ActionCallError::Unavailable`].
+pub async fn readings_from<Read, Answer>(
+    asks: &[ResourceAsk],
+    mut read: Read,
+) -> Result<ResourceReadings, ActionCallError>
+where
+    Read: FnMut(ResourceAddress) -> Answer,
+    Answer: std::future::Future<Output = Result<ResourceCopy, ActionCallError>>,
+{
     let mut revision = blake3::Hasher::new();
     let mut records = Vec::new();
     for ask in asks {
@@ -381,7 +434,7 @@ pub fn readings_of(
                 app: ask.address.app.clone(),
                 record,
             };
-            let copy = match read(&address) {
+            let copy = match read(address.clone()).await {
                 Ok(copy) => Some(copy),
                 // A record still arriving is not held yet: its write wakes the reader.
                 Err(ActionCallError::Unavailable { .. }) => None,
@@ -448,8 +501,8 @@ pub fn readings_of(
 /// # Errors
 ///
 /// As [`ResourceReads::read`], but a record still arriving answers `None` rather than failing.
-pub fn read_resources(
-    reads: &dyn ResourceReads,
+pub async fn read_resources<Reads: ResourceReads + ?Sized>(
+    reads: &Reads,
     caller: &Caller,
     asks: &[ResourceAsk],
     after: Option<&str>,
@@ -457,38 +510,47 @@ pub fn read_resources(
 ) -> Result<ResourceReadings, ActionCallError> {
     loop {
         let (wake, woken) = ResourceWake::new();
-        let readings = readings_of(asks, |address| {
-            reads
-                .watch(caller, address, &wake)
-                .and_then(|()| reads.read(caller, address))
-        })?;
+        let wake = &wake;
+        let readings = readings_from(asks, |address| async move {
+            reads.watch(caller, &address, wake).await?;
+            reads.read(caller, &address).await
+        })
+        .await?;
         let now = tilo_clock::now();
         if after != Some(readings.revision.as_str()) || now >= deadline {
             return Ok(readings);
         }
-        let _ = woken.wait_timeout(deadline.saturating_duration_since(now));
+        let mut woken = std::pin::pin!(woken);
+        let mut passed = std::pin::pin!(tilo_rt::sleep(deadline.saturating_duration_since(now)));
+        std::future::poll_fn(|cx| {
+            if woken.as_mut().poll(cx).is_ready() || passed.as_mut().poll(cx).is_ready() {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
     }
 }
 
-/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the provider's record API: on
-/// a thread of its own, which the wait for a write past `read.after` and the record's capture hold.
+/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the provider's record API:
+/// awaited where it is asked, through the wait for a write past `read.after` and the record's
+/// capture.
 ///
 /// Every provider that reads records answers [`ResourceReads::answer_read`] with this, and the API
 /// posts a read through that method rather than here: the reading, the JSON every reader is
 /// answered and the record format behind it are reached only from a reader's own code, so a provider
 /// that serves an app's windows and reads no record does not carry them.
-pub fn answer_read(
-    reads: std::sync::Arc<dyn ResourceReads>,
-    caller: &Caller,
+pub async fn answer_read<Reads: ResourceReads + ?Sized>(
+    reads: std::sync::Arc<Reads>,
+    caller: Caller,
     correlation: u64,
     read: super::ResourceReadRequest,
-) -> super::Pending<super::RemoteActionMessage> {
-    serve_readings(reads, caller, read).map(move |result| {
-        super::RemoteActionMessage::ResourceReading {
-            correlation,
-            result,
-        }
-    })
+) -> super::RemoteActionMessage {
+    super::RemoteActionMessage::ResourceReading {
+        correlation,
+        result: serve_readings(reads.as_ref(), &caller, read).await,
+    }
 }
 
 /// What `reads` answers `read` for `caller` through the record API's read message, as JSON
@@ -504,13 +566,27 @@ pub async fn answered(
     read: super::ResourceReadRequest,
 ) -> Result<serde_json::Value, ActionCallError> {
     match reads.answer_read(caller, 0, read).await {
-        Some(super::RemoteActionMessage::ResourceReading { result, .. }) => {
+        super::RemoteActionMessage::ResourceReading { result, .. } => {
             serde_json::from_str(&result?).map_err(|error| ActionCallError::Unavailable {
                 reason: format!("the reading does not read: {error}"),
             })
         }
         _ => Err(ActionCallError::Unanswered),
     }
+}
+
+/// `reading`, answered on a task of the runtime that asked, or of the app's runtime when no
+/// runtime asked: what the API's dispatch, which answers through [`super::Pending`], waits on.
+pub(crate) fn on_a_task(reading: ReadingAnswer) -> super::Pending<super::RemoteActionMessage> {
+    let (answer, answered) = super::pending();
+    let task = async move { answer.complete(reading.await) };
+    #[cfg(not(target_family = "wasm"))]
+    if let Ok(runtime) = tilo_rt::Handle::try_current() {
+        drop(runtime.spawn(task));
+        return answered;
+    }
+    drop(tilo_rt::app().spawn(task));
+    answered
 }
 
 /// What a provider that reads no records answers a read of one: the API posts every read through
@@ -525,13 +601,11 @@ pub(crate) fn unanswered(correlation: u64) -> super::Pending<super::RemoteAction
     })
 }
 
-fn serve_readings(
-    reads: std::sync::Arc<dyn ResourceReads>,
+async fn serve_readings<Reads: ResourceReads + ?Sized>(
+    reads: &Reads,
     caller: &Caller,
     read: super::ResourceReadRequest,
-) -> super::Pending<Result<String, ActionCallError>> {
-    let (answer, answered) = super::pending();
-    let caller = caller.clone();
+) -> Result<String, ActionCallError> {
     let write = read.answer == super::ReadAnswer::WriteDecision;
     if write || read.answer == super::ReadAnswer::Decision {
         let address = ResourceAddress {
@@ -539,33 +613,15 @@ fn serve_readings(
             app: read.app,
             record: read.record,
         };
-        // A reader may block to decide; without a thread the caller hears the read dropped.
-        let _ = std::thread::Builder::new()
-            .name("resource-decision".into())
-            .spawn(move || {
-                let decided = if write {
-                    reads.may_write(&caller, &address)
-                } else {
-                    reads.may_read(&caller, &address)
-                };
-                decided.then(move |decided| {
-                    answer.complete(
-                        decided
-                            .unwrap_or(Err(ActionCallError::Unanswered))
-                            .map(|()| "null".to_owned()),
-                    );
-                });
-            });
-        return answered;
+        let decided = if write {
+            reads.may_write(caller, &address).await
+        } else {
+            reads.may_read(caller, &address).await
+        };
+        return decided.map(|()| "null".to_owned());
     }
     if read.answer == super::ReadAnswer::Listing {
-        // Without a thread the completer goes with the closure: the caller hears the read dropped.
-        let _ = std::thread::Builder::new()
-            .name("resource-listing".into())
-            .spawn(move || {
-                answer.complete(listing(reads.as_ref(), &caller, &read.workspace, &read.app));
-            });
-        return answered;
+        return listing(reads, caller, &read.workspace, &read.app).await;
     }
     let document = read.answer == super::ReadAnswer::Document;
     let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
@@ -577,42 +633,27 @@ fn serve_readings(
         },
         joined: read.joined,
     }];
-    // Without a thread the completer goes with the closure: the caller hears the read dropped.
-    let _ = std::thread::Builder::new()
-        .name("record-read".into())
-        .spawn(move || {
-            answer.complete(
-                read_resources(
-                    reads.as_ref(),
-                    &caller,
-                    &ask,
-                    read.after.as_deref(),
-                    deadline,
-                )
-                .and_then(|readings| {
-                    if document {
-                        return Ok(readings.documents().to_string());
-                    }
-                    readings
-                        .readable()
-                        .map(|answer| answer.to_string())
-                        .map_err(|reason| ActionCallError::Refused { reason })
-                }),
-            );
-        });
-    answered
+    let readings = read_resources(reads, caller, &ask, read.after.as_deref(), deadline).await?;
+    if document {
+        return Ok(readings.documents().to_string());
+    }
+    readings
+        .readable()
+        .map(|answer| answer.to_string())
+        .map_err(|reason| ActionCallError::Refused { reason })
 }
 
 /// The resources of `workspace` `caller` may read of `app` (every app's, empty), as a listing
 /// answers them: `{"records": [{"app", "record"}]}`.
-fn listing(
-    reads: &dyn ResourceReads,
+async fn listing<Reads: ResourceReads + ?Sized>(
+    reads: &Reads,
     caller: &Caller,
     workspace: &str,
     app: &str,
 ) -> Result<String, ActionCallError> {
     let listed: Vec<serde_json::Value> = reads
-        .list(caller, workspace, app)?
+        .list(caller, workspace, app)
+        .await?
         .into_iter()
         .map(|address| serde_json::json!({"app": address.app, "record": address.record}))
         .collect();
@@ -825,6 +866,17 @@ mod tests {
         }
     }
 
+    /// [`super::read_resources`], waited for on a runtime of its own.
+    fn read_resources(
+        reads: &(impl ResourceReads + ?Sized),
+        caller: &Caller,
+        asks: &[ResourceAsk],
+        after: Option<&str>,
+        deadline: tilo_clock::time::Instant,
+    ) -> Result<ResourceReadings, ActionCallError> {
+        tilo_rt::block_on(super::read_resources(reads, caller, asks, after, deadline)).unwrap()
+    }
+
     fn values(readings: &ResourceReadings) -> Vec<(String, serde_json::Value)> {
         readings
             .records
@@ -983,34 +1035,29 @@ mod tests {
             }
 
             impl ResourceReads for Published {
-                fn read(
-                    &self,
-                    _: &Caller,
-                    _: &ResourceAddress,
-                ) -> Result<ResourceCopy, ActionCallError> {
+                fn read<'a>(
+                    &'a self,
+                    _: &'a Caller,
+                    _: &'a ResourceAddress,
+                ) -> ReadsAnswer<'a, ResourceCopy> {
+                    Box::pin(std::future::ready((|| {
                     Ok(ResourceCopy::reading(
                         self.value.lock().unwrap().clone(),
                         Some(self.revision.lock().unwrap().clone()),
                     ))
+                    })()))
                 }
 
-                fn watch(
-                    &self,
-                    _: &Caller,
-                    _: &ResourceAddress,
-                    wake: &ResourceWake,
-                ) -> Result<(), ActionCallError> {
+                fn watch<'a>(
+                    &'a self,
+                    _: &'a Caller,
+                    _: &'a ResourceAddress,
+                    wake: &'a ResourceWake,
+                ) -> ReadsAnswer<'a, ()> {
+                    Box::pin(std::future::ready((|| {
                     self.wakers.lock().unwrap().push(wake.clone());
                     Ok(())
-                }
-
-                fn answer_read(
-                    self: std::sync::Arc<Self>,
-                    caller: &Caller,
-                    correlation: u64,
-                    read: super::super::ResourceReadRequest,
-                ) -> super::super::Pending<super::super::RemoteActionMessage> {
-                    answer_read(self, caller, correlation, read)
+                    })()))
                 }
             }
 
@@ -1085,33 +1132,28 @@ mod tests {
             struct Unversioned(std::sync::Mutex<serde_json::Value>);
 
             impl ResourceReads for Unversioned {
-                fn read(
-                    &self,
-                    _: &Caller,
-                    _: &ResourceAddress,
-                ) -> Result<ResourceCopy, ActionCallError> {
+                fn read<'a>(
+                    &'a self,
+                    _: &'a Caller,
+                    _: &'a ResourceAddress,
+                ) -> ReadsAnswer<'a, ResourceCopy> {
+                    Box::pin(std::future::ready((|| {
                     Ok(ResourceCopy::reading(
                         self.0.lock().unwrap().clone(),
                         None,
                     ))
+                    })()))
                 }
 
-                fn watch(
-                    &self,
-                    _: &Caller,
-                    _: &ResourceAddress,
-                    _: &ResourceWake,
-                ) -> Result<(), ActionCallError> {
+                fn watch<'a>(
+                    &'a self,
+                    _: &'a Caller,
+                    _: &'a ResourceAddress,
+                    _: &'a ResourceWake,
+                ) -> ReadsAnswer<'a, ()> {
+                    Box::pin(std::future::ready((|| {
                     Ok(())
-                }
-
-                fn answer_read(
-                    self: std::sync::Arc<Self>,
-                    caller: &Caller,
-                    correlation: u64,
-                    read: super::super::ResourceReadRequest,
-                ) -> super::super::Pending<super::super::RemoteActionMessage> {
-                    answer_read(self, caller, correlation, read)
+                    })()))
                 }
             }
 

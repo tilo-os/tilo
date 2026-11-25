@@ -192,7 +192,7 @@ pub(crate) fn run_surfaces(args: SurfacesArgs) -> Result<Value> {
             println!("warning: {}: {unbound}", app.display());
         }
         if args.write {
-            let file = tilo_app_builder::surface::write(app, &report.resources)?;
+            let file = tilo_app_builder::surface::write(app, &report.resources, &report.owners)?;
             println!("Wrote {}", file.display());
             written.push(file);
             if tilo_app_builder::surface::write_offers(app, &report.offers)? {

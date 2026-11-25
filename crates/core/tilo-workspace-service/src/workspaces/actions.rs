@@ -82,8 +82,6 @@ mod agent_record;
 #[cfg(test)]
 mod accounts_surface;
 pub(super) mod agents;
-#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
-mod calendars;
 mod server_params;
 use server_params::{add_server_params, copies_params, move_server_params, remove_server_params};
 #[cfg(not(target_arch = "wasm32"))]
@@ -4343,14 +4341,40 @@ impl InWorkspace {
 #[derive(Clone)]
 struct Governing(ServiceWorkspaceActions);
 
+/// The workspace a call on a workspace's own tree names: the first part of its resource
+/// (`workspace.permissions:<id>/vault`), for every child of the tree alike, its vault, mail
+/// accounts, models and apps as much as its people.
+fn addressed_workspace(address: &tilo_actions::ActionAddress) -> Option<WorkspaceId> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let workspace = named
+        .split_once('/')
+        .map_or(named, |(workspace, _)| workspace);
+    WorkspaceId::parse(workspace)
+}
+
 impl Governing {
-    /// The governance of the workspace `workspace_id` names, for a caller whose certificate the
-    /// workspace reads itself.
-    fn of(&self, workspace_id: Option<WorkspaceId>) -> InWorkspace {
+    /// What the workspace `workspace_id` names decides of its own tree, for `caller`: certified
+    /// by this device's own certificate where the caller is this device, as its person on it
+    /// asks (the certificate [`Workspaces::governed_by`] reads for this device too), and
+    /// otherwise by the certificate the workspace reads itself.
+    fn of(&self, workspace_id: Option<WorkspaceId>, caller: &Caller) -> InWorkspace {
+        let certificate = self
+            .0
+            .shared
+            .workspaces
+            .get()
+            .map(|workspaces| &workspaces.inner.host.cert)
+            .filter(|own| {
+                caller.device_public_key() == Some(&own.device_public_key)
+                    && caller.user_public_key() == Some(&own.user_public_key)
+            })
+            .cloned();
         InWorkspace {
             server: self.0.clone(),
             workspace_id,
-            certificate: None,
+            certificate,
         }
     }
 }
@@ -4362,7 +4386,7 @@ impl ActionProvider for Governing {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         let workspace_id = caller.workspace().and_then(WorkspaceId::parse);
-        self.of(workspace_id).query(caller, query)
+        self.of(workspace_id, caller).query(caller, query)
     }
 
     fn invoke(
@@ -4370,17 +4394,16 @@ impl ActionProvider for Governing {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let workspace_id = workspace_governance_operation(&request.target.address)
-            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
-        self.of(workspace_id).invoke(caller, request)
+        let workspace_id = addressed_workspace(&request.target.address);
+        self.of(workspace_id, caller).invoke(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.of(None).observe(caller, id)
+        self.of(None, caller).observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.of(None).next_change(caller, id)
+        self.of(None, caller).next_change(caller, id)
     }
 
     fn run(
@@ -4389,9 +4412,8 @@ impl ActionProvider for Governing {
         request: InvokeRequest,
         admitted: tilo_actions::remote::Admitted,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let workspace_id = workspace_governance_operation(&request.target.address)
-            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
-        ActionProvider::run(&self.of(workspace_id), caller, request, admitted)
+        let workspace_id = addressed_workspace(&request.target.address);
+        ActionProvider::run(&self.of(workspace_id, caller), caller, request, admitted)
     }
 
     fn asks_first(
@@ -4400,9 +4422,9 @@ impl ActionProvider for Governing {
         request: &InvokeRequest,
         admitted: &tilo_actions::remote::Admitted,
     ) -> Option<Pending<Result<(), ActionCallError>>> {
-        let workspace_id = workspace_governance_operation(&request.target.address)
-            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
-        self.of(workspace_id).asks_first(caller, request, admitted)
+        let workspace_id = addressed_workspace(&request.target.address);
+        self.of(workspace_id, caller)
+            .asks_first(caller, request, admitted)
     }
 
     fn watch(
@@ -4410,13 +4432,12 @@ impl ActionProvider for Governing {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<tilo_actions::remote::LiveView, String> {
-        let workspace_id = workspace_governance_operation(&request.target.address)
-            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
-        self.of(workspace_id).watch(caller, request)
+        let workspace_id = addressed_workspace(&request.target.address);
+        self.of(workspace_id, caller).watch(caller, request)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        self.of(None).cancel(caller, id)
+        self.of(None, caller).cancel(caller, id)
     }
 }
 
@@ -5116,7 +5137,8 @@ mod surface_tests {
             >())
             .expect("a surface writes as JSON"),
         );
-        tilo_resource::surface::file::render(HEADER, &resources).expect("a surface writes as TOML")
+        tilo_resource::surface::file::render(HEADER, &resources, &[])
+            .expect("a surface writes as TOML")
     }
 
     /// The parameters the action `verb` takes, each with the schema its type gives and the

@@ -3149,12 +3149,19 @@ impl Workspaces {
         // A device with the record's keys checks the checkpoint leading it against the writes it
         // stands in for, and keeps that it did: the writes stay in every store until every such
         // device has.
+        // A compaction taken behind was checked as it was taken, against every write here that
+        // it covers; the writes it alone holds cannot be read again to check it.
         #[cfg(feature = "device-keys")]
         if followed.changed {
-            if let Err(error) = self
-                .check_leading_checkpoint(workspace, (app.as_str(), record.as_str()))
-                .await
-            {
+            let route = (app.as_str(), record.as_str());
+            let checked = match &followed.taken_behind {
+                Some(compaction) => {
+                    self.keep_checkpoint_check(workspace, route, compaction)
+                        .await
+                }
+                None => self.check_leading_checkpoint(workspace, route).await,
+            };
+            if let Err(error) = checked {
                 tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
                     "this host's check of a record's checkpoint was not kept");
             }
@@ -3335,7 +3342,29 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);
         let publishing = crate::timing::start();
+        let published_from = workspace.record.published;
         workspace.publish(&self.inner.records)?;
+        // A member copy's governance is a write of its own, and reaches the
+        // device serving it over the copy's link as every write of its does.
+        // The records store keeps the publication for whichever device links
+        // next; the serving device takes it in now. A host publishes to its
+        // members from that store and has no member link to itself.
+        let workspace_id = workspace.workspace_id();
+        if self.member_link(workspace_id).is_some() {
+            for entry in workspace
+                .record
+                .outgoing
+                .get(published_from..workspace.record.published)
+                .unwrap_or_default()
+            {
+                let Ok(message @ neighbour_wire::NeighbourMsg::SyncResp { .. }) =
+                    neighbour_wire::NeighbourMsg::decode(entry.bytes.as_ref())
+                else {
+                    continue;
+                };
+                self.forward_member_document(workspace_id, message);
+            }
+        }
         crate::timing::event("workspace.settle.publish", publishing, 0);
         let observing = crate::timing::start();
         self.dial_holders(workspace);

@@ -22,9 +22,6 @@ pub(crate) use tilo_net::proxy::host::{
     Destinations, Lookup, check_destination, guarded_client, is_non_public_literal,
     is_withheld_request_header, refused_address, system_lookup,
 };
-/// Only a calendar a turn connects reads a name's addresses itself.
-#[cfg(feature = "agents")]
-pub(crate) use tilo_net::proxy::host::{is_public, written_out};
 use tilo_net::{HeaderValue, Url};
 
 /// What this server calls for its people's connections, and how it looks a

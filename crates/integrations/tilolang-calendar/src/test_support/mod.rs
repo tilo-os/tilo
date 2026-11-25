@@ -2,6 +2,11 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::string_slice,
+    clippy::pedantic,
+    clippy::nursery,
     reason = "a test says what it needs in a sentence when what it needs is not there"
 )]
 
@@ -14,8 +19,8 @@ pub mod fake_caldav;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use tilolang_calendar::engine::{AccountSource, CalendarAccount, DirectConnector};
-use tilolang_calendar::origin::CalDavOrigin;
+use crate::engine::{AccountSource, CalendarAccount, DirectConnector};
+use crate::origin::CalDavOrigin;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
@@ -26,7 +31,7 @@ use tilolang_tilo::publish::PlanRequest;
 pub const APP: &str = "so.tilo.calendar.test";
 
 /// Its source.
-pub const SOURCE: &str = include_str!("../app.tl");
+pub const SOURCE: &str = include_str!("../../tests/app.tl");
 
 /// The moment every poll happens at.
 pub const NOW: &str = "2026-11-23T09:00:00Z";

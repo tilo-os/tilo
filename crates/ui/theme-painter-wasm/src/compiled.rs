@@ -123,12 +123,18 @@ impl Guest {
         self.store
             .set_fuel(FUEL_PER_CALL)
             .map_err(|error| Failure::Trap(error.to_string()))?;
-        let at = self.buffer.call(&mut self.store, len).map_err(classify)?;
+        let at = self
+            .buffer
+            .call(&mut self.store, len)
+            .map_err(|error| classify(&error))?;
         let at = usize::try_from(at).unwrap_or(usize::MAX);
         self.memory
             .write(&mut self.store, at, request)
             .map_err(|error| Failure::Trap(error.to_string()))?;
-        let answer = self.call.call(&mut self.store, len).map_err(classify)?;
+        let answer = self
+            .call
+            .call(&mut self.store, len)
+            .map_err(|error| classify(&error))?;
         let at = usize::try_from(answer >> 32).unwrap_or(usize::MAX);
         let len = usize::try_from(answer & u64::from(u32::MAX)).unwrap_or(usize::MAX);
         if len > MAX_ANSWER {
@@ -146,7 +152,7 @@ impl Guest {
 
 /// A failed call, as the interpreter reports one: the fuel text where the budget was spent, the
 /// growth text where memory was refused, and the trap's own words otherwise.
-fn classify(error: wasmtime::Error) -> Failure {
+fn classify(error: &wasmtime::Error) -> Failure {
     let text = error.to_string();
     if text.contains("fuel") {
         Failure::OutOfFuel(tilo_wasm_host::OUT_OF_FUEL.to_owned())

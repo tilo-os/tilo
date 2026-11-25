@@ -63,7 +63,7 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
         let workspaces = Arc::clone(&workspaces);
         let request = membership(&workspace, &command);
         tilo_rt::app()
-            .block_on(async move { ask(&workspaces, caller, request).await })
+            .block_on(async move { Box::pin(ask(&workspaces, caller, request)).await })
             .expect("the runtime runs")
     };
     let share = WorkspaceMembershipCommand::Share {

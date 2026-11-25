@@ -41,8 +41,11 @@ impl Served {
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![offer::<NoEffect>(
-            tilo_resource::LiveRow::typed::<InputRoot>(RESOURCE, crate::i18n::t("session-keyboard"))
-                .into_resource(),
+            tilo_resource::LiveRow::typed::<InputRoot>(
+                RESOURCE,
+                crate::i18n::t("session-keyboard"),
+            )
+            .into_resource(),
         )]
     }
 

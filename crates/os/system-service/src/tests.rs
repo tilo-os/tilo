@@ -2510,10 +2510,8 @@ fn adobe_reader_ready() -> tilo_system_resources::windows_apps::WindowsApps {
     }
 }
 
-#[test]
-fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_workspace() {
-    use tilo_system_resources::windows_apps::WINDOWS_APPS;
-
+/// A system service whose Windows compatibility manager has Adobe Reader installed and ready.
+fn adobe_reader_service() -> (Arc<Fake>, Arc<FakeWindows>, SystemService) {
     let fake = Fake::new();
     let windows = Arc::new(FakeWindows::default());
     *windows.reading.lock().unwrap() = adobe_reader_ready();
@@ -2525,6 +2523,14 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     )
     .unwrap();
     service.settle();
+    (fake, windows, service)
+}
+
+#[test]
+fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_workspace() {
+    use tilo_system_resources::windows_apps::WINDOWS_APPS;
+
+    let (_fake, windows, mut service) = adobe_reader_service();
 
     let reading = service
         .read_for("so.tilo.windows", "w1", WINDOWS_APPS)
@@ -2569,6 +2575,39 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     service.settle();
     assert_eq!(windows.changes(), [("w1".to_owned(), "launch".to_owned())]);
 
+    // The action's own refusal is said in the reading until the next.
+    *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());
+    service
+        .invoke_for(
+            "so.tilo.windows",
+            "w1",
+            WINDOWS_APPS,
+            "launch",
+            &arguments(json!({"program": "adobe-reader"})),
+        )
+        .unwrap();
+    service.settle();
+    let reading = service
+        .read_for("so.tilo.windows", "w1", WINDOWS_APPS)
+        .unwrap();
+    assert_eq!(
+        reading["problem"],
+        json!("The capsule's runner is not installed.")
+    );
+    assert_eq!(reading["pending"], json!([]));
+}
+
+#[test]
+fn each_windows_program_is_a_search_row_and_a_resource_whose_action_opens_it() {
+    use tilo_system_resources::windows_apps::WINDOWS_APPS;
+
+    let (_fake, windows, mut service) = adobe_reader_service();
+    let published = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == WINDOWS_APPS)
+        .expect("the resource is published");
+
     // Search finds the program by its name and opens the Windows Apps window at its page:
     // the row is the reading's, shown by the app that draws it.
     let (resource, found) = service
@@ -2612,31 +2651,7 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     service.settle();
     assert_eq!(
         windows.programs(),
-        [
-            ("launch".to_owned(), "adobe-reader".to_owned()),
-            ("launch".to_owned(), "adobe-reader".to_owned())
-        ],
+        [("launch".to_owned(), "adobe-reader".to_owned())],
         "the row's own action opens the program its address names"
     );
-
-    // The action's own refusal is said in the reading until the next.
-    *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());
-    service
-        .invoke_for(
-            "so.tilo.windows",
-            "w1",
-            WINDOWS_APPS,
-            "launch",
-            &arguments(json!({"program": "adobe-reader"})),
-        )
-        .unwrap();
-    service.settle();
-    let reading = service
-        .read_for("so.tilo.windows", "w1", WINDOWS_APPS)
-        .unwrap();
-    assert_eq!(
-        reading["problem"],
-        json!("The capsule's runner is not installed.")
-    );
-    assert_eq!(reading["pending"], json!([]));
 }

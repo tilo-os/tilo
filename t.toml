@@ -1234,7 +1234,11 @@ on = ["main", "dispatch"]
 name = "publish-crates"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "python3 -I tools/sdk/publish_check.py --publish"
+# crates.io takes a new name about every ten minutes after a short burst, so a first release of
+# many crates outlasts one job: each run publishes until its budget, then the same tag is
+# dispatched again (`t dispatch publish-crates --ref tag:vX.Y.Z`) and carries on.
+run = "python3 -I tools/sdk/publish_check.py --publish --budget 6600"
+timeout_secs = 7200
 needs = ["publish-crates-dry-run"]
 requires = ["arch=x86_64"]
 cache = false
@@ -1826,6 +1830,14 @@ run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for L
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true
+
+[[check]]
+name = "window-connector"
+# A window with no session keeping the video site's types in step with YouTube through the
+# connector the window reaches: the origin path a window outside a tilolang host takes. The
+# package checks key on what cargo reads, which leaves apps/tl out of their tree; this names the
+# package the window runs, and the test that moves with the connector.
+run = "test -d apps/tl/tube\ncargo test --locked -p tilolang-process --test window hosted::origins::a_window_without_a_session_browses_and_plays_through_the_connector -- --exact --nocapture"
 
 [[check]]
 name = "apps-macos"
@@ -4777,13 +4789,27 @@ default = false
 name = "wine/windows-x86_64-runtime"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/windows/wine-test.sh runtime /target/windows/x86_64/runtime/tilo-runtime.exe"
-needs = ["build/windows-runtime-x86_64"]
+run = "bash tools/ci/windows/wine-test.sh runtime /target/windows/x86_64/runtime/tilo-runtime.exe && bash tools/ci/windows/walk.sh run /target/windows/x86_64/walk /target/windows/x86_64/walk-shots"
+needs = ["build/windows-runtime-x86_64", "build/windows-walk-x86_64"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
 requires = ["arch=x86_64"]
-# The Windows daemon compiles before it runs: Wine drives its CLI, which must
-# answer the Windows refusal instead of crashing or starting half a daemon.
+# The Windows daemon serves under Wine, then a person's use of it is walked: Video installed,
+# opened, acted on, a clip played and its History read (tools/ci/windows/walk.py). The pictures
+# of its window are the outputs.
+outputs = ["/target/windows/x86_64/walk-shots/*"]
 on = ["idle"]
+
+[[check]]
+name = "build/windows-walk-x86_64"
+# Fetches from mirrors, registries and release hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/windows/walk.sh build /target/windows/sdk/sdk-x86_64.tar.zst /target/windows/x86_64/runtime /target/windows/x86_64/walk"
+needs = ["build/windows-sdk-x86_64", "build/windows-runtime-x86_64"]
+image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
+outputs = ["/target/windows/x86_64/walk/**"]
+# The daemon test build that may start a tilolang process unconfined, which nothing that ships
+# carries, tilo-install and Video's package, for the walk above.
+default = false
 
 [[check]]
 name = "windows/x86_64-platform"

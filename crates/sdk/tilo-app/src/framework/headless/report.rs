@@ -32,6 +32,7 @@ const OPENS_WITHIN: ui_core::time::Duration = ui_core::time::Duration::from_secs
 #[must_use]
 pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     let mut report = report_surface(
+        A::ID,
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
         A::PERSON_RESOURCES,
@@ -81,6 +82,7 @@ fn published_ids<A: ResourceApp>(driver: &mut Driver) -> PublishedActions {
 /// surface is `surface` and whose person resources are `person`; `published`
 /// reads the ids of the effects and the named views a built view publishes.
 fn report_surface(
+    app: &'static str,
     opening: &Opening,
     mut surface: tilo_resource::Surface,
     person: &[PersonKind],
@@ -145,12 +147,30 @@ fn report_surface(
     add_effect_verbs(&mut surface, &declared.rows);
     let PublishedActions { effects, views, .. } = declared;
     let (unbound, opened) = collecting.finish();
+    // The app that owns each resource: this app for its own records, and the app
+    // keeping it for a shared record of another, which the surface then lists as
+    // one of its `reads` rather than as a resource of its own.
+    let mut owners: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    owners.insert(surface.kind.clone(), app.to_owned());
+    let opened: Vec<tilo_resource::Surface> = opened
+        .into_iter()
+        .map(|(owner, surface)| {
+            owners
+                .entry(surface.kind.clone())
+                .or_insert_with(|| owner.unwrap_or(app).to_owned());
+            surface
+        })
+        .collect();
     let mut resources = vec![surface];
     resources.extend(opened);
     // The person's own resources the app declares are part of its surface whether
     // or not a view of it was showing: the host admits the app's changes to
     // them, and its reads of them, against this.
     for declared in person {
+        owners.insert(
+            declared.kind().to_owned(),
+            declared.owner().unwrap_or(app).to_owned(),
+        );
         match resources
             .iter_mut()
             .find(|resource| resource.kind == declared.kind())
@@ -160,6 +180,7 @@ fn report_surface(
         }
     }
     serde_json::json!({
+        "owners": owners,
         "resources": resources,
         "unbound": unbound,
         "effects": effects,
@@ -337,7 +358,12 @@ fn collect_unbound() -> Collecting {
 impl Collecting {
     /// What was collected: one sentence per unbound control, and the
     /// surfaces of the other documents the views opened.
-    fn finish(self) -> (Vec<String>, Vec<tilo_resource::Surface>) {
+    fn finish(
+        self,
+    ) -> (
+        Vec<String>,
+        Vec<(Option<&'static str>, tilo_resource::Surface)>,
+    ) {
         let unbound =
             controls::UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
         let opened = controls::OPENED.with(|opened| opened.borrow_mut().take().unwrap_or_default());

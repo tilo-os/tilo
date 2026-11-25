@@ -15,7 +15,7 @@ use tilo_app_package::trust::{RevocationList, RevokedKey, TrustedAttestor};
 use tilo_app_package::{BlobFetcher, PackageId, SigningIdentity};
 
 pub mod catalogue;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod device;
 pub mod flatpak;
 mod offered;

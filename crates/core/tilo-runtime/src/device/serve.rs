@@ -738,7 +738,7 @@ async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
     let login = daemon.home_source();
     let key = daemon.key().clone();
     drop(daemon);
-    peer.keep(own, account, login, key).await;
+    Box::pin(peer.keep(own, account, login, key)).await;
 }
 
 #[cfg(test)]
@@ -868,6 +868,10 @@ mod tests {
     /// connection ends; the workspace's host refuses whatever the key signs, whichever device
     /// sends it; and an agent that connects again is told why it is not served.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one key, from its certification to its revocation and the connection's end, read top to bottom"
+    )]
     fn an_agent_whose_key_its_person_revokes_is_ended_where_it_is_connected() {
         use tilo_workspace_service::agents::agent_keys::{REVOKED, this_device};
         let Some(root) = super::super::services::tests::isolated_root(REVOKED_TEST) else {

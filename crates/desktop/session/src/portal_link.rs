@@ -129,7 +129,7 @@ impl PortalSide {
     }
 
     /// Whether app `app_id` runs in one of the launcher's own sandboxes, as this session started
-    /// it: only such an app's mount namespace holds the documents store its files are chosen into.
+    /// it: only such an app's mount namespace is the session's own.
     #[must_use]
     pub fn sandboxed(&self, app_id: &str) -> bool {
         self.shared.sandboxed.lock_recover().contains(app_id)
@@ -316,9 +316,8 @@ impl SessionLink {
         }
     }
 
-    /// Tell the portal which of the apps it serves run with the session's documents store bound
-    /// into them: the ones a file the person chooses can be answered with a path in that store.
-    /// None of them, while the store is not served: the path would name nothing in their sandbox.
+    /// Tell the portal which of the apps it serves run in the launcher's sandbox: the ones a file
+    /// the person chooses is answered with its reference.
     fn publish_launches(&self, launched: &Launches, documents_served: bool) {
         let apps: BTreeSet<String> = if documents_served {
             launched.sandboxed_apps().into_iter().collect()

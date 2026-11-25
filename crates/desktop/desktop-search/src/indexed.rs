@@ -590,7 +590,10 @@ mod tests {
         app_name: impl Fn(&str) -> String + Send + Sync + 'static,
         person: &str,
     ) -> IndexedContent {
-        let search = Arc::new(IndexSearch::new(Arc::clone(index), Arc::new(|_, _| true)));
+        let search = Arc::new(IndexSearch::new(
+            Arc::clone(index),
+            tilo_workspace_service::search::deciding(|_, _| true),
+        ));
         IndexedContent::new(
             search,
             Caller::local_person(person).in_workspace("workspace"),

@@ -115,6 +115,10 @@ enum Cmd {
         /// compositor before spawning.
         #[arg(long)]
         capabilities: Option<PathBuf>,
+        /// JSON file holding what the person gave this app a choice on, written by the session
+        /// before spawning: each bound into the sandbox at its reference.
+        #[arg(long)]
+        grants: Option<PathBuf>,
         #[command(flatten)]
         file_locations: Box<FileLocationArgs>,
         #[command(flatten)]
@@ -666,6 +670,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         wayland_socket,
         workspace_id,
         capabilities,
+        grants,
         file_locations,
         action_authority,
         app_id,
@@ -695,6 +700,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         wayland_socket,
         workspace_id,
         capabilities,
+        grants,
         trusted_identities: file_locations.trusted_identities,
         action_authority: action_authority.action_authority,
         app_id,
@@ -911,6 +917,9 @@ struct RunCliArgs {
     wayland_socket: Option<PathBuf>,
     workspace_id: Option<String>,
     capabilities: Option<PathBuf>,
+    /// What the person gave this app a choice on, as the session wrote it: bound into the app's
+    /// sandbox at each reference.
+    grants: Option<PathBuf>,
     trusted_identities: Option<PathBuf>,
     action_authority: Option<PathBuf>,
     app_id: Option<String>,
@@ -923,6 +932,27 @@ struct RunCliArgs {
     tilolang_process: bool,
     tilolang_connector: Option<String>,
     rest: Vec<String>,
+}
+
+/// What the person gave this app a choice on, as the session wrote it. A file that does not read
+/// grants the app nothing, which narrows the sandbox rather than widening it.
+fn granted_from(path: Option<PathBuf>) -> Vec<launcher::run::GrantedPath> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    match std::fs::read(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+    {
+        Ok(granted) => granted,
+        Err(error) => {
+            eprintln!(
+                "tilo-launcher: the choices at {} do not read ({error}); the app gets none",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Build [`LaunchOptions`] from the `run` subcommand's flags and launch either the package's GUI
@@ -965,6 +995,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         headless_console: args.headless_console,
         tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
+        granted: granted_from(args.grants),
     };
     // Held from before the package is verified until the app exits, so an update meanwhile leaves the
     // build this launch runs alone (`launcher::lease`).
@@ -1432,6 +1463,7 @@ fn run_installed(
         headless_console: None,
         tilolang_process: false,
         tilolang_connector: None,
+        granted: Vec::new(),
     };
     match launcher::run::launch_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {

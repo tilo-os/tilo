@@ -1830,7 +1830,7 @@ impl SystemService {
     /// An action on one program of the `windows-apps` reading, called on the address its row
     /// carries (`windows-program:<id>`): opening or stopping the program that id names.
     fn invoke_windows_program(
-        &mut self,
+        &self,
         published: &[ResourceSpec],
         workspace: &str,
         resource: &str,
@@ -2079,8 +2079,8 @@ impl SystemService {
                 Ok(self.start_storage(id, Some(StorageChange::SetPrefetch { on })))
             }
             tilo_system_resources::storage::StorageAction::SetCacheSize { size } => {
-                let bytes = crate::storage::cache_budget(&size)
-                    .map_err(ApiError::InvalidArguments)?;
+                let bytes =
+                    crate::storage::cache_budget(&size).map_err(ApiError::InvalidArguments)?;
                 Ok(self.start_storage(id, Some(StorageChange::SetCacheSize { bytes })))
             }
             tilo_system_resources::storage::StorageAction::FreeFile { workspace, path } => {

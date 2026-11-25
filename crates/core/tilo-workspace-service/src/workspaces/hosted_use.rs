@@ -95,19 +95,6 @@ mod web_call;
 /// workspace's word on which agent may use which account ([`Workspaces::mail_for_turn`]).
 pub use super::person_settings::turn_mail::AskedSend;
 
-/// A person's calendars as such a turn reads them ([`Workspaces::calendars_for_turn`]): the
-/// resource they are asked under, and the read whose answer holds what other people wrote.
-#[cfg(feature = "agents")]
-pub use super::person_settings::calendars::{ENTRIES as CALENDAR_ENTRIES, RESOURCE as CALENDARS};
-
-/// A person's calendar as such a turn connects it, by their telling
-/// ([`Workspaces::connect_calendar_for_turn`]): the action, what is kept while its person is
-/// asked for the password, and what comes of their answer.
-#[cfg(feature = "agents")]
-pub use super::person_settings::calendars::CONNECT as CALENDAR_CONNECT;
-#[cfg(feature = "agents")]
-pub use super::person_settings::calendars::connect::Connected;
-
 /// A person's mail account as such a turn signs it in from its address alone
 /// ([`Workspaces::connect_mail_for_turn`]): the action, what is kept while its person is
 /// asked for the password, what comes of their answer, and where an address's mail lives
@@ -243,12 +230,6 @@ enum TurnCall {
     /// A mail account signed in from the address they told it.
     #[cfg(feature = "agents")]
     MailConnect,
-    /// A read of their calendars.
-    #[cfg(feature = "agents")]
-    Calendars,
-    /// A calendar connected from what they told it.
-    #[cfg(feature = "agents")]
-    CalendarConnect,
     /// A call of a service they connected.
     Connections,
 }
@@ -275,14 +256,6 @@ impl TurnCall {
             return None;
         }
         let (resource, action) = (&target.address.resource, &target.address.action);
-        #[cfg(feature = "agents")]
-        if resource == CALENDARS {
-            return Some(if action == CALENDAR_CONNECT {
-                Self::CalendarConnect
-            } else {
-                Self::Calendars
-            });
-        }
         if resource != person_accounts::RESOURCE {
             return None;
         }
@@ -394,12 +367,6 @@ impl Workspaces {
             TurnCall::Mail => self.mail_for_turn(&turn, request).await?,
             #[cfg(feature = "agents")]
             TurnCall::MailConnect => answered(self.connect_mail_for_turn(&turn, request).await?)?,
-            #[cfg(feature = "agents")]
-            TurnCall::Calendars => self.calendars_for_turn(&turn, request).await?,
-            #[cfg(feature = "agents")]
-            TurnCall::CalendarConnect => {
-                answered(self.connect_calendar_for_turn(&turn, request).await?)?
-            }
             TurnCall::Connections => self.connections_for_turn(&turn, request).await?,
         };
         Ok(tilo_actions::remote::InvocationReceipt {
@@ -432,8 +399,6 @@ impl Workspaces {
         #[cfg(feature = "agents")]
         {
             rows.extend(self.mail_connect_offered(&turn).await);
-            rows.extend(self.calendars_offered(&turn).await);
-            rows.extend(self.calendar_connect_offered(&turn).await);
         }
         rows.extend(self.connection_rows_for_turn(&turn).await);
         rows.retain(|row| row.provider == provider);

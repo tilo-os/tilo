@@ -411,6 +411,16 @@ impl OtherWindow {
             .and_then(Value::as_array)
             .map(|resources| resources.iter().map(kind).collect())
             .unwrap_or_default();
+        // Each resource keeps the owner the other window's report gave it, so a
+        // resource of another app stays a read of this app's surface.
+        if let (Some(theirs), Some(ours)) = (
+            other.get("owners").and_then(Value::as_object),
+            report.get_mut("owners").and_then(Value::as_object_mut),
+        ) {
+            for (kind, owner) in theirs {
+                ours.entry(kind.clone()).or_insert(owner.clone());
+            }
+        }
         for list in ["resources", "effects", "views", "unbound"] {
             let (Some(theirs), Some(ours)) = (
                 other.get(list).and_then(Value::as_array),
@@ -514,7 +524,6 @@ impl SeedCx<'_> {
     pub fn host(&self) -> Option<&ProcessContext> {
         self.host
     }
-
 }
 
 type Leaked = &'static (dyn std::any::Any + Send + Sync);
@@ -1438,15 +1447,11 @@ fn start_resource(
         .map(|file| replay_of(app, context, file, created))
         .transpose()?;
     match &replay {
-        Some(recording) => initialize_resource(
-            context,
-            &mut |_| Ok(()),
-            &mut |doc| {
-                tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            },
-        )?,
+        Some(recording) => initialize_resource(context, &mut |_| Ok(()), &mut |doc| {
+            tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })?,
         None if created => (app.new_resource)(context, &arguments, file.as_ref(), &options)?,
         None => {}
     }

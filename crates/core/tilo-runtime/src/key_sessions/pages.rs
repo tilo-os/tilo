@@ -130,11 +130,11 @@ enum Held {
     /// An app's window, shown on the page: the app it shows and the workspace it is in, which a
     /// call its reader signed names.
     App {
-        window: WindowLink,
+        window: Box<WindowLink>,
         workspace: String,
         app: String,
         /// What the page shows where the view leaves a window to the device: the desktop's.
-        wells: Option<DesktopWells>,
+        wells: Option<Box<DesktopWells>>,
     },
     /// The workspace's front page: it changes only when opened again.
     Home,
@@ -251,18 +251,20 @@ impl Inner {
             app_named(&dispatch, caller, &address.app)?
         };
         let mut window = views.open(&workspace, &app_id, caller)?;
-        let mut wells = desktop.then(|| DesktopWells {
-            workspace_id,
-            dispatch: dispatch.clone(),
-            caller: caller.clone(),
-            shown: None,
+        let mut wells = desktop.then(|| {
+            Box::new(DesktopWells {
+                workspace_id,
+                dispatch: dispatch.clone(),
+                caller: caller.clone(),
+                shown: None,
+            })
         });
         if let Some(wells) = &mut wells {
             wells.follow(&mut window)?;
         }
         let (title, css, body) = window.open(address.show.clone()).map_err(unavailable)?;
         let page = self.hold(Held::App {
-            window,
+            window: Box::new(window),
             workspace,
             app: address.app.clone(),
             wells,
@@ -543,8 +545,18 @@ impl DesktopWells {
             .map(|(app_id, _)| app_id)
             .collect();
         let mut wells = std::collections::BTreeMap::new();
-        for window in read["windows"].as_array().into_iter().flatten() {
-            let field = |name: &str| window[name].as_str().unwrap_or_default();
+        for window in read
+            .get("windows")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let field = |name: &str| {
+                window
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            };
             let (key, app, title, record) = (
                 field("key"),
                 field("app"),

@@ -101,8 +101,8 @@ pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedHandle> {
             INVALID_HANDLE_VALUE,
             std::ptr::null(),
             PAGE_READWRITE | SEC_COMMIT,
-            (size >> 32) as u32,
-            size as u32,
+            u32::try_from(size >> 32).unwrap_or(u32::MAX),
+            u32::try_from(size & u64::from(u32::MAX)).unwrap_or(u32::MAX),
             std::ptr::null(),
         )
     };

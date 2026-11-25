@@ -586,7 +586,7 @@ impl Host {
         Member {
             remote,
             service,
-            _endpoint: endpoint,
+            endpoint,
         }
     }
 
@@ -605,7 +605,7 @@ impl Host {
         Member {
             remote,
             service,
-            _endpoint: endpoint,
+            endpoint,
         }
     }
 }
@@ -782,7 +782,7 @@ impl Agent {
 pub struct Member {
     remote: Arc<RemoteDevice>,
     service: ActionService,
-    _endpoint: iroh::Endpoint,
+    endpoint: iroh::Endpoint,
 }
 
 impl Member {
@@ -796,7 +796,7 @@ impl Member {
     /// This device's endpoint, as it dials a host's terminal streams.
     #[must_use]
     pub fn endpoint(&self) -> &iroh::Endpoint {
-        &self._endpoint
+        &self.endpoint
     }
 
     /// `request` as it is, its signature included, followed until it settles.

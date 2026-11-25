@@ -271,29 +271,39 @@ pub fn a_desktop_that_answers_no_reads_says_so_at_once() {
     );
 }
 
-/// A reader that takes records from the session itself, on its own thread, as a shortcut's read
-/// step does on a native host, is refused in so many words: it never reads a record as still
-/// arriving that only the desktop's own pass can answer.
+/// A reader that takes records from the session itself, as a shortcut's read step does on a
+/// native host, is refused in so many words, and at once: it never reads a record as still
+/// arriving that only the desktop's own pass can answer, and never waits out a write for one.
 #[test]
 pub fn a_reader_that_takes_records_itself_is_refused_not_left_waiting() {
+    use std::future::Future as _;
     use tilo_actions::remote::{ResourceAsk, read_resources};
     let (session, openings) = super::serve(WORKSPACE, Arc::default());
     let _answers = openings.answer_records();
     let reads = session.resource_reads().expect("the desktop answers reads");
-    let taken = read_resources(
+    let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
+    let asks = [ResourceAsk {
+        address: ResourceAddress {
+            workspace: WORKSPACE.into(),
+            app: TASKS.into(),
+            record: String::new(),
+        },
+        joined: false,
+    }];
+    let mut read = std::pin::pin!(read_resources(
         reads.as_ref(),
-        &Caller::local_person("ada").in_workspace(WORKSPACE),
-        &[ResourceAsk {
-            address: ResourceAddress {
-                workspace: WORKSPACE.into(),
-                app: TASKS.into(),
-                record: String::new(),
-            },
-            joined: false,
-        }],
+        &caller,
+        &asks,
         None,
         tilo_clock::now(),
-    );
+    ));
+    let taken = match read
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(taken) => taken,
+        std::task::Poll::Pending => panic!("the read waits for the desktop's own pass"),
+    };
     assert_eq!(
         taken.err(),
         Some(ActionCallError::Refused {

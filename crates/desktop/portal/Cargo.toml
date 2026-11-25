@@ -31,8 +31,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 tilo-paths.workspace = true
 # Naming an unsandboxed requester by the installed app it runs.
 tilo-desktop-entry = { path = "../desktop-entry" }
-# What a sandboxed app is handed in place of the host file the person chose.
-tilo-documents = { path = "../../core/documents" }
 # The person's default apps, for the links the portal opens.
 desktop-policy = { package = "tilo-default-apps", path = "../default-apps", default-features = false }
 percent-encoding.workspace = true
@@ -47,7 +45,7 @@ hex.workspace = true
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 rand.workspace = true
 zeroize.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
 # The theme the legacy toolkits' appearance keys are projected from.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
@@ -80,8 +78,6 @@ pipewire = ["dep:pipewire"]
 tilo-app-package = { path = "../../core/tilo-app-package" }
 image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
-# Serving the store as a filesystem, to read back what a chooser handed out.
-tilo-documents = { path = "../../core/documents", features = ["mount"] }
 # The bus the tests run on, which starts without the caller's user database.
 tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

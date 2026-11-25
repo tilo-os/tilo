@@ -34,8 +34,8 @@ use crate::apps::collab_app_broker::{
     NativeMediaServices,
 };
 use crate::apps::services::{
-    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, Caller,
-    ClipboardAnswering, FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
+    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, Caller, ClipboardAnswering,
+    FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
     PublishedResources, Reading, ResourceWatch,
 };
 use crate::workspaces::providers::Providers;
@@ -60,6 +60,7 @@ pub mod calls {
     pub const CONTINUATIONS: &str = "continuations";
     pub const PUBLISHED: &str = "published";
     pub const WORKSPACE_NODES: &str = "workspace_nodes";
+    pub const RECORDS: &str = "records";
     pub const SETTINGS: &str = "settings";
     pub const DISPLAY_CONTROL: &str = "display_control";
     pub const LIVE_ACTIVITIES: &str = "live_activities";
@@ -389,6 +390,41 @@ impl tilo_broker_core::steps::ContinuationServices for SeatContinuations {
         );
         Ok(())
     }
+}
+
+/// Tell the roles of the session serving `seat` that follow the workspaces' records (the
+/// person's mentions, the activity) of every record `writes` says the workspaces took a change
+/// of: this device's own write, an app's, or a member's, each by the document it is read as. A
+/// write of the store's index of a kind changes no record's content, and is no news to them.
+pub fn tell_record_changes(
+    seat: Seat,
+    mut writes: tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite>,
+) {
+    let runtime = seat.runtime.clone();
+    runtime.spawn(async move {
+        loop {
+            let write = match writes.recv().await {
+                Ok(write) => write,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(missed, "the session was not told of some records changing");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+            if collab_types::is_store_document(&write.record)
+                && tilo_resource_store::content_resource(&write.record).is_none()
+            {
+                continue;
+            }
+            if seat.served() {
+                seat.tell(
+                    calls::RECORDS,
+                    calls::CHANGED,
+                    json!({"workspace": write.workspace, "app": write.app, "record": write.record}),
+                );
+            }
+        }
+    });
 }
 
 /// A resource's reading as the seat answers it.

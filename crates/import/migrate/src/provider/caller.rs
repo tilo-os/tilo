@@ -126,7 +126,7 @@ impl Steps {
     ///
     /// # Errors
     /// The device did not answer, or refused the step before it ran.
-    pub fn step(
+    pub async fn step(
         &self,
         action: &str,
         mut args: Map<String, Value>,
@@ -143,14 +143,15 @@ impl Steps {
             args,
         );
         let id = request.invocation;
-        let receipt = answered(self.dispatch.invoke(&self.caller, request))?
+        let receipt = answered(self.dispatch.invoke(&self.caller, request))
+            .await?
             .map_err(|error| anyhow!("{action} was refused: {}", error.said()))?;
-        self.follow(id, receipt.status, answering)
+        self.follow(id, receipt.status, answering).await
     }
 
     /// Follow the invocation `id`, whose receipt said `status`, to its end, answering the
     /// questions it asks as `answering` says.
-    fn follow(
+    async fn follow(
         &self,
         id: InvocationId,
         mut status: ReceiptStatus,
@@ -185,11 +186,11 @@ impl Steps {
                 if answering.asks.answers() {
                     // A run that waits for its person asks in a record of its own: the caller
                     // answers it, as any other client of the workspace does.
-                    self.answer_asks(answering)?;
-                    let _ = change.wait_timeout(LOOK_AGAIN);
+                    self.answer_asks(answering).await?;
+                    let _ = within(LOOK_AGAIN, change).await;
                 } else {
                     // A wait the device let pass unanswered is looked at again.
-                    let _ = change.wait_timeout(MAX_REMOTE_WAIT.saturating_add(SLACK));
+                    let _ = within(MAX_REMOTE_WAIT.saturating_add(SLACK), change).await;
                 }
                 continue;
             }
@@ -207,8 +208,8 @@ impl Steps {
 
     /// Answer the questions a run asks, as `answering` says, each with its record's own
     /// `resolve`, as the person's shell answers it.
-    fn answer_asks(&self, answering: &mut Answering<'_>) -> Result<()> {
-        for question in self.questions()? {
+    async fn answer_asks(&self, answering: &mut Answering<'_>) -> Result<()> {
+        for question in self.questions().await? {
             if !connects_a_mail_account(&question) {
                 continue;
             }
@@ -221,7 +222,7 @@ impl Steps {
             if answering.asks != Asks::Prompt {
                 (answering.say)(&question_said(&question));
             }
-            if let Err(error) = self.answer(&question, approve) {
+            if let Err(error) = self.answer(&question, approve).await {
                 // Another client answered it first: the run reads their answer.
                 (answering.say)(&format!("the answer did not go through: {error:#}"));
                 continue;
@@ -240,7 +241,7 @@ impl Steps {
     ///
     /// # Errors
     /// The record could not be read.
-    pub fn questions(&self) -> Result<Vec<Asked>> {
+    pub async fn questions(&self) -> Result<Vec<Asked>> {
         let reads = self
             .dispatch
             .resource_reads()
@@ -254,7 +255,7 @@ impl Steps {
             wait_ms: None,
             answer: ReadAnswer::Reading,
         };
-        let reading = match answered(reads.answer_read(&self.caller, 0, read))? {
+        let reading = match reads.answer_read(&self.caller, 0, read).await {
             RemoteActionMessage::ResourceReading { result, .. } => result
                 .map_err(|error| anyhow!("the questions could not be read: {}", error.said()))?,
             other => bail!("the device answered no reading: {other:?}"),
@@ -264,7 +265,7 @@ impl Steps {
     }
 
     /// Answer `question`'s record with `approve`, in the workspace that keeps it.
-    fn answer(&self, question: &Asked, approve: bool) -> Result<()> {
+    async fn answer(&self, question: &Asked, approve: bool) -> Result<()> {
         let mut args = Map::new();
         args.insert(
             "resolution".into(),
@@ -281,7 +282,8 @@ impl Steps {
             .caller
             .clone()
             .in_workspace(question.record.workspace.clone());
-        answered(self.dispatch.invoke(&caller, request))?
+        answered(self.dispatch.invoke(&caller, request))
+            .await?
             .map_err(|error| anyhow!("the answer was refused: {}", error.said()))?;
         Ok(())
     }
@@ -303,12 +305,24 @@ fn waiting_in(reading: &Value) -> Vec<Asked> {
 }
 
 /// What the device answers to `pending`.
-fn answered<T: Send + 'static>(pending: Pending<T>) -> Result<T> {
-    pending
-        .wait_timeout(MAX_REMOTE_WAIT.saturating_add(SLACK))
-        .ok()
+async fn answered<T>(pending: Pending<T>) -> Result<T> {
+    within(MAX_REMOTE_WAIT.saturating_add(SLACK), pending)
+        .await
         .flatten()
         .ok_or_else(|| anyhow!("the device did not answer"))
+}
+
+/// What `future` comes to within `wait`, or `None` once `wait` passed first.
+async fn within<F: std::future::Future>(wait: Duration, future: F) -> Option<F::Output> {
+    let mut future = std::pin::pin!(future);
+    let mut passed = std::pin::pin!(tilo_rt::sleep(wait));
+    std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Some(output));
+        }
+        passed.as_mut().poll(cx).map(|()| None)
+    })
+    .await
 }
 
 /// Whether `named` is the workspace the device is in, by its id or the name its person knows it

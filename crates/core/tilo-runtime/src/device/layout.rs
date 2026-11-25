@@ -75,7 +75,7 @@ pub enum LayoutAction {
 /// The workspace's layout as this device has it.
 enum LayoutHere {
     /// The layout document.
-    Here(automerge::AutoCommit),
+    Here(Box<automerge::AutoCommit>),
     /// This device keeps the workspace and has no layout: none was written yet.
     Unwritten,
     /// This device does not have it (yet): another device keeps it.
@@ -117,9 +117,10 @@ impl DeviceLayouts {
             None,
         );
         match read {
-            Ok(DocumentRead::Whole { bytes, .. }) => {
-                automerge::AutoCommit::load(&bytes).map_or(LayoutHere::Elsewhere, LayoutHere::Here)
-            }
+            Ok(DocumentRead::Whole { bytes, .. }) => automerge::AutoCommit::load(&bytes)
+                .map_or(LayoutHere::Elsewhere, |layout| {
+                    LayoutHere::Here(Box::new(layout))
+                }),
             // A workspace this device keeps has every layout written in it: none here is none.
             Ok(DocumentRead::Absent) => {
                 let Some(id) = WorkspaceId::parse(workspace) else {
@@ -179,7 +180,7 @@ impl DeviceLayouts {
         opened_by: Option<tilo_desktop_model::ownership::OpenedBy>,
     ) -> Result<(), String> {
         let layout = match self.layout(workspace) {
-            LayoutHere::Here(layout) => layout,
+            LayoutHere::Here(layout) => *layout,
             LayoutHere::Unwritten => {
                 let name = self
                     .name(workspace)
@@ -353,7 +354,13 @@ fn founded_layout(workspace: &str, name: &str) -> automerge::AutoCommit {
         ..Layout::default()
     };
     let mut doc = automerge::AutoCommit::new();
-    tilo_desktop_model::desktop_doc::write_shared(&mut doc, &tree, &[], &[], &Default::default());
+    tilo_desktop_model::desktop_doc::write_shared(
+        &mut doc,
+        &tree,
+        &[],
+        &[],
+        &std::collections::BTreeMap::default(),
+    );
     doc.commit();
     doc
 }
@@ -466,7 +473,8 @@ impl ActionProvider for LayoutActions {
             }));
         };
         let id = request.invocation;
-        match self.log.lock_recover().reserve(caller, &request) {
+        let reservation = self.log.lock_recover().reserve(caller, &request);
+        match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
                 let state = self.log.lock_recover().get(caller, &id).cloned();

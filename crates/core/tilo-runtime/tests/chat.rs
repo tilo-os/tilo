@@ -99,8 +99,10 @@ fn made(result: &Value) -> String {
             made.as_str()
                 .or_else(|| made.get("id").and_then(Value::as_str))
         })
-        .map(str::to_owned)
-        .unwrap_or_else(|| panic!("the call names what it made: {result}"))
+        .map_or_else(
+            || panic!("the call names what it made: {result}"),
+            str::to_owned,
+        )
 }
 
 /// The agent makes the channel `name` in the workspace's chat, and names it by the id a post

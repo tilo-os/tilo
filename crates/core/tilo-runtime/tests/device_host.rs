@@ -491,8 +491,7 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
                             html: format!("{action:?}"),
                         },
                     ]),
-                    WindowAsk::Changed => WindowAnswer::Changed(Vec::new()),
-                    WindowAsk::Wells(_) => WindowAnswer::Changed(Vec::new()),
+                    WindowAsk::Changed | WindowAsk::Wells(_) => WindowAnswer::Changed(Vec::new()),
                 };
                 send(&mut window, &answer).unwrap();
             }
@@ -883,23 +882,13 @@ impl ForwardedClient {
     }
 }
 
-fn refused_by(answer: &Value) -> String {
-    assert_eq!(answer["result"]["isError"], true, "{answer}");
-    answer["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned()
-}
-
 /// Two of a person's devices: one keeps a workspace, the other's daemon carries an agent's MCP
 /// client to it under the agent's own key. Returns the forward along with what the test flips.
 struct Forwarded {
     client: ForwardedClient,
     host: Arc<WorkspaceService>,
     answers: Arc<Answers>,
-    workspace: String,
     host_cert: DeviceCert,
-    person: [u8; 32],
     host_endpoint: Endpoint,
     laptop_endpoint: Endpoint,
     router: Router,
@@ -981,9 +970,7 @@ impl Forwarded {
             client: ForwardedClient::over(local),
             host,
             answers,
-            workspace,
             host_cert,
-            person,
             host_endpoint,
             laptop_endpoint,
             router,

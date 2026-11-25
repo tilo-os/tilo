@@ -259,8 +259,7 @@ impl Nearby {
 
     /// Tell every follower the reading moved.
     fn moved(&self) {
-        let _ = self
-            .inner
+        self.inner
             .changed
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
@@ -323,7 +322,7 @@ impl Nearby {
         if items.len() > MAX_ITEMS {
             return Err(format!("an offer names at most {MAX_ITEMS} files"));
         }
-        let shelf = self
+        let content_shelf = self
             .inner
             .workspaces
             .content_shelf()
@@ -334,7 +333,7 @@ impl Nearby {
             if !valid_hash(&item.hash) {
                 return Err("an offered file's content address is not one".to_owned());
             }
-            let Some(size) = shelf.size(&scope, &item.hash) else {
+            let Some(size) = content_shelf.size(&scope, &item.hash) else {
                 return Err("an offered file is not on this device's shelf".to_owned());
             };
             if item.size != 0 && item.size != size {
@@ -464,12 +463,14 @@ impl Nearby {
                     "that offer belongs to another workspace, not {workspace}"
                 ));
             }
-            (
+            let offer = (
                 found.peer_device,
                 found.hash.clone(),
                 found.name.clone(),
                 found.total,
-            )
+            );
+            drop(state);
+            offer
         };
         let chosen = destination
             .map(str::to_owned)
@@ -486,11 +487,12 @@ impl Nearby {
             let mut state = self.inner.state.lock_recover();
             if let Some(found) = state.transfers.get_mut(&id) {
                 found.state = TransferState::Sending;
-                found.destination = chosen.clone();
+                found.destination.clone_from(&chosen);
             }
             state
                 .remembered
                 .insert(workspace.to_owned(), chosen.clone());
+            drop(state);
         }
         self.moved();
         let nearby = Arc::clone(&self.inner);
@@ -511,9 +513,12 @@ impl Nearby {
                 }
                 Ok(staged) => {
                     let kept = match nearby.workspaces.content_shelf() {
-                        Some(shelf) => {
-                            shelf.keep_file(&Nearby::scope(&workspace), &hash, &staged, total)
-                        }
+                        Some(content_shelf) => content_shelf.keep_file(
+                            &Nearby::scope(&workspace),
+                            &hash,
+                            &staged,
+                            total,
+                        ),
                         None => Err("this device keeps no content".to_owned()),
                     };
                     let _ = std::fs::remove_file(&staged);
@@ -550,7 +555,9 @@ impl Nearby {
                 .get_mut(&id)
                 .ok_or("that is not a transfer this device holds")?;
             found.stopped.store(true, Ordering::Relaxed);
-            found.peer_device
+            let peer = found.peer_device;
+            drop(state);
+            peer
         };
         let result = json!({"transfer": hex(&id), "ok": false});
         let inner = Arc::clone(&self.inner);
@@ -571,14 +578,16 @@ impl Nearby {
                 .transfers
                 .get(&id)
                 .ok_or("that is not a transfer this device holds")?;
-            (
+            let held = (
                 found.incoming,
                 found.peer_device,
                 found.hash.clone(),
                 found.name.clone(),
                 found.total,
                 found.state,
-            )
+            );
+            drop(state);
+            held
         };
         if state != TransferState::Failed {
             return Err("only a transfer that failed is offered again".to_owned());
@@ -607,70 +616,25 @@ impl Nearby {
             .get(&workspace)
             .cloned()
             .unwrap_or_else(|| DEFAULT_FOLDER.to_owned());
+        let again = Retried {
+            id,
+            incoming,
+            peer,
+            hash,
+            name,
+            total,
+            workspace,
+            destination,
+            stopped,
+        };
         tilo_rt::app().spawn(async move {
-            if incoming {
-                let settled = match fetch(&inner, id, peer, &workspace, &hash, total, &stopped)
-                    .await
-                {
-                    Err(reason) => {
-                        tracing::warn!(%reason, "a nearby file was not received again");
-                        Err(())
-                    }
-                    Ok(staged) => {
-                        let kept = match inner.workspaces.content_shelf() {
-                            Some(shelf) => {
-                                shelf.keep_file(&Nearby::scope(&workspace), &hash, &staged, total)
-                            }
-                            None => Err("this device keeps no content".to_owned()),
-                        };
-                        let _ = std::fs::remove_file(&staged);
-                        match kept {
-                            Err(reason) => {
-                                tracing::warn!(%reason, "a received file was not kept");
-                                Err(())
-                            }
-                            Ok(()) => {
-                                Inner::install(
-                                    &inner,
-                                    &workspace,
-                                    &hash,
-                                    &name,
-                                    &destination,
-                                    total,
-                                )
-                                .await
-                            }
-                        }
-                    }
-                };
-                let state = if settled.is_ok() {
-                    TransferState::Done
-                } else {
-                    TransferState::Failed
-                };
-                Inner::settle(&inner, id, state);
-                let result = json!({"transfer": hex(&id), "ok": settled.is_ok()});
-                let _ = call(&inner, peer, &workspace, RESULT, result).await;
-            } else {
-                let offer = json!({
-                    "transfer": hex(&id),
-                    "name": name,
-                    "hash": hash,
-                    "size": total,
-                    "device": hex(&inner.workspaces.device_cert().device_public_key),
-                    "label": inner.workspaces.device_cert().device_label,
-                });
-                match call(&inner, peer, &workspace, RECEIVE, offer).await {
-                    Ok(_) => Inner::settle(&inner, id, TransferState::Sending),
-                    Err(_) => Inner::settle(&inner, id, TransferState::Failed),
-                }
-            }
+            Inner::offer_again(&inner, again).await;
         });
         Ok(())
     }
 
     /// One piece of the content `transfer` names, for the device it was offered to.
-    fn content(&self, caller: &Caller, request: Piece) -> Result<ActionOutput, String> {
+    fn content(&self, caller: &Caller, request: &Piece) -> Result<ActionOutput, String> {
         let id = bytes_of(&request.transfer).ok_or("that is not a transfer")?;
         let (hash, peer, workspace) = {
             let state = self.inner.state.lock_recover();
@@ -679,28 +643,30 @@ impl Nearby {
                 .get(&id)
                 .filter(|transfer| !transfer.incoming)
                 .ok_or("that is not a transfer this device offers")?;
-            (
+            let offered = (
                 found.hash.clone(),
                 found.peer_device,
                 found.workspace.clone(),
-            )
+            );
+            drop(state);
+            offered
         };
         if caller.device_public_key() != Some(&peer) {
             return Err("that transfer was offered to another device".to_owned());
         }
-        let shelf = self
+        let content_shelf = self
             .inner
             .workspaces
             .content_shelf()
             .ok_or("this device keeps no content")?;
         let scope = Self::scope(&workspace);
-        let total = shelf
+        let total = content_shelf
             .size(&scope, &hash)
             .ok_or("this device does not keep that content")?;
         let start = request.offset.min(total);
         let len = request.length.min(total.saturating_sub(start));
         let len = usize::try_from(len).unwrap_or(usize::MAX);
-        let piece = shelf
+        let piece = content_shelf
             .read_range(&scope, &hash, start, len)
             .ok_or("this device does not keep that content")?;
         Ok(ActionOutput {
@@ -755,7 +721,87 @@ struct Ended {
     ok: bool,
 }
 
+/// A transfer [`Nearby::retry`] offers again: what it moves, and where what it receives lands.
+struct Retried {
+    id: [u8; 16],
+    incoming: bool,
+    peer: [u8; 32],
+    hash: String,
+    name: String,
+    total: u64,
+    workspace: String,
+    destination: String,
+    stopped: Arc<AtomicBool>,
+}
+
 impl Inner {
+    /// Offer `again` again: ask its peer for its content and keep it, or offer what this device
+    /// holds of it.
+    async fn offer_again(inner: &Arc<Self>, again: Retried) {
+        let Retried {
+            id,
+            incoming,
+            peer,
+            hash,
+            name,
+            total,
+            workspace,
+            destination,
+            stopped,
+        } = again;
+        if incoming {
+            let settled = match fetch(inner, id, peer, &workspace, &hash, total, &stopped).await {
+                Err(reason) => {
+                    tracing::warn!(%reason, "a nearby file was not received again");
+                    Err(())
+                }
+                Ok(staged) => {
+                    let kept = match inner.workspaces.content_shelf() {
+                        Some(content_shelf) => content_shelf.keep_file(
+                            &Nearby::scope(&workspace),
+                            &hash,
+                            &staged,
+                            total,
+                        ),
+                        None => Err("this device keeps no content".to_owned()),
+                    };
+                    let _ = std::fs::remove_file(&staged);
+                    match kept {
+                        Err(reason) => {
+                            tracing::warn!(%reason, "a received file was not kept");
+                            Err(())
+                        }
+                        Ok(()) => {
+                            Inner::install(inner, &workspace, &hash, &name, &destination, total)
+                                .await
+                        }
+                    }
+                }
+            };
+            let state = if settled.is_ok() {
+                TransferState::Done
+            } else {
+                TransferState::Failed
+            };
+            Inner::settle(inner, id, state);
+            let result = json!({"transfer": hex(&id), "ok": settled.is_ok()});
+            let _ = call(inner, peer, &workspace, RESULT, result).await;
+        } else {
+            let offer = json!({
+                "transfer": hex(&id),
+                "name": name,
+                "hash": hash,
+                "size": total,
+                "device": hex(&inner.workspaces.device_cert().device_public_key),
+                "label": inner.workspaces.device_cert().device_label,
+            });
+            match call(inner, peer, &workspace, RECEIVE, offer).await {
+                Ok(_) => Inner::settle(inner, id, TransferState::Sending),
+                Err(_) => Inner::settle(inner, id, TransferState::Failed),
+            }
+        }
+    }
+
     /// Have `id` stand at `state` and tell the followers.
     fn settle(inner: &Arc<Self>, id: [u8; 16], state: TransferState) {
         {
@@ -767,8 +813,9 @@ impl Inner {
             if state == TransferState::Done {
                 found.transferred = found.total;
             }
+            drop(held);
         }
-        let _ = inner
+        inner
             .changed
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
@@ -802,6 +849,7 @@ impl Inner {
         .await;
         let mut folders = read
             .ok()
+            .and_then(Result::ok)
             .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
             .unwrap_or_default();
         if !folders.iter().any(|folder| folder == DEFAULT_FOLDER) {
@@ -814,7 +862,7 @@ impl Inner {
             .insert(workspace.to_owned(), folders)
             .is_none()
         {
-            let _ = inner
+            inner
                 .changed
                 .send_modify(|revision| *revision = revision.wrapping_add(1));
         }
@@ -860,11 +908,11 @@ impl Inner {
         })
         .await;
         match written {
-            Ok(value) => {
+            Ok(Ok(value)) => {
                 tracing::info!(%value, "a file arrived from one of the person's devices");
                 Ok(())
             }
-            Err(reason) => {
+            Ok(Err(reason)) | Err(reason) => {
                 tracing::warn!(%reason, "a received file is not installed");
                 Err(())
             }
@@ -874,10 +922,10 @@ impl Inner {
 
 /// Run `f` on a thread of its own, off the runtime: what reads or changes a workspace's tree is
 /// the thread that asks for it, never a task.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
         .await
-        .expect("a blocking task of this device's")
+        .map_err(|error| format!("a blocking task of this device's: {error}"))
 }
 
 /// `name`, made free among taken names by the `n`th try: "photo.png", "photo (2).png".
@@ -971,14 +1019,13 @@ async fn call(
     let actions = inner.workspaces.copies().action_service();
     // A device the daemon holds a link to is asked back over it: the one it asked with. One it
     // does not is dialled at the address its key resolves to.
-    let remote = match actions.remote_held(device, workspace) {
-        Some(held) => Arc::new(held),
-        None => {
-            let addr = EndpointId::from_bytes(&device)
-                .map(EndpointAddr::new)
-                .map_err(|_| "that is not a device key".to_owned())?;
-            Arc::new(actions.remote(&inner.workspaces.endpoint(), &addr, workspace))
-        }
+    let remote = if let Some(held) = actions.remote_held(device, workspace) {
+        Arc::new(held)
+    } else {
+        let addr = EndpointId::from_bytes(&device)
+            .map(EndpointAddr::new)
+            .map_err(|_| "that is not a device key".to_owned())?;
+        Arc::new(actions.remote(&inner.workspaces.endpoint(), &addr, workspace))
     };
     let argument = match arguments {
         Value::Object(fields) => InvokeArgument::Json(fields),
@@ -1073,7 +1120,7 @@ async fn fetch(
                     found.transferred = received;
                 }
             }
-            let _ = inner
+            inner
                 .changed
                 .send_modify(|revision| *revision = revision.wrapping_add(1));
         }
@@ -1265,7 +1312,7 @@ impl Nearby {
             }
             CONTENT => {
                 let piece: Piece = argument(request)?;
-                self.content(caller, piece)
+                self.content(caller, &piece)
                     .map(|output| output.value)
                     .map_err(refused)
             }

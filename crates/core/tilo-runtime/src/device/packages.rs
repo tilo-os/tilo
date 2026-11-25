@@ -23,7 +23,8 @@ use package_actions::{PackageRow, RowState};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPuts,
     InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    Reservation, ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
+    ReadsAnswer, Reservation, ResourceAddress, ResourceCopy, ResourceReads, ResourceWake,
+    reads_answer,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
@@ -133,59 +134,54 @@ impl Rows {
 }
 
 impl ResourceReads for Rows {
-    fn read(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-    ) -> Result<ResourceCopy, ActionCallError> {
-        let Some(app) = self.named(address) else {
-            return Ok(ResourceCopy::Absent);
-        };
-        // The revision first: a row that changes while they are read moves it past this one, so
-        // a follow reads again.
-        let revision = self.revision.borrow().to_string();
-        let rows = self.now()?;
-        let reading = if app.is_empty() {
-            serde_json::to_value(rows)
-        } else {
-            match rows.into_iter().find(|row| row.app == app) {
-                Some(row) => serde_json::to_value(row),
-                None => return Ok(ResourceCopy::Absent),
-            }
-        };
-        reading
-            .map(|value| ResourceCopy::reading(value, Some(revision)))
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+    ) -> ReadsAnswer<'a, ResourceCopy> {
+        reads_answer(async move {
+            let Some(app) = self.named(address) else {
+                return Ok(ResourceCopy::Absent);
+            };
+            // The revision first: a row that changes while they are read moves it past this one,
+            // so a follow reads again.
+            let revision = self.revision.borrow().to_string();
+            let rows = self.now()?;
+            let reading = if app.is_empty() {
+                serde_json::to_value(rows)
+            } else {
+                match rows.into_iter().find(|row| row.app == app) {
+                    Some(row) => serde_json::to_value(row),
+                    None => return Ok(ResourceCopy::Absent),
+                }
+            };
+            reading
+                .map(|value| ResourceCopy::reading(value, Some(revision)))
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })
+        })
     }
 
-    fn answer_read(
-        self: Arc<Self>,
-        caller: &Caller,
-        correlation: u64,
-        read: ResourceReadRequest,
-    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
-    }
-
-    fn watch(
-        &self,
-        _caller: &Caller,
-        address: &ResourceAddress,
-        wake: &ResourceWake,
-    ) -> Result<(), ActionCallError> {
-        if self.named(address).is_none() {
-            return Ok(());
-        }
-        let mut seen = self.revision.subscribe();
-        let wake = wake.clone();
-        tilo_rt::app().spawn(async move {
-            if seen.changed().await.is_ok() {
-                wake.wake();
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        address: &'a ResourceAddress,
+        wake: &'a ResourceWake,
+    ) -> ReadsAnswer<'a, ()> {
+        reads_answer(async move {
+            if self.named(address).is_none() {
+                return Ok(());
             }
-        });
-        Ok(())
+            let mut seen = self.revision.subscribe();
+            let wake = wake.clone();
+            tilo_rt::app().spawn(async move {
+                if seen.changed().await.is_ok() {
+                    wake.wake();
+                }
+            });
+            Ok(())
+        })
     }
 }
 
@@ -793,7 +789,9 @@ pub fn carry_runtimes(manifest: &tilo_app_package::Manifest) -> Result<(), Strin
         .as_deref()
         .filter(|runtime| !runtime.is_empty())
     {
-        let version = runtime.split_once('/').map_or(runtime, |(_, version)| version);
+        let version = runtime
+            .split_once('/')
+            .map_or(runtime, |(_, version)| version);
         if runtime_bundle::split_abi_version(version).is_none() {
             return Err(format!(
                 "the app's manifest names {runtime}, and a host must declare the exact Tilo runtime \
@@ -1461,9 +1459,9 @@ mod tests {
     #[test]
     fn a_version_the_cache_has_is_run_without_fetching_it() {
         let store = tempfile::tempdir().unwrap();
-        let mut _env = tilo_test_env::ScopedEnv::new();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // The store is this test's whole answer: the image's own is not read over it.
-        _env.remove("TILO_APPS_SYSTEM_DIR")
+        env.remove("TILO_APPS_SYSTEM_DIR")
             .set("TILO_APPS_DATA_DIR", store.path());
         let installed = [9; 32];
         let cache = cache_with_installed(installed, store.path());

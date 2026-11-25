@@ -404,7 +404,7 @@ fn certify_boot_key(
 ///
 /// # Errors
 /// This daemon keeps no root, or the half is not one it sealed.
-pub fn release_half(args: &Value, rooted: Rooted) -> io::Result<Value> {
+pub fn release_half(args: &Value, rooted: &Rooted) -> io::Result<Value> {
     let entry = |field: &str| -> io::Result<&str> {
         args.get(field)
             .and_then(Value::as_str)

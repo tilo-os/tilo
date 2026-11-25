@@ -587,6 +587,10 @@ fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> T {
 /// connection's resolve is refused, theirs through their own dispatch there answers it. A
 /// workspace they are not in refuses both the read and the call.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two workspaces, one connection and the writes each reaches, read top to bottom"
+)]
 fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
     use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget};
     let Some(root) = isolated_root(WORKSPACES_TEST) else {
@@ -637,7 +641,10 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
             None,
         )
     };
-    let questions = steps(&studio).questions().expect("the questions read");
+    let questions = tilo_rt::app()
+        .block_on(steps(&studio).questions())
+        .expect("the app runtime")
+        .expect("the questions read");
     let question = questions
         .iter()
         .find(|question| question.action.ends_with("#publish"))
@@ -645,8 +652,9 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
         .clone();
     assert_eq!(question.workspace, studio, "{question:?}");
     assert!(
-        steps(&own)
-            .questions()
+        tilo_rt::app()
+            .block_on(steps(&own).questions())
+            .expect("the app runtime")
             .unwrap()
             .iter()
             .all(|asked| asked.workspace != studio),
@@ -680,8 +688,9 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
     }
     assert_eq!(probe.asked().len(), 1, "their yes runs the call it answers");
     assert!(
-        steps(&studio)
-            .questions()
+        tilo_rt::app()
+            .block_on(steps(&studio).questions())
+            .expect("the app runtime")
             .unwrap()
             .iter()
             .all(|asked| asked.record.record != question.record.record),
@@ -690,8 +699,9 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
 
     // A workspace the person is not in refuses their read and their call alike.
     let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
-    let refused = steps(&elsewhere)
-        .questions()
+    let refused = tilo_rt::app()
+        .block_on(steps(&elsewhere).questions())
+        .expect("the app runtime")
         .expect_err("a workspace they are not in reads nothing");
     assert!(
         refused

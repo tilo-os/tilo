@@ -80,6 +80,7 @@ fn started_surface() -> Option<String> {
 
 #[cfg(unix)]
 impl ServiceConnections {
+    #[cfg(any(test, target_os = "macos"))]
     pub(crate) fn connect(
         app_id: &str,
         workspace: &str,
@@ -197,12 +198,12 @@ impl Connections {
         workspace: &str,
         sockets: &ServiceSockets<'_>,
     ) -> io::Result<Self> {
-        Self::inherited(
+        Ok(Self::inherited(
             command,
             app_id,
             workspace,
             ServiceConnections::connect(app_id, workspace, sockets)?,
-        )
+        ))
     }
 
     fn inherited(
@@ -210,7 +211,7 @@ impl Connections {
         app_id: &str,
         workspace: &str,
         services: ServiceConnections,
-    ) -> io::Result<Self> {
+    ) -> Self {
         let fds = services.fds();
         command
             .env_remove("TILO_SVC_BLOBS_FD")
@@ -237,9 +238,9 @@ impl Connections {
                 Ok(())
             });
         }
-        Ok(Self {
+        Self {
             _services: services,
-        })
+        }
     }
 }
 
@@ -259,7 +260,7 @@ pub fn launch(
         app_id,
         workspace,
         ServiceConnections::connect_launched(app_id, workspace, sockets)?,
-    )?;
+    );
     command.spawn()
 }
 

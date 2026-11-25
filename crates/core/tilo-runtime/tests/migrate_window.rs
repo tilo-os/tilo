@@ -36,14 +36,16 @@ pub(crate) fn engine(host: &host::Host) -> String {
         .iter()
         .find(|package| package.app == ENGINE)
         .and_then(|package| package.resources.first())
-        .map(|resource| resource.address.clone())
-        .unwrap_or_else(|| {
-            let registered: Vec<&str> = packages
-                .iter()
-                .map(|package| package.app.as_str())
-                .collect();
-            panic!("the device registers no migrations: {registered:?}")
-        })
+        .map_or_else(
+            || {
+                let registered: Vec<&str> = packages
+                    .iter()
+                    .map(|package| package.app.as_str())
+                    .collect();
+                panic!("the device registers no migrations: {registered:?}")
+            },
+            |resource| resource.address.clone(),
+        )
 }
 
 /// What the agent's `tilo_do` of `action` on `path` answered: its value, or what it said when

@@ -606,21 +606,21 @@ impl ServedReads {
 }
 
 impl ResourceReads for ServedReads {
-    fn read(
-        &self,
-        _caller: &Caller,
-        _address: &tilo_actions::remote::ResourceAddress,
-    ) -> Result<tilo_actions::remote::ResourceCopy, tilo_actions::remote::ActionCallError> {
-        Err(Self::whole())
+    fn read<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move { Err(Self::whole()) })
     }
 
-    fn watch(
-        &self,
-        _caller: &Caller,
-        _address: &tilo_actions::remote::ResourceAddress,
-        _wake: &tilo_actions::remote::ResourceWake,
-    ) -> Result<(), tilo_actions::remote::ActionCallError> {
-        Err(Self::whole())
+    fn watch<'a>(
+        &'a self,
+        _caller: &'a Caller,
+        _address: &'a tilo_actions::remote::ResourceAddress,
+        _wake: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        tilo_actions::remote::reads_answer(async move { Err(Self::whole()) })
     }
 
     fn answer_read(
@@ -628,16 +628,19 @@ impl ResourceReads for ServedReads {
         caller: &Caller,
         correlation: u64,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Pending<RemoteActionMessage> {
+    ) -> tilo_actions::remote::ReadingAnswer {
+        let refused = move |error| RemoteActionMessage::ResourceReading {
+            correlation,
+            result: Err(error),
+        };
         let Some(workspace) =
             WorkspaceId::parse(&read.workspace).or_else(|| Served::workspace_of(caller))
         else {
-            return Pending::ready(RemoteActionMessage::ResourceReading {
-                correlation,
-                result: Err(tilo_actions::remote::ActionCallError::NotPermitted),
-            });
+            return Box::pin(std::future::ready(refused(
+                tilo_actions::remote::ActionCallError::NotPermitted,
+            )));
         };
-        self.0.later(
+        let later = self.0.later(
             workspace,
             caller.clone(),
             RemoteActionMessage::ResourceRead {
@@ -645,7 +648,12 @@ impl ResourceReads for ServedReads {
                 on_behalf_of: None,
                 read,
             },
-        )
+        );
+        Box::pin(async move {
+            later
+                .await
+                .unwrap_or_else(|| refused(tilo_actions::remote::ActionCallError::Unanswered))
+        })
     }
 }
 

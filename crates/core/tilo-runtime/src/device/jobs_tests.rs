@@ -48,8 +48,7 @@ async fn reading(
     };
     let answer = Arc::clone(jobs)
         .answer_read(caller, 0, request)
-        .await
-        .expect("the device answers the read");
+        .await;
     let RemoteActionMessage::ResourceReading { result, .. } = answer else {
         panic!("a read is answered by a reading");
     };
@@ -146,7 +145,7 @@ async fn a_held_read_wakes_when_the_job_moves() {
 
     // A job that ended stays readable: the answer a person waited for is never taken away.
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "render-1"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "render-1"))
             .expect("the device reads its own job")
             .readable()
             .expect("a job reads as its JSON"),
@@ -162,13 +161,13 @@ async fn a_caller_who_may_not_read_the_jobs_app_reads_no_job() {
     let address = device_job_address(&DEVICE, "render-1");
     // The device itself reads its own jobs.
     assert!(
-        jobs.read(&caller, &address).is_ok(),
+        jobs.read_job(&caller, &address).is_ok(),
         "the device reads its own job"
     );
     // Anybody else is decided by the app the job runs in its workspace, which no stranger may
     // read: with no workspace admitted here, nobody else may.
     let refused = jobs
-        .read(&Caller::authenticated(STRANGER, [2; 32]), &address)
+        .read_job(&Caller::authenticated(STRANGER, [2; 32]), &address)
         .expect_err("a stranger reads no job");
     assert!(
         matches!(refused, ActionCallError::Refused { .. }),
@@ -176,7 +175,7 @@ async fn a_caller_who_may_not_read_the_jobs_app_reads_no_job() {
     );
     // A job the device runs none of is absent to the device, not refused.
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "no-such-job"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "no-such-job"))
             .expect("the device reads its own space"),
         ResourceCopy::Absent
     );
@@ -216,7 +215,7 @@ async fn a_process_that_ended_leaves_its_unfinished_jobs_failed() {
     );
     assert_eq!(jobs.live(&other), 0);
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "render-1"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "render-1"))
             .expect("the device reads its job")
             .readable()
             .expect("a job reads as its JSON")["state"],
@@ -224,7 +223,7 @@ async fn a_process_that_ended_leaves_its_unfinished_jobs_failed() {
         "a job does not outlive the process that ran it"
     );
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "render-2"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "render-2"))
             .expect("the device reads its job")
             .readable()
             .expect("a job reads as its JSON")["state"],
@@ -244,7 +243,7 @@ fn a_job_never_leaves_an_ended_state() {
     );
     jobs.moved(&process(), "render-1", running());
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "render-1"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "render-1"))
             .expect("the device reads its job")
             .readable()
             .expect("a job reads as its JSON")["state"],
@@ -271,14 +270,14 @@ fn cancelling_the_invocation_cancels_the_jobs_it_started() {
     );
     let caller = device();
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "render-1"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "render-1"))
             .expect("the device reads its job")
             .readable()
             .expect("a job reads as its JSON")["state"],
         "cancelled"
     );
     assert_eq!(
-        jobs.read(&caller, &device_job_address(&DEVICE, "render-3"))
+        jobs.read_job(&caller, &device_job_address(&DEVICE, "render-3"))
             .expect("the device reads its job")
             .readable()
             .expect("a job reads as its JSON")["state"],

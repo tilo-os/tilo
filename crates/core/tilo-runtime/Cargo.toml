@@ -229,13 +229,14 @@ launcher-macos = { path = "../launcher-macos" }
 # The file chooser a confined app asks this runtime to show, and the one this runtime serves a
 # hosted app: the files a person chooses for it, kept by reference.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
-tilo-documents = { path = "../../core/documents" }
 # The camera and microphone a confined app asks this runtime to capture.
 tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "microphone"] }
 # The runtimes Tilo.app carries install through the one installer on first start.
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
+# A test takes the changes a placed view wrote into the layout the one way the workspace does.
+tilo-automerge.workspace = true
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.
 tilo-actions = { path = "../actions", features = ["test-support"] }

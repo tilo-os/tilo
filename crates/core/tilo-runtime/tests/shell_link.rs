@@ -289,23 +289,24 @@ fn a_closed_link_takes_the_shells_providers_and_fails_their_calls() {
             error.message
         );
         // The provider went with the link.
-        let gone = tilo_test_env::within("the provider goes", async {
-            loop {
-                let again = host
-                    .dispatch()
-                    .invoke(
-                        &host.caller(),
-                        request(WAITS, "waits/one", "answer", "again"),
-                    )
-                    .await
-                    .unwrap();
-                if again.is_err() {
-                    return again;
+        let gone: Result<InvocationReceipt, _> =
+            tilo_test_env::within("the provider goes", async {
+                loop {
+                    let again = host
+                        .dispatch()
+                        .invoke(
+                            &host.caller(),
+                            request(WAITS, "waits/one", "answer", "again"),
+                        )
+                        .await
+                        .unwrap();
+                    match again {
+                        Err(error) => return Err(error),
+                        Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+                    }
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await;
+            })
+            .await;
         assert!(gone.is_err(), "nothing serves {WAITS} once the link closed");
     });
 }
@@ -408,9 +409,16 @@ fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
                 .unwrap();
         let socket = session.native_socket().to_owned();
         let mut said = String::new();
-        std::io::BufReader::new(session.shell().stdout.take().unwrap())
-            .read_line(&mut said)
-            .unwrap();
+        std::io::BufReader::new(
+            session
+                .shell()
+                .expect("the session's shell")
+                .stdout
+                .take()
+                .unwrap(),
+        )
+        .read_line(&mut said)
+        .unwrap();
         assert_eq!(said.trim(), "linked 3", "the shell holds the daemon's link");
         assert!(
             std::os::unix::net::UnixStream::connect(&socket).is_ok(),

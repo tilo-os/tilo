@@ -46,6 +46,9 @@ libc.workspace = true
 # Windows, a pipe.
 serde.workspace = true
 serde_json.workspace = true
+# A choice's reference is unguessable from outside without knowing the app, the workspace and the
+# host path it was made for.
+blake3.workspace = true
 wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../wire-frame" }
 tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
 

@@ -1116,7 +1116,6 @@ doc = false
 "tilo-doc-pdf" = { path = "../../crates/engines/tilo-doc-pdf", default-features = false, features = [] }
 "tilo-docs" = { path = "../../tools/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../crates/sdk/tilo-document", default-features = false, features = [] }
-"tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = ["mount"] }
 "tilo-egress" = { path = "../../crates/core/egress", default-features = false, features = [] }
 "tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
@@ -3587,7 +3586,6 @@ doc = false
 "tilo-doc-pdf" = { path = "../../crates/engines/tilo-doc-pdf", default-features = false, features = [] }
 "tilo-docs" = { path = "../../tools/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../crates/sdk/tilo-document", default-features = false, features = [] }
-"tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = ["mount"] }
 "tilo-egress" = { path = "../../crates/core/egress", default-features = false, features = [] }
 "tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
@@ -4803,7 +4801,6 @@ doc = false
 "tilo-desktop-entry" = { path = "../../crates/desktop/desktop-entry", default-features = false, features = [] }
 "tilo-desktop-model" = { path = "../../crates/desktop/desktop-model", default-features = false, features = [] }
 "tilo-device-identity" = { path = "../../crates/core/tilo-device-identity", default-features = false, features = [] }
-"tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../crates/platform/tilo-failure", default-features = false, features = [] }

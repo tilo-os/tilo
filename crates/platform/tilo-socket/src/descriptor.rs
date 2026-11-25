@@ -23,9 +23,7 @@ type Held = std::convert::Infallible;
 mod windows {
     use std::fmt;
     use std::io;
-    use std::os::windows::io::{
-        AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle as _, OwnedHandle, RawHandle,
-    };
+    use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 
     use crate::Stream;
 

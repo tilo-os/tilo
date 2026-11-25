@@ -53,8 +53,7 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
         &tilo_device_identity::login::Device {
             site: "https://tilo.test/".into(),
             host_origin: "https://eu1.tilo.test".into(),
-            workspace: tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key)
-                .to_string(),
+            workspace: tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
             workspace_name: Some("Ada's".into()),
             agent: String::new(),
             cert: cert.clone(),
@@ -84,7 +83,7 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
         "the certificate still names a person: {fresh}"
     );
 
-    let made = ask(&socket, &do_request("devices#found", json!({})));
+    let made = ask(&socket, &do_request("devices#found", &json!({})));
     assert_ne!(
         made["result"]["isError"], true,
         "a half-made computer made no person: {made}"
@@ -115,7 +114,7 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
     );
     assert_eq!(
         who["home"]["workspace"],
-        tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key).to_string(),
+        tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
         "the daemon's own account is told where it enters, from the entry the login left: {who}"
     );
 
@@ -154,7 +153,7 @@ fn a_computer_with_no_identity_at_all_stays_up_and_founds_its_person() {
 
     let made = ask(
         &socket,
-        &do_request("devices#found", json!({"name": "Ada"})),
+        &do_request("devices#found", &json!({"name": "Ada"})),
     );
     assert_ne!(
         made["result"]["isError"], true,
@@ -199,7 +198,7 @@ fn a_plain_connection_to_a_founding_daemon_prints_a_device_ticket() {
     let socket = running.native_socket().to_owned();
     let made = ask(
         &socket,
-        &do_request("devices#found", json!({"name": "Ada"})),
+        &do_request("devices#found", &json!({"name": "Ada"})),
     );
     assert_ne!(
         made["result"]["isError"], true,
@@ -268,7 +267,10 @@ fn a_founding_call_asked_for_tickets_is_followed_after_its_person_serves() {
         &socket,
         &followed_request("devices#found", &asked, Some(&invocation), 0),
     );
-    assert!(made.get("error").is_none(), "the daemon did not answer: {made}");
+    assert!(
+        made.get("error").is_none(),
+        "the daemon did not answer: {made}"
+    );
 
     running
         .wait_for_person(Duration::from_secs(120))
@@ -459,7 +461,7 @@ fn reset_identity(keys: &tilo_device_identity::IdentityPaths) {
 /// Wait until the daemon's own status names the device its person's part serves: from that
 /// moment `account#who` answers where this computer enters its person's workspaces.
 fn wait_for_the_person_serving(socket: &Path) -> Value {
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let started = std::time::Instant::now();
     loop {
         let status = ask(
             socket,
@@ -469,7 +471,7 @@ fn wait_for_the_person_serving(socket: &Path) -> Value {
             return status;
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            started.elapsed() < Duration::from_secs(120),
             "the person's part did not take this device up: {status}"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -491,7 +493,7 @@ fn ask(socket: &Path, request: &Value) -> Value {
 }
 
 /// `tilo_do` of `path` with `args`, as the daemon's native endpoint answers it.
-fn do_request(path: &str, args: Value) -> Value {
+fn do_request(path: &str, args: &Value) -> Value {
     json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "tilo_do",
         "arguments": {"path": path, "args": args},
