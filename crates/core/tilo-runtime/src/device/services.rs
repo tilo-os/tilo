@@ -5808,11 +5808,21 @@ impl RuntimeActionProvider {
             // action.
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        // What the dispatch runs is blocking work: a root-signed answer reads and writes
-        // the person's workspace. Every session of this endpoint shares one
-        // current-thread runtime, so it is answered beside that runtime, as the
-        // catalogue the broker assembles is, and the answer it settles with is handed
-        // on.
+        // A root-signed answer is blocking work: it reads and writes the person's workspace.
+        // Every session of this endpoint shares one current-thread runtime, so that one is
+        // answered beside that runtime, as the catalogue the broker assembles is, and the answer
+        // it settles with is handed on. Every other device action (what the device is, its
+        // identities, a ticket) is answered in its receipt, as a caller reading it at once
+        // expects.
+        if !Tickets::root_only(&request) {
+            return device_action(
+                (&self.invocations, self.asked.as_ref()),
+                tickets,
+                caller,
+                request,
+                &self.workspace,
+            );
+        }
         let (invocations, asked, tickets, caller, request, workspace) = (
             Arc::clone(&self.invocations),
             self.asked.clone(),
