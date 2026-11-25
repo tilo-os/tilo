@@ -1378,7 +1378,11 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
-    let design = call(&ada, "new_channel", vec![all.clone(), Value::text("design")]);
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
     let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
     ada.commit();
 
@@ -1407,15 +1411,10 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     };
     let access: std::rc::Rc<std::cell::RefCell<Option<tilo_action_policy::MemberAccess>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
-    let (ben, _) = Replica::following(
-        "ben",
-        ada.doc.fork(),
-        &[(CHAT, &loaded[0].ids)],
-        {
-            let access = std::rc::Rc::clone(&access);
-            move || access.borrow().clone()
-        },
-    );
+    let (ben, _) = Replica::following("ben", ada.doc.fork(), &[(CHAT, &loaded[0].ids)], {
+        let access = std::rc::Rc::clone(&access);
+        move || access.borrow().clone()
+    });
     let plan = |channel: &tilolang_runtime::ResourceRef| {
         let meta = ben.host.package(APP).unwrap().meta;
         let send = meta.actions.iter().find(|a| a.name == "send").unwrap();
@@ -1466,7 +1465,11 @@ fn a_channel_lists_its_threads_and_opening_one_opens_it() {
     let ask = call(
         &ada,
         "send",
-        vec![design.clone(), rich("Can we move the account step to the end?"), Value::none()],
+        vec![
+            design.clone(),
+            rich("Can we move the account step to the end?"),
+            Value::none(),
+        ],
     );
     let account = call(
         &ada,
@@ -1476,7 +1479,11 @@ fn a_channel_lists_its_threads_and_opening_one_opens_it() {
     let when = call(
         &ada,
         "send",
-        vec![design.clone(), rich("When does the build go out?"), Value::none()],
+        vec![
+            design.clone(),
+            rich("When does the build go out?"),
+            Value::none(),
+        ],
     );
     call(
         &ada,
@@ -1495,7 +1502,10 @@ fn a_channel_lists_its_threads_and_opening_one_opens_it() {
         .into_iter()
         .flat_map(|section| section.of_kind("ui.ListRow"))
         .collect();
-    let titles: Vec<String> = rows.iter().filter_map(|row| text_prop(row, "title")).collect();
+    let titles: Vec<String> = rows
+        .iter()
+        .filter_map(|row| text_prop(row, "title"))
+        .collect();
     assert_eq!(titles, ["Account step", "Release date"], "{titles:?}");
 
     // Each row shows the thread it lists, and activating it opens that thread.
@@ -1525,7 +1535,11 @@ fn a_place_is_keyed_by_its_conversation_so_a_rename_and_a_twin_name_stay_apart()
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
-    let design = call(&ada, "new_channel", vec![all.clone(), Value::text("design")]);
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all.clone(), Value::text("design")],
+    );
     let team = call(&ada, "new_category", vec![all.clone(), Value::text("Team")]);
     let twin = call(
         &ada,
