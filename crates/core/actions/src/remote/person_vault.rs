@@ -96,9 +96,11 @@ pub const KEEP_USES: &str = "keep-uses";
 #[must_use]
 pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
     match action {
-        ADD | ASK | KEEP => vec![vault_step(KEEP_SEALED)],
-        REMOVE => vec![vault_step(REMOVE_SEALED)],
-        COPY | REVEAL | FILL_PAGE | WEB_CALL | SIGN | RELEASE => vec![vault_step(KEEP_USES)],
+        ADD | ASK | KEEP | KEEP_PAGE_LOGIN => vec![vault_step(KEEP_SEALED)],
+        REMOVE | FORGET_PAGE_LOGIN => vec![vault_step(REMOVE_SEALED)],
+        COPY | REVEAL | FILL_PAGE | PAGE_FILL | WEB_CALL | SIGN | RELEASE => {
+            vec![vault_step(KEEP_USES)]
+        }
         _ => Vec::new(),
     }
 }

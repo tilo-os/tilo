@@ -182,6 +182,9 @@ mod tests {
             person_vault::WEB_CALL,
             person_vault::SIGN,
             person_vault::RELEASE,
+            person_vault::KEEP_PAGE_LOGIN,
+            person_vault::FORGET_PAGE_LOGIN,
+            person_vault::PAGE_FILL,
         ] {
             for effect in person_vault::effects(action) {
                 assert_eq!(effect.app, tilo_app_id::apps::PASSWORDS, "{action}");
@@ -190,7 +193,7 @@ mod tests {
                 declared += 1;
             }
         }
-        assert_eq!(declared, 9, "every action that writes declares its step");
+        assert_eq!(declared, 12, "every action that writes declares its step");
         for read in [person_vault::LIST, person_vault::USES] {
             assert!(
                 person_vault::effects(read).is_empty(),
