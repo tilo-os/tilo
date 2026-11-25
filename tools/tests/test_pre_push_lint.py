@@ -114,6 +114,9 @@ case "$1 $2" in
   "cargo metadata") printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
 esac
 case "$1" in
+  scope)
+    [ "${STUB_T_SCOPE_STATUS:-0}" = 0 ] || exit "$STUB_T_SCOPE_STATUS"
+    printf '%s\\n' "${STUB_T_SCOPE:-}"; exit 0 ;;
   cargo)
     shift
     printf 'start %s t cargo %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
@@ -313,10 +316,13 @@ class PrePushLintTests(unittest.TestCase):
         return json.dumps({"packages": packages})
 
     def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False,
-                    agent=False, t_outcome="pass", t_cached=None, t_excerpt="", t_error="") -> dict:
+                    agent=False, t_outcome="pass", t_cached=None, t_excerpt="", t_error="",
+                    t_scope=None, t_scope_status=2) -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain.
 
         `agent` pushes as a coding agent does, whose shell says so in its environment.
+        `t_scope` is what `t scope --names` answers, and `t_scope_status` whether it can say
+        (2: it cannot, which a machine without its scope cache is).
         """
         env = dict(os.environ)
         env.pop("CARGO", None)
@@ -334,7 +340,8 @@ class PrePushLintTests(unittest.TestCase):
         if drop_in:
             env["CARGO"] = str(self.bin / "drop-in")
         env.update(STUB_T_OUTCOME=t_outcome, STUB_T_CACHED=json.dumps(t_cached),
-                   STUB_T_EXCERPT=t_excerpt, STUB_T_ERROR=t_error)
+                   STUB_T_EXCERPT=t_excerpt, STUB_T_ERROR=t_error,
+                   STUB_T_SCOPE=t_scope or "", STUB_T_SCOPE_STATUS=str(t_scope_status))
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None,
@@ -653,6 +660,34 @@ class PrePushLintTests(unittest.TestCase):
             f"t test clippy/fixture-native clippy-{ARCH}/fixture-web clippy-page/fixture-web --json"])
         self.assertIn("pre-push: clippy/fixture-native passed in 61s", result.stderr)
         self.assertIn("clippy and rustfmt for 2 packages", result.stderr)
+
+    def test_a_manifest_change_runs_the_page_hack_policy_step(self):
+        # An ungated workspace-hack leaves the host lint green and fails every page clippy job
+        # on main; the policy step names the cause, and the push runs it for a manifest.
+        self.with_t()
+        self.write("native/Cargo.toml", CRATE.format(name="fixture-native")
+                   + '\n[dependencies]\nserde = "1"\n')
+        self.commit("feat: the host crate names a dependency")
+        result = self.push(t_scope="policy/wasm-workspace-hack", t_scope_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("policy/wasm-workspace-hack", self.calls()[0].split())
+
+    def test_a_rust_change_does_not_run_the_page_hack_policy_step(self):
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=31))
+        self.commit("feat: answer 31")
+        result = self.push(t_scope="policy/wasm-workspace-hack", t_scope_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("policy/wasm-workspace-hack", self.calls()[0].split())
+
+    def test_a_manifest_change_does_not_ask_for_a_policy_step_the_tree_lacks(self):
+        self.with_t()
+        self.write("native/Cargo.toml", CRATE.format(name="fixture-native")
+                   + '\n[dependencies]\nserde = "1"\n')
+        self.commit("feat: the host crate names a dependency")
+        result = self.push(t_scope="policy/source-content", t_scope_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("policy/wasm-workspace-hack", self.calls()[0].split())
 
     def test_without_a_cargo_t_names_the_packages_and_lints_them(self):
         self.with_t(cargo=False)
@@ -1024,6 +1059,47 @@ class CatalogueGateTests(unittest.TestCase):
         batches = [run.command for run in runs if run.t]
         self.assertEqual(batches, [
             [module.T_CARGO[0], "test", "clippy/fixture-native", "ui-graph", "--json"]])
+
+
+class PolicyGateTests(unittest.TestCase):
+    """A push that changes a manifest runs t's policy step for the page's wasm32 build."""
+
+    def names(self, named, *files: str, root: Path = ROOT) -> list[str]:
+        module = pre_push_lint()
+        return module.policy_checks(root, module.Push(set(files), [], [], []), named)
+
+    def test_a_manifest_change_names_the_page_hack_step(self):
+        self.assertEqual(self.names({"policy/wasm-workspace-hack"}, "crates/x/Cargo.toml"),
+                         ["policy/wasm-workspace-hack"])
+
+    def test_a_lock_change_names_it_too(self):
+        self.assertEqual(self.names({"policy/wasm-workspace-hack"}, "Cargo.lock"),
+                         ["policy/wasm-workspace-hack"])
+
+    def test_a_rust_change_names_nothing(self):
+        # t's read sets name it for any change (a job lists the workspace's directories), so
+        # the lint gates it on the manifest itself: no other push pays for it.
+        self.assertEqual(self.names({"policy/wasm-workspace-hack"}, "crates/x/src/lib.rs"), [])
+
+    def test_a_step_the_tree_lacks_is_not_asked_for(self):
+        self.assertEqual(self.names({"policy/source-content"}, "crates/x/Cargo.toml"), [])
+
+    def test_without_ts_answer_a_manifest_change_still_names_it(self):
+        self.assertEqual(self.names(None, "crates/x/Cargo.toml"), ["policy/wasm-workspace-hack"])
+        self.assertEqual(self.names(None, "crates/x/src/lib.rs"), [])
+
+    def test_a_tree_that_does_not_declare_the_step_is_not_asked(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertEqual(self.names(None, "Cargo.toml", root=Path(empty)), [])
+
+    def test_the_step_runs_in_the_same_t_batch_as_the_clippy_checks(self):
+        module = pre_push_lint()
+        selection = module.Selection(["fixture-native"], {})
+        runs = module.lint_runs(Path("/"), selection, [], [
+            "clippy/fixture-native", "policy/wasm-workspace-hack"])
+        self.assertEqual([run.command for run in runs if run.t], [
+            [module.T_CARGO[0], "test", "clippy/fixture-native",
+             "policy/wasm-workspace-hack", "--json"]])
 
 
 if __name__ == "__main__":

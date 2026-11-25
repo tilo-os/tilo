@@ -23,7 +23,10 @@ constructs it while the package that declares it compiles clean. A dependant is 
 never linted: only a compile error there refuses the push. Its lints are its own authors'
 and main's, and a push that refused on them refused for code it never touched, which sent
 pushes out with `--no-verify` and left their own lints unchecked. A changed package the page
-family names is also linted for wasm32, a target the host lint cannot see.
+family names is also linted for wasm32, a target the host lint cannot see. A push that changes
+a Cargo manifest or the lockfile runs the policy step that keeps the page's wasm32 builds off
+the workspace-hack: an ungated dependency there compiles the native feature set into every page
+build, and only the page clippy job surfaced it, after the push's own lint passed.
 The crates that only unify features are neither a source nor a dependant: their
 dependency lists name members they hold no code for. Only the direct dependants are
 named; what a change reaches through them, and the packages as they ship, is t's
@@ -715,7 +718,26 @@ def lint_runs(root: Path, selection: Selection, formatting: list[str],
     return runs
 
 
-def surface_checks(root: Path, push: Push) -> list[str]:
+def scoped_checks(root: Path, push: Push) -> set[str] | None:
+    """The checks `t scope` names for the push's change, or None when t cannot tell.
+
+    `t scope` is what says which checks a change reaches: it asks each check's read sets whether
+    the change touches them. A script that names a check from a change checks the same rule t
+    does, rather than one of its own.
+    """
+    if not push.tips:
+        return None
+    try:
+        scoped = subprocess.run(["t", "scope", "--rev", push.tips[0], "--names"],
+                                cwd=root, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if scoped.returncode != 0:
+        return None
+    return set(scoped.stdout.split())
+
+
+def surface_checks(push: Push, named: set[str] | None) -> list[str]:
     """t's checks over what a surface or an action or record type writes, when the push reaches them.
 
     The app-fleet catalogue and the SDK's generated types are written from the apps' surfaces
@@ -724,19 +746,51 @@ def surface_checks(root: Path, push: Push) -> list[str]:
     and does not regenerate refuses here, not on main.
     """
     wanted = ("sdk-policy", "sdk-types")
-    if push.tips:
-        try:
-            scoped = subprocess.run(["t", "scope", "--rev", push.tips[0], "--names"],
-                                    cwd=root, capture_output=True, text=True, check=False)
-        except OSError:
-            scoped = None
-        if scoped is not None and scoped.returncode == 0:
-            named = set(scoped.stdout.split())
-            return [name for name in wanted if name in named]
+    if named is not None:
+        return [name for name in wanted if name in named]
     # t could not tell: an app's surface alone still moves the generated catalogue and types.
     if any(path.startswith(("apps/", "crates/desktop/app-fleet/")) for path in push.files):
         return list(wanted)
     return []
+
+
+# A dependency line is written in a manifest and versioned in the lockfile: a push that changes
+# neither adds none.
+MANIFESTS = ("Cargo.toml", "Cargo.lock")
+# The file t.toml turns into its `policy/{step}` checks.
+POLICY_STEPS = Path("tools/policy/steps.toml")
+# t's policy step that keeps the browser's wasm32 builds off workspace-hack, whose native
+# feature set (mio, sockets, D-Bus, ...) the page cannot compile.
+PAGE_HACK_POLICY = "policy/wasm-workspace-hack"
+
+
+def policy_step_declared(root: Path, name: str) -> bool:
+    """Whether the tree's policy suite declares the step `t.toml` turns into `name`."""
+    try:
+        steps = tomllib.loads((root / POLICY_STEPS).read_text())
+    except (OSError, ValueError):
+        return False
+    wanted = name.removeprefix("policy/")
+    return any(step.get("name") == wanted for step in steps.get("step", ()))
+
+
+def policy_checks(root: Path, push: Push, named: set[str] | None) -> list[str]:
+    """t's policy step a manifest change can break the page's wasm32 builds with.
+
+    ``workspace-hack`` unifies the workspace's native feature sets, and `cargo hakari
+    manage-deps` writes it into a new member's ``[dependencies]`` unconditionally. A member the
+    page family builds must name it only under a ``cfg(not(target_arch = "wasm32"))`` table;
+    ungated, the page's wasm32 build pulls mio and every ``clippy-page/*`` job fails for every
+    pusher. The host Clippy and compile a push runs cannot see that build, so the policy step
+    runs here for the change that can cause it. A step removed from the pushed tree is one t no
+    longer names, so a push cannot ask for a check the tree lacks.
+    """
+    if not any(Path(path).name in MANIFESTS for path in push.files):
+        return []
+    if named is not None:
+        return [PAGE_HACK_POLICY] if PAGE_HACK_POLICY in named else []
+    # t could not tell: the tree says whether it declares the step.
+    return [PAGE_HACK_POLICY] if policy_step_declared(root, PAGE_HACK_POLICY) else []
 
 
 # What the component catalogue (`crates/ui/ui-graph/components.json`) is
@@ -1098,7 +1152,9 @@ def main(argv: list[str]) -> int:
         if lints_through_t():
             members = set(package_maps(selection.metadata, root)[0])
             named = t_checks(root, selection.linted, members)[0]
-            named += [name for name in catalogue_checks(push) if name not in named]
+            scoped = scoped_checks(root, push)
+            extra = [*catalogue_checks(push), *policy_checks(root, push, scoped)]
+            named += [name for name in extra if name not in named]
             print(f"t: {' '.join(named)}")
         catalogue_plan(push)
         return 0
@@ -1107,7 +1163,9 @@ def main(argv: list[str]) -> int:
         try:
             members = set(package_maps(selection.metadata, root)[0])
             checks, uncovered = t_checks(root, selection.linted, members)
-            extra = [*surface_checks(root, push), *catalogue_checks(push)]
+            scoped = scoped_checks(root, push)
+            extra = [*surface_checks(push, scoped), *catalogue_checks(push),
+                     *policy_checks(root, push, scoped)]
             checks += [name for name in extra if name not in checks]
         except (OSError, ValueError, KeyError) as error:
             say(f"pre-push: cannot read which of t's checks lint these packages from {T_TOML}: {error}")
