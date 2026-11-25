@@ -205,11 +205,3 @@ impl tilolang_tilo::held::Release for SignInRelease {
         Ok(released)
     }
 }
-
-/// Nothing is started on Windows yet: the process link a session hands the host is a descriptor,
-/// and a session hands a window its workspace over one too.
-#[cfg(windows)]
-fn main() -> std::process::ExitCode {
-    eprintln!("tilolang-process: the tilolang runtime does not run on Windows yet");
-    std::process::ExitCode::from(2)
-}
