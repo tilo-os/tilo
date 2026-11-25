@@ -1957,7 +1957,7 @@ pub(crate) mod entry_tests {
     #[tokio::test]
     async fn opening_an_entry_leaves_its_owner_contact_and_mail_in_force() {
         let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
+        let (key, owner) = hosting_device();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;

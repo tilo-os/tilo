@@ -225,7 +225,7 @@ async fn an_apps_command_under_the_platforms_verb_is_refused() {
     )
     .expect("a surface");
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = super::governor();
+    let (key, cert) = super::hosting_device();
     let server = super::test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     workspaces.set_member_device(std::sync::Arc::new(crate::workspaces::MemberDevice {
