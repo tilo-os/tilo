@@ -164,6 +164,7 @@ fn founding_rows(
             delegate: None,
             workspace_delegations: Vec::new(),
             removed: false,
+            entry: None,
         };
         doc.put(
             &identities,

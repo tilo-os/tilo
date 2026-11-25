@@ -79,6 +79,13 @@ pub enum MembershipOpCommand {
     /// Whoever records the redemption writes it; the invitation is its
     /// authority, not its writer.
     Admit { invite: [u8; 32], person: [u8; 32] },
+    /// Its author's device came into the workspace under its entry: `entry` is
+    /// the digest of the entry ([`crate::state::entry_digest`]) it relied on,
+    /// and `person` is the author's own person. Replay checks the entry the
+    /// workspace's governance held where this operation sits, and admits the
+    /// person at the role that entry opened at. No invitation is behind it,
+    /// and the host that answered the join signed nothing for them.
+    Enter { entry: [u8; 32], person: [u8; 32] },
     /// Its author's device made `base`, the hash of the base change of
     /// `workspace`'s document at `generation`, that the document's history
     /// starts over from ([`crate::workspace::compaction`]). It is kept beside

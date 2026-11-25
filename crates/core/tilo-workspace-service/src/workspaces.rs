@@ -107,6 +107,7 @@ use carried::Carried;
 mod clock;
 pub(crate) use clock::system_time;
 mod listing;
+pub use listing::Listed;
 pub(crate) mod memberships;
 /// The operator's kill switch, held while a host offers one.
 pub mod mode;

@@ -146,6 +146,83 @@ pub fn further_device_row(
     )
 }
 
+/// The changes admitting `own` through `workspace`'s entry: its own row and
+/// its entry admission, signed by its own key, the entry the governance
+/// carries being the grant. No invitation is behind them and no host signed
+/// them.
+///
+/// # Errors
+/// The governance does not read, `key` is not `own`'s, the entry takes nobody
+/// who asks, or the workspace refuses it as every receiver would.
+pub fn entry_admission(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    own: &DeviceCert,
+    request_id: [u8; 32],
+    name: Option<&str>,
+    key: &dyn DeviceSigner,
+    now: SystemTime,
+) -> Result<Vec<Vec<u8>>, String> {
+    written(
+        workspace,
+        governance,
+        own,
+        key,
+        |peer, key| {
+            let entry = peer.governance().governed_entry();
+            if entry.open_role().is_none() {
+                return Err("this workspace's entry does not take people who ask".into());
+            }
+            let digest = crate::state::entry_digest(&entry)?;
+            let admitted = peer
+                .governance_mut()
+                .admit_entered_member(digest, request_id, name, key, now)?;
+            let granted = peer
+                .governance_mut()
+                .author_own_grant(own, name, key, now)?;
+            Ok(admitted || granted)
+        },
+        now,
+    )
+}
+
+/// [`entry_admission`] signed by `signer`, which may sign outside the turn.
+///
+/// # Errors
+/// As [`entry_admission`], or `signer` does not sign.
+pub async fn sign_entry_admission(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    own: &DeviceCert,
+    request_id: [u8; 32],
+    name: Option<&str>,
+    signer: &dyn DeviceSigner,
+    now: SystemTime,
+) -> Result<Vec<Vec<u8>>, String> {
+    signed_turn(signer, |signatures| {
+        entry_admission(
+            workspace, governance, own, request_id, name, signatures, now,
+        )
+    })
+    .await
+}
+
+/// Whether `own`'s person is one the `governance` messages make a member of
+/// `workspace`: a further device of theirs then comes in as theirs, and not
+/// through the entry.
+fn person_is_member(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    own: &DeviceCert,
+    now: SystemTime,
+) -> bool {
+    crate::StatePeer::unanchored(workspace, own, governance, now).is_ok_and(|peer| {
+        peer.governance()
+            .governed_policy()
+            .is_ok_and(|policy| policy.role_of(&hex::encode(own.user_public_key)).is_some())
+    })
+}
+
 /// [`further_device_row`] signed by `signer`, which may sign outside the turn.
 ///
 /// # Errors
@@ -191,6 +268,14 @@ pub async fn sign_entry(
             )?;
             sign_own_admission(workspace, governance, &redemption, name, signer, now).await
         }
-        None => sign_further_device_row(workspace, governance, own, signer, now).await,
+        // A device of a person the workspace has in it brings itself in as
+        // theirs; a stranger comes in under the workspace's entry, naming the
+        // entry the governance it was sent holds.
+        None if person_is_member(workspace, governance, own, now) => {
+            sign_further_device_row(workspace, governance, own, signer, now).await
+        }
+        None => {
+            sign_entry_admission(workspace, governance, own, request_id, name, signer, now).await
+        }
     }
 }

@@ -31,16 +31,13 @@ mod entering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use sha2::{Digest as _, Sha256};
 use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join_log::request_digest;
 use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
-use tilo_server_protocol::workspaces::{
-    IssueInvitationRequest, IssuedInvitation, WorkspaceListing,
-};
+use tilo_server_protocol::workspaces::{IssuedInvitation, WorkspaceListing};
 use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_user_identity::DeviceCert;
 
@@ -50,12 +47,6 @@ use super::{CollaborationError, GovernedWorkspace, Workspaces, wait_list};
 /// Where a server kept its public workspaces' listings before a workspace's
 /// entry was part of its governance ([`Workspaces::adopt_listings_file`]).
 const LISTINGS_FILE: &str = "listings.json";
-/// How long an entry's invitation and its token stay good: time for the
-/// person's device to redeem it now, not to keep it.
-const ENTRY_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
-/// How an entry's admission names where the person came from, in the
-/// owner's notices.
-pub(crate) const ENTRY_LABEL: &str = "the public directory";
 
 /// Why a public workspace's entry turns a person away.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,6 +190,17 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
     hex::decode_to_slice(hex_key, &mut key)
         .map_err(|_| CollaborationError::new("a person is 64 hex characters"))?;
     Ok(key)
+}
+
+/// What a workspace's entry answers a device that asks to come in.
+#[derive(Debug)]
+pub enum Listed {
+    /// The entry takes people who ask: the device signs its own admission
+    /// under the entry the workspace records, and no host signs it in.
+    Open,
+    /// The workspace holds an invitation for the person, made by a member:
+    /// the person redeems it as any invitation.
+    Invited(IssuedInvitation),
 }
 
 impl Workspaces {
@@ -723,38 +725,21 @@ impl Workspaces {
         &self,
         workspace: &str,
         join: &EntryJoin,
-    ) -> Result<(IssuedInvitation, String), EntryRefusal> {
+    ) -> Result<Listed, EntryRefusal> {
         let refused = |error: CollaborationError| EntryRefusal::Refused(error.to_string());
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
-        let address = self.invitation_addr().await;
-        let issued = {
+        let listed = {
             let state = self.workspace(workspace).await.map_err(refused)?;
-            let mut governed = state.lock().await;
+            let governed = state.lock().await;
             let policy = governed
                 .peer()
                 .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
             let entry = Self::entry_of(&governed);
-            let Some(listing) = entry.listing.as_ref() else {
+            if entry.listing.is_none() {
                 return Err(EntryRefusal::refused("that workspace is not public"));
-            };
-            let member = policy.active_role(&hex::encode(user));
-            // An invitation-only entry refuses a stranger who holds no
-            // invitation of their own and whom the workspace does not have in
-            // it, and says so: the person's page offers them the way to be
-            // invited (the site's wait list) instead of a link in as a guest.
-            // Someone invited into any workspace on this host is no stranger:
-            // whoever invited them let them in.
-            let invited = governed
-                .collaboration()
-                .pending(now)
-                .iter()
-                .any(|invitation| invitation.recipient_user_public_key == Some(user))
-                || self.inner.memberships.holds_any(&user);
-            if entry.invitation_only && member.is_none() && !invited {
-                return Err(EntryRefusal::InvitationOnly);
             }
             if policy.is_blocked(&hex::encode(user)) {
                 return Err(EntryRefusal::Banned);
@@ -762,106 +747,34 @@ impl Workspaces {
             if governed.removals.refuses(user, now) {
                 return Err(EntryRefusal::Removed);
             }
-            // A member is handed the part they hold, so that redeeming it leaves them as they
-            // are; the owner holds the workspace whatever an invitation names.
-            let role = member
-                .filter(|role| role.assignable())
-                .unwrap_or(listing.default_role);
-            let token = hex::encode(rand::random::<[u8; 32]>());
-            let grant = self.entry_grant(workspace, role, now, &token)?;
-            // A person an invitation of the workspace's own names is handed
-            // that invitation, not a new one: the inviter decided its role and
-            // how long it stands, and its consent is the decision. The page
-            // that joined redeems it with a token as it redeems every entry's
-            // answer, so the entry records a grant for this invitation at once.
-            // An invitation a member already pre-admitted carries that grant,
-            // and the person redeems it with the member's own token; a page
-            // that asks the entry without it is handed a fresh invitation as
-            // any guest is.
-            let their_own = Self::entry_of(&governed)
-                .invitation_only
-                .then(|| governed.invitation_for(user, now))
-                .flatten()
-                .filter(|issued| !governed.admissions.carries(issued.invite_id));
-            let issued = if let Some(issued) = &their_own {
-                governed
-                    .admissions
-                    .record(
-                        issued.invite_id,
-                        grant,
-                        now,
-                        self.inner.host.max_pre_admissions,
-                    )
-                    .map_err(|error| refused(CollaborationError::new(error)))?;
-                issued.clone()
-            } else {
-                if let Some(retry_after_secs) = governed
-                    .admissions
-                    .full_for(now, self.inner.host.max_pre_admissions)
-                {
-                    return Err(EntryRefusal::Full { retry_after_secs });
-                }
-                let host = self.inner.host.cert.clone();
-                let issued = self
-                    .stage_issue(
-                        &mut governed,
-                        &host,
-                        IssueInvitationRequest {
-                            request_id: rand::random(),
-                            role,
-                            recipient_user_public_key: Some(user),
-                            invitee_name: tilo_user_identity::display_name(&join.display_name)
-                                .ok()
-                                .map(str::to_owned),
-                            expires_at_ns: grant.expires_at_ns,
-                            inviter_name: None,
-                        },
-                        false,
-                        &address,
-                        now,
-                    )
-                    .map_err(refused)?;
-                governed
-                    .admissions
-                    .record(
-                        issued.invite_id,
-                        grant,
-                        now,
-                        self.inner.host.max_pre_admissions,
-                    )
-                    .map_err(|error| refused(CollaborationError::new(error)))?;
-                issued
-            };
-            (issued, token)
+            // A person the workspace has in it brings another device in as
+            // theirs, on a device of theirs that is already in: the entry
+            // admits strangers, and hands nobody a part of their own.
+            if policy.active_role(&hex::encode(user)).is_some() {
+                return Err(EntryRefusal::refused(
+                    tilo_peer_state::workspace::membership::ENTRY_NAMES_ANOTHER_DEVICE,
+                ));
+            }
+            // An invitation-only entry refuses a stranger who holds no
+            // invitation of their own, and says so: the person's page offers
+            // them the way to be invited (the site's wait list) instead of a
+            // link in as a guest. The invitation a member made is the
+            // decision; this host issues none of its own.
+            if entry.invitation_only {
+                // An invitation carrying an owner's pre-admission is redeemed
+                // with that owner's one-time token, which the entry does not
+                // hand out: the person comes with the link that carries both.
+                let Some(issued) = governed
+                    .invitation_for(user, now)
+                    .filter(|issued| !governed.admissions.carries(issued.invite_id))
+                else {
+                    return Err(EntryRefusal::InvitationOnly);
+                };
+                return Ok(Listed::Invited(issued));
+            }
+            Listed::Open
         };
-        self.written(workspace, true).await.map_err(refused)?;
-        Ok(issued)
-    }
-
-    /// The grant the entry records for the token it hands out at `workspace`'s
-    /// entry: signed by this host's device key, which the redemption checks
-    /// against the host and the workspace's listing
-    /// ([`Workspaces::pre_admission_signer`]).
-    fn entry_grant(
-        &self,
-        workspace: &str,
-        role: Role,
-        now: u64,
-        token: &str,
-    ) -> Result<PreAdmission, EntryRefusal> {
-        let mut grant = PreAdmission {
-            workspace: workspace.to_owned(),
-            role,
-            token_sha256: Sha256::digest(token.as_bytes()).into(),
-            label: ENTRY_LABEL.to_owned(),
-            expires_at_ns: now.saturating_add(ENTRY_INVITATION_NS),
-            owner_user_public_key: [0; 32],
-            signature: [0; 64],
-        };
-        grant.sign(&self.inner.host.key).map_err(|error| {
-            EntryRefusal::refused(CollaborationError::new(error.to_string()).to_string())
-        })?;
-        Ok(grant)
+        Ok(listed)
     }
 
     /// Whether `workspace`'s entry keeps `person` out because moderation removed
@@ -881,26 +794,33 @@ impl Workspaces {
     /// # Errors
     ///
     /// The signature does not verify, or its signer may not admit anyone.
-    pub(super) fn pre_admission_signer(
-        &self,
-        workspace: &GovernedWorkspace,
-        grant: &PreAdmission,
-    ) -> Result<(), String> {
+    pub(super) fn pre_admission_signer(&self, grant: &PreAdmission) -> Result<(), String> {
         grant.verify()?;
         let host = &self.inner.host.cert;
         if grant.owner_user_public_key == host.user_public_key {
             return Ok(());
         }
-        if grant.owner_user_public_key == host.device_public_key
-            && grant.label == ENTRY_LABEL
-            && Self::entry_of(workspace).is_listed()
-        {
-            return Ok(());
-        }
-        Err(
-            "the pre-admission is signed by neither the workspace's owner nor its host's entry"
-                .into(),
-        )
+        Err("the pre-admission is not signed by the workspace's owner".into())
+    }
+
+    /// `workspace`'s governance as the entry hands it to a device that signs
+    /// its own admission: what a person's device writes its row and its entry
+    /// admission on. The bytes grant nothing; they are what every entry answer
+    /// carries to the device it lets sign, and what this host's own surfaces
+    /// (its pages, its tests) hand the same way.
+    ///
+    /// # Errors
+    ///
+    /// This host holds no such workspace, or its governance does not encode.
+    pub async fn entry_signed_changes(&self, workspace: &str) -> Result<Vec<Vec<u8>>, String> {
+        use tilo_peer_state::join_log::GovernanceMessages as _;
+        self.workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?
+            .lock()
+            .await
+            .peer()
+            .governance_messages()
     }
 
     /// Tell the people who run the public workspace `workspace` that someone reported
@@ -973,16 +893,15 @@ pub(crate) mod entry_tests {
     use tilo_server_protocol::WorkspaceId;
     use tilo_server_protocol::directory::{EntryJoin, Listing};
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
-    use tilo_server_protocol::workspaces::{
-        JoinReply, PreAdmission, WorkspacesReply, WorkspacesRequest,
-    };
+    use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
     use tilo_user_identity::DeviceCert;
 
     use super::super::actions::{PUBLISH, UNPUBLISH};
+    use super::Listed;
     use crate::workspaces::EntryRefusal;
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
-    use crate::workspaces::tests::{governor, guest_device, test_host, test_host_with_grants};
+    use crate::workspaces::tests::{governor, guest_device, test_host};
     use crate::workspaces::{AddMemberRequest, MemberPlace};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
@@ -1057,123 +976,40 @@ pub(crate) mod entry_tests {
         workspaces: &Workspaces,
         workspace: &str,
         join: &EntryJoin,
-        device: (&SigningKey, &DeviceCert),
+        (key, cert): (&SigningKey, &DeviceCert),
     ) -> Result<JoinReply, String> {
-        let (issued, token) = workspaces
+        let listed = workspaces
             .admit_listed(workspace, join)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(redeem(workspaces, issued.signed_invitation, token, device).await)
-    }
-
-    /// Redeem `invitation` with the entry's `token`, as the person's device.
-    pub(crate) async fn redeem(
-        workspaces: &Workspaces,
-        invitation: Vec<u8>,
-        token: String,
-        (key, cert): (&SigningKey, &DeviceCert),
-    ) -> JoinReply {
-        workspaces
-            .admit_proven(
-                invitation,
-                (cert.clone(), key),
-                rand::random(),
-                "Cy",
-                Some(token.as_bytes()),
-            )
-            .await
-    }
-
-    /// What a test does to an entry's grant before it is redeemed.
-    type Forgery = Box<dyn FnOnce(&mut PreAdmission) + Send>;
-
-    #[tokio::test]
-    async fn a_entry_grant_with_a_forged_or_zero_signature_admits_nobody() {
-        let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
-        let server = test_host(dir.path(), &key, &owner).await;
-        let workspaces = server.workspaces();
-        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
-                    description: String::new(),
-                    default_role: Role::Editor,
-                },
-            )
-            .await
-            .unwrap();
-        let host_device = owner.device_public_key;
-        let forgeries: [(&str, Forgery); 3] = [
-            (
-                "a zero signature",
-                Box::new(|grant: &mut PreAdmission| grant.signature = [0; 64]),
-            ),
-            (
-                "a stranger's key",
-                Box::new(|grant: &mut PreAdmission| {
-                    grant
-                        .sign(&ed25519_dalek::SigningKey::from_bytes(&[77; 32]))
-                        .unwrap();
-                }),
-            ),
-            (
-                "a stranger's signature in the host's name",
-                Box::new(move |grant: &mut PreAdmission| {
-                    grant
-                        .sign(&ed25519_dalek::SigningKey::from_bytes(&[78; 32]))
-                        .unwrap();
-                    grant.owner_user_public_key = host_device;
-                }),
-            ),
-        ];
-        for (what, forge) in forgeries {
-            let (guest_key, guest) = guest_device();
-            let join = EntryJoin {
-                user_public_key: hex::encode(guest.user_public_key),
-                display_name: "Mallory".into(),
-            };
-            let (issued, token) = workspaces.admit_listed(&workspace, &join).await.unwrap();
-            workspaces
-                .workspace(&workspace)
-                .await
-                .unwrap()
-                .lock()
-                .await
-                .admissions
-                .tamper(issued.invite_id, forge);
-            let reply = redeem(
-                workspaces,
-                issued.signed_invitation,
-                token,
-                (&guest_key, &guest),
-            )
-            .await;
-            assert!(
-                !matches!(reply, JoinReply::Admitted { .. }),
-                "{what} admitted someone: {reply:?}"
-            );
-            let members = workspaces.summary(&workspace).await.unwrap().members;
-            assert!(
-                members
-                    .iter()
-                    .all(|member| member.root() != Some(guest.user_public_key)),
-                "{what}: not a member"
-            );
+        let request_id = rand::random();
+        match listed {
+            Listed::Invited(issued) => Ok(workspaces
+                .admit_proven(
+                    issued.signed_invitation,
+                    (cert.clone(), key),
+                    request_id,
+                    "Cy",
+                    None,
+                )
+                .await),
+            Listed::Open => {
+                let signed = workspaces.entry_signed_changes(workspace).await?;
+                let admission = tilo_peer_state::own_admission::sign_entry_admission(
+                    workspace,
+                    &signed,
+                    cert,
+                    request_id,
+                    Some("Cy"),
+                    key,
+                    tilo_clock::wall(),
+                )
+                .await?;
+                Ok(workspaces
+                    .admit_entered(cert, workspace, request_id, &admission)
+                    .await)
+            }
         }
-
-        let (guest_key, guest) = guest_device();
-        let join = EntryJoin {
-            user_public_key: hex::encode(guest.user_public_key),
-            display_name: "Cy".into(),
-        };
-        assert!(matches!(
-            walk_in_as(workspaces, &workspace, &join, (&guest_key, &guest)).await,
-            Ok(JoinReply::Admitted { .. })
-        ));
-        server.shutdown().await;
     }
 
     #[tokio::test]
@@ -1781,51 +1617,6 @@ pub(crate) mod entry_tests {
         server.shutdown().await;
         let server = test_host(dir.path(), &key, &owner).await;
         assert!(server.workspaces().published_workspaces().await.is_empty());
-        server.shutdown().await;
-    }
-
-    /// An entry that holds as many open grants as the workspace keeps says when
-    /// it has room again instead of taking another invitation.
-    #[tokio::test]
-    async fn a_full_entry_answers_when_it_has_room_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let (key, owner) = governor();
-        let server = test_host_with_grants(dir.path(), &key, &owner, Some(1)).await;
-        let workspaces = server.workspaces();
-        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
-                    description: String::new(),
-                    default_role: Role::Editor,
-                },
-            )
-            .await
-            .unwrap();
-        let join = || {
-            let (_, guest) = guest_device();
-            EntryJoin {
-                user_public_key: hex::encode(guest.user_public_key),
-                display_name: "Cy".into(),
-            }
-        };
-        workspaces
-            .admit_listed(&workspace, &join())
-            .await
-            .expect("the entry takes the first grant");
-        let refused = workspaces
-            .admit_listed(&workspace, &join())
-            .await
-            .unwrap_err();
-        let EntryRefusal::Full { retry_after_secs } = refused else {
-            panic!("the full entry refused another way: {refused:?}");
-        };
-        assert!(
-            (1..=600).contains(&retry_after_secs),
-            "the earliest open grant expires within its ten minutes: {retry_after_secs}"
-        );
         server.shutdown().await;
     }
 

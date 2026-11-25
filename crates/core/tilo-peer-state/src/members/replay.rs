@@ -369,6 +369,10 @@ struct Log<'a> {
     doc: &'a AutoCommit,
     workspace: &'a str,
     parts: Option<BTreeMap<String, Vec<Vec<u8>>>>,
+    /// The heads each membership operation's change was written on, by the
+    /// document key the operation is stored under: what an entry admission
+    /// names is read at the place its operation sits, not at the head now.
+    op_deps: Option<BTreeMap<String, Vec<automerge::ChangeHash>>>,
 }
 
 impl<'a> Log<'a> {
@@ -377,7 +381,91 @@ impl<'a> Log<'a> {
             doc,
             workspace,
             parts: None,
+            op_deps: None,
         }
+    }
+
+    /// The entry the workspace's governance held where operation `id` sits:
+    /// the heads its change was written on are the basis the device that made
+    /// it saw, and the entry there is what admits its author. `None` when the
+    /// document does not hold the change that wrote the operation.
+    ///
+    /// This is the only place a replay reads an entry: the entry now decides
+    /// nothing about a change already in the log, so the owner closing the
+    /// entry throws out no guest who came in while it was open.
+    fn entry_at(&mut self, id: crate::members::OpId) -> Option<tilo_action_policy::EntryPolicy> {
+        let key = crate::members::op::op_key(id);
+        let heads = self.op_deps().get(&key)?.clone();
+        let mut doc = self.doc.clone();
+        let forked = doc.fork_at(&heads).ok()?;
+        Some(tilo_desktop_model::projection::workspace_entry_of(&forked))
+    }
+
+    /// The heads each membership operation's change was written on, read once
+    /// from the document's changes.
+    fn op_deps(&mut self) -> &BTreeMap<String, Vec<automerge::ChangeHash>> {
+        self.op_deps.get_or_insert_with(|| {
+            let mut doc = self.doc.clone();
+            let mut deps = BTreeMap::new();
+            for change in doc.get_changes(&[]) {
+                let keys: Vec<String> = change
+                    .decode()
+                    .operations
+                    .iter()
+                    .filter(|operation| operation.obj == automerge::legacy::ObjectId::Root)
+                    .filter_map(|operation| match &operation.key {
+                        automerge::legacy::Key::Map(key) => Some(key.to_string()),
+                        automerge::legacy::Key::Seq(_) => None,
+                    })
+                    .filter(|key| crate::members::op::keyed(key).is_some())
+                    .collect();
+                for key in keys {
+                    deps.insert(key, change.deps().to_vec());
+                }
+            }
+            deps
+        })
+    }
+
+    /// Admit `person` into `policy` under the entry `entry` their device
+    /// named, as the workspace's governance held the entry where the
+    /// operation sits: the named entry must be that one, it must open to
+    /// people who ask, and the person takes its role. The owner and a banned
+    /// person come in neither. Whether it admitted anyone.
+    fn enter(
+        &mut self,
+        policy: &mut WorkspacePolicy,
+        op: &SignedMembershipOp,
+        entry: [u8; 32],
+        person: [u8; 32],
+    ) -> bool {
+        let person_hex = hex::encode(person);
+        if policy.is_owner(&person_hex) || policy.is_banned(&person_hex) {
+            return false;
+        }
+        let Ok(id) = op.id() else {
+            return false;
+        };
+        let Some(at) = self.entry_at(id) else {
+            return false;
+        };
+        let Ok(digest) = crate::state::entry_digest(&at) else {
+            return false;
+        };
+        if digest != entry {
+            return false;
+        }
+        let Some(role) = at.open_role() else {
+            return false;
+        };
+        policy
+            .joined
+            .entry(person_hex.clone())
+            .or_insert(op.at_ns / 1_000_000);
+        // Someone who is a member already keeps the role they hold: the entry
+        // is how someone enters, not the place they hold now.
+        policy.members.entry(person_hex).or_insert(role);
+        true
     }
 
     /// Admit `person` into `policy` by the invitation `invite`, as recorded at
@@ -489,6 +577,12 @@ fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, log: &mut Lo
         | MembershipOpCommand::Readmit { .. } => {}
         MembershipOpCommand::Admit { invite, person } => {
             if !log.admit(policy, *invite, *person, op.at_ns) {
+                return false;
+            }
+            order(policy);
+        }
+        MembershipOpCommand::Enter { entry, person } => {
+            if !log.enter(policy, op, *entry, *person) {
                 return false;
             }
             order(policy);

@@ -12,6 +12,7 @@ use tilo_server_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
+use super::Listed;
 use crate::handshake::{Admit, EntryFuture};
 use crate::workspace_access::person_device;
 use crate::workspaces::mode::{Mode, PAUSED_RETRY_AFTER_SECS};
@@ -95,11 +96,38 @@ impl Admit for Workspaces {
             let entered = match (member_device, entering.through) {
                 (Some(entered), _) => entered,
                 (None, Through::Entry) => {
-                    self.entered_by_entry(
-                        cert,
-                        (&entering.workspace, &entering.name, &entering.admission),
-                    )
-                    .await
+                    // The entry lets a person who asks in: they sign their own
+                    // admission under the entry the workspace records, and no
+                    // host signs anything for them. A device that comes back
+                    // with that admission is taken in as it wrote itself.
+                    if entering.admission.is_empty() {
+                        match self.entry(cert, &entering.workspace, &entering.name).await {
+                            Ok(Listed::Open) => {
+                                return self.sign_on(&entering.workspace, Through::Entry).await;
+                            }
+                            Ok(Listed::Invited(issued)) => {
+                                let through = Through::Invitation {
+                                    invitation: issued.signed_invitation,
+                                    token: None,
+                                };
+                                return self.sign_on(&entering.workspace, through).await;
+                            }
+                            Err(refused) => return Entered::Refused(refused),
+                        }
+                    }
+                    let admitted = self
+                        .admit_entered(
+                            cert,
+                            &entering.workspace,
+                            entering.request_id,
+                            &entering.admission,
+                        )
+                        .await;
+                    let admitted = entered(admitted);
+                    if !matches!(admitted, Entered::Admitted { .. }) {
+                        return admitted;
+                    }
+                    admitted
                 }
                 (None, Through::Invitation { invitation, token }) => {
                     // The keys the entry asks for are the named workspace's group's: an
@@ -148,30 +176,6 @@ impl Admit for Workspaces {
 }
 
 impl Workspaces {
-    /// The entry issues the person an invitation, which the device redeems by the admission it
-    /// signs on it: an entry that names an admission of its own already is refused.
-    async fn entered_by_entry(
-        &self,
-        cert: &DeviceCert,
-        (workspace, name, admission): (&str, &str, &[Vec<u8>]),
-    ) -> Entered {
-        if !admission.is_empty() {
-            return Entered::Refused(refused(
-                "an admission comes with the invitation the entry issued".to_owned(),
-            ));
-        }
-        match self.entry(cert, workspace, name).await {
-            Ok((invitation, token)) => {
-                let through = Through::Invitation {
-                    invitation,
-                    token: Some(token.into_bytes()),
-                };
-                self.sign_on(workspace, through).await
-            }
-            Err(refused) => Entered::Refused(refused),
-        }
-    }
-
     /// What a device that may come into `workspace` is answered before it
     /// signs its own admission: the workspace's member list it writes it on,
     /// and how to come back with it (`through`).
@@ -197,7 +201,7 @@ impl Workspaces {
         cert: &DeviceCert,
         workspace: &str,
         name: &str,
-    ) -> Result<(Vec<u8>, String), EnterRefusal> {
+    ) -> Result<super::Listed, EnterRefusal> {
         let wait_list = self.waiting_offer(workspace).await;
         // A key acting for someone the workspace has in it is no device of
         // theirs: the entry would hand it its person's part, and its
@@ -225,17 +229,15 @@ impl Workspaces {
         let asking = crate::timing::start();
         let admitted = self.admit_listed(workspace, &join).await;
         crate::timing::event("entry.entry", asking, 0);
-        admitted
-            .map(|(issued, token)| (issued.signed_invitation, token))
-            .map_err(|refusal| EnterRefusal::Entry {
-                retry_after_secs: match refusal {
-                    crate::workspaces::EntryRefusal::Full { retry_after_secs } => {
-                        Some(retry_after_secs)
-                    }
-                    _ => None,
-                },
-                refused: refusal.answer_with(wait_list.as_ref()),
-            })
+        admitted.map_err(|refusal| EnterRefusal::Entry {
+            retry_after_secs: match refusal {
+                crate::workspaces::EntryRefusal::Full { retry_after_secs } => {
+                    Some(retry_after_secs)
+                }
+                _ => None,
+            },
+            refused: refusal.answer_with(wait_list.as_ref()),
+        })
     }
 
     /// Whether `entering` is one the removed `cert` may not make: a device the
@@ -392,6 +394,94 @@ impl Workspaces {
             )
             .map_err(|error| format!("the device's own row was not carried: {error}"))?;
         self.settle(governed).await
+    }
+
+    /// Take `admission`, the changes `cert`'s device signed for itself
+    /// through `workspace`'s entry, as every member takes them: judged under
+    /// their author, the device, while this host carries them and signs
+    /// nothing of its own. The entry the guest named must still be the one
+    /// the workspace records, so a close or an invitation-only change since
+    /// it looked refuses it here; an admission already in the history is
+    /// judged by the entry its own place held, never by this one.
+    ///
+    /// The host's answer: the workspace's admission, or why it refused.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from reading the entry until its device is committed and settled"
+    )]
+    pub async fn admit_entered(
+        &self,
+        cert: &DeviceCert,
+        workspace: &str,
+        request_id: [u8; 32],
+        admission: &[Vec<u8>],
+    ) -> JoinReply {
+        let refused = |reason: String| JoinReply::Refused(reason);
+        if !crate::workspace_access::person_device(cert) {
+            return refused(
+                "a key acting for someone comes into a workspace by its delegation, not through the entry"
+                    .to_owned(),
+            );
+        }
+        let now = tilo_clock::unix_now_ns();
+        let Ok(state) = self.workspace(workspace).await else {
+            return refused("this host holds no such workspace".to_owned());
+        };
+        let mut governed = state.lock().await;
+        if governed.admitted_device(request_id) == Some(cert.device_public_key) {
+            return Self::admitted(&governed, cert.device_public_key, now)
+                .unwrap_or_else(|error| refused(error.to_string()));
+        }
+        let entry = governed.peer().governance().governed_entry();
+        let Some(role) = entry.open_role() else {
+            return refused("this workspace's entry does not take people who ask".to_owned());
+        };
+        let Ok(digest) = tilo_peer_state::entry_digest(&entry) else {
+            return refused("the workspace's entry does not read".to_owned());
+        };
+        if governed
+            .peer()
+            .governance()
+            .governed_policy()
+            .is_ok_and(|policy| policy.is_blocked(&hex::encode(cert.user_public_key)))
+        {
+            return refused("this person is banned from the workspace".to_owned());
+        }
+        if governed.removals.refuses(cert.user_public_key, now)
+            || governed.peer().governance().removed_from_member_list(cert)
+        {
+            return refused(tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned());
+        }
+        let key = self.inner.host.key.clone();
+        let mut candidate = governed.peer().clone();
+        if let Err(error) = candidate.admit_own(
+            cert,
+            admission.to_vec(),
+            crate::workspaces::system_time(now),
+        ) {
+            return refused(error);
+        }
+        let mut collaboration = governed.collaboration().clone();
+        {
+            let host = governed.governed(self.device_cert());
+            if let Err(error) = collaboration.completed_entry(&host, cert, request_id, digest, role)
+            {
+                return refused(error.to_string());
+            }
+        }
+        if let Err(error) = governed.keep(
+            candidate,
+            &key,
+            crate::workspaces::system_time(now),
+            |_, _| Ok(collaboration),
+        ) {
+            return refused(error);
+        }
+        if let Err(error) = self.settle(&mut governed).await {
+            return refused(error);
+        }
+        Self::admitted(&governed, cert.device_public_key, now)
+            .unwrap_or_else(|error| refused(error.to_string()))
     }
 
     /// Admit `cert`'s device to `workspace` as a device of its person, who
@@ -575,7 +665,7 @@ fn entered(reply: JoinReply) -> Entered {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
-    use tilo_server_protocol::directory::{EntryJoin, EntryRefusalCode, Listing};
+    use tilo_server_protocol::directory::{EntryRefusalCode, Listing};
     use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
     use tilo_server_protocol::workspaces::RemoveMemberRequest;
     use tilo_server_protocol::workspaces::{JoinReply, Role};
@@ -778,25 +868,56 @@ mod tests {
         member_at(workspaces, &owner, &workspace, &ada, Role::Moderator).await;
         let before = role_of(workspaces, &workspace, ada.verifying_key().to_bytes()).await;
 
-        let join = EntryJoin {
-            user_public_key: hex::encode(ada.verifying_key().to_bytes()),
-            display_name: "Ada".into(),
-        };
-        let (issued, token) = workspaces.admit_listed(&workspace, &join).await.unwrap();
         let (tab_key, tab) = device_of(&ada, DeviceCapabilities::member());
+        let request_id = rand::random();
+        let asked = Entry {
+            entering: Entering {
+                workspace: workspace.clone(),
+                name: "Ada".into(),
+                request_id,
+                through: Through::Entry,
+                admission: Vec::new(),
+            },
+            access: None,
+            proof: [0; 64],
+        };
+        let Entered::Sign {
+            governance,
+            through,
+        } = workspaces.enter_signed((&tab_key, &tab), asked).await
+        else {
+            panic!("the entry lets a further device of a member sign its own row");
+        };
+        let admission = tilo_peer_state::own_admission::sign_entry(
+            &workspace,
+            &governance,
+            (None, request_id),
+            Some("Ada"),
+            (&tab, &tab_key),
+            tilo_clock::wall(),
+        )
+        .await
+        .unwrap();
         let reply = workspaces
-            .admit_proven(
-                issued.signed_invitation,
-                (tab, &tab_key),
-                rand::random(),
-                "Ada",
-                Some(token.as_bytes()),
+            .enter_signed(
+                (&tab_key, &tab),
+                Entry {
+                    entering: Entering {
+                        workspace: workspace.clone(),
+                        name: "Ada".into(),
+                        request_id,
+                        through,
+                        admission,
+                    },
+                    access: None,
+                    proof: [0; 64],
+                },
             )
             .await;
         assert!(
             matches!(
                 reply,
-                JoinReply::Admitted {
+                Entered::Admitted {
                     role: Role::Moderator,
                     ..
                 }

@@ -1749,7 +1749,7 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
         .list_invitation_only(&lounge, &owner, true)
         .await
         .unwrap();
-    workspaces
+    let refused = workspaces
         .admit_listed(
             &lounge,
             &EntryJoin {
@@ -1758,7 +1758,15 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
             },
         )
         .await
-        .expect("the owner is let in through their own workspace's closed entry");
+        .expect_err("a member's device joins as theirs, never as a stranger through the entry");
+    assert!(
+        matches!(
+            refused,
+            crate::workspaces::EntryRefusal::Refused(ref text)
+                if text.contains("as one of yours")
+        ),
+        "{refused:?}"
+    );
 }
 
 /// The wait list holds the entry: the invitation-only entry lets nobody in on

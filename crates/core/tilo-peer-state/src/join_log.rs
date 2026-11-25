@@ -517,6 +517,34 @@ impl JoinLog {
             .map(|completion| completion.bootstrap.device_cert.device_public_key)
     }
 
+    /// Record the completion of an entry admission: `device_cert` came in
+    /// under the entry `entry` names, at `role`, answered at the endpoint its
+    /// own key is, for `request_id`. No invitation was spent, so the
+    /// completion names the entry's digest where an invitation's id goes, and
+    /// the same request asked again hears this answer.
+    ///
+    /// # Errors
+    ///
+    /// The request does not encode.
+    pub fn completed_entry(
+        &mut self,
+        governed: &Governed<'_>,
+        device_cert: &DeviceCert,
+        request_id: [u8; 32],
+        entry: [u8; 32],
+        role: Role,
+    ) -> Result<JoinBootstrap, JoinError> {
+        let admitted = governed.admission(entry, device_cert.clone(), role);
+        let digest = request_digest(&(device_cert.device_public_key, request_id))?;
+        self.join_completions.push(JoinCompletionRecord::receipt(
+            device_cert.device_public_key,
+            request_id,
+            digest,
+            admitted.clone(),
+        ));
+        Ok(admitted)
+    }
+
     /// Drop what the workspace keeps about how `people` joined: their
     /// invitations, join receipts and pending membership challenges. An
     /// invitation whose records are gone is refused as not issued here, so

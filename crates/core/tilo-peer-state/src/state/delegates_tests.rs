@@ -573,6 +573,7 @@ tilo_test_env::scenario! {
             delegate: None,
             workspace_delegations: vec![],
             removed: false,
+            entry: None,
         };
         let bytes = identity.encode().unwrap();
         let back = crate::state::GovernedIdentity::decode(&bytes).unwrap();

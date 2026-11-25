@@ -411,7 +411,7 @@ impl Workspaces {
                             &token,
                             now,
                         )?;
-                        self.pre_admission_signer(workspace, grant)?;
+                        self.pre_admission_signer(grant)?;
                         if grant.role != role || grant.workspace != workspace.workspace() {
                             return Err(CollaborationError::new(
                                 "the pre-admission is for another workspace or role",

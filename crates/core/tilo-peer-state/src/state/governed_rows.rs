@@ -79,6 +79,11 @@ pub(crate) struct GovernedIdentity {
     /// reads it, and a deliberate admission of the device writes it false
     /// again.
     pub(crate) removed: bool,
+    /// What admitted the device through the workspace's entry, where the
+    /// workspace's entry is what let it in: the entry's digest, the role it
+    /// opened at, and the request it came in under. No invitation is behind
+    /// it, and no device of the host's signed it.
+    pub(crate) entry: Option<EntryReceipt>,
 }
 
 impl GovernedIdentity {
@@ -115,15 +120,47 @@ impl GovernedIdentity {
                     admissions,
                     delegate,
                     workspace_delegations,
-                ) = postcard::from_bytes::<(
+                    removed,
+                ) = match postcard::from_bytes::<(
                     DeviceCert,
                     Vec<tilo_user_identity::RevocationEntry>,
                     Option<RedemptionReceipt>,
                     Vec<RedemptionReceipt>,
                     Option<Vec<u8>>,
                     Vec<WorkspaceDelegation>,
+                    bool,
                 )>(bytes)
-                .map_err(RowError::Postcard)?;
+                {
+                    Ok(row) => row,
+                    Err(postcard::Error::DeserializeUnexpectedEnd) => {
+                        let (
+                            device_cert,
+                            revocations,
+                            admission,
+                            admissions,
+                            delegate,
+                            workspace_delegations,
+                        ) = postcard::from_bytes::<(
+                            DeviceCert,
+                            Vec<tilo_user_identity::RevocationEntry>,
+                            Option<RedemptionReceipt>,
+                            Vec<RedemptionReceipt>,
+                            Option<Vec<u8>>,
+                            Vec<WorkspaceDelegation>,
+                        )>(bytes)
+                        .map_err(RowError::Postcard)?;
+                        (
+                            device_cert,
+                            revocations,
+                            admission,
+                            admissions,
+                            delegate,
+                            workspace_delegations,
+                            false,
+                        )
+                    }
+                    Err(error) => return Err(RowError::Postcard(error)),
+                };
                 StoredIdentity {
                     device_cert,
                     revocations,
@@ -131,7 +168,8 @@ impl GovernedIdentity {
                     admissions,
                     delegate,
                     workspace_delegations,
-                    removed: false,
+                    removed,
+                    entry: None,
                 }
             }
             Err(error) => return Err(RowError::Postcard(error)),
@@ -148,6 +186,7 @@ impl GovernedIdentity {
                 .map_err(RowError::Delegate)?,
             workspace_delegations: stored.workspace_delegations,
             removed: stored.removed,
+            entry: stored.entry,
         })
     }
 
@@ -171,6 +210,7 @@ impl GovernedIdentity {
             delegate: delegate.as_deref(),
             workspace_delegations: &self.workspace_delegations,
             removed: self.removed,
+            entry: self.entry.as_ref(),
         })
         .map_err(RowError::Postcard)
     }
@@ -202,6 +242,7 @@ struct StoredIdentity {
     delegate: Option<Vec<u8>>,
     workspace_delegations: Vec<WorkspaceDelegation>,
     removed: bool,
+    entry: Option<EntryReceipt>,
 }
 /// [`StoredIdentity`], borrowed to be written.
 #[derive(Serialize)]
@@ -213,6 +254,7 @@ struct StoredIdentityRef<'a> {
     delegate: Option<&'a [u8]>,
     workspace_delegations: &'a [WorkspaceDelegation],
     removed: bool,
+    entry: Option<&'a EntryReceipt>,
 }
 
 /// A workspace delegation as older builds wrote it, read for the media
@@ -262,6 +304,7 @@ impl Default for GovernedIdentity {
             delegate: None,
             workspace_delegations: Vec::new(),
             removed: false,
+            entry: None,
         }
     }
 }
@@ -270,7 +313,7 @@ impl GovernedIdentity {
     pub(crate) fn has_admission(&self) -> bool {
         // An agent row is no admission, which keeps other people's agents
         // out.
-        self.admission.is_some() || !self.admissions.is_empty()
+        self.admission.is_some() || !self.admissions.is_empty() || self.entry.is_some()
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +323,17 @@ pub(crate) struct RedemptionReceipt {
     pub(crate) device_public_key: [u8; 32],
     pub(crate) request_id: [u8; 32],
     pub(crate) role: crate::join::Role,
+}
+
+/// What admitted a device through the workspace's entry: the entry digest it
+/// came in under, the role that entry opened at, and the request it asked
+/// with. The owner's entry is the grant, so no invitation and no host's key
+/// is named.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct EntryReceipt {
+    pub(crate) entry: [u8; 32],
+    pub(crate) role: crate::join::Role,
+    pub(crate) request_id: [u8; 32],
 }
 
 #[cfg(test)]

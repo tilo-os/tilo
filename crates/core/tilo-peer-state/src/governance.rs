@@ -205,6 +205,7 @@ pub(crate) fn admit_invited_member(
         delegate,
         workspace_delegations: Vec::new(),
         removed: false,
+        entry: None,
     };
     candidate
         .put(
@@ -248,6 +249,138 @@ pub(crate) fn admit_invited_member(
             }
         }
     }
+    crate::state::commit_governance(&mut candidate, crate::state::now_secs(now), None);
+    let changes = candidate
+        .get_changes(&before)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    *document = candidate;
+    Ok(AdmissionOutcome::Applied { changes })
+}
+
+/// Apply an entry admission to the caller's workspace document as one
+/// transaction, written by the joining device itself: `cert` came in under the
+/// entry `entry` names, at the role that entry opens. No invitation is
+/// checked and no host signed anything for it: the owner's entry is the grant,
+/// and the write is the device's own.
+///
+/// The entry must still be the one the held workspace records, so a close or
+/// an invitation-only change since the guest looked refuses it here; replay
+/// checks the entry where the admission sits in the log instead.
+///
+/// # Errors
+///
+/// `cert` is not current, the entry is not the workspace's now or opens to
+/// nobody, the person is banned, the row conflicts, or it cannot be written.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one atomic governance transaction; on error the document stays unchanged"
+)]
+pub(crate) fn admit_entered_member(
+    document: &mut AutoCommit,
+    held: &crate::cached_document::CachedDocument,
+    cert: &tilo_user_identity::DeviceCert,
+    entry: [u8; 32],
+    request_id: [u8; 32],
+    name: Option<&str>,
+    now: SystemTime,
+) -> Result<AdmissionOutcome, String> {
+    let now_ns: u64 = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    tilo_user_identity::verify_device_cert_at(cert, now_ns).map_err(|error| error.to_string())?;
+    let declared_workspace = document
+        .get(ROOT, "workspace")
+        .map_err(|error| error.to_string())?
+        .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
+        .ok_or("governed workspace id is missing")?;
+    let policy = held.workspace_policy(&declared_workspace);
+    let current = held.workspace_entry();
+    if crate::state::entry_digest(&current)? != entry {
+        return Err("the workspace's entry is not the one this admission names".into());
+    }
+    let Some(role) = current.open_role() else {
+        return Err("this workspace's entry does not take people who ask".into());
+    };
+    if policy.is_banned(&hex::encode(cert.user_public_key)) {
+        return Err("this person is banned from the workspace".into());
+    }
+    let id = hex::encode(cert.device_public_key);
+    let prior = held
+        .identities()
+        .get(&id)
+        .map(|identity| identity.clone().map_err(|error| error.to_string()))
+        .transpose()?;
+    if prior.as_ref().is_some_and(|old| {
+        old.device_cert != *cert && !crate::state::supersedes(&old.device_cert, cert)
+    }) {
+        return Err("governed certificate conflict".into());
+    }
+    let receipt = crate::state::EntryReceipt {
+        entry,
+        role,
+        request_id,
+    };
+    if prior
+        .as_ref()
+        .is_some_and(|old| old.entry.as_ref() == Some(&receipt))
+    {
+        return Ok(AdmissionOutcome::AlreadyApplied);
+    }
+    let (revocations, admission, admissions, delegate) = prior.map_or_else(
+        || (Vec::new(), None, Vec::new(), None),
+        |identity| {
+            (
+                identity.revocations,
+                identity.admission,
+                identity.admissions,
+                identity.delegate,
+            )
+        },
+    );
+    let identity = GovernedIdentity {
+        device_cert: cert.clone(),
+        revocations,
+        admission,
+        admissions,
+        delegate,
+        workspace_delegations: Vec::new(),
+        removed: false,
+        entry: Some(receipt),
+    };
+    let mut candidate = document.clone();
+    let before = candidate.get_heads();
+    let identities = candidate
+        .get(ROOT, "peer_identities_v1")
+        .map_err(|error| error.to_string())?
+        .ok_or("governed identities missing")?
+        .1;
+    let names = candidate
+        .get(ROOT, "peers")
+        .map_err(|error| error.to_string())?
+        .ok_or("governed peers missing")?
+        .1;
+    candidate
+        .put(
+            &identities,
+            &id,
+            automerge::ScalarValue::Bytes(identity.encode().map_err(|error| error.to_string())?),
+        )
+        .map_err(|error| error.to_string())?;
+    let known = name
+        .map(str::to_owned)
+        .or_else(|| known_person_name(held, cert.user_public_key));
+    candidate
+        .put(
+            &names,
+            &id,
+            known.as_deref().unwrap_or(cert.device_label.as_str()),
+        )
+        .map_err(|error| error.to_string())?;
     crate::state::commit_governance(&mut candidate, crate::state::now_secs(now), None);
     let changes = candidate
         .get_changes(&before)

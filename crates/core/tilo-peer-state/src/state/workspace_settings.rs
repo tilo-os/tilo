@@ -144,6 +144,23 @@ fn grant_sandbox(
     Ok(())
 }
 
+/// The digest a join names the workspace's entry by: a domain tag and the
+/// entry's canonical encoding. Every device computes it alike, and the value
+/// says exactly the rule a guest came in under, not merely that it was open.
+///
+/// # Errors
+///
+/// The entry does not encode.
+pub fn entry_digest(entry: &tilo_action_policy::EntryPolicy) -> Result<[u8; 32], String> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(ENTRY_DIGEST_DOMAIN);
+    hasher.update(&postcard::to_allocvec(entry).map_err(|error| error.to_string())?);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// What separates an entry's digest from any other digest of the same bytes.
+const ENTRY_DIGEST_DOMAIN: &[u8] = b"tilo.workspace.entry.v1";
+
 impl PeerGovernance<'_> {
     /// The workspace's entry, as its governance records it: whether a directory
     /// lists it, and whom it lets in. Every host serving the workspace answers

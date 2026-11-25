@@ -464,6 +464,7 @@ fn row_written_by(
         delegate: None,
         workspace_delegations: Vec::new(),
         removed: false,
+        entry: None,
     };
     let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     doc.put(

@@ -530,6 +530,9 @@ impl PeerGovernance<'_> {
                 crate::members::MembershipOpCommand::Admit { person, .. } => {
                     format!("admission of {}", hex::encode(person))
                 }
+                crate::members::MembershipOpCommand::Enter { person, .. } => {
+                    format!("entry admission of {}", hex::encode(person))
+                }
                 crate::members::MembershipOpCommand::Governance { rows } => {
                     format!("governance of {} rows", rows.len())
                 }
@@ -1130,6 +1133,92 @@ impl PeerGovernanceMut<'_> {
             }
         }
     }
+    /// Admit `key`'s device through the workspace's entry: it names the entry
+    /// `entry` it came in under, and the entry's open role is the role its
+    /// person takes. No invitation is behind it and no host signs it; the
+    /// device writes its own row and its own membership change, and the
+    /// entry the workspace records now is what admits it. Whether the
+    /// workspace changed.
+    ///
+    /// A workspace whose entry closed, turned invitation-only, or opened at
+    /// another role since the device looked refuses it, and so does one that
+    /// banned the person; replay judges an admission already in the history
+    /// by the entry its own place in the log held, not by the entry now.
+    ///
+    /// # Errors
+    ///
+    /// The device is not current or is revoked, the entry is not the
+    /// workspace's now or takes nobody, the person is banned, an agent tries
+    /// to come in by the entry, or governance cannot be updated.
+    pub fn admit_entered_member(
+        self,
+        entry: [u8; 32],
+        request_id: [u8; 32],
+        name: Option<&str>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let name = name
+            .map(|name| {
+                tilo_user_identity::display_name(name)
+                    .map_err(tilo_user_identity::DisplayNameError::reason)
+            })
+            .transpose()?;
+        let device = key.device_public_key();
+        let cert = self
+            .peer
+            .certificate(&device, now)
+            .map_err(|error| error.to_string())?
+            .clone();
+        if key.device_public_key() != cert.device_public_key {
+            return Err("a device signs only its own admission".into());
+        }
+        if cert.capabilities.agent.is_some() || cert.capabilities.stand_in {
+            return Err(
+                "a key acting for someone comes in by its delegation, not through the entry".into(),
+            );
+        }
+        if self.peer.core.revocations.refuses(&cert) {
+            return Err("device revoked".into());
+        }
+        let cached = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        let mut document = (**cached).clone();
+        document.set_actor(self.peer.workspace_actor_of(key));
+        let before = document.get_heads();
+        match crate::governance::admit_entered_member(
+            &mut document,
+            cached,
+            &cert,
+            entry,
+            request_id,
+            name,
+            now,
+        )? {
+            crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
+            crate::governance::AdmissionOutcome::Applied { .. } => {
+                // The workspace's owner is not one of its members: they hold
+                // it from its beginning, and their device's certificate is
+                // what admits it.
+                let enter = (cert.user_public_key != self.peer.core.owner).then_some(
+                    crate::members::MembershipOpCommand::Enter {
+                        entry,
+                        person: cert.user_public_key,
+                    },
+                );
+                // A person joining names the change for whoever reads the
+                // workspace's members: they came in under its entry.
+                let joined = enter.as_ref().map(|_| joined_entry(&cert, request_id));
+                self.peer.naming(joined, |peer| {
+                    peer.write_membership(document.into(), &before, key, now, enter)
+                })
+            }
+        }
+    }
     /// Admit `device`, a device certified by the root of someone already a
     /// member, as that member's: it needs no invitation, and `key` is that
     /// very device, writing its own row. No device writes another's row.
@@ -1223,6 +1312,7 @@ impl PeerGovernanceMut<'_> {
             delegate: None,
             workspace_delegations: Vec::new(),
             removed: false,
+            entry: None,
         };
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -1988,6 +2078,22 @@ impl PeerGovernanceMut<'_> {
             )
         })
     }
+}
+
+/// The action an entry admission is, for whoever reads the workspace's
+/// members: the person came in under the workspace's entry, which is the only
+/// thing that proposed them. Its own request names it.
+fn joined_entry(cert: &DeviceCert, request_id: [u8; 32]) -> super::ActionStamp {
+    let person = |root: [u8; 32]| {
+        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(root)))
+    };
+    // The entry proposed them, and it names no person: the stamp suggests
+    // nobody.
+    super::ActionStamp::of_invocation(
+        tilo_action_policy::roles::governance::JOIN,
+        person(cert.user_public_key),
+        hex::encode(request_id),
+    )
 }
 
 /// The action a redemption of an invitation is, for whoever reads the

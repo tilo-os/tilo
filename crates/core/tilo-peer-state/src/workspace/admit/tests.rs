@@ -1335,6 +1335,7 @@ fn list_device(doc: &mut AutoCommit, cert: &DeviceCert) {
         delegate: None,
         workspace_delegations: Vec::new(),
         removed: false,
+        entry: None,
     };
     doc.put(
         &rows,

@@ -111,6 +111,7 @@ mod workspace_settings;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS};
 pub use seed::{seed_workspace, seed_workspace_at, workspace_seed};
+pub use workspace_settings::entry_digest;
 mod checkpoints;
 pub(crate) use checkpoints::kept_by as checkpoint_check_kept_by;
 pub use checkpoints::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
@@ -548,7 +549,7 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
 }
 
 pub use governed_rows::RowError;
-pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+pub(crate) use governed_rows::{EntryReceipt, GovernedIdentity, RedemptionReceipt};
 pub(crate) use invitation_receipts::StoredReceipt;
 
 /// The map at `key` of a governed workspace document.

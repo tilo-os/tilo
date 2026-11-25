@@ -121,7 +121,7 @@ async fn through_the_entry(
     )
     .await
     .unwrap();
-    let (issued, token) = workspaces
+    let listed = workspaces
         .admit_listed(
             workspace,
             &tilo_server_protocol::directory::EntryJoin {
@@ -131,15 +131,37 @@ async fn through_the_entry(
         )
         .await
         .unwrap();
-    let admitted = workspaces
-        .admit_proven(
-            issued.signed_invitation,
-            (cert, &key),
-            rand::random(),
-            name,
-            Some(token.as_bytes()),
-        )
-        .await;
+    let admitted = match listed {
+        tilo_server::workspaces::Listed::Invited(issued) => {
+            workspaces
+                .admit_proven(
+                    issued.signed_invitation,
+                    (cert, &key),
+                    rand::random(),
+                    name,
+                    None,
+                )
+                .await
+        }
+        tilo_server::workspaces::Listed::Open => {
+            let request_id = rand::random();
+            let signed = workspaces.entry_signed_changes(workspace).await.unwrap();
+            let admission = tilo_peer_state::own_admission::sign_entry_admission(
+                workspace,
+                &signed,
+                &cert,
+                request_id,
+                Some(name),
+                &key,
+                tilo_clock::wall(),
+            )
+            .await
+            .unwrap();
+            workspaces
+                .admit_entered(&cert, workspace, request_id, &admission)
+                .await
+        }
+    };
     assert!(
         matches!(admitted, JoinReply::Admitted { .. }),
         "{admitted:?}"

@@ -127,6 +127,18 @@ impl EntryPolicy {
         self.invitation_only && self.wait_list_max > 0
     }
 
+    /// The role the entry lets anyone who asks come in at: its listing's
+    /// default role on an entry that takes people who ask. `None` on an entry
+    /// that takes people by invitation only, and on one no directory lists:
+    /// neither lets a stranger in.
+    #[must_use]
+    pub const fn open_role(&self) -> Option<Role> {
+        match &self.listing {
+            Some(listing) if !self.invitation_only => Some(listing.default_role),
+            _ => None,
+        }
+    }
+
     /// What the entry opens to any key ([`Grantee::AnyKey`]) in `workspace`: on an entry that
     /// keeps requests, leaving an address there, confirming it and taking it off. Nothing on any other
     /// entry. Every device derives these from the entry alike, so a visitor's call is admitted,

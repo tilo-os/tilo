@@ -53,6 +53,7 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
         delegate: None,
         workspace_delegations: vec![],
         removed: false,
+        entry: None,
     }
 }
 

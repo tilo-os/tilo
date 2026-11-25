@@ -235,9 +235,11 @@ fn operations_name_rows(
             MembershipOpCommand::Governance { rows } => rows,
             // An admission writes the device it admits, and names that row
             // itself: each admission of a batch writes its own device.
-            MembershipOpCommand::Admit { person, .. } => {
+            MembershipOpCommand::Admit { person, .. }
+            | MembershipOpCommand::Enter { person, .. } => {
                 // An admission is written by the device it admits, the
-                // invitation its authority: no device signs anyone else in.
+                // invitation or the entry its authority: no device signs
+                // anyone else in.
                 if *person != op.author.user_public_key {
                     return Err(MembershipRefusal::Refused(
                         "an admission is written by the device it admits".into(),
@@ -640,6 +642,72 @@ fn written_rows(
     Some((read(at), read(after)))
 }
 
+/// What a device reads when it presents an entry admission another device's
+/// receipt admits: the entry admits a person through their own device, and a
+/// device of a person already in comes in as theirs, granted by one of their
+/// own.
+pub const ENTRY_NAMES_ANOTHER_DEVICE: &str = "this device joins as one of yours: on a device \
+     of yours that is already in the workspace, add it to your person's devices, and it comes in as \
+     theirs";
+
+/// What a device reads when the entry it named is not the workspace's, or
+/// takes nobody who asks.
+pub const ENTRY_TAKES_NOBODY: &str =
+    "the workspace's entry does not take this person in at the role it names";
+
+/// The device row an entry admission adds, checked: `op` names the entry
+/// `entry` its author came in under, and the row the same change writes must
+/// carry that entry's receipt for that very device, at the role the entry
+/// held where the operation sits. No invitation is behind it. Answers the
+/// role and the person, for the membership the batch may list.
+fn entered(
+    op: &SignedMembershipOp,
+    entry: [u8; 32],
+    person: [u8; 32],
+    at: &AutoCommit,
+    (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
+) -> Result<(Role, String), MembershipRefusal> {
+    let refused = |message: &str| MembershipRefusal::Refused(message.to_owned());
+    let author = hex::encode(op.author.device_public_key);
+    let Some(row) = written
+        .identities
+        .get(&author)
+        .filter(|row| before.identities.get(&author) != Some(*row))
+    else {
+        return Err(refused(ENTRY_NAMES_ANOTHER_DEVICE));
+    };
+    let identity = GovernedIdentity::decode(row)
+        .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
+    let Some(receipt) = identity.entry else {
+        return Err(refused(ENTRY_NAMES_ANOTHER_DEVICE));
+    };
+    if identity.device_cert.device_public_key != op.author.device_public_key
+        || identity.device_cert.user_public_key != person
+        || receipt.entry != entry
+    {
+        return Err(refused(ENTRY_NAMES_ANOTHER_DEVICE));
+    }
+    if identity.device_cert.capabilities.agent.is_some()
+        || identity.device_cert.capabilities.stand_in
+    {
+        return Err(MembershipRefusal::Refused(
+            "a key acting for someone comes into a workspace by its delegation, not through the entry"
+                .into(),
+        ));
+    }
+    let at_entry = tilo_desktop_model::projection::workspace_entry_of(at);
+    if crate::state::entry_digest(&at_entry).map_err(MembershipRefusal::Malformed)? != entry {
+        return Err(refused(ENTRY_TAKES_NOBODY));
+    }
+    let Some(role) = at_entry.open_role() else {
+        return Err(refused(ENTRY_TAKES_NOBODY));
+    };
+    if role != receipt.role {
+        return Err(refused(ENTRY_TAKES_NOBODY));
+    }
+    Ok((role, hex::encode(person)))
+}
+
 /// Whether `op`'s author may change `rows`, from `at` to `after`.
 fn rows_permitted(
     workspace: &str,
@@ -677,12 +745,18 @@ fn rows_permitted(
             GovernanceRow::Sandbox => sandbox(before, written, &held, writer)?,
             GovernanceRow::Standing => standing(workspace, at, after)?,
             GovernanceRow::Identities => {
-                let invited = redemptions(
-                    workspace,
-                    (&held, &wanted),
-                    (before, written),
-                    (op.at_ns, now_ns),
-                )?;
+                let invited = match &op.command {
+                    MembershipOpCommand::Enter { entry, person } => {
+                        let (role, person) = entered(op, *entry, *person, at, (before, written))?;
+                        BTreeMap::from([(person, (role, "entry".to_owned()))])
+                    }
+                    _ => redemptions(
+                        workspace,
+                        (&held, &wanted),
+                        (before, written),
+                        (op.at_ns, now_ns),
+                    )?,
+                };
                 identities(
                     &held,
                     &wanted,

@@ -218,6 +218,10 @@ impl CachedDocument {
         );
         policy
     }
+    /// The workspace's entry this state records: whom it lets in.
+    pub(crate) fn workspace_entry(&self) -> tilo_action_policy::EntryPolicy {
+        tilo_desktop_model::projection::workspace_entry_of(&self.doc)
+    }
     /// The changes this state holds by the bytes a write names each by, and
     /// those that build on no other: read once per state.
     pub(crate) fn changes_named(&self) -> &Named {

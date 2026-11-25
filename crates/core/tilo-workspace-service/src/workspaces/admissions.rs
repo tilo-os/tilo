@@ -57,10 +57,12 @@ impl Admissions {
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
     }
 
-    /// How long until the entry takes another grant, or `None` when it does
-    /// now: the table has room under `max_grants`, or a spent or expired grant
-    /// to evict ([`Self::record`]). Otherwise the earliest open grant's expiry,
-    /// so the person who asked knows when to come back.
+    /// Record `grant` for the invitation `invite_id` issued with it. The
+    /// same grant again is a retry. A full table evicts a spent grant, or
+    /// else one expired by `now_ns`, so visitors who never redeemed their
+    /// invitation cannot lock a public workspace's joins.
+    /// Unwritten: the workspace's next write saves it.
+    #[cfg(test)]
     pub(super) fn full_for(&self, now_ns: u64, max_grants: usize) -> Option<u64> {
         let evictable = self.grants.iter().any(|known| known.spent)
             || self
@@ -84,11 +86,6 @@ impl Admissions {
         )
     }
 
-    /// Record `grant` for the invitation `invite_id` issued with it. The
-    /// same grant again is a retry. A full table evicts a spent grant, or
-    /// else one expired by `now_ns`, so visitors who never redeemed their
-    /// invitation cannot lock a public workspace's joins.
-    /// Unwritten: the workspace's next write saves it.
     pub(super) fn record(
         &mut self,
         invite_id: [u8; 32],
@@ -186,17 +183,6 @@ impl Admissions {
     }
 
     /// Change the grant recorded for `invite_id` in place, as an attacker
-    /// with the workspace's files would.
-    #[cfg(test)]
-    pub(super) fn tamper(&mut self, invite_id: [u8; 32], change: impl FnOnce(&mut PreAdmission)) {
-        if let Some(granted) = self
-            .grants
-            .iter_mut()
-            .find(|granted| granted.invite_id == invite_id)
-        {
-            change(&mut granted.grant);
-        }
-    }
 
     pub(super) fn notices(&self) -> Vec<WorkspaceNotice> {
         self.notices.clone()

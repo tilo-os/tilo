@@ -535,7 +535,8 @@ fn own_operations(
         op.author == author
             && op.author.device_public_key == sender
             && match &op.command {
-                crate::members::MembershipOpCommand::Admit { person, .. } => {
+                crate::members::MembershipOpCommand::Admit { person, .. }
+                | crate::members::MembershipOpCommand::Enter { person, .. } => {
                     *person == op.author.user_public_key
                 }
                 crate::members::MembershipOpCommand::Governance { rows } => {
