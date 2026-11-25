@@ -11,7 +11,6 @@
 
 use std::time::Duration;
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use tilo_peer_state::direct::Kept;
 use tilo_peer_state::join::Role;
 use tilo_server::ServerConfig;
@@ -19,12 +18,12 @@ use tilo_server::workspaces::RemoveMemberRequest;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{
-    KEYS, Linked, TestDevice, TestUser, hold_workspace, invitation, opened, redeem,
+    KEYS, Linked, RECORDS_APP as APP, TestUser, copy_says, hold_workspace, invitation, opened,
+    redeem, write,
 };
 use tilo_server::WorkspaceId;
 
-/// The app and record the devices write through their links, and the field they write.
-const APP: &str = "test.app";
+/// The record the devices write through their links.
 const RECORD: &str = "note:1";
 
 /// How long a refused change is given to surface before its absence counts.
@@ -32,23 +31,7 @@ const QUIET: Duration = Duration::from_millis(400);
 
 /// `linked`'s copy of the record says `marker`.
 fn carries(linked: &Linked, marker: &str) -> bool {
-    linked.opened((APP, RECORD)).is_some_and(|bytes| {
-        AutoCommit::load(&bytes).is_ok_and(|doc| {
-            doc.get(ROOT, "marker")
-                .ok()
-                .flatten()
-                .is_some_and(|(value, _)| value.as_str() == Some(marker))
-        })
-    })
-}
-
-/// Write `marker` into the record as `device`, through its link.
-fn write(linked: &Linked, device: &TestDevice, marker: &str) -> Result<(), String> {
-    linked
-        .write(&device.sk, (APP, RECORD), |doc| {
-            doc.put(ROOT, "marker", marker).unwrap();
-        })
-        .map(|_| ())
+    linked.read(|peer| copy_says(peer, RECORD, marker))
 }
 
 /// Nothing of the refused change reaches `linked` within [`QUIET`]: the workspace publishes the
@@ -162,7 +145,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     // ended: closure or lack of fanout alone is not sufficient revocation evidence. It is sent
     // as she is removed, before an audit may close her link, so a write racing the removal can
     // find the link already ended; it never lands.
-    let _ = write(&alice_shared, &alice_a, "removed-live-writer");
+    let _ = write(&alice_shared, &alice_a, RECORD, "removed-live-writer");
     let mut answers = alice_shared.answers();
     let told = tokio::time::timeout(QUIET, async {
         loop {
@@ -236,7 +219,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         "the workspace her person left admits her new device"
     );
 
-    write(&bob_shared, &bob_device, "after-removal").unwrap();
+    write(&bob_shared, &bob_device, RECORD, "after-removal").unwrap();
     crate::common::receives(&bob_shared, |peer| {
         opened(peer, &KEYS, (APP, RECORD)).is_some()
     })

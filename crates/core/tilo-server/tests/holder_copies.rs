@@ -186,7 +186,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     }
 
     holders[2] = Some(serve_in(&alice, &server, settings[2].clone(), state).await);
-    let mut on_server = member_at(
+    let on_server = member_at(
         holders[2].as_ref().unwrap(),
         &tablet,
         workspace.workspace_id,

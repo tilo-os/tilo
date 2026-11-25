@@ -1382,20 +1382,17 @@ pub fn copy_says(peer: &StatePeer, record: &str, body: &str) -> bool {
     opened(peer, &KEYS, (RECORDS_APP, record)).is_some_and(|bytes| says(&bytes, body))
 }
 
-/// Whether `hosted`'s own copy of `record` carries `body`.
-pub async fn host_says(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) -> bool {
-    hosted
-        .host
-        .workspaces()
-        .state(&workspace.to_string())
-        .await
-        .is_some_and(|state| copy_says(&state, record, body))
-}
-
 /// Wait until `hosted`'s own copy of `record` carries `body`.
 pub async fn reaches_host(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) {
+    let workspace = workspace.to_string();
     tilo_test_env::within("the change reaches the host's own copy", async {
-        while !host_says(hosted, workspace, record, body).await {
+        while !hosted
+            .host
+            .workspaces()
+            .state(&workspace)
+            .await
+            .is_some_and(|state| copy_says(&state, record, body))
+        {
             tokio::task::yield_now().await;
         }
     })
