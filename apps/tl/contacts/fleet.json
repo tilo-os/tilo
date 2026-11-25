@@ -1,0 +1,328 @@
+{
+  "id": "so.tilo.contacts",
+  "name": "Contacts",
+  "category": "Office",
+  "platforms": [
+    "linux",
+    "macos",
+    "web"
+  ],
+  "tagline": "The people of the workspace, with how to reach them",
+  "names": [
+    "Kontakte"
+  ],
+  "keywords": [
+    "contacts",
+    "address book",
+    "people",
+    "phone",
+    "email",
+    "vcard",
+    "kontakte",
+    "adressbuch",
+    "personen",
+    "telefon",
+    "e-mail"
+  ],
+  "resource_types": [
+    [
+      "tl.so.tilo.contacts.Labeled",
+      "Labeled"
+    ],
+    [
+      "tl.so.tilo.contacts.Address",
+      "Address"
+    ],
+    [
+      "tl.so.tilo.contacts.Contact",
+      "Contact"
+    ],
+    [
+      "tl.so.tilo.contacts.Group",
+      "Group"
+    ],
+    [
+      "tl.so.tilo.contacts.ImportCard",
+      "Import card"
+    ],
+    [
+      "tl.so.tilo.contacts.ImportReport",
+      "Import report"
+    ],
+    [
+      "tl.so.tilo.contacts.Book",
+      "Book"
+    ]
+  ],
+  "offers": [
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "new_contact",
+      "label": "New contact",
+      "description": "A new contact, named by what is typed where they were made; a book's entry gives the name",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "named_or_new",
+      "label": "Find or add a contact",
+      "description": "Finds the contact the workspace keeps under `name`, or adds one: what brings someone in from",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "name",
+          "type": "text",
+          "description": "Name"
+        }
+      ],
+      "keywords": [],
+      "icon": "user-plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "new_group",
+      "label": "New group",
+      "description": "Starts a group the book offers as a place, with nobody in it yet.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "name",
+          "type": "text",
+          "description": "Name"
+        }
+      ],
+      "keywords": [],
+      "icon": "plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "export_book",
+      "label": "Export all as vCard",
+      "description": "Every contact as one vCard file, which another address book reads whole.",
+      "kind": "read",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "download"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "export_book_v3",
+      "label": "Export all as vCard 3.0",
+      "description": "Every contact as one vCard 3.0 file, which an address book that reads no 4.0 card opens.",
+      "kind": "read",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "download"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "export_vcard_content",
+      "label": "Export the vCard text",
+      "description": "Every contact as the text of one card file, or the one `name` calls: for an agent or a script",
+      "kind": "read",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "download"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "add_contacts",
+      "label": "Add contacts",
+      "description": "The cards `cards`, the words of a vCard file, as contacts of this book, and what became of",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "cards",
+          "type": "text",
+          "description": "Cards"
+        }
+      ],
+      "keywords": [],
+      "icon": "plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "refuse_import",
+      "label": "Refuse import",
+      "description": "The report of an import of `skipped` cards, and no others: what a file that could not be read",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "skipped",
+          "type": "integer",
+          "description": "Skipped"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "report_import",
+      "label": "Report import",
+      "description": "What an import did, kept on the book for the window's banner to read and answer.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "imported",
+          "type": "integer",
+          "description": "Imported"
+        },
+        {
+          "name": "unchanged",
+          "type": "integer",
+          "description": "Unchanged"
+        },
+        {
+          "name": "awaiting",
+          "type": "integer",
+          "description": "Awaiting"
+        },
+        {
+          "name": "skipped",
+          "type": "integer",
+          "description": "Skipped"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "dismiss_import",
+      "label": "Dismiss the import report",
+      "description": "The person has read what the last import did: the banner stops showing it.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "x"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "file_card",
+      "label": "File a vCard's card",
+      "description": "Brings one card of a vCard file to the book: takes it as a contact, finds the book already",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "card",
+          "type": "text",
+          "description": "Card"
+        }
+      ],
+      "keywords": [],
+      "icon": "file-plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "take_card",
+      "label": "Take a vCard's card",
+      "description": "The contact a card makes in the book, under the id `id`: what a new card becomes, and what a",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "card",
+          "type": "text",
+          "description": "Card"
+        }
+      ],
+      "keywords": [],
+      "icon": "file-plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "add_card",
+      "label": "Add a vCard's card",
+      "description": "The contact a vCard card says, made in the book, or none for a card that names nobody and for",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "card",
+          "type": "text",
+          "description": "Card"
+        }
+      ],
+      "keywords": [],
+      "icon": "file-plus"
+    },
+    {
+      "resource": "tl.so.tilo.contacts.Book",
+      "resource_kind": "",
+      "action": "find_for_address",
+      "label": "Find the contact for an address",
+      "description": "The contact the book holds for `address`, as an action: what a person, an agent or another",
+      "kind": "read",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "address",
+          "type": "text",
+          "description": "Address"
+        }
+      ],
+      "keywords": [],
+      "icon": "search"
+    }
+  ],
+  "commands": [
+    {
+      "action": "new_contact",
+      "label": "New contact",
+      "key": "Ctrl+n"
+    },
+    {
+      "action": "delete",
+      "label": "Delete",
+      "key": "delete"
+    }
+  ],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [],
+  "listed": true,
+  "surface": "{\"resources\":[{\"fields\":[],\"kind\":\"tl.host\",\"label\":\"tilolang\",\"verbs\":[],\"version\":1},{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1},{\"fields\":[{\"path\":\"doc\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"entry\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"app\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"capability\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"payload\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"owner\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"state\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"detail\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"outcome\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"reason\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"held_until\",\"stored\":\"value\",\"type\":{\"option\":\"text\"}},{\"path\":\"settled\",\"stored\":\"value\",\"type\":\"bool\"}],\"kind\":\"tilolang.effect\",\"label\":\"A queued effect\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"$send\",\"kind\":\"undoable\",\"label\":\"Hand the effect over\",\"params\":[]},{\"id\":\"$wait\",\"kind\":\"undoable\",\"label\":\"Say why it waits\",\"params\":[]},{\"id\":\"$settle\",\"kind\":\"undoable\",\"label\":\"Say how it went\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"notice\",\"path\":\"notice-to\",\"stored\":\"value\",\"title\":\"to\",\"type\":\"actor\"},{\"owner\":\"notice\",\"path\":\"notice-title\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-body\",\"stored\":\"value\",\"title\":\"body\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-opens\",\"stored\":\"record\",\"title\":\"opens\",\"type\":{\"resource\":\"tl.tilo.host.Resource\"}},{\"owner\":\"notice\",\"path\":\"notice-seen\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"},{\"owner\":\"notice\",\"path\":\"notice-device\",\"stored\":\"value\",\"title\":\"device\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-actions\",\"stored\":\"value\",\"title\":\"actions\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tl.tilo.host.Notice\",\"label\":\"Notice\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"title\",\"body\",\"device\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"seen\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"labeled\",\"path\":\"fzyd2a52\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"labeled\",\"path\":\"b4cilqkx\",\"stored\":\"value\",\"title\":\"value\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.contacts.Labeled\",\"label\":\"Labeled\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"label\",\"value\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"address\",\"path\":\"5iipld72\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"zpxsouby\",\"stored\":\"value\",\"title\":\"street\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"txsphfy2\",\"stored\":\"value\",\"title\":\"city\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"g55zwvsh\",\"stored\":\"value\",\"title\":\"region\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"xuayok2l\",\"stored\":\"value\",\"title\":\"postal\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"xlbwdlve\",\"stored\":\"value\",\"title\":\"country\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.contacts.Address\",\"label\":\"Address\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"label\",\"street\",\"city\",\"region\",\"postal\",\"country\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"contact\",\"path\":\"zut4kvim\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"rfhxkccf\",\"stored\":\"value\",\"title\":\"org\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"7wq5grnt\",\"stored\":\"value\",\"title\":\"role\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"dg7b4wfh\",\"stored\":\"value\",\"title\":\"website\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"fc62qk5v\",\"stored\":\"value\",\"title\":\"birthday\",\"type\":{\"option\":\"date\"}},{\"owner\":\"contact\",\"path\":\"32tuvb6l\",\"stored\":\"value\",\"title\":\"birthday_year\",\"type\":\"bool\"},{\"owner\":\"contact\",\"path\":\"4lfazbdq\",\"stored\":\"value\",\"title\":\"notes\",\"type\":\"rich_text\"},{\"owner\":\"contact\",\"path\":\"lurugxra\",\"stored\":\"collection\",\"title\":\"phones\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}},{\"owner\":\"labeled\",\"path\":\"lurugxra.*.fzyd2a52\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"labeled\",\"path\":\"lurugxra.*.b4cilqkx\",\"stored\":\"value\",\"title\":\"value\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"hfbs4gxe\",\"stored\":\"collection\",\"title\":\"emails\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}},{\"owner\":\"labeled\",\"path\":\"hfbs4gxe.*.fzyd2a52\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"labeled\",\"path\":\"hfbs4gxe.*.b4cilqkx\",\"stored\":\"value\",\"title\":\"value\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"orxuftuv\",\"stored\":\"collection\",\"title\":\"addresses\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Address\"}}},{\"owner\":\"address\",\"path\":\"orxuftuv.*.5iipld72\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"orxuftuv.*.zpxsouby\",\"stored\":\"value\",\"title\":\"street\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"orxuftuv.*.txsphfy2\",\"stored\":\"value\",\"title\":\"city\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"orxuftuv.*.g55zwvsh\",\"stored\":\"value\",\"title\":\"region\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"orxuftuv.*.xuayok2l\",\"stored\":\"value\",\"title\":\"postal\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"orxuftuv.*.xlbwdlve\",\"stored\":\"value\",\"title\":\"country\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"vea52w55\",\"stored\":\"value\",\"title\":\"groups\",\"type\":{\"set\":\"text\"}},{\"owner\":\"contact\",\"path\":\"ur3qshor\",\"stored\":\"value\",\"title\":\"favorite\",\"type\":\"bool\"},{\"owner\":\"contact\",\"path\":\"kvhikhu4\",\"stored\":\"value\",\"title\":\"photo\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"szrijd7k\",\"stored\":\"value\",\"title\":\"person\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"q3um3t7j\",\"stored\":\"value\",\"title\":\"uid\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.contacts.Contact\",\"label\":\"Contact\",\"types\":[{\"cases\":[{\"label\":\"vCard 4.0, the current format: dates in its compact form and kinds in lower case\",\"name\":\"v4\"},{\"label\":\"vCard 3.0, which older address books read: dates with their dashes and kinds in capitals\",\"name\":\"v3\"}],\"doc\":\"The versions of the card format another address book reads.\",\"name\":\"VCardVersion\"}],\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"name\",\"org\",\"role\",\"website\",\"notes\",\"photo\",\"person\",\"uid\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"birthday_year\",\"favorite\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Set one paragraph of a rich-text field to what a Markdown text says.\",\"id\":\"edit-block\",\"kind\":\"undoable\",\"label\":\"Edit a paragraph\",\"params\":[{\"name\":\"block\",\"required\":true,\"schema\":{\"description\":\"The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: notes\",\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"text\",\"required\":true,\"schema\":{\"description\":\"What the paragraph says, as Markdown.\",\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Put a paragraph before the one the address names.\",\"id\":\"insert-block\",\"kind\":\"undoable\",\"label\":\"Add a paragraph\",\"params\":[{\"name\":\"block\",\"required\":true,\"schema\":{\"description\":\"The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: notes\",\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"text\",\"required\":true,\"schema\":{\"description\":\"What the paragraph says, as Markdown.\",\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Remove the paragraph the address names, and the paragraphs it holds.\",\"id\":\"delete-block\",\"kind\":\"undoable\",\"label\":\"Delete a paragraph\",\"params\":[{\"name\":\"block\",\"required\":true,\"schema\":{\"description\":\"The paragraph's address, `tl:<app>:<id>#<field>.<place>`, as block search names one; the text's fields: notes\",\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Renames a contact.\",\"id\":\"zwp7xkyi\",\"kind\":\"undoable\",\"label\":\"Rename\",\"name\":\"rename\",\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Adds a contact to favorites, or takes them off.\",\"id\":\"kp6evyhz\",\"kind\":\"undoable\",\"label\":\"Add to favorites\",\"name\":\"favorite\",\"params\":[{\"name\":\"on\",\"required\":false,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Gives a contact a phone number, as the number `number` and the kind `label` where the caller\\nknows them already. Addressed from the card's own button, both are empty for the person to\\nfill in.\",\"id\":\"2ctxgtyd\",\"kind\":\"undoable\",\"label\":\"Add phone\",\"name\":\"add_phone\",\"params\":[{\"name\":\"number\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"label\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}},{\"description\":\"Takes one of a contact's phone numbers away.\",\"id\":\"spe2pxo4\",\"kind\":\"undoable\",\"label\":\"Remove phone\",\"name\":\"remove_phone\",\"params\":[{\"name\":\"phone\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Labeled\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}]},{\"description\":\"Gives a contact a mailbox, as the `address` and the kind `label` where the caller knows them\\nalready. Addressed from the card's own button, both are empty for the person to fill in.\",\"id\":\"ts6f5mgs\",\"kind\":\"undoable\",\"label\":\"Add email\",\"name\":\"add_email\",\"params\":[{\"name\":\"address\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"label\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}},{\"description\":\"Takes one of a contact's mailboxes away.\",\"id\":\"infpb6bb\",\"kind\":\"undoable\",\"label\":\"Remove email\",\"name\":\"remove_email\",\"params\":[{\"name\":\"mail\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Labeled\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}]},{\"description\":\"Gives a contact a postal address to fill in.\",\"id\":\"qgoswgkz\",\"kind\":\"undoable\",\"label\":\"Add address\",\"name\":\"add_address\",\"params\":[],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Address\"}}},{\"description\":\"Takes one of a contact's addresses away.\",\"id\":\"xr3q4wsk\",\"kind\":\"undoable\",\"label\":\"Remove address\",\"name\":\"remove_address\",\"params\":[{\"name\":\"address\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Address\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Address\"}}]},{\"description\":\"Keeps a birthday with its year or without it: a birthday kept without one is the day it falls\\non every year, as many address books keep one.\",\"id\":\"qekysgef\",\"kind\":\"undoable\",\"label\":\"The birthday's year\",\"name\":\"keep_birthday_year\",\"params\":[{\"name\":\"on\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Takes a contact out of a group.\",\"id\":\"qafligvf\",\"kind\":\"undoable\",\"label\":\"Remove from group\",\"name\":\"ungroup\",\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A contact as a file: their card, named for them. The system's one Export… lists it and saves\\nit where the person says.\",\"id\":\"4jncxnhw\",\"kind\":\"read\",\"label\":\"Export as vCard\",\"name\":\"export_contact\",\"params\":[{\"name\":\"version\",\"required\":false,\"schema\":{\"choice_labels\":{\"v3\":\"vCard 3.0, which older address books read: dates with their dashes and kinds in capitals\",\"v4\":\"vCard 4.0, the current format: dates in its compact form and kinds in lower case\"},\"enum\":[\"v4\",\"v3\"],\"type\":\"string\"},\"type\":{\"named\":\"VCardVersion\"}}],\"returns\":{}}],\"version\":1},{\"fields\":[{\"owner\":\"group\",\"path\":\"jn6l7z6v\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.contacts.Group\",\"label\":\"Group\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"name\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"importcard\",\"path\":\"op5ercnd\",\"stored\":\"value\",\"title\":\"card\",\"type\":\"text\"},{\"owner\":\"importcard\",\"path\":\"a4s7qvbf\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"importcard\",\"path\":\"kcnlll33\",\"stored\":\"value\",\"title\":\"uid\",\"type\":\"text\"},{\"owner\":\"importcard\",\"path\":\"rsywb3bl\",\"stored\":\"value\",\"title\":\"existing\",\"type\":{\"option\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}}],\"kind\":\"tl.so.tilo.contacts.ImportCard\",\"label\":\"ImportCard\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"card\",\"name\",\"uid\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"importreport\",\"path\":\"ydus2juj\",\"stored\":\"value\",\"title\":\"imported\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"bqy264j6\",\"stored\":\"value\",\"title\":\"unchanged\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"jm2un2fr\",\"stored\":\"value\",\"title\":\"awaiting\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"sikc2jgn\",\"stored\":\"value\",\"title\":\"skipped\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"azh3qbqs\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.contacts.ImportReport\",\"label\":\"ImportReport\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"seen\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"book\",\"path\":\"qfj7l6eu\",\"stored\":\"collection\",\"title\":\"contacts\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.zut4kvim\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.rfhxkccf\",\"stored\":\"value\",\"title\":\"org\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.7wq5grnt\",\"stored\":\"value\",\"title\":\"role\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.dg7b4wfh\",\"stored\":\"value\",\"title\":\"website\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.fc62qk5v\",\"stored\":\"value\",\"title\":\"birthday\",\"type\":{\"option\":\"date\"}},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.32tuvb6l\",\"stored\":\"value\",\"title\":\"birthday_year\",\"type\":\"bool\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.4lfazbdq\",\"stored\":\"value\",\"title\":\"notes\",\"type\":\"rich_text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.lurugxra\",\"stored\":\"collection\",\"title\":\"phones\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}},{\"owner\":\"labeled\",\"path\":\"qfj7l6eu.*.lurugxra.*.fzyd2a52\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"labeled\",\"path\":\"qfj7l6eu.*.lurugxra.*.b4cilqkx\",\"stored\":\"value\",\"title\":\"value\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.hfbs4gxe\",\"stored\":\"collection\",\"title\":\"emails\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Labeled\"}}},{\"owner\":\"labeled\",\"path\":\"qfj7l6eu.*.hfbs4gxe.*.fzyd2a52\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"labeled\",\"path\":\"qfj7l6eu.*.hfbs4gxe.*.b4cilqkx\",\"stored\":\"value\",\"title\":\"value\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.orxuftuv\",\"stored\":\"collection\",\"title\":\"addresses\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Address\"}}},{\"owner\":\"address\",\"path\":\"qfj7l6eu.*.orxuftuv.*.5iipld72\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"qfj7l6eu.*.orxuftuv.*.zpxsouby\",\"stored\":\"value\",\"title\":\"street\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"qfj7l6eu.*.orxuftuv.*.txsphfy2\",\"stored\":\"value\",\"title\":\"city\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"qfj7l6eu.*.orxuftuv.*.g55zwvsh\",\"stored\":\"value\",\"title\":\"region\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"qfj7l6eu.*.orxuftuv.*.xuayok2l\",\"stored\":\"value\",\"title\":\"postal\",\"type\":\"text\"},{\"owner\":\"address\",\"path\":\"qfj7l6eu.*.orxuftuv.*.xlbwdlve\",\"stored\":\"value\",\"title\":\"country\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.vea52w55\",\"stored\":\"value\",\"title\":\"groups\",\"type\":{\"set\":\"text\"}},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.ur3qshor\",\"stored\":\"value\",\"title\":\"favorite\",\"type\":\"bool\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.kvhikhu4\",\"stored\":\"value\",\"title\":\"photo\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.szrijd7k\",\"stored\":\"value\",\"title\":\"person\",\"type\":\"text\"},{\"owner\":\"contact\",\"path\":\"qfj7l6eu.*.q3um3t7j\",\"stored\":\"value\",\"title\":\"uid\",\"type\":\"text\"},{\"owner\":\"book\",\"path\":\"uyyz5pg2\",\"stored\":\"collection\",\"title\":\"groups\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.Group\"}}},{\"owner\":\"group\",\"path\":\"uyyz5pg2.*.jn6l7z6v\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"book\",\"path\":\"zc4aqhgg\",\"stored\":\"collection\",\"title\":\"review\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.contacts.ImportCard\"}}},{\"owner\":\"importcard\",\"path\":\"zc4aqhgg.*.op5ercnd\",\"stored\":\"value\",\"title\":\"card\",\"type\":\"text\"},{\"owner\":\"importcard\",\"path\":\"zc4aqhgg.*.a4s7qvbf\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"importcard\",\"path\":\"zc4aqhgg.*.kcnlll33\",\"stored\":\"value\",\"title\":\"uid\",\"type\":\"text\"},{\"owner\":\"importcard\",\"path\":\"zc4aqhgg.*.rsywb3bl\",\"stored\":\"value\",\"title\":\"existing\",\"type\":{\"option\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}},{\"owner\":\"book\",\"path\":\"scky6ngy\",\"stored\":\"record\",\"title\":\"last_import\",\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportReport\"}},{\"owner\":\"importreport\",\"path\":\"scky6ngy.ydus2juj\",\"stored\":\"value\",\"title\":\"imported\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"scky6ngy.bqy264j6\",\"stored\":\"value\",\"title\":\"unchanged\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"scky6ngy.jm2un2fr\",\"stored\":\"value\",\"title\":\"awaiting\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"scky6ngy.sikc2jgn\",\"stored\":\"value\",\"title\":\"skipped\",\"type\":\"int\"},{\"owner\":\"importreport\",\"path\":\"scky6ngy.azh3qbqs\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.contacts.Book\",\"label\":\"Book\",\"types\":[{\"cases\":[{\"label\":\"The card is a contact now\",\"name\":\"taken\"},{\"label\":\"The book already held it, unchanged\",\"name\":\"held\"},{\"label\":\"The card changes a contact the book holds, and waits in the book's review\",\"name\":\"review\"},{\"label\":\"The card names nobody this app can take\",\"name\":\"skipped\"}],\"doc\":\"What one card of a file is to the book.\",\"name\":\"CardFate\"},{\"cases\":[{\"label\":\"Their name\",\"name\":\"name\"},{\"label\":\"Where they work\",\"name\":\"org\"},{\"label\":\"What they do there\",\"name\":\"role\"},{\"label\":\"Their website\",\"name\":\"website\"},{\"label\":\"The day they were born\",\"name\":\"birthday\"},{\"label\":\"What is written about them\",\"name\":\"notes\"}],\"doc\":\"What a merge may take from the card that goes: the values each card keeps one of. Numbers,\\nmailboxes, addresses and groups always come over; these are the person's to choose.\",\"name\":\"MergeField\"},{\"cases\":[{\"label\":\"vCard 4.0, the current format: dates in its compact form and kinds in lower case\",\"name\":\"v4\"},{\"label\":\"vCard 3.0, which older address books read: dates with their dashes and kinds in capitals\",\"name\":\"v3\"}],\"doc\":\"The versions of the card format another address book reads.\",\"name\":\"VCardVersion\"}],\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"A new contact, named by what is typed where they were made; a book's entry gives the name\\nit takes, so nothing is left called \\\"No name yet\\\" by a person who typed one.\",\"id\":\"smciqs6j\",\"kind\":\"undoable\",\"label\":\"New contact\",\"name\":\"new_contact\",\"params\":[{\"name\":\"name\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}},{\"description\":\"Finds the contact the workspace keeps under `name`, or adds one: what brings someone in from\\nanother service — a task given to them before they joined — to one card, however many imports\\nname them.\",\"id\":\"bfuqzfia\",\"kind\":\"undoable\",\"label\":\"Find or add a contact\",\"name\":\"named_or_new\",\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}},{\"description\":\"Puts a contact in a group, making the group the book's place if it is new: the same group\\nhowever it is spelled, so \\\"Work\\\" and \\\"work\\\" are one place.\",\"id\":\"pa7wwp6r\",\"kind\":\"undoable\",\"label\":\"Add to group\",\"name\":\"group\",\"params\":[{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}},{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Starts a group the book offers as a place, with nobody in it yet.\",\"id\":\"vi6ajqma\",\"kind\":\"undoable\",\"label\":\"New group\",\"name\":\"new_group\",\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Group\"}}},{\"description\":\"Deletes a contact from the book, and with it the person the workspace's apps know of it where\\nthe window hands the directory: what Mail, Calendar and Messages reach it by goes too.\",\"destructive\":true,\"id\":\"ivtvy7sy\",\"kind\":\"undoable\",\"label\":\"Delete\",\"name\":\"delete\",\"params\":[{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}},{\"name\":\"directory\",\"required\":false,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"option\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}}}]},{\"description\":\"Merges the card that goes into the one that stays: every number, mailbox, address and group of\\nboth is the card that stays, the fields `take` names come from the card that goes, and the\\ncard that goes is deleted. One change, so undo brings both cards back.\",\"destructive\":true,\"id\":\"76ulubho\",\"kind\":\"undoable\",\"label\":\"Merge contacts\",\"name\":\"merge_into\",\"params\":[{\"name\":\"keep\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}},{\"name\":\"goes\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}},{\"name\":\"take\",\"required\":false,\"schema\":{\"items\":{\"choice_labels\":{\"birthday\":\"The day they were born\",\"name\":\"Their name\",\"notes\":\"What is written about them\",\"org\":\"Where they work\",\"role\":\"What they do there\",\"website\":\"Their website\"},\"enum\":[\"name\",\"org\",\"role\",\"website\",\"birthday\",\"notes\"],\"type\":\"string\"},\"type\":\"array\"},\"type\":{\"list\":{\"named\":\"MergeField\"}}},{\"name\":\"directory\",\"required\":false,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"option\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}}}]},{\"description\":\"Every contact as one vCard file, which another address book reads whole.\",\"id\":\"5ceccmwk\",\"kind\":\"read\",\"label\":\"Export all as vCard\",\"name\":\"export_book\",\"params\":[{\"name\":\"version\",\"required\":false,\"schema\":{\"choice_labels\":{\"v3\":\"vCard 3.0, which older address books read: dates with their dashes and kinds in capitals\",\"v4\":\"vCard 4.0, the current format: dates in its compact form and kinds in lower case\"},\"enum\":[\"v4\",\"v3\"],\"type\":\"string\"},\"type\":{\"named\":\"VCardVersion\"}}],\"returns\":{}},{\"description\":\"Every contact as one vCard 3.0 file, which an address book that reads no 4.0 card opens.\",\"id\":\"mcisoxmg\",\"kind\":\"read\",\"label\":\"Export all as vCard 3.0\",\"name\":\"export_book_v3\",\"params\":[],\"returns\":{}},{\"description\":\"Every contact as the text of one card file, or the one `name` calls: for an agent or a script\\nthat hands the cards on where a person's file chooser cannot, as the address its bytes are\\nkept at. A name the book holds twice is refused rather than guessed.\",\"id\":\"inkvofy4\",\"kind\":\"read\",\"label\":\"Export the vCard text\",\"name\":\"export_vcard_content\",\"params\":[{\"name\":\"name\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{}},{\"description\":\"Imports the contacts a vCard file holds into the book, each new card a contact of its own, and\\nanswers what it did. A card whose id the book already holds unchanged is nobody new; one that\\nsays something else about the person waits in the book's review, and the contact stays as it\\nis until someone says which card is theirs. A file beyond what this app reads is refused whole:\\nwhat the refusal says is why.\",\"id\":\"btp4fqga\",\"kind\":\"undoable\",\"label\":\"Import vCards\",\"name\":\"import_vcard\",\"params\":[{\"name\":\"file\",\"required\":true,\"schema\":{}}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportReport\"}}},{\"description\":\"The cards `cards`, the words of a vCard file, as contacts of this book, and what became of\\neach: what an importer, an agent or a script hands a book in one call.\",\"id\":\"lcnj23sa\",\"kind\":\"undoable\",\"label\":\"Add contacts\",\"name\":\"add_contacts\",\"params\":[{\"name\":\"cards\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportReport\"}}},{\"description\":\"The report of an import of `skipped` cards, and no others: what a file that could not be read\\nanswers.\",\"id\":\"srkiqvld\",\"kind\":\"undoable\",\"label\":\"Refuse import\",\"name\":\"refuse_import\",\"params\":[{\"name\":\"skipped\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportReport\"}}},{\"description\":\"What an import did, kept on the book for the window's banner to read and answer.\",\"id\":\"yq5wfs7z\",\"kind\":\"undoable\",\"label\":\"Report import\",\"name\":\"report_import\",\"params\":[{\"name\":\"imported\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"unchanged\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"awaiting\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"skipped\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportReport\"}}},{\"description\":\"The person has read what the last import did: the banner stops showing it.\",\"id\":\"5ekvqkm6\",\"kind\":\"undoable\",\"label\":\"Dismiss the import report\",\"name\":\"dismiss_import\",\"params\":[]},{\"description\":\"Brings one card of a vCard file to the book: takes it as a contact, finds the book already\\nholds it unchanged, puts it up for review where it says something else about a contact the\\nbook holds by the same id, or refuses a card that names nobody. `uid` is the id the caller\\ngives a card whose file names none, so the caller can find the contact it makes.\",\"id\":\"eng26pua\",\"kind\":\"undoable\",\"label\":\"File a vCard's card\",\"name\":\"file_card\",\"params\":[{\"name\":\"card\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"uid\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"named\":\"CardFate\"}}},{\"description\":\"The contact a card makes in the book, under the id `id`: what a new card becomes, and what a\\ncard someone chose over the one the book held becomes. Its rows are filled after it stands in\\nthe book, as every resource's are.\",\"id\":\"t6oakqpq\",\"kind\":\"undoable\",\"label\":\"Take a vCard's card\",\"name\":\"take_card\",\"params\":[{\"name\":\"card\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"id\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}},{\"description\":\"The contact a vCard card says, made in the book, or none for a card that names nobody and for\\none the book already holds: the single-card form of importing a file.\",\"id\":\"l64bjt6g\",\"kind\":\"undoable\",\"label\":\"Add a vCard's card\",\"name\":\"add_card\",\"params\":[{\"name\":\"card\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"option\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}}},{\"description\":\"Takes a card that waited for review as a contact of its own, beside the one the book holds\\nunder the id it named: the file's card is the person's, and the card the book kept keeps\\neverything of its own. Its id is new, because the two cards are two now.\",\"id\":\"ktpgvkx4\",\"kind\":\"undoable\",\"label\":\"Import as a new contact\",\"name\":\"import_as_new\",\"params\":[{\"name\":\"p\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.ImportCard\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportCard\"}}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}},{\"description\":\"Leaves the card the book holds as it is, and takes the file's card out of the review.\",\"id\":\"26oiuqrc\",\"kind\":\"undoable\",\"label\":\"Keep the existing contact\",\"name\":\"keep_existing\",\"params\":[{\"name\":\"p\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.ImportCard\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.ImportCard\"}}]},{\"description\":\"The contact the book holds for `address`, as an action: what a person, an agent or another\\napp asks before they write to it. Nothing is changed and nothing is guessed from a name.\",\"id\":\"xdqrpoil\",\"kind\":\"read\",\"label\":\"Find the contact for an address\",\"name\":\"find_for_address\",\"params\":[{\"name\":\"address\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"option\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}}}],\"version\":1},{\"fields\":[],\"kind\":\"tl.so.tilo.contacts\",\"label\":\"Contacts\",\"verbs\":[{\"description\":\"Binds `account` of `service` to the person: the directory's `confirm-endpoint`, or\\n`confirm-account` where the service names an account scope.\",\"id\":\"jz6v4veg\",\"kind\":\"undoable\",\"label\":\"Associate account\",\"name\":\"confirm\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}},{\"name\":\"person\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Person\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Person\"}},{\"name\":\"service\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"scope\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"account\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Changes the account an association names, under the directory's rule that a changed address\\nneeds review before anything is sent to it.\",\"id\":\"o2qwok2w\",\"kind\":\"undoable\",\"label\":\"Change association\",\"name\":\"change\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}},{\"name\":\"person\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Person\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Person\"}},{\"name\":\"endpoint\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Endpoint\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Endpoint\"}},{\"name\":\"service\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"scope\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"account\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Takes an association away: messages from that account stop reaching this contact, and what was\\nalready received is unchanged.\",\"destructive\":true,\"id\":\"rlngk4rk\",\"kind\":\"undoable\",\"label\":\"Remove association\",\"name\":\"forget\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}},{\"name\":\"person\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Person\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Person\"}},{\"name\":\"endpoint\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Endpoint\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Endpoint\"}}]},{\"description\":\"Shares this card with the workspace's apps, under the person it is: the name, the numbers and\\nthe mailboxes another app reads of a contact before it writes to them. The card keeps that\\nperson's id, so it stops being shared, or is shared again, as the same person.\",\"id\":\"nhasu5my\",\"kind\":\"undoable\",\"label\":\"Share this card\",\"name\":\"share\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}},{\"name\":\"person\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Person\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Person\"}},{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}]},{\"description\":\"Shares a card the workspace's apps do not know yet: a person of its own is made for it, so Mail,\\nCalendar and Messages can name it and find it by its numbers and mailboxes.\",\"id\":\"4oatdkw2\",\"kind\":\"undoable\",\"label\":\"Share this card\",\"name\":\"share_card\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}},{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}]},{\"description\":\"Takes the contact out of the directory, leaving its card in the book: what the apps read of it\\nstops naming it, and the card is no person of the directory's until it is shared again.\",\"destructive\":true,\"id\":\"kqf6yzpo\",\"kind\":\"undoable\",\"label\":\"Stop sharing this card\",\"name\":\"unshare\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Identities\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Identities\"}},{\"name\":\"person\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.directory.Person\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.directory.Person\"}},{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.contacts.Contact\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.contacts.Contact\"}}]}],\"version\":1}]}"
+}

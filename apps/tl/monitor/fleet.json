@@ -1,0 +1,72 @@
+{
+  "id": "so.tilo.monitor",
+  "name": "System Monitor",
+  "category": "System",
+  "platforms": [
+    "linux",
+    "macos",
+    "web"
+  ],
+  "tagline": "This computer's processes, and what it uses",
+  "names": [
+    "Systemüberwachung"
+  ],
+  "keywords": [
+    "monitor",
+    "system monitor",
+    "activity",
+    "processes",
+    "cpu",
+    "memory",
+    "task manager",
+    "ressourcen",
+    "prozesse",
+    "Überwachung",
+    "aktivität",
+    "speicher",
+    "task-manager"
+  ],
+  "resource_types": [
+    [
+      "tl.so.tilo.monitor.Row",
+      "Row"
+    ],
+    [
+      "tl.so.tilo.monitor.Monitor",
+      "Monitor"
+    ]
+  ],
+  "offers": [
+    {
+      "resource": "tl.so.tilo.monitor.Monitor",
+      "resource_kind": "",
+      "action": "apply_cadence",
+      "label": "Apply cadence",
+      "description": "Keeps this device's reading at the cadence the person watches it by.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "ms",
+          "type": "integer",
+          "description": "Ms"
+        },
+        {
+          "name": "paused",
+          "type": "boolean",
+          "description": "Paused"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    }
+  ],
+  "commands": [],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [],
+  "listed": true,
+  "surface": "{\"resources\":[{\"fields\":[],\"kind\":\"tl.host\",\"label\":\"tilolang\",\"verbs\":[],\"version\":1},{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1},{\"fields\":[{\"path\":\"doc\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"entry\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"app\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"capability\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"payload\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"owner\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"state\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"detail\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"outcome\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"reason\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"held_until\",\"stored\":\"value\",\"type\":{\"option\":\"text\"}},{\"path\":\"settled\",\"stored\":\"value\",\"type\":\"bool\"}],\"kind\":\"tilolang.effect\",\"label\":\"A queued effect\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"$send\",\"kind\":\"undoable\",\"label\":\"Hand the effect over\",\"params\":[]},{\"id\":\"$wait\",\"kind\":\"undoable\",\"label\":\"Say why it waits\",\"params\":[]},{\"id\":\"$settle\",\"kind\":\"undoable\",\"label\":\"Say how it went\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"notice\",\"path\":\"notice-to\",\"stored\":\"value\",\"title\":\"to\",\"type\":\"actor\"},{\"owner\":\"notice\",\"path\":\"notice-title\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-body\",\"stored\":\"value\",\"title\":\"body\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-opens\",\"stored\":\"record\",\"title\":\"opens\",\"type\":{\"resource\":\"tl.tilo.host.Resource\"}},{\"owner\":\"notice\",\"path\":\"notice-seen\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"},{\"owner\":\"notice\",\"path\":\"notice-device\",\"stored\":\"value\",\"title\":\"device\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-actions\",\"stored\":\"value\",\"title\":\"actions\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tl.tilo.host.Notice\",\"label\":\"Notice\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"title\",\"body\",\"device\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"seen\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"row\",\"path\":\"uoc4p4dx\",\"stored\":\"value\",\"title\":\"process\",\"type\":{\"resource\":\"tl.so.tilo.device.Process\"}},{\"owner\":\"row\",\"path\":\"qwzsalow\",\"stored\":\"value\",\"title\":\"depth\",\"type\":\"int\"},{\"owner\":\"row\",\"path\":\"6waph57m\",\"stored\":\"value\",\"title\":\"has_children\",\"type\":\"bool\"},{\"owner\":\"row\",\"path\":\"22v7oibb\",\"stored\":\"value\",\"title\":\"cpu\",\"type\":\"float\"},{\"owner\":\"row\",\"path\":\"u6hj324t\",\"stored\":\"value\",\"title\":\"memory_bytes\",\"type\":\"int\"},{\"owner\":\"row\",\"path\":\"cwilirks\",\"stored\":\"value\",\"title\":\"threads\",\"type\":\"int\"}],\"kind\":\"tl.so.tilo.monitor.Row\",\"label\":\"Row\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"has_children\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[],\"kind\":\"tl.so.tilo.monitor.Monitor\",\"label\":\"Monitor\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Keeps this device's reading at the cadence the person watches it by.\",\"id\":\"mycnv7ws\",\"kind\":\"outside\",\"label\":\"Apply cadence\",\"name\":\"apply_cadence\",\"params\":[{\"name\":\"ms\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"paused\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[],\"kind\":\"tl.so.tilo.monitor\",\"label\":\"System Monitor\",\"verbs\":[{\"description\":\"Asks every process of an app to close.\",\"id\":\"4imh4jjl\",\"kind\":\"outside\",\"label\":\"End app\",\"name\":\"end_app\",\"params\":[{\"name\":\"application\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]}],\"version\":1}]}"
+}

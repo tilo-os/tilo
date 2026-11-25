@@ -1,0 +1,68 @@
+{
+  "id": "so.tilo.remote",
+  "name": "Remote Desktop",
+  "category": "Network",
+  "platforms": [
+    "linux",
+    "macos"
+  ],
+  "tagline": "Shows and controls another desktop",
+  "names": [
+    "Entfernter Desktop"
+  ],
+  "keywords": [
+    "remote desktop",
+    "rdp",
+    "vnc",
+    "screen sharing",
+    "remote access",
+    "remote control",
+    "remmina",
+    "krdc",
+    "remote desktop connection",
+    "mstsc",
+    "fernzugriff",
+    "fernwartung",
+    "remotedesktop",
+    "entfernter zugriff",
+    "bildschirmfreigabe",
+    "fernsteuerung",
+    "verbinden"
+  ],
+  "resource_types": [],
+  "offers": [
+    {
+      "resource": "remote.connection-list",
+      "resource_kind": "",
+      "action": "show-connections",
+      "label": "Show connections",
+      "description": "",
+      "kind": "read",
+      "operation": "view",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "remote.connection-list",
+      "resource_kind": "",
+      "action": "new",
+      "label": "New connection",
+      "description": "",
+      "kind": "read",
+      "operation": "view",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": ""
+    }
+  ],
+  "commands": [],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [],
+  "listed": true,
+  "surface_file": "surface.json"
+}

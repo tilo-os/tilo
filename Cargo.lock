@@ -15182,6 +15182,8 @@ dependencies = [
 name = "tilo-app-fleet"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "workspace-hack",
 ]
 

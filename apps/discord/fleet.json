@@ -1,0 +1,681 @@
+{
+  "id": "so.tilo.discord",
+  "name": "Discord",
+  "category": "Network",
+  "platforms": [
+    "linux"
+  ],
+  "tagline": "Bridges a Discord server and a Tilo workspace both ways",
+  "names": [],
+  "keywords": [
+    "voice chat",
+    "communities",
+    "community servers",
+    "sprachchat",
+    "gemeinschaften",
+    "community-server"
+  ],
+  "resource_types": [],
+  "offers": [
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "send",
+      "label": "Send a message",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "edit",
+      "label": "Edit a message",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "delete",
+      "label": "Delete a message",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "react",
+      "label": "Add a reaction",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "unreact",
+      "label": "Remove a reaction",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "start-thread",
+      "label": "Start a thread",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "create-webhook",
+      "label": "Create a webhook",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "apply-channel",
+      "label": "Apply a channel",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "delete-channel",
+      "label": "Delete a channel",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "arrange-channels",
+      "label": "Arrange channels",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "apply-role",
+      "label": "Apply a role",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "delete-role",
+      "label": "Delete a role",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "set-member-roles",
+      "label": "Set member roles",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "kick",
+      "label": "Kick a member",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "ban",
+      "label": "Ban a member",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "unban",
+      "label": "Unban a member",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "set-overwrite",
+      "label": "Set a permission override",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "fetch-asset",
+      "label": "Copy a file from Discord",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "begin-connect",
+      "label": "Start linking your account",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "state_sha256",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "complete-link",
+      "label": "Link the offered account",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "proof",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "set-sign-in",
+      "label": "Offer signing in with Discord",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "page",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "answer-interaction",
+      "label": "Answer a slash command",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "unlink",
+      "label": "Unlink an account",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "discord_user",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "block-persona",
+      "label": "Block a user",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "discord_user",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "unblock-persona",
+      "label": "Unblock a user",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "discord_user",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "finish-import",
+      "label": "Finish importing a server",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "tilo_only",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "apply-emoji",
+      "label": "Apply an emoji",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "delete-emoji",
+      "label": "Delete an emoji",
+      "description": "",
+      "kind": "outside",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "op",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "report-voice",
+      "label": "Report voice support",
+      "description": "",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "problem",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "connect-account",
+      "label": "Connect my account",
+      "description": "",
+      "kind": "undoable",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "link-offer",
+      "label": "Read a link offer",
+      "description": "",
+      "kind": "read",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "token",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "accept-link",
+      "label": "Link the offered account",
+      "description": "",
+      "kind": "undoable",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "token",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "unlink-mine",
+      "label": "Unlink my account",
+      "description": "",
+      "kind": "undoable",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "set-bot-token",
+      "label": "Set bot token",
+      "description": "",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": true,
+      "asks": [
+        {
+          "name": "token",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "discord.guild",
+      "resource_kind": "",
+      "action": "find-servers",
+      "label": "Find the bot's servers",
+      "description": "",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "token",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    }
+  ],
+  "commands": [],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [],
+  "listed": true,
+  "surface_file": "surface.json"
+}

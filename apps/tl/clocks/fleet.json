@@ -1,0 +1,197 @@
+{
+  "id": "so.tilo.clocks",
+  "name": "Clocks",
+  "category": "Utility",
+  "platforms": [
+    "linux",
+    "macos",
+    "web"
+  ],
+  "tagline": "World clocks, alarms, timers and a stopwatch",
+  "names": [
+    "Uhren"
+  ],
+  "keywords": [
+    "clock",
+    "clocks",
+    "alarm",
+    "alarms",
+    "timer",
+    "timers",
+    "stopwatch",
+    "world clock",
+    "time",
+    "countdown",
+    "wecker",
+    "uhr",
+    "stoppuhr",
+    "weltzeit",
+    "zeit",
+    "countdown",
+    "uhren",
+    "alarme",
+    "weltuhr"
+  ],
+  "resource_types": [
+    [
+      "tl.so.tilo.clocks.WorldClock",
+      "World clock"
+    ],
+    [
+      "tl.so.tilo.clocks.Alarm",
+      "Alarm"
+    ],
+    [
+      "tl.so.tilo.clocks.Timer",
+      "Timer"
+    ],
+    [
+      "tl.so.tilo.clocks.Lap",
+      "Lap"
+    ],
+    [
+      "tl.so.tilo.clocks.Stopwatch",
+      "Stopwatch"
+    ]
+  ],
+  "offers": [
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "add_world_clock",
+      "label": "Add world clock",
+      "description": "Adds a city's clock to the workspace.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "city",
+          "type": "text",
+          "description": "City"
+        },
+        {
+          "name": "zone",
+          "type": "text",
+          "description": "Zone"
+        }
+      ],
+      "keywords": [],
+      "icon": "globe"
+    },
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "add_alarm",
+      "label": "New alarm",
+      "description": "Sets an alarm: at the time of day `when` names, on the days it repeats on, ringing on",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "label",
+          "type": "text",
+          "description": "Label"
+        },
+        {
+          "name": "hour",
+          "type": "integer",
+          "description": "Hour"
+        },
+        {
+          "name": "minute",
+          "type": "integer",
+          "description": "Minute"
+        }
+      ],
+      "keywords": [],
+      "icon": "alarm-clock"
+    },
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "add_timer",
+      "label": "Start a timer",
+      "description": "Starts a timer of `seconds`.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "label",
+          "type": "text",
+          "description": "Label"
+        },
+        {
+          "name": "seconds",
+          "type": "integer",
+          "description": "Seconds"
+        }
+      ],
+      "keywords": [],
+      "icon": "timer"
+    },
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "start_stopwatch",
+      "label": "Start the stopwatch",
+      "description": "Starts the stopwatch.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "play"
+    },
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "pause_stopwatch",
+      "label": "Pause the stopwatch",
+      "description": "Pauses the stopwatch where it stands.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "pause"
+    },
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "lap",
+      "label": "Lap",
+      "description": "Keeps a lap: the time the stopwatch stands at.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "flag"
+    },
+    {
+      "resource": "tl.so.tilo.clocks.Clocks",
+      "resource_kind": "",
+      "action": "reset_stopwatch",
+      "label": "Reset the stopwatch",
+      "description": "Resets the stopwatch: it is at zero and stopped, with no laps.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "rotate-ccw"
+    }
+  ],
+  "commands": [],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [
+    "so.tilo.lang.clocks"
+  ],
+  "listed": true,
+  "surface": "{\"resources\":[{\"fields\":[],\"kind\":\"tl.host\",\"label\":\"tilolang\",\"verbs\":[],\"version\":1},{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1},{\"fields\":[{\"path\":\"doc\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"entry\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"app\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"capability\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"payload\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"owner\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"state\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"detail\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"outcome\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"reason\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"held_until\",\"stored\":\"value\",\"type\":{\"option\":\"text\"}},{\"path\":\"settled\",\"stored\":\"value\",\"type\":\"bool\"}],\"kind\":\"tilolang.effect\",\"label\":\"A queued effect\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"$send\",\"kind\":\"undoable\",\"label\":\"Hand the effect over\",\"params\":[]},{\"id\":\"$wait\",\"kind\":\"undoable\",\"label\":\"Say why it waits\",\"params\":[]},{\"id\":\"$settle\",\"kind\":\"undoable\",\"label\":\"Say how it went\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"notice\",\"path\":\"notice-to\",\"stored\":\"value\",\"title\":\"to\",\"type\":\"actor\"},{\"owner\":\"notice\",\"path\":\"notice-title\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-body\",\"stored\":\"value\",\"title\":\"body\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-opens\",\"stored\":\"record\",\"title\":\"opens\",\"type\":{\"resource\":\"tl.tilo.host.Resource\"}},{\"owner\":\"notice\",\"path\":\"notice-seen\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"},{\"owner\":\"notice\",\"path\":\"notice-device\",\"stored\":\"value\",\"title\":\"device\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-actions\",\"stored\":\"value\",\"title\":\"actions\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tl.tilo.host.Notice\",\"label\":\"Notice\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"title\",\"body\",\"device\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"seen\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"worldclock\",\"path\":\"kbeao6ct\",\"stored\":\"value\",\"title\":\"city\",\"type\":\"text\"},{\"owner\":\"worldclock\",\"path\":\"g5vsvo2p\",\"stored\":\"value\",\"title\":\"zone\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.clocks.WorldClock\",\"label\":\"WorldClock\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"city\",\"zone\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"alarm\",\"path\":\"e6jhyy6h\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"alarm\",\"path\":\"cb6boqqg\",\"stored\":\"value\",\"title\":\"hour\",\"type\":\"int\"},{\"owner\":\"alarm\",\"path\":\"bvmw7lxl\",\"stored\":\"value\",\"title\":\"minute\",\"type\":\"int\"},{\"owner\":\"alarm\",\"path\":\"s4ppnbtv\",\"stored\":\"value\",\"title\":\"days\",\"type\":{\"set\":{\"named\":\"Weekday\"}}},{\"owner\":\"alarm\",\"path\":\"adpv3jco\",\"stored\":\"value\",\"title\":\"enabled\",\"type\":\"bool\"},{\"owner\":\"alarm\",\"path\":\"fbxt6ruu\",\"stored\":\"value\",\"title\":\"at\",\"type\":{\"option\":\"time\"}},{\"owner\":\"alarm\",\"path\":\"3bdkffqt\",\"stored\":\"value\",\"title\":\"rings_on\",\"type\":\"text\"},{\"owner\":\"alarm\",\"path\":\"uizteftt\",\"stored\":\"value\",\"title\":\"snoozed\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.clocks.Alarm\",\"label\":\"Alarm\",\"types\":[{\"cases\":[{\"label\":\"Monday\",\"name\":\"mon\"},{\"label\":\"Tuesday\",\"name\":\"tue\"},{\"label\":\"Wednesday\",\"name\":\"wed\"},{\"label\":\"Thursday\",\"name\":\"thu\"},{\"label\":\"Friday\",\"name\":\"fri\"},{\"label\":\"Saturday\",\"name\":\"sat\"},{\"label\":\"Sunday\",\"name\":\"sun\"}],\"doc\":\"A day of the week an alarm repeats on, Monday first.\",\"name\":\"Weekday\"}],\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"label\",\"rings_on\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"enabled\",\"snoozed\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Changes an alarm's words, time and days. Its on/off state stays as it was, and one that is on\\nrings next at the time it now names.\",\"id\":\"fivi3e67\",\"kind\":\"undoable\",\"label\":\"Edit alarm\",\"name\":\"edit_alarm\",\"params\":[{\"name\":\"label\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"hour\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"minute\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"days\",\"required\":false,\"schema\":{\"items\":{\"choice_labels\":{\"fri\":\"Friday\",\"mon\":\"Monday\",\"sat\":\"Saturday\",\"sun\":\"Sunday\",\"thu\":\"Thursday\",\"tue\":\"Tuesday\",\"wed\":\"Wednesday\"},\"enum\":[\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\",\"sun\"],\"type\":\"string\"},\"type\":\"array\"},\"type\":{\"list\":{\"named\":\"Weekday\"}}}]},{\"description\":\"Turns an alarm on or off: off, it does not ring; on, it rings next at its time.\",\"id\":\"sqirq543\",\"kind\":\"undoable\",\"label\":\"Set alarm enabled\",\"name\":\"set_alarm_enabled\",\"params\":[{\"name\":\"enabled\",\"required\":false,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Names the device an alarm rings on: one device's id, or none for every device of the person's.\",\"id\":\"uxdphvkl\",\"kind\":\"undoable\",\"label\":\"Set alarm device\",\"name\":\"set_alarm_device\",\"params\":[{\"name\":\"rings_on\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Repeats an alarm on `d`, or stops repeating on it: a day it names rings, a day it does not\\nskips. Its next ring moves to the next day it names.\",\"id\":\"eencngbt\",\"kind\":\"undoable\",\"label\":\"Toggle day\",\"name\":\"toggle_day\",\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"choice_labels\":{\"fri\":\"Friday\",\"mon\":\"Monday\",\"sat\":\"Saturday\",\"sun\":\"Sunday\",\"thu\":\"Thursday\",\"tue\":\"Tuesday\",\"wed\":\"Wednesday\"},\"enum\":[\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\",\"sun\"],\"type\":\"string\"},\"type\":{\"named\":\"Weekday\"}}]},{\"description\":\"Snoozes the alarm ringing now: it rings again in five minutes.\",\"id\":\"2uk2bvmz\",\"kind\":\"undoable\",\"label\":\"Snooze 5 minutes\",\"name\":\"snooze_alarm\",\"params\":[]},{\"description\":\"Rings an alarm when its moment comes, on the device it names, window or no window. A repeating\\nalarm rings again the next day it names; one that rings once turns itself off.\",\"id\":\"7lw2tfxp\",\"kind\":\"undoable\",\"label\":\"Ring the alarm now\",\"name\":\"ring_alarm\",\"notice\":true,\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"timer\",\"path\":\"nhqnhguz\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"timer\",\"path\":\"5b7nw57j\",\"stored\":\"value\",\"title\":\"seconds\",\"type\":\"int\"},{\"owner\":\"timer\",\"path\":\"6anly4z4\",\"stored\":\"value\",\"title\":\"ends_at\",\"type\":{\"option\":\"time\"}},{\"owner\":\"timer\",\"path\":\"ufpse6mi\",\"stored\":\"value\",\"title\":\"left\",\"type\":{\"option\":\"int\"}}],\"kind\":\"tl.so.tilo.clocks.Timer\",\"label\":\"Timer\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"label\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Pauses a running timer where it stands.\",\"id\":\"latbht2w\",\"kind\":\"undoable\",\"label\":\"Pause timer\",\"name\":\"pause_timer\",\"params\":[]},{\"description\":\"Resumes a paused timer, or starts a finished one over.\",\"id\":\"2n5kbb4o\",\"kind\":\"undoable\",\"label\":\"Resume timer\",\"name\":\"resume_timer\",\"params\":[]},{\"description\":\"Adds a minute to a timer, running or paused.\",\"id\":\"eepdn3h5\",\"kind\":\"undoable\",\"label\":\"Add minute\",\"name\":\"add_minute\",\"params\":[]},{\"description\":\"Rings a timer when it finishes, on every device of the person's, window or no window.\",\"id\":\"gidp5so6\",\"kind\":\"read\",\"label\":\"Ring timer\",\"name\":\"ring_timer\",\"notice\":true,\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"lap\",\"path\":\"mq5diuqb\",\"stored\":\"value\",\"title\":\"at\",\"type\":\"int\"}],\"kind\":\"tl.so.tilo.clocks.Lap\",\"label\":\"Lap\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"stopwatch\",\"path\":\"yhijhjuh\",\"stored\":\"value\",\"title\":\"elapsed\",\"type\":\"int\"},{\"owner\":\"stopwatch\",\"path\":\"fg2gmze6\",\"stored\":\"value\",\"title\":\"since\",\"type\":{\"option\":\"time\"}},{\"owner\":\"stopwatch\",\"path\":\"ngcmcd7g\",\"stored\":\"collection\",\"title\":\"laps\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.clocks.Lap\"}}},{\"owner\":\"lap\",\"path\":\"ngcmcd7g.*.mq5diuqb\",\"stored\":\"value\",\"title\":\"at\",\"type\":\"int\"}],\"kind\":\"tl.so.tilo.clocks.Stopwatch\",\"label\":\"Stopwatch\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"clocks\",\"path\":\"r2amisi7\",\"stored\":\"collection\",\"title\":\"world_clocks\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.clocks.WorldClock\"}}},{\"owner\":\"worldclock\",\"path\":\"r2amisi7.*.kbeao6ct\",\"stored\":\"value\",\"title\":\"city\",\"type\":\"text\"},{\"owner\":\"worldclock\",\"path\":\"r2amisi7.*.g5vsvo2p\",\"stored\":\"value\",\"title\":\"zone\",\"type\":\"text\"},{\"owner\":\"clocks\",\"path\":\"gneumngu\",\"stored\":\"collection\",\"title\":\"alarms\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.clocks.Alarm\"}}},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.e6jhyy6h\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.cb6boqqg\",\"stored\":\"value\",\"title\":\"hour\",\"type\":\"int\"},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.bvmw7lxl\",\"stored\":\"value\",\"title\":\"minute\",\"type\":\"int\"},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.s4ppnbtv\",\"stored\":\"value\",\"title\":\"days\",\"type\":{\"set\":{\"named\":\"Weekday\"}}},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.adpv3jco\",\"stored\":\"value\",\"title\":\"enabled\",\"type\":\"bool\"},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.fbxt6ruu\",\"stored\":\"value\",\"title\":\"at\",\"type\":{\"option\":\"time\"}},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.3bdkffqt\",\"stored\":\"value\",\"title\":\"rings_on\",\"type\":\"text\"},{\"owner\":\"alarm\",\"path\":\"gneumngu.*.uizteftt\",\"stored\":\"value\",\"title\":\"snoozed\",\"type\":\"bool\"},{\"owner\":\"clocks\",\"path\":\"kahapraa\",\"stored\":\"collection\",\"title\":\"timers\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.clocks.Timer\"}}},{\"owner\":\"timer\",\"path\":\"kahapraa.*.nhqnhguz\",\"stored\":\"value\",\"title\":\"label\",\"type\":\"text\"},{\"owner\":\"timer\",\"path\":\"kahapraa.*.5b7nw57j\",\"stored\":\"value\",\"title\":\"seconds\",\"type\":\"int\"},{\"owner\":\"timer\",\"path\":\"kahapraa.*.6anly4z4\",\"stored\":\"value\",\"title\":\"ends_at\",\"type\":{\"option\":\"time\"}},{\"owner\":\"timer\",\"path\":\"kahapraa.*.ufpse6mi\",\"stored\":\"value\",\"title\":\"left\",\"type\":{\"option\":\"int\"}},{\"owner\":\"clocks\",\"path\":\"rjh2x76r\",\"stored\":\"record\",\"title\":\"stopwatch\",\"type\":{\"resource\":\"tl.so.tilo.clocks.Stopwatch\"}},{\"owner\":\"stopwatch\",\"path\":\"rjh2x76r.yhijhjuh\",\"stored\":\"value\",\"title\":\"elapsed\",\"type\":\"int\"},{\"owner\":\"stopwatch\",\"path\":\"rjh2x76r.fg2gmze6\",\"stored\":\"value\",\"title\":\"since\",\"type\":{\"option\":\"time\"}},{\"owner\":\"stopwatch\",\"path\":\"rjh2x76r.ngcmcd7g\",\"stored\":\"collection\",\"title\":\"laps\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.clocks.Lap\"}}},{\"owner\":\"lap\",\"path\":\"rjh2x76r.ngcmcd7g.*.mq5diuqb\",\"stored\":\"value\",\"title\":\"at\",\"type\":\"int\"},{\"owner\":\"clocks\",\"path\":\"hnwcprw3\",\"stored\":\"value\",\"title\":\"active\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.clocks.Clocks\",\"label\":\"Clocks\",\"live\":{\"view\":\"live\",\"when\":[{\"Is\":[\"active\",{\"Bool\":true}]}]},\"types\":[{\"cases\":[{\"label\":\"Monday\",\"name\":\"mon\"},{\"label\":\"Tuesday\",\"name\":\"tue\"},{\"label\":\"Wednesday\",\"name\":\"wed\"},{\"label\":\"Thursday\",\"name\":\"thu\"},{\"label\":\"Friday\",\"name\":\"fri\"},{\"label\":\"Saturday\",\"name\":\"sat\"},{\"label\":\"Sunday\",\"name\":\"sun\"}],\"doc\":\"A day of the week an alarm repeats on, Monday first.\",\"name\":\"Weekday\"}],\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"active\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Adds a city's clock to the workspace.\",\"id\":\"ofkzixdx\",\"kind\":\"undoable\",\"label\":\"Add world clock\",\"name\":\"add_world_clock\",\"params\":[{\"name\":\"city\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"zone\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.clocks.WorldClock\"}}},{\"description\":\"Removes a city's clock.\",\"destructive\":true,\"id\":\"tp56af3m\",\"kind\":\"undoable\",\"label\":\"Remove world clock\",\"name\":\"remove_world_clock\",\"params\":[{\"name\":\"w\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.clocks.WorldClock\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.clocks.WorldClock\"}}]},{\"description\":\"Sets an alarm: at the time of day `when` names, on the days it repeats on, ringing on\\n`rings_on`, every device of the person's when it names none. It rings first at the next such\\ntime.\",\"id\":\"aozz4wlf\",\"kind\":\"undoable\",\"label\":\"New alarm\",\"name\":\"add_alarm\",\"params\":[{\"name\":\"label\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"hour\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"minute\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"},{\"name\":\"days\",\"required\":false,\"schema\":{\"items\":{\"choice_labels\":{\"fri\":\"Friday\",\"mon\":\"Monday\",\"sat\":\"Saturday\",\"sun\":\"Sunday\",\"thu\":\"Thursday\",\"tue\":\"Tuesday\",\"wed\":\"Wednesday\"},\"enum\":[\"mon\",\"tue\",\"wed\",\"thu\",\"fri\",\"sat\",\"sun\"],\"type\":\"string\"},\"type\":\"array\"},\"type\":{\"list\":{\"named\":\"Weekday\"}}},{\"name\":\"rings_on\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.clocks.Alarm\"}}},{\"description\":\"Removes an alarm.\",\"destructive\":true,\"id\":\"mgfcysje\",\"kind\":\"undoable\",\"label\":\"Remove alarm\",\"name\":\"remove_alarm\",\"params\":[{\"name\":\"a\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.clocks.Alarm\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.clocks.Alarm\"}}]},{\"description\":\"Starts a timer of `seconds`.\",\"id\":\"7anuyebc\",\"kind\":\"undoable\",\"label\":\"Start a timer\",\"name\":\"add_timer\",\"params\":[{\"name\":\"label\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"seconds\",\"required\":true,\"schema\":{\"type\":\"integer\"},\"type\":\"int\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.clocks.Timer\"}}},{\"description\":\"Removes a timer.\",\"destructive\":true,\"id\":\"nwtaannw\",\"kind\":\"undoable\",\"label\":\"Remove timer\",\"name\":\"remove_timer\",\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.clocks.Timer\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.clocks.Timer\"}}]},{\"description\":\"Starts the stopwatch.\",\"id\":\"knkom4sf\",\"kind\":\"undoable\",\"label\":\"Start the stopwatch\",\"name\":\"start_stopwatch\",\"params\":[]},{\"description\":\"Pauses the stopwatch where it stands.\",\"id\":\"kcycaaaa\",\"kind\":\"undoable\",\"label\":\"Pause the stopwatch\",\"name\":\"pause_stopwatch\",\"params\":[]},{\"description\":\"Keeps a lap: the time the stopwatch stands at.\",\"id\":\"7twb2otm\",\"kind\":\"undoable\",\"label\":\"Lap\",\"name\":\"lap\",\"params\":[]},{\"description\":\"Resets the stopwatch: it is at zero and stopped, with no laps.\",\"id\":\"qcjegi7p\",\"kind\":\"undoable\",\"label\":\"Reset the stopwatch\",\"name\":\"reset_stopwatch\",\"params\":[]}],\"version\":1},{\"fields\":[],\"kind\":\"tl.so.tilo.clocks\",\"label\":\"Clocks\",\"verbs\":[],\"version\":1}]}"
+}

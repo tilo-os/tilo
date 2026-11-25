@@ -196,7 +196,7 @@ name = "test"
 tool = "nextest"
 unify = "workspace-unify"
 
-# The gate over the generated fleet, which declares the fix that writes it back.
+# The gate over the app surfaces, which declares the fix that writes them back.
 [[check]]
 name = "app-surfaces"
 run = "fixture"
@@ -738,7 +738,7 @@ class PrePushLintTests(unittest.TestCase):
 
     def test_a_push_of_an_app_surface_alone_runs_the_freshness_checks(self):
         # No crate changes, so the lint would otherwise say there is nothing to lint, and the
-        # generated fleet lands stale for the next person's push to refuse.
+        # app's committed catalogue entry lands stale for the next person's push to refuse.
         self.with_t()
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         self.commit("feat: an app's surface file")
@@ -746,9 +746,9 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["t test app-surfaces sdk-policy sdk-types --json"])
 
-    def test_a_crate_change_does_not_run_the_fleet_gate(self):
-        # The fleet gate builds a compiler and an app collection; a crate change moves the SDK's
-        # types without it, though t's read sets name both for any change.
+    def test_a_crate_change_does_not_run_the_surfaces_gate(self):
+        # The surfaces' gate builds a compiler and an app collection; a crate change moves the
+        # SDK's types without it, though t's read sets name both for any change.
         self.with_t()
         self.write("native/src/lib.rs", LIB.format(answer=33))
         self.commit("feat: answer 33")
@@ -758,13 +758,13 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("sdk-types", checks)
         self.assertNotIn("app-surfaces", checks)
 
-    def test_a_stale_fleet_refuses_the_push_and_names_its_fix(self):
+    def test_a_stale_catalogue_entry_refuses_the_push_and_names_its_fix(self):
         self.with_t()
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         self.commit("feat: an app's surface file")
         result = self.push(t_scope="app-surfaces sdk-policy sdk-types", t_scope_status=0,
                            t_outcome="fail",
-                           t_excerpt="crates/desktop/app-fleet/src/generated.rs is stale")
+                           t_excerpt="apps/tl/fixture/fleet.json is stale")
         self.assertEqual(result.returncode, 1)
         self.assertIn("app-surfaces: fail", result.stderr)
         self.assertIn("new: crates/desktop/app-fleet/src/generated.rs", result.stderr)
@@ -1344,7 +1344,7 @@ class SurfaceGateTests(unittest.TestCase):
         module = pre_push_lint()
         return module.surface_checks(module.Push(set(files), [], [], []), named)
 
-    def test_an_app_source_names_the_fleet_and_sdk_checks(self):
+    def test_an_app_source_names_the_surface_and_sdk_checks(self):
         self.assertEqual(self.names({"app-surfaces", "sdk-policy", "sdk-types"},
                                     "apps/tl/shell/asking.tl"),
                          ["app-surfaces", "sdk-policy", "sdk-types"])
@@ -1358,9 +1358,9 @@ class SurfaceGateTests(unittest.TestCase):
         self.assertEqual(self.names({"app-surfaces"}, "apps/discord/surface.json"),
                          ["app-surfaces"])
 
-    def test_a_crate_change_outside_a_surface_does_not_name_the_fleet_gate(self):
-        # sdk-types follows every crate's actions and records; the fleet gate builds a compiler
-        # and an app collection, so only an app's published surface asks for it.
+    def test_a_crate_change_outside_a_surface_does_not_name_the_surfaces_gate(self):
+        # sdk-types follows every crate's actions and records; the surfaces' gate builds a
+        # compiler and an app collection, so only an app's published surface asks for it.
         self.assertEqual(self.names({"app-surfaces", "sdk-types"},
                                     "crates/core/tilo-actions/src/lib.rs"),
                          ["sdk-types"])

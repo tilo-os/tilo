@@ -1,0 +1,445 @@
+{
+  "id": "so.tilo.music",
+  "name": "Music",
+  "category": "AudioVideo",
+  "platforms": [
+    "linux",
+    "macos",
+    "web"
+  ],
+  "tagline": "The music on your devices, and the catalogues that have more",
+  "names": [],
+  "keywords": [
+    "music",
+    "musik",
+    "song",
+    "songs",
+    "titel",
+    "track",
+    "tracks",
+    "album",
+    "alben",
+    "artist",
+    "artists",
+    "künstler",
+    "kuenstler",
+    "playlist",
+    "playlists",
+    "wiedergabe",
+    "player",
+    "audio",
+    "listen",
+    "hören",
+    "hoeren",
+    "spotify",
+    "youtube music",
+    "lyrics",
+    "songtext",
+    "liedtext"
+  ],
+  "resource_types": [
+    [
+      "tl.so.tilo.music.Track",
+      "Track"
+    ],
+    [
+      "tl.so.tilo.music.Album",
+      "Album"
+    ],
+    [
+      "tl.so.tilo.music.Artist",
+      "Artist"
+    ],
+    [
+      "tl.so.tilo.music.Playlist",
+      "Playlist"
+    ],
+    [
+      "tl.so.tilo.music.SpotifyDevice",
+      "Spotify device"
+    ],
+    [
+      "tl.so.tilo.music.SpotifyQueueItem",
+      "Spotify queue item"
+    ],
+    [
+      "tl.so.tilo.music.Section",
+      "Section"
+    ],
+    [
+      "tl.so.tilo.music.Suggestion",
+      "Suggestion"
+    ],
+    [
+      "tl.so.tilo.music.Mixtape",
+      "Mixtape"
+    ],
+    [
+      "tl.so.tilo.music.Taste",
+      "Taste"
+    ],
+    [
+      "tl.so.tilo.music.Library",
+      "Library"
+    ]
+  ],
+  "offers": [
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "session",
+      "label": "Session",
+      "description": "The session this app plays through: the one it has, or one made now. It is kept both in",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "open_link",
+      "label": "Open link",
+      "description": "Opens a `music://` link: the song it names plays, and the album, artist or playlist it names",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "link",
+          "type": "text",
+          "description": "Link"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "lyrics_now",
+      "label": "Lyrics now",
+      "description": "Asks for the words of what plays, keeping the session it asks for.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "quote"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "search",
+      "label": "Search",
+      "description": "Asks the catalogue for the songs, albums, artists and playlists a query finds.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "query",
+          "type": "text",
+          "description": "Query"
+        }
+      ],
+      "keywords": [],
+      "icon": "search"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "refresh",
+      "label": "Refresh",
+      "description": "Asks the catalogue for its home page.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "refresh"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "note_failure",
+      "label": "Note failure",
+      "description": "Says why the player stopped, and where, so the notice names the place and continues there.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "reason",
+          "type": "text",
+          "description": "Reason"
+        },
+        {
+          "name": "at",
+          "type": "number",
+          "description": "At"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "retry_stream",
+      "label": "Try again",
+      "description": "Asks the catalogue for the song's address again and plays it on from where it stopped: a",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "refresh"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "new_mixtape",
+      "label": "New mixtape",
+      "description": "Makes a playlist of the person's own: at Spotify too, when it is their catalogue and their",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "name",
+          "type": "text",
+          "description": "Name"
+        }
+      ],
+      "keywords": [],
+      "icon": "plus"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "set_catalogue",
+      "label": "Set catalogue",
+      "description": "Chooses which catalogue the app asks.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "which",
+          "type": "text",
+          "description": "Which"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "connect_spotify",
+      "label": "Connect Spotify",
+      "description": "Connects the person's Spotify: the page they sign in on is shown in the Spotify section.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "link"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "finish_spotify",
+      "label": "I signed in",
+      "description": "Takes the sign-in the person gave on Spotify's page.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "check"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "disconnect_spotify",
+      "label": "Disconnect Spotify",
+      "description": "Forgets this device's Spotify sign-in.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "x"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "spotify_devices",
+      "label": "Refresh devices",
+      "description": "Reads the places Spotify plays on.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "speaker"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "remote_play",
+      "label": "Play on Spotify",
+      "description": "Plays `uri` on Spotify, where it plays: empty plays what was playing.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "play"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "remote_pause",
+      "label": "Pause on Spotify",
+      "description": "Pauses what plays on Spotify.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "pause"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "remote_next",
+      "label": "Next on Spotify",
+      "description": "Plays what follows on Spotify.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "skip-forward"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "remote_previous",
+      "label": "Previous on Spotify",
+      "description": "Plays what played before on Spotify.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "skip-back"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "spotify_now",
+      "label": "What plays on Spotify",
+      "description": "Reads what plays on Spotify now.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "music"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "spotify_queue",
+      "label": "Read Spotify's queue",
+      "description": "Reads what plays next on Spotify: its own queue, which is shown here and never edited here.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": "list"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "spotify_more",
+      "label": "More from Spotify",
+      "description": "Asks Spotify for one more page of what the person keeps there.",
+      "kind": "outside",
+      "operation": "effect",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "kind",
+          "type": "text",
+          "description": "Kind"
+        }
+      ],
+      "keywords": [],
+      "icon": "chevron-down"
+    },
+    {
+      "resource": "tl.so.tilo.music.Library",
+      "resource_kind": "",
+      "action": "update_taste",
+      "label": "Update taste",
+      "description": "Turns one of the recommendations' switches.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "which",
+          "type": "text",
+          "description": "Which"
+        },
+        {
+          "name": "on",
+          "type": "boolean",
+          "description": "On"
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    },
+    {
+      "resource": "tl:so.tilo.music:root-aymfw7yu",
+      "resource_kind": "tl.so.tilo.music.Library",
+      "action": "open-link",
+      "label": "Open link",
+      "description": "",
+      "kind": "read",
+      "operation": "view",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "link",
+          "type": "text",
+          "description": ""
+        }
+      ],
+      "keywords": [],
+      "icon": ""
+    }
+  ],
+  "commands": [
+    {
+      "action": "open_audio_file",
+      "label": "Open audio file",
+      "key": "Ctrl+o"
+    }
+  ],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [],
+  "listed": true,
+  "surface": "{\"reads\":[\"tl.so.tilo.playback.Output\",\"tl.so.tilo.playback.Item\",\"tl.so.tilo.playback.Progress\",\"tl.so.tilo.playback.Playback\",\"tl.so.tilo.playback\"],\"resources\":[{\"fields\":[],\"kind\":\"tl.host\",\"label\":\"tilolang\",\"verbs\":[],\"version\":1},{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1},{\"fields\":[{\"path\":\"doc\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"entry\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"app\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"capability\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"payload\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"owner\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"state\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"detail\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"outcome\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"reason\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"held_until\",\"stored\":\"value\",\"type\":{\"option\":\"text\"}},{\"path\":\"settled\",\"stored\":\"value\",\"type\":\"bool\"}],\"kind\":\"tilolang.effect\",\"label\":\"A queued effect\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"$send\",\"kind\":\"undoable\",\"label\":\"Hand the effect over\",\"params\":[]},{\"id\":\"$wait\",\"kind\":\"undoable\",\"label\":\"Say why it waits\",\"params\":[]},{\"id\":\"$settle\",\"kind\":\"undoable\",\"label\":\"Say how it went\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"notice\",\"path\":\"notice-to\",\"stored\":\"value\",\"title\":\"to\",\"type\":\"actor\"},{\"owner\":\"notice\",\"path\":\"notice-title\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-body\",\"stored\":\"value\",\"title\":\"body\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-opens\",\"stored\":\"record\",\"title\":\"opens\",\"type\":{\"resource\":\"tl.tilo.host.Resource\"}},{\"owner\":\"notice\",\"path\":\"notice-seen\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"},{\"owner\":\"notice\",\"path\":\"notice-device\",\"stored\":\"value\",\"title\":\"device\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-actions\",\"stored\":\"value\",\"title\":\"actions\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tl.tilo.host.Notice\",\"label\":\"Notice\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"title\",\"body\",\"device\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"seen\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"track\",\"path\":\"wapyyydf\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"zpnajesf\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"pzaz5i7w\",\"stored\":\"value\",\"title\":\"artist\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"kyegi6xm\",\"stored\":\"value\",\"title\":\"artist_key\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"j67d2q4o\",\"stored\":\"value\",\"title\":\"album\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"ojqrhkks\",\"stored\":\"value\",\"title\":\"album_key\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"2sm6xpgo\",\"stored\":\"value\",\"title\":\"seconds\",\"type\":\"int\"},{\"owner\":\"track\",\"path\":\"wy2gg3hw\",\"stored\":\"value\",\"title\":\"plays\",\"type\":\"int\"},{\"owner\":\"track\",\"path\":\"yaujsp7u\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"hlfttyoj\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"47b7sivc\",\"stored\":\"value\",\"title\":\"stream\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"fdkr4wxf\",\"stored\":\"value\",\"title\":\"offline\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"2hvaqxk2\",\"stored\":\"value\",\"title\":\"lyrics\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"4hjvzjcl\",\"stored\":\"value\",\"title\":\"lyrics_state\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"wt3jlodv\",\"stored\":\"value\",\"title\":\"liked\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.music.Track\",\"label\":\"Track\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"title\",\"artist\",\"artist_key\",\"album\",\"album_key\",\"cover\",\"found_for\",\"stream\",\"offline\",\"lyrics\",\"lyrics_state\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"liked\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.track\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Plays one song, alone: what a row's press does. The place is the shared session's own\\nrecord, so the song continues on this device or another.\",\"id\":\"luhqjplo\",\"kind\":\"outside\",\"label\":\"Play song\",\"name\":\"play_song\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Plays a suggested song.\",\"id\":\"qh2hecoe\",\"kind\":\"outside\",\"label\":\"Play rec\",\"name\":\"play_rec\",\"params\":[]},{\"description\":\"Likes a song, or takes the like back. Where the song is Spotify's and the person's Spotify\\nis connected, their Spotify library keeps it too, and what Spotify says is what the song\\nshows.\",\"id\":\"dy7fl53w\",\"kind\":\"outside\",\"label\":\"Like\",\"name\":\"like\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"liked\",\"required\":false,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Keeps a song on this device, for playing with no network.\",\"id\":\"2f6h2snc\",\"kind\":\"outside\",\"label\":\"Keep offline\",\"name\":\"keep_offline\",\"outside\":[\"music.pin\",\"music.stream\"],\"params\":[]},{\"description\":\"Takes the kept copy away; the song still plays from the catalogue.\",\"id\":\"54u4oyoo\",\"kind\":\"outside\",\"label\":\"Remove download\",\"name\":\"remove_offline\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"album\",\"path\":\"xlmick3d\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"ui7q6nc2\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"c36cztfw\",\"stored\":\"value\",\"title\":\"artist\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"2px6jkdl\",\"stored\":\"value\",\"title\":\"artist_key\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"aecqneo6\",\"stored\":\"value\",\"title\":\"year\",\"type\":\"int\"},{\"owner\":\"album\",\"path\":\"aajvirg5\",\"stored\":\"value\",\"title\":\"release_kind\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"lzsbpa3s\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"hsjkx4hy\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"6ygyv2n2\",\"stored\":\"value\",\"title\":\"in_library\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.music.Album\",\"label\":\"Album\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"title\",\"artist\",\"artist_key\",\"release_kind\",\"cover\",\"found_for\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"in_library\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.album\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Plays an album's songs from the top.\",\"id\":\"7aatw4mh\",\"kind\":\"undoable\",\"label\":\"Play album\",\"name\":\"play_album\",\"params\":[]},{\"description\":\"Keeps an album in the library, or takes it out: at Spotify too, when it is a Spotify album\\nand the person's Spotify is connected.\",\"id\":\"tel4nf6o\",\"kind\":\"outside\",\"label\":\"Save album\",\"name\":\"save_album\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"keep\",\"required\":false,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"artist\",\"path\":\"a3jwtsne\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"aht5vji7\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"p7suhaoo\",\"stored\":\"value\",\"title\":\"subscribers\",\"type\":\"int\"},{\"owner\":\"artist\",\"path\":\"xmevyzrv\",\"stored\":\"value\",\"title\":\"avatar\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"aazaiqyu\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"wkrm32am\",\"stored\":\"value\",\"title\":\"followed\",\"type\":\"bool\"},{\"owner\":\"artist\",\"path\":\"nb4ehhax\",\"stored\":\"value\",\"title\":\"genres\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tl.so.tilo.music.Artist\",\"label\":\"Artist\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"name\",\"avatar\",\"found_for\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"followed\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.artist\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Follows an artist, or stops: at Spotify too, when they are a Spotify artist and the person's\\nSpotify is connected.\",\"id\":\"kqfycazm\",\"kind\":\"outside\",\"label\":\"Follow artist\",\"name\":\"follow_artist\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"followed\",\"required\":false,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Asks the catalogue for an artist's page.\",\"id\":\"yxg55cix\",\"kind\":\"outside\",\"label\":\"Refresh artist\",\"name\":\"refresh_artist\",\"outside\":[\"music.artist\",\"music.spotify\"],\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"playlist\",\"path\":\"zliedtfz\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"rtkxqj2p\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"htibtwee\",\"stored\":\"value\",\"title\":\"subtitle\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"4rfi4yqu\",\"stored\":\"value\",\"title\":\"track_count\",\"type\":\"int\"},{\"owner\":\"playlist\",\"path\":\"qdbwyy7o\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"ac7ep6rb\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"qu3zxatt\",\"stored\":\"value\",\"title\":\"description\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.music.Playlist\",\"label\":\"Playlist\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"title\",\"subtitle\",\"cover\",\"found_for\",\"description\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.playlist\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Asks the catalogue for a playlist's songs.\",\"id\":\"qayzlavt\",\"kind\":\"outside\",\"label\":\"Refresh\",\"name\":\"open_playlist\",\"outside\":[\"music.playlist\",\"music.spotify\"],\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"spotifydevice\",\"path\":\"4ruem7bk\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"spotifydevice\",\"path\":\"fysa7usi\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"spotifydevice\",\"path\":\"ajgkhxtc\",\"stored\":\"value\",\"title\":\"kind\",\"type\":\"text\"},{\"owner\":\"spotifydevice\",\"path\":\"njju5rcv\",\"stored\":\"value\",\"title\":\"active\",\"type\":\"bool\"},{\"owner\":\"spotifydevice\",\"path\":\"daqeango\",\"stored\":\"value\",\"title\":\"volume\",\"type\":\"int\"}],\"kind\":\"tl.so.tilo.music.SpotifyDevice\",\"label\":\"SpotifyDevice\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"name\",\"kind\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"active\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.device\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"spotifyqueueitem\",\"path\":\"r4rop6xj\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"teom6gyk\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"b4nh57k6\",\"stored\":\"value\",\"title\":\"artist\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"cjgrr3sx\",\"stored\":\"value\",\"title\":\"album\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"edgjqah3\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"gbooyryg\",\"stored\":\"value\",\"title\":\"seconds\",\"type\":\"int\"}],\"kind\":\"tl.so.tilo.music.SpotifyQueueItem\",\"label\":\"SpotifyQueueItem\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"title\",\"artist\",\"album\",\"cover\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.spotify_queue\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"section\",\"path\":\"jsrmddga\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"section\",\"path\":\"2kqqdved\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"section\",\"path\":\"lp6qsyhj\",\"stored\":\"value\",\"title\":\"order\",\"type\":\"int\"}],\"kind\":\"tl.so.tilo.music.Section\",\"label\":\"Section\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"title\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.section\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"suggestion\",\"path\":\"qh34h2ch\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"xh6birha\",\"stored\":\"value\",\"title\":\"section\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"a5bkjkyq\",\"stored\":\"value\",\"title\":\"kind\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"gqxd4uhg\",\"stored\":\"value\",\"title\":\"target\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"5a3o3zds\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"oeqw4xpb\",\"stored\":\"value\",\"title\":\"subtitle\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"5gpg6lqq\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.music.Suggestion\",\"label\":\"Suggestion\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"key\",\"section\",\"kind\",\"target\",\"title\",\"subtitle\",\"cover\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"What the outside service said is taken in.\",\"id\":\"$origin\",\"kind\":\"undoable\",\"label\":\"Keep in step with its service\",\"origin\":\"music.suggestion\",\"params\":[]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"mixtape\",\"path\":\"5d2oxk4b\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"mixtape\",\"path\":\"dombkrij\",\"stored\":\"collection\",\"title\":\"tracks\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.playback.Item\"}}},{\"owner\":\"mixtape\",\"path\":\"jonjr2zv\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"mixtape\",\"path\":\"ltrfuiaz\",\"stored\":\"value\",\"title\":\"description\",\"type\":\"text\"},{\"owner\":\"mixtape\",\"path\":\"xp3dtewi\",\"stored\":\"value\",\"title\":\"spotify\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.music.Mixtape\",\"label\":\"Mixtape\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"name\",\"cover\",\"description\",\"spotify\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"Plays a mixtape's songs in the person's order.\",\"id\":\"i3sjiskz\",\"kind\":\"undoable\",\"label\":\"Play mixtape\",\"name\":\"play_mixtape\",\"params\":[]},{\"description\":\"Adds a song to a mixtape, and to the Spotify playlist it is.\",\"id\":\"mxym7u3g\",\"kind\":\"outside\",\"label\":\"Mixtape add\",\"name\":\"mixtape_add\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Takes a song out of a mixtape, and out of the Spotify playlist it is.\",\"id\":\"4k4f6fox\",\"kind\":\"outside\",\"label\":\"Mixtape remove\",\"name\":\"mixtape_remove\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Gives a playlist of the person's another name, at Spotify too when it is a Spotify one.\",\"id\":\"ilknh6a6\",\"kind\":\"outside\",\"label\":\"Rename mixtape\",\"name\":\"rename_mixtape\",\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Sets what a playlist says about itself, at Spotify too when it is a Spotify one.\",\"id\":\"mj6ddil6\",\"kind\":\"outside\",\"label\":\"Describe mixtape\",\"name\":\"describe_mixtape\",\"params\":[{\"name\":\"description\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Sends a playlist's name and description to Spotify, which is the copy its person reads on\\ntheir other devices; a playlist that is not Spotify's says nothing.\",\"id\":\"o6zynibu\",\"kind\":\"outside\",\"label\":\"Send playlist to Spotify\",\"name\":\"send_playlist\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Gives a mixtape the cover the person picks.\",\"id\":\"rmq2tjia\",\"kind\":\"undoable\",\"label\":\"Pick cover\",\"name\":\"pick_cover\",\"params\":[{\"name\":\"file\",\"required\":true,\"schema\":{}}]},{\"description\":\"Sets a mixtape's cover to the picture the person chose.\",\"id\":\"vkqi2loo\",\"kind\":\"undoable\",\"label\":\"Set cover\",\"name\":\"set_cover\",\"params\":[{\"name\":\"file\",\"required\":true,\"schema\":{}}]}],\"version\":1},{\"fields\":[{\"owner\":\"taste\",\"path\":\"nhxvxvrt\",\"stored\":\"value\",\"title\":\"followed_artists\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"fygjzxca\",\"stored\":\"value\",\"title\":\"liked_songs\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"splmmoir\",\"stored\":\"value\",\"title\":\"saved_albums\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"myoyyape\",\"stored\":\"value\",\"title\":\"similar_artists\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"gfhj3dh4\",\"stored\":\"value\",\"title\":\"dismissed\",\"type\":{\"set\":\"text\"}},{\"owner\":\"taste\",\"path\":\"oa6ryv4n\",\"stored\":\"value\",\"title\":\"preferred\",\"type\":{\"set\":\"text\"}},{\"owner\":\"taste\",\"path\":\"nsvv7dnn\",\"stored\":\"value\",\"title\":\"hidden\",\"type\":{\"set\":\"text\"}}],\"kind\":\"tl.so.tilo.music.Taste\",\"label\":\"Taste\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"followed_artists\",\"liked_songs\",\"saved_albums\",\"similar_artists\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"library\",\"path\":\"hkr3ia6d\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"cp5uymkx\",\"stored\":\"collection\",\"title\":\"tracks\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Track\"}}},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.wapyyydf\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.zpnajesf\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.pzaz5i7w\",\"stored\":\"value\",\"title\":\"artist\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.kyegi6xm\",\"stored\":\"value\",\"title\":\"artist_key\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.j67d2q4o\",\"stored\":\"value\",\"title\":\"album\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.ojqrhkks\",\"stored\":\"value\",\"title\":\"album_key\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.2sm6xpgo\",\"stored\":\"value\",\"title\":\"seconds\",\"type\":\"int\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.wy2gg3hw\",\"stored\":\"value\",\"title\":\"plays\",\"type\":\"int\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.yaujsp7u\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.hlfttyoj\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.47b7sivc\",\"stored\":\"value\",\"title\":\"stream\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.fdkr4wxf\",\"stored\":\"value\",\"title\":\"offline\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.2hvaqxk2\",\"stored\":\"value\",\"title\":\"lyrics\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.4hjvzjcl\",\"stored\":\"value\",\"title\":\"lyrics_state\",\"type\":\"text\"},{\"owner\":\"track\",\"path\":\"cp5uymkx.*.wt3jlodv\",\"stored\":\"value\",\"title\":\"liked\",\"type\":\"bool\"},{\"owner\":\"library\",\"path\":\"phkx3ocv\",\"stored\":\"collection\",\"title\":\"albums\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Album\"}}},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.xlmick3d\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.ui7q6nc2\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.c36cztfw\",\"stored\":\"value\",\"title\":\"artist\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.2px6jkdl\",\"stored\":\"value\",\"title\":\"artist_key\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.aecqneo6\",\"stored\":\"value\",\"title\":\"year\",\"type\":\"int\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.aajvirg5\",\"stored\":\"value\",\"title\":\"release_kind\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.lzsbpa3s\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.hsjkx4hy\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"album\",\"path\":\"phkx3ocv.*.6ygyv2n2\",\"stored\":\"value\",\"title\":\"in_library\",\"type\":\"bool\"},{\"owner\":\"library\",\"path\":\"oarbmgph\",\"stored\":\"collection\",\"title\":\"artists\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Artist\"}}},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.a3jwtsne\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.aht5vji7\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.p7suhaoo\",\"stored\":\"value\",\"title\":\"subscribers\",\"type\":\"int\"},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.xmevyzrv\",\"stored\":\"value\",\"title\":\"avatar\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.aazaiqyu\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.wkrm32am\",\"stored\":\"value\",\"title\":\"followed\",\"type\":\"bool\"},{\"owner\":\"artist\",\"path\":\"oarbmgph.*.nb4ehhax\",\"stored\":\"value\",\"title\":\"genres\",\"type\":{\"list\":\"text\"}},{\"owner\":\"library\",\"path\":\"bfjw6uca\",\"stored\":\"collection\",\"title\":\"playlists\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Playlist\"}}},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.zliedtfz\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.rtkxqj2p\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.htibtwee\",\"stored\":\"value\",\"title\":\"subtitle\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.4rfi4yqu\",\"stored\":\"value\",\"title\":\"track_count\",\"type\":\"int\"},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.qdbwyy7o\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.ac7ep6rb\",\"stored\":\"value\",\"title\":\"found_for\",\"type\":\"text\"},{\"owner\":\"playlist\",\"path\":\"bfjw6uca.*.qu3zxatt\",\"stored\":\"value\",\"title\":\"description\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"k6usb4n2\",\"stored\":\"collection\",\"title\":\"suggestions\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Suggestion\"}}},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.qh34h2ch\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.xh6birha\",\"stored\":\"value\",\"title\":\"section\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.a5bkjkyq\",\"stored\":\"value\",\"title\":\"kind\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.gqxd4uhg\",\"stored\":\"value\",\"title\":\"target\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.5a3o3zds\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.oeqw4xpb\",\"stored\":\"value\",\"title\":\"subtitle\",\"type\":\"text\"},{\"owner\":\"suggestion\",\"path\":\"k6usb4n2.*.5gpg6lqq\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"qu6nxpq3\",\"stored\":\"collection\",\"title\":\"sections\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Section\"}}},{\"owner\":\"section\",\"path\":\"qu6nxpq3.*.jsrmddga\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"section\",\"path\":\"qu6nxpq3.*.2kqqdved\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"section\",\"path\":\"qu6nxpq3.*.lp6qsyhj\",\"stored\":\"value\",\"title\":\"order\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"bfayjji6\",\"stored\":\"collection\",\"title\":\"mixtapes\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.Mixtape\"}}},{\"owner\":\"mixtape\",\"path\":\"bfayjji6.*.5d2oxk4b\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"mixtape\",\"path\":\"bfayjji6.*.dombkrij\",\"stored\":\"collection\",\"title\":\"tracks\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.playback.Item\"}}},{\"owner\":\"mixtape\",\"path\":\"bfayjji6.*.jonjr2zv\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"mixtape\",\"path\":\"bfayjji6.*.ltrfuiaz\",\"stored\":\"value\",\"title\":\"description\",\"type\":\"text\"},{\"owner\":\"mixtape\",\"path\":\"bfayjji6.*.xp3dtewi\",\"stored\":\"value\",\"title\":\"spotify\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"u4kuzao5\",\"stored\":\"record\",\"title\":\"taste\",\"type\":{\"resource\":\"tl.so.tilo.music.Taste\"}},{\"owner\":\"taste\",\"path\":\"u4kuzao5.nhxvxvrt\",\"stored\":\"value\",\"title\":\"followed_artists\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"u4kuzao5.fygjzxca\",\"stored\":\"value\",\"title\":\"liked_songs\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"u4kuzao5.splmmoir\",\"stored\":\"value\",\"title\":\"saved_albums\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"u4kuzao5.myoyyape\",\"stored\":\"value\",\"title\":\"similar_artists\",\"type\":\"bool\"},{\"owner\":\"taste\",\"path\":\"u4kuzao5.gfhj3dh4\",\"stored\":\"value\",\"title\":\"dismissed\",\"type\":{\"set\":\"text\"}},{\"owner\":\"taste\",\"path\":\"u4kuzao5.oa6ryv4n\",\"stored\":\"value\",\"title\":\"preferred\",\"type\":{\"set\":\"text\"}},{\"owner\":\"taste\",\"path\":\"u4kuzao5.nsvv7dnn\",\"stored\":\"value\",\"title\":\"hidden\",\"type\":{\"set\":\"text\"}},{\"owner\":\"library\",\"path\":\"scejauac\",\"stored\":\"value\",\"title\":\"playing\",\"type\":{\"option\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}},{\"owner\":\"library\",\"path\":\"tnkopk2m\",\"stored\":\"collection\",\"title\":\"sessions\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}},{\"owner\":\"library\",\"path\":\"cjoykprs\",\"stored\":\"collection\",\"title\":\"devices\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.SpotifyDevice\"}}},{\"owner\":\"spotifydevice\",\"path\":\"cjoykprs.*.4ruem7bk\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"spotifydevice\",\"path\":\"cjoykprs.*.fysa7usi\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"spotifydevice\",\"path\":\"cjoykprs.*.ajgkhxtc\",\"stored\":\"value\",\"title\":\"kind\",\"type\":\"text\"},{\"owner\":\"spotifydevice\",\"path\":\"cjoykprs.*.njju5rcv\",\"stored\":\"value\",\"title\":\"active\",\"type\":\"bool\"},{\"owner\":\"spotifydevice\",\"path\":\"cjoykprs.*.daqeango\",\"stored\":\"value\",\"title\":\"volume\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"hiupwos3\",\"stored\":\"collection\",\"title\":\"spotify_queue\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.music.SpotifyQueueItem\"}}},{\"owner\":\"spotifyqueueitem\",\"path\":\"hiupwos3.*.r4rop6xj\",\"stored\":\"value\",\"title\":\"key\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"hiupwos3.*.teom6gyk\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"hiupwos3.*.b4nh57k6\",\"stored\":\"value\",\"title\":\"artist\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"hiupwos3.*.cjgrr3sx\",\"stored\":\"value\",\"title\":\"album\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"hiupwos3.*.edgjqah3\",\"stored\":\"value\",\"title\":\"cover\",\"type\":\"text\"},{\"owner\":\"spotifyqueueitem\",\"path\":\"hiupwos3.*.gbooyryg\",\"stored\":\"value\",\"title\":\"seconds\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"d6agrwhu\",\"stored\":\"value\",\"title\":\"spotify_state\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"wzbxwvai\",\"stored\":\"value\",\"title\":\"spotify_account\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"q6fvzfwi\",\"stored\":\"value\",\"title\":\"spotify_product\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"bnnshdna\",\"stored\":\"value\",\"title\":\"spotify_trouble\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"rwf7lfs6\",\"stored\":\"value\",\"title\":\"connect_url\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"gghnswba\",\"stored\":\"value\",\"title\":\"spotify_active\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"sdkihe6k\",\"stored\":\"value\",\"title\":\"spotify_now\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"22kwzmah\",\"stored\":\"value\",\"title\":\"spotify_playing\",\"type\":\"bool\"},{\"owner\":\"library\",\"path\":\"ekk67ewc\",\"stored\":\"value\",\"title\":\"spotify_next_tracks\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"gwbm6xq4\",\"stored\":\"value\",\"title\":\"spotify_next_albums\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"q6w6ykgo\",\"stored\":\"value\",\"title\":\"spotify_next_playlists\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"hbxo67cl\",\"stored\":\"value\",\"title\":\"spotify_next_artists\",\"type\":\"int\"},{\"owner\":\"library\",\"path\":\"wout6rgv\",\"stored\":\"value\",\"title\":\"catalogue\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"olobgipa\",\"stored\":\"value\",\"title\":\"search_state\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"foqrtqa3\",\"stored\":\"value\",\"title\":\"search_trouble\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"w3c7fplo\",\"stored\":\"value\",\"title\":\"home_state\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"gmizjqwj\",\"stored\":\"value\",\"title\":\"home_trouble\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"vnufl2py\",\"stored\":\"value\",\"title\":\"trouble\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"jelhifn2\",\"stored\":\"value\",\"title\":\"player_trouble\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"bw27kdqh\",\"stored\":\"value\",\"title\":\"player_at\",\"type\":\"float\"},{\"owner\":\"library\",\"path\":\"x6v7yq2x\",\"stored\":\"value\",\"title\":\"player_retried\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"fkvdcomi\",\"stored\":\"value\",\"title\":\"online\",\"type\":\"bool\"}],\"kind\":\"tl.so.tilo.music.Library\",\"label\":\"Library\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"name\",\"spotify_state\",\"spotify_account\",\"spotify_product\",\"spotify_trouble\",\"connect_url\",\"spotify_active\",\"spotify_now\",\"catalogue\",\"search_state\",\"search_trouble\",\"home_state\",\"home_trouble\",\"trouble\",\"player_trouble\",\"player_retried\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"spotify_playing\",\"online\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"The data the app's shots and demos start from is written.\",\"id\":\"$scenario\",\"kind\":\"undoable\",\"label\":\"Fill with its scenario\",\"params\":[]},{\"description\":\"The session this app plays through: the one it has, or one made now. It is kept both in\\n`playing`, which a view reads, and in `sessions`, so the record is a resource of its own.\",\"id\":\"oefcidqo\",\"kind\":\"undoable\",\"label\":\"Session\",\"name\":\"session\",\"params\":[],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}},{\"description\":\"Opens an audio file: the file a person picked, or one Files handed over, and plays it. The\\nsong it already made opens instead of a second copy, so its place in history stays one.\",\"id\":\"jjm34kdi\",\"kind\":\"outside\",\"label\":\"Open audio file\",\"name\":\"open_audio_file\",\"params\":[{\"name\":\"file\",\"required\":true,\"schema\":{}}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}},{\"description\":\"Keeps the session's source the song's own address, so the live card and another device play\\nthe one the catalogue last answered with.\",\"id\":\"tc6nujg6\",\"kind\":\"undoable\",\"label\":\"Follow stream\",\"name\":\"follow_stream\",\"params\":[{\"name\":\"p\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.playback.Playback\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}]},{\"description\":\"Opens a `music://` link: the song it names plays, and the album, artist or playlist it names\\nopens on its page. A shell hands a link here whether or not a window of Music is open, and what\\nthis returns opens in the window; a link this library holds nothing for shows the library.\",\"id\":\"ijpx3myl\",\"kind\":\"outside\",\"label\":\"Open link\",\"name\":\"open_link\",\"params\":[{\"name\":\"link\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.tilo.host.Resource\"}}},{\"description\":\"Adds a song to what follows.\",\"id\":\"akdhwldp\",\"kind\":\"undoable\",\"label\":\"Add to queue\",\"name\":\"add_to_queue\",\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Queues a song right after what plays.\",\"id\":\"uwlrca54\",\"kind\":\"undoable\",\"label\":\"Play next\",\"name\":\"play_next\",\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Asks for the words of what plays, keeping the session it asks for.\",\"id\":\"b2wwy2bq\",\"kind\":\"outside\",\"label\":\"Lyrics now\",\"name\":\"lyrics_now\",\"params\":[]},{\"description\":\"Hides a song from the suggestions. History can undo it, and the taste page brings it back.\",\"id\":\"deybznbt\",\"kind\":\"undoable\",\"label\":\"Hide this suggestion\",\"name\":\"hide_rec\",\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Brings a hidden song back into the suggestions.\",\"id\":\"324mqcom\",\"kind\":\"undoable\",\"label\":\"Suggest this again\",\"name\":\"restore_rec\",\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Asks the catalogue for the songs, albums, artists and playlists a query finds.\",\"id\":\"zgwkhxmj\",\"kind\":\"outside\",\"label\":\"Search\",\"name\":\"search\",\"outside\":[\"music.search\",\"music.spotify\"],\"params\":[{\"name\":\"query\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Asks the catalogue for its home page.\",\"id\":\"e3bonqvl\",\"kind\":\"outside\",\"label\":\"Refresh\",\"name\":\"refresh\",\"outside\":[\"music.home\",\"music.spotify\"],\"params\":[]},{\"description\":\"Does what a suggestion on the home page names.\",\"id\":\"f2kpza4x\",\"kind\":\"outside\",\"label\":\"Open suggestion\",\"name\":\"open_suggestion\",\"outside\":[\"music.album\",\"music.artist\",\"music.playlist\",\"music.spotify\"],\"params\":[{\"name\":\"row\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Suggestion\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Suggestion\"}}]},{\"description\":\"Asks for what plays to be sung, into the song's own record.\",\"id\":\"txbarxog\",\"kind\":\"outside\",\"label\":\"Lyrics of\",\"name\":\"lyrics_of\",\"outside\":[\"music.lyrics\"],\"params\":[{\"name\":\"p\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.playback.Playback\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}]},{\"description\":\"Says why the player stopped, and where, so the notice names the place and continues there.\\nA stream that stopped partway is first asked for again by itself, once: a source that drops\\na connection or an address that expired plays on without the person doing anything.\",\"id\":\"p3qnaypk\",\"kind\":\"outside\",\"label\":\"Note failure\",\"name\":\"note_failure\",\"params\":[{\"name\":\"reason\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"at\",\"required\":true,\"schema\":{\"type\":\"number\"},\"type\":\"float\"}]},{\"description\":\"Asks the catalogue for the song's address again and plays it on from where it stopped: a\\nstream its source stopped serving partway through, or one whose signed address expired,\\ncontinues from that place rather than beginning again.\",\"id\":\"t5g7ut27\",\"kind\":\"outside\",\"label\":\"Try again\",\"name\":\"retry_stream\",\"outside\":[\"music.stream\"],\"params\":[]},{\"description\":\"Makes a playlist of the person's own: at Spotify too, when it is their catalogue and their\\nSpotify is connected, so the playlist plays there as it does here.\",\"id\":\"xfhbh7qm\",\"kind\":\"outside\",\"label\":\"New mixtape\",\"name\":\"new_mixtape\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Chooses which catalogue the app asks.\",\"id\":\"cul6iynf\",\"kind\":\"outside\",\"label\":\"Set catalogue\",\"name\":\"set_catalogue\",\"outside\":[\"music.home\",\"music.spotify\"],\"params\":[{\"name\":\"which\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Connects the person's Spotify: the page they sign in on is shown in the Spotify section.\",\"id\":\"cpsa6nlq\",\"kind\":\"outside\",\"label\":\"Connect Spotify\",\"name\":\"connect_spotify\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Takes the sign-in the person gave on Spotify's page.\",\"id\":\"bgomdthz\",\"kind\":\"outside\",\"label\":\"I signed in\",\"name\":\"finish_spotify\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Forgets this device's Spotify sign-in.\",\"id\":\"c3zailpi\",\"kind\":\"outside\",\"label\":\"Disconnect Spotify\",\"name\":\"disconnect_spotify\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Reads the places Spotify plays on.\",\"id\":\"lyxtlmu3\",\"kind\":\"outside\",\"label\":\"Refresh devices\",\"name\":\"spotify_devices\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Moves what plays to `d`, from the beginning.\",\"id\":\"s5u526ny\",\"kind\":\"outside\",\"label\":\"Transfer playback\",\"name\":\"transfer_playback\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"d\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.SpotifyDevice\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.SpotifyDevice\"}}]},{\"description\":\"Plays `uri` on Spotify, where it plays: empty plays what was playing.\",\"id\":\"amt56qpq\",\"kind\":\"outside\",\"label\":\"Play on Spotify\",\"name\":\"remote_play\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"uri\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Pauses what plays on Spotify.\",\"id\":\"7vrw7iss\",\"kind\":\"outside\",\"label\":\"Pause on Spotify\",\"name\":\"remote_pause\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Plays what follows on Spotify.\",\"id\":\"y4ceqqvs\",\"kind\":\"outside\",\"label\":\"Next on Spotify\",\"name\":\"remote_next\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Plays what played before on Spotify.\",\"id\":\"moryk2vk\",\"kind\":\"outside\",\"label\":\"Previous on Spotify\",\"name\":\"remote_previous\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Reads what plays on Spotify now.\",\"id\":\"clxyvglt\",\"kind\":\"outside\",\"label\":\"What plays on Spotify\",\"name\":\"spotify_now\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Reads what plays next on Spotify: its own queue, which is shown here and never edited here.\",\"id\":\"mirav5ur\",\"kind\":\"outside\",\"label\":\"Read Spotify's queue\",\"name\":\"spotify_queue\",\"outside\":[\"music.spotify\"],\"params\":[]},{\"description\":\"Puts a song after what plays on Spotify.\",\"id\":\"sdo3anxm\",\"kind\":\"outside\",\"label\":\"Add to Spotify's queue\",\"name\":\"queue_on_spotify\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"t\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Track\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Track\"}}]},{\"description\":\"Asks Spotify for one more page of what the person keeps there.\",\"id\":\"nvvyoutq\",\"kind\":\"outside\",\"label\":\"More from Spotify\",\"name\":\"spotify_more\",\"outside\":[\"music.spotify\"],\"params\":[{\"name\":\"kind\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"Turns one of the recommendations' switches.\",\"id\":\"ywyw4kwy\",\"kind\":\"undoable\",\"label\":\"Update taste\",\"name\":\"update_taste\",\"params\":[{\"name\":\"which\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"on\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Leaves an artist out of the recommendations, or brings them back.\",\"id\":\"kftmajje\",\"kind\":\"undoable\",\"label\":\"Dismiss artist\",\"name\":\"dismiss_artist\",\"params\":[{\"name\":\"a\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Artist\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Artist\"}}]},{\"description\":\"Asks for more of an artist.\",\"id\":\"7fxad2em\",\"kind\":\"undoable\",\"label\":\"Prefer artist\",\"name\":\"prefer_artist\",\"params\":[{\"name\":\"a\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.music.Artist\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.music.Artist\"}}]}],\"version\":1},{\"fields\":[],\"kind\":\"tl.so.tilo.music\",\"label\":\"Music\",\"verbs\":[{\"description\":\"Moves the dragged row where it was dropped: the two ids its reorder carries.\",\"id\":\"dw5iplh4\",\"kind\":\"undoable\",\"label\":\"Queue moved\",\"name\":\"queue_moved\",\"params\":[{\"name\":\"p\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.playback.Playback\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.playback.Playback\"}},{\"name\":\"ids\",\"required\":true,\"schema\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"type\":{\"list\":\"text\"}}]},{\"description\":\"Likes what plays.\",\"id\":\"bjppiep2\",\"kind\":\"outside\",\"label\":\"Like playing\",\"name\":\"like_playing\",\"params\":[{\"name\":\"p\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.playback.Playback\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.playback.Playback\"}},{\"name\":\"liked\",\"required\":false,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1}]}"
+}

@@ -35,4 +35,3 @@ vendor/git/** -text
 /Cargo.lock merge=generated
 /crates/workspace-hack/** merge=generated
 /docs/codemap.md merge=generated
-/crates/desktop/app-fleet/src/generated.rs merge=generated

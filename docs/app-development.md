@@ -89,8 +89,9 @@ connection can install one; a key, a visitor or another account is refused.
 A new app is a Cargo project: `src/` holds the app, `tilo-app.toml` is the
 package manifest (id, entrypoint, sandbox), `surface.toml` records the public
 surface and `surface.json` is its canonical compiled form (what the package
-ships and a receiver reads), `locales/` holds the text, `tests/` the tests and `AGENTS.md` a short
-guide for coding agents.
+ships and a receiver reads), `fleet.json` is the catalogue entry search and the
+Store know the app by while it is not installed, `locales/` holds the text,
+`tests/` the tests and `AGENTS.md` a short guide for coding agents.
 
 ## The model: resources, actions, bound views
 

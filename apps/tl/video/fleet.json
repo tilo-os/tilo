@@ -1,0 +1,117 @@
+{
+  "id": "so.tilo.video",
+  "name": "Video",
+  "category": "AudioVideo",
+  "platforms": [
+    "linux",
+    "macos",
+    "web"
+  ],
+  "tagline": "Plays the videos on your devices",
+  "names": [],
+  "keywords": [
+    "video",
+    "videos",
+    "player",
+    "movie",
+    "movies",
+    "film",
+    "films",
+    "play",
+    "watch",
+    "clip",
+    "clips",
+    "media",
+    "mp4",
+    "mkv",
+    "webm",
+    "mov",
+    "avi",
+    "video abspielen",
+    "videoplayer",
+    "film ansehen",
+    "filme",
+    "video",
+    "videos",
+    "abspielen",
+    "anschauen",
+    "wiedergabe",
+    "medienspieler",
+    "klipp",
+    "medien"
+  ],
+  "resource_types": [
+    [
+      "tl.so.tilo.video.Clip",
+      "Clip"
+    ],
+    [
+      "tl.so.tilo.video.Playlist",
+      "Playlist"
+    ],
+    [
+      "tl.so.tilo.video.PlaylistEntry",
+      "Playlist entry"
+    ],
+    [
+      "tl.so.tilo.video.Bookmark",
+      "Bookmark"
+    ],
+    [
+      "tl.so.tilo.video.Library",
+      "Library"
+    ]
+  ],
+  "offers": [
+    {
+      "resource": "tl.so.tilo.video.Library",
+      "resource_kind": "",
+      "action": "create_playlist",
+      "label": "Create playlist",
+      "description": "Starts an empty playlist.",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [
+        {
+          "name": "name",
+          "type": "text",
+          "description": "Name"
+        }
+      ],
+      "keywords": [],
+      "icon": "plus"
+    },
+    {
+      "resource": "tl.so.tilo.video.Library",
+      "resource_kind": "",
+      "action": "session",
+      "label": "Session",
+      "description": "The session this app plays through: the one it has, or one made now. It is kept both in",
+      "kind": "undoable",
+      "operation": "document",
+      "confirm": false,
+      "asks": [],
+      "keywords": [],
+      "icon": ""
+    }
+  ],
+  "commands": [
+    {
+      "action": "open_video",
+      "label": "Open video",
+      "key": "Ctrl+o"
+    },
+    {
+      "action": "toggle_playing",
+      "label": "Toggle playing",
+      "key": "p"
+    }
+  ],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [],
+  "previously": [],
+  "listed": true,
+  "surface": "{\"reads\":[\"tl.so.tilo.playback.Output\",\"tl.so.tilo.playback.Item\",\"tl.so.tilo.playback.Progress\",\"tl.so.tilo.playback.Playback\",\"tl.so.tilo.playback\"],\"resources\":[{\"fields\":[],\"kind\":\"tl.host\",\"label\":\"tilolang\",\"verbs\":[],\"version\":1},{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1},{\"fields\":[{\"path\":\"doc\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"entry\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"app\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"capability\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"payload\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"owner\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"state\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"detail\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"outcome\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"reason\",\"stored\":\"value\",\"type\":\"text\"},{\"path\":\"held_until\",\"stored\":\"value\",\"type\":{\"option\":\"text\"}},{\"path\":\"settled\",\"stored\":\"value\",\"type\":\"bool\"}],\"kind\":\"tilolang.effect\",\"label\":\"A queued effect\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"$send\",\"kind\":\"undoable\",\"label\":\"Hand the effect over\",\"params\":[]},{\"id\":\"$wait\",\"kind\":\"undoable\",\"label\":\"Say why it waits\",\"params\":[]},{\"id\":\"$settle\",\"kind\":\"undoable\",\"label\":\"Say how it went\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"notice\",\"path\":\"notice-to\",\"stored\":\"value\",\"title\":\"to\",\"type\":\"actor\"},{\"owner\":\"notice\",\"path\":\"notice-title\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-body\",\"stored\":\"value\",\"title\":\"body\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-opens\",\"stored\":\"record\",\"title\":\"opens\",\"type\":{\"resource\":\"tl.tilo.host.Resource\"}},{\"owner\":\"notice\",\"path\":\"notice-seen\",\"stored\":\"value\",\"title\":\"seen\",\"type\":\"bool\"},{\"owner\":\"notice\",\"path\":\"notice-device\",\"stored\":\"value\",\"title\":\"device\",\"type\":\"text\"},{\"owner\":\"notice\",\"path\":\"notice-actions\",\"stored\":\"value\",\"title\":\"actions\",\"type\":{\"list\":\"text\"}}],\"kind\":\"tl.tilo.host.Notice\",\"label\":\"Notice\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"title\",\"body\",\"device\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"seen\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"clip\",\"path\":\"sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.video.Clip\",\"label\":\"Clip\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"title\",\"source\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Plays or pauses the session when it is showing `c`: what the P key and the window's player\\ncontrol run, without needing the root passed in.\",\"id\":\"o42ih4gs\",\"kind\":\"undoable\",\"label\":\"Toggle playing\",\"name\":\"toggle_playing\",\"params\":[]}],\"version\":1},{\"fields\":[{\"owner\":\"playlist\",\"path\":\"hktiqra6\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.video.Playlist\",\"label\":\"Playlist\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"name\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"playlistentry\",\"path\":\"pmcgj5bo\",\"stored\":\"record\",\"title\":\"playlist\",\"type\":{\"resource\":\"tl.so.tilo.video.Playlist\"}},{\"owner\":\"playlist\",\"path\":\"pmcgj5bo.hktiqra6\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"playlistentry\",\"path\":\"gofxf7oh\",\"stored\":\"record\",\"title\":\"clip\",\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}},{\"owner\":\"clip\",\"path\":\"gofxf7oh.sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"gofxf7oh.vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.video.PlaylistEntry\",\"label\":\"PlaylistEntry\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"bookmark\",\"path\":\"h4e7iq7t\",\"stored\":\"record\",\"title\":\"clip\",\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}},{\"owner\":\"clip\",\"path\":\"h4e7iq7t.sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"h4e7iq7t.vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"},{\"owner\":\"bookmark\",\"path\":\"cwamirwi\",\"stored\":\"value\",\"title\":\"at\",\"type\":\"float\"},{\"owner\":\"bookmark\",\"path\":\"n323noym\",\"stored\":\"value\",\"title\":\"text\",\"type\":\"text\"}],\"kind\":\"tl.so.tilo.video.Bookmark\",\"label\":\"Bookmark\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[\"text\"],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]}],\"version\":1},{\"fields\":[{\"owner\":\"library\",\"path\":\"cfgqumjg\",\"stored\":\"collection\",\"title\":\"clips\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.video.Clip\"}}},{\"owner\":\"clip\",\"path\":\"cfgqumjg.*.sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"cfgqumjg.*.vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"7sp4sk7x\",\"stored\":\"collection\",\"title\":\"playlists\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.video.Playlist\"}}},{\"owner\":\"playlist\",\"path\":\"7sp4sk7x.*.hktiqra6\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"ve6kofwh\",\"stored\":\"collection\",\"title\":\"entries\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.video.PlaylistEntry\"}}},{\"owner\":\"playlistentry\",\"path\":\"ve6kofwh.*.pmcgj5bo\",\"stored\":\"record\",\"title\":\"playlist\",\"type\":{\"resource\":\"tl.so.tilo.video.Playlist\"}},{\"owner\":\"playlist\",\"path\":\"ve6kofwh.*.pmcgj5bo.hktiqra6\",\"stored\":\"value\",\"title\":\"name\",\"type\":\"text\"},{\"owner\":\"playlistentry\",\"path\":\"ve6kofwh.*.gofxf7oh\",\"stored\":\"record\",\"title\":\"clip\",\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}},{\"owner\":\"clip\",\"path\":\"ve6kofwh.*.gofxf7oh.sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"ve6kofwh.*.gofxf7oh.vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"srzszayp\",\"stored\":\"collection\",\"title\":\"watch_later\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.video.Clip\"}}},{\"owner\":\"clip\",\"path\":\"srzszayp.*.sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"srzszayp.*.vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"265jfqy5\",\"stored\":\"collection\",\"title\":\"bookmarks\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.video.Bookmark\"}}},{\"owner\":\"bookmark\",\"path\":\"265jfqy5.*.h4e7iq7t\",\"stored\":\"record\",\"title\":\"clip\",\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}},{\"owner\":\"clip\",\"path\":\"265jfqy5.*.h4e7iq7t.sit6wbwo\",\"stored\":\"value\",\"title\":\"title\",\"type\":\"text\"},{\"owner\":\"clip\",\"path\":\"265jfqy5.*.h4e7iq7t.vnxskfep\",\"stored\":\"value\",\"title\":\"source\",\"type\":\"text\"},{\"owner\":\"bookmark\",\"path\":\"265jfqy5.*.cwamirwi\",\"stored\":\"value\",\"title\":\"at\",\"type\":\"float\"},{\"owner\":\"bookmark\",\"path\":\"265jfqy5.*.n323noym\",\"stored\":\"value\",\"title\":\"text\",\"type\":\"text\"},{\"owner\":\"library\",\"path\":\"jcuq2e4s\",\"stored\":\"value\",\"title\":\"playing\",\"type\":{\"option\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}},{\"owner\":\"library\",\"path\":\"eajmuh6i\",\"stored\":\"collection\",\"title\":\"sessions\",\"type\":{\"collection\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}}],\"kind\":\"tl.so.tilo.video.Library\",\"label\":\"Library\",\"verbs\":[{\"description\":\"The resource is made the first time it is wanted.\",\"id\":\"$create\",\"kind\":\"undoable\",\"label\":\"Create\",\"params\":[]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-text\",\"kind\":\"undoable\",\"label\":\"Edit a text field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}]},{\"description\":\"A bound control changes the field it shows.\",\"id\":\"edit-flag\",\"kind\":\"undoable\",\"label\":\"Set a flag field\",\"params\":[{\"name\":\"field\",\"required\":true,\"schema\":{\"description\":\"The name of the field to set.\",\"enum\":[],\"type\":\"string\"},\"type\":\"text\"},{\"name\":\"value\",\"required\":true,\"schema\":{\"type\":\"boolean\"},\"type\":\"bool\"}]},{\"description\":\"Opens a video file: the file a person picked, or one Files handed over, and plays it where it\\nwas left. The clip it already made opens instead of a second copy, so its place in history\\nstays one.\",\"id\":\"hksyhpqm\",\"kind\":\"undoable\",\"label\":\"Open video\",\"name\":\"open_video\",\"params\":[{\"name\":\"file\",\"required\":true,\"schema\":{}}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}}},{\"description\":\"Starts an empty playlist.\",\"id\":\"7vndi4ty\",\"kind\":\"undoable\",\"label\":\"Create playlist\",\"name\":\"create_playlist\",\"params\":[{\"name\":\"name\",\"required\":true,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.video.Playlist\"}}},{\"description\":\"Deletes a playlist and the entries that name it.\",\"destructive\":true,\"id\":\"qx6xvn26\",\"kind\":\"undoable\",\"label\":\"Delete playlist\",\"name\":\"delete_playlist\",\"params\":[{\"name\":\"pl\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Playlist\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Playlist\"}}]},{\"description\":\"Adds `c` to `pl`, once.\",\"id\":\"gy4thduh\",\"kind\":\"undoable\",\"label\":\"Add to playlist\",\"name\":\"add_to_playlist\",\"params\":[{\"name\":\"pl\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Playlist\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Playlist\"}},{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Clip\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}}]},{\"description\":\"Keeps `c` to watch later, once.\",\"id\":\"ocgz6qq7\",\"kind\":\"undoable\",\"label\":\"Add to watch later\",\"name\":\"add_to_watch_later\",\"params\":[{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Clip\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}}]},{\"description\":\"Bookmarks the moment `at` of `c`, with `text` when the person wrote something.\",\"id\":\"fkgh2zyf\",\"kind\":\"undoable\",\"label\":\"Add bookmark\",\"name\":\"add_bookmark\",\"params\":[{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Clip\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}},{\"name\":\"at\",\"required\":true,\"schema\":{\"type\":\"number\"},\"type\":\"float\"},{\"name\":\"text\",\"required\":false,\"schema\":{\"type\":\"string\"},\"type\":\"text\"}],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.video.Bookmark\"}}},{\"description\":\"Deletes a bookmark or note.\",\"destructive\":true,\"id\":\"5edgge6m\",\"kind\":\"undoable\",\"label\":\"Delete bookmark\",\"name\":\"delete_bookmark\",\"params\":[{\"name\":\"b\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Bookmark\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Bookmark\"}}]},{\"description\":\"Opens the videos a person dropped on the window: each file becomes its clip, and the first\\nplays in the shared session.\",\"id\":\"jowwlxkl\",\"kind\":\"undoable\",\"label\":\"Open dropped\",\"name\":\"open_dropped\",\"params\":[{\"name\":\"files\",\"required\":true,\"schema\":{\"items\":{},\"type\":\"array\"},\"type\":{\"list\":\"any\"}}]},{\"description\":\"The session this app plays through: the one it has, or one made now. It is kept both in\\n`playing`, which a view reads, and in `sessions`, so the record is a resource of its own.\",\"id\":\"qr5yt6i6\",\"kind\":\"undoable\",\"label\":\"Session\",\"name\":\"session\",\"params\":[],\"returns\":{\"type\":{\"resource\":\"tl.so.tilo.playback.Playback\"}}},{\"description\":\"Plays `c` in the shared session, from where it was left (the beginning the first time):\\nwhat the window's Play button, the palette and an agent's `play` run. The place is the\\nshared session's own record, so the video continues on this device or another.\",\"id\":\"23vsff7g\",\"kind\":\"undoable\",\"label\":\"Play clip\",\"name\":\"play_clip\",\"params\":[{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Clip\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}}]},{\"description\":\"Plays `c` from its beginning, as a person who watched it before chooses.\",\"id\":\"4hyldob5\",\"kind\":\"undoable\",\"label\":\"Play from the beginning\",\"name\":\"restart_clip\",\"params\":[{\"name\":\"c\",\"required\":true,\"schema\":{\"pick\":\"resource\",\"properties\":{\"app\":{\"minLength\":1,\"type\":\"string\"},\"id\":{\"minLength\":1,\"type\":\"string\"},\"kind\":{\"minLength\":1,\"type\":\"string\"},\"label\":{\"type\":\"string\"},\"record\":{\"minLength\":1,\"type\":\"string\"}},\"required\":[\"app\",\"kind\",\"id\",\"label\"],\"resource_kind\":\"tl.so.tilo.video.Clip\",\"type\":\"object\"},\"type\":{\"resource\":\"tl.so.tilo.video.Clip\"}}]}],\"version\":1},{\"fields\":[],\"kind\":\"tl.so.tilo.video\",\"label\":\"Video\",\"verbs\":[],\"version\":1}]}"
+}

@@ -86,13 +86,14 @@ const USAGE: &[(&str, &str)] = &[
     (
         "describe",
         "\
-  tilolang describe [DIR] [--search DIR]... [--fleet]
+  tilolang describe [DIR] [--search DIR]... [--fleet] [--write|--check]
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
       --fleet prints it as the catalogue fleet reads it instead (JSON): the id, name, category,
       tag line, other-language names and keywords, the kinds of record it declares, the actions
-      it offers while closed and the surface.toml it ships, or null for a package that declares
-      no app",
+      it offers while closed and the surface it ships, or null for a package that declares no app
+      --write writes each app's catalogue entry beside it instead, as fleet.json (`DIR`: the root
+      of a checkout, with apps/), and --check says whether the committed ones are current",
     ),
     (
         "repl",
@@ -554,19 +555,40 @@ fn describe_command(args: &[String]) -> Result<(), String> {
     let mut dir = PathBuf::from(".");
     let mut search = Vec::new();
     let mut fleet = false;
+    let mut write = false;
+    let mut check = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--search" | "--path" => search.push(value(&mut iter, arg)?.into()),
             "--fleet" => fleet = true,
+            "--write" => write = true,
+            "--check" => check = true,
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown option {flag}\n{}", usage("describe")));
             }
             other => dir = other.into(),
         }
     }
+    if write || check {
+        // Each app's entry beside it, rather than one printed here: a change to an app writes
+        // the one file of that app, never a file every app shares.
+        if write && check {
+            return Err(format!(
+                "--write and --check are one or the other\n{}",
+                usage("describe")
+            ));
+        }
+        if check {
+            tilolang_cli::describe::check_fleet(&dir, &search)?;
+        } else {
+            let written = tilolang_cli::describe::write_fleet(&dir, &search)?;
+            println!("{written} apps' catalogue entries written");
+        }
+        return Ok(());
+    }
     if fleet {
-        let entry = tilolang_cli::describe::fleet(&dir, &search)?;
+        let entry = tilolang_cli::describe::fleet_entry(&dir, &search)?;
         println!(
             "{}",
             serde_json::to_string(&entry).map_err(|error| error.to_string())?

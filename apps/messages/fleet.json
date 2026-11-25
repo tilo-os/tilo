@@ -1,0 +1,35 @@
+{
+  "id": "so.tilo.messages",
+  "name": "Messages",
+  "category": "Network",
+  "platforms": [
+    "linux",
+    "macos",
+    "web"
+  ],
+  "tagline": "Direct conversations across your messaging accounts",
+  "names": [],
+  "keywords": [
+    "messaging",
+    "direct messages",
+    "dm",
+    "imessage",
+    "sms",
+    "text messages",
+    "kurznachrichten",
+    "textnachrichten",
+    "mitteilungen",
+    "nachrichten"
+  ],
+  "resource_types": [],
+  "offers": [],
+  "commands": [],
+  "windows_personal": false,
+  "window_documents": false,
+  "private": [
+    "messages.drafts"
+  ],
+  "previously": [],
+  "listed": true,
+  "surface_file": "surface.json"
+}

@@ -28,9 +28,9 @@ a Cargo manifest or the lockfile runs the policy step that keeps the page's wasm
 the workspace-hack: an ungated dependency there compiles the native feature set into every page
 build, and only the page clippy job surfaced it, after the push's own lint passed.
 A push that changes only an app's published surface - its sources, its surface file, the
-catalogue the desktop reads - has no package to lint, and runs t's checks over the generated
-fleet and the SDK's types on their own: they are committed, and an app change that does not
-regenerate them lands stale for the next person to fix.
+catalogue entry the desktop reads the fleet from - has no package to lint, and runs t's checks
+over the app's committed files and the generated SDK types on their own: they are committed, and
+an app change that does not regenerate them lands stale for the next person to fix.
 The crates that only unify features are neither a source nor a dependant: their
 dependency lists name members they hold no code for. Only the direct dependants are
 named; what a change reaches through them, and the packages as they ship, is t's
@@ -764,13 +764,14 @@ def scoped_checks(root: Path, push: Push) -> set[str] | None:
 
 
 # What an app publishes as its surface: its sources, the surface file written from them, and the
-# catalogue the desktop reads the fleet from. The fleet and the SDK's types are generated from
-# these and committed, so a change to one leaves them stale until they are regenerated.
-SURFACE_PREFIXES = ("apps/", "crates/desktop/app-fleet/")
+# catalogue entry it commits beside itself (`fleet.json`), which the fleet crate gathers at build
+# time. The SDK's types are generated from these and committed, so a change to one leaves them
+# stale until they are regenerated.
+SURFACE_PREFIXES = ("apps/",)
 SURFACE_NAMES = ("surface.json",)
 SURFACE_SUFFIXES = (".tl",)
-# t's checks that judge what an app publishes: its catalogue and generated types, and whether the
-# committed fleet is what the apps declare.
+# t's checks that judge what an app publishes: its committed surfaces and catalogue entry, and
+# the generated types.
 SURFACE_CHECKS = ("app-surfaces", "sdk-policy", "sdk-types")
 
 
@@ -783,17 +784,17 @@ def surface_change(files: set[str]) -> bool:
 def surface_checks(push: Push, named: set[str] | None) -> list[str]:
     """t's checks over what an app publishes, when the push reaches them.
 
-    The app-fleet catalogue and the SDK's generated types are written from the apps' surfaces
-    and from the action and record types of every crate, so the list of what moves them is
-    t's own: `t scope` names the checks a commit's change touches. A push that reaches one
-    and does not regenerate refuses here, not on main. The fleet's own gate builds a compiler
-    and an app collection, so it is asked only when the push changes an app's published
-    surface; a manifest or a crate elsewhere moves the SDK's types without it.
+    The SDK's generated types are written from the apps' surfaces and from the action and
+    record types of every crate, so the list of what moves them is t's own: `t scope` names
+    the checks a commit's change touches. A push that reaches one and does not regenerate
+    refuses here, not on main. The surfaces' own gate builds a compiler and an app collection,
+    so it is asked only when the push changes an app's published surface; a manifest or a crate
+    elsewhere moves the SDK's types without it.
     """
     wanted = list(SURFACE_CHECKS) if surface_change(push.files) else ["sdk-policy", "sdk-types"]
     if named is not None:
         return [name for name in wanted if name in named]
-    # t could not tell: an app's surface alone still moves the generated catalogue and types.
+    # t could not tell: an app's surface alone still moves its catalogue entry and the types.
     return wanted if surface_change(push.files) else []
 
 
@@ -1536,9 +1537,9 @@ def earlier_pass(root: Path, push: Push, runs: list[Lint],
 def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
     """Lint a push that changes an app's published surface and nothing Rust or Cargo.
 
-    An app's sources and surface file move the generated fleet and the SDK's types without a
-    crate of the workspace changing, so the lint has no package to lint and would otherwise say
-    there is nothing to do. The checks that judge the generated files are t's; without t there
+    An app's sources and surface file move its committed catalogue entry and the SDK's types
+    without a crate of the workspace changing, so the lint has no package to lint and would
+    otherwise say there is nothing to do. The checks that judge the generated files are t's; without t there
     is none to run, as no other check of this lint runs without a cargo.
     """
     checks = surface_checks(push, scoped_checks(root, push))
@@ -1636,7 +1637,7 @@ def main(argv: list[str]) -> int:
             return 0
     if not selection.native:
         # Running the surface checks needs no package of the workspace, and a .tl source can
-        # belong to none while still moving the generated fleet.
+        # belong to none while still moving a committed catalogue entry.
         if surface_change(push.files) and lints_through_t():
             return surface_only(root, push, options)
         say("pre-push: the changed Rust files belong to no workspace package; CI builds them outside it")

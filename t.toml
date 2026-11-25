@@ -904,10 +904,12 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 # wrong answer everywhere. One build of the whole application set, then each
 # binary prints what it publishes; the example apps beside the tree are
 # compared the same way, so a surface kept beside generated code cannot drift.
-# The catalogue generator then reads each tilolang package of `apps/tl` through
-# `tilolang describe --fleet`, so the fleet knows a tilolang app as fully as a
-# native one, and fails when the generated catalogue is stale or two apps claim
-# one id. Each binary is run in a network namespace of its own (`isolation`), so
+# Each app also commits its catalogue entry beside itself (`fleet.json`, for a
+# tilolang package read from its own declaration), which is what search, the
+# Store and the SDK know an app by while it is not installed; the entry is
+# compared here, so the fleet the app-fleet crate gathers from them at build
+# time is what the apps declare. That crate refuses two apps claiming one id.
+# Each binary is run in a network namespace of its own (`isolation`), so
 # a report cannot wait on a network: what it publishes is what its code holds.
 # A gate of main beside `check` (`gate`): a surface the committed files no longer match refuses
 # every push that reaches the apps reading it, so a head that left one stale is told to its pusher
@@ -917,8 +919,8 @@ name = "app-surfaces"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 isolation = "nested"
 gate = true
-run = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces examples\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
-fix = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces --write\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces examples --write\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\"\npython3 -I tools/apps/generate_default_apps.py\n"
+run = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces examples\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- describe --fleet --check\npython3 -I tools/apps/generate_default_apps.py --check\n"
+fix = "cargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces --write\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- surfaces examples --write\ncargo run --locked --quiet -p tilolang-cli --bin tilolang -- describe --fleet --write\npython3 -I tools/apps/generate_default_apps.py\n"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 # The device's published surface, crates/desktop/device-surfaces/device-surface.json, against
@@ -1406,8 +1408,7 @@ secrets = ["NPM_TOKEN"]
 name = "sdk-policy"
 requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
-fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\""
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\npython3 -I tools/sdk/publish_check.py --report-only\n"
 
 [[check]]
 name = "sdk-linux"
