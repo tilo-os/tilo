@@ -179,7 +179,7 @@ if [[ ${1:-} == --apps ]]; then
   # (`crates/lang/tilolang-process/tilo-runtime.toml`) and standard library
   # (`crates/lang/tilolang/std`) name its version.
   for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts app-plan.json \
-      tilolang crates; do
+      tilolang tilolang-std crates; do
     [[ -e $from/$f ]] || continue
     cp -a "$from/$f" "$out/"
   done
@@ -191,7 +191,7 @@ if [[ ${1:-} == --apps ]]; then
   if [[ -f $out/app-plan.json ]] \
       && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("tilolang") else 1)' \
            "$out/app-plan.json"; then
-    for f in tilolang crates/lang/tilolang-process/tilo-runtime.toml \
+    for f in tilolang tilolang-std crates/lang/tilolang-process/tilo-runtime.toml \
         crates/lang/tilolang/std/app.tl crates/lang/tilolang/std/app.ids; do
       [[ -e $out/$f ]] \
         || { echo "compile.sh --apps: $from has no $f, which the app plan's tilolang packages are built and run with" >&2; exit 1; }
@@ -388,8 +388,8 @@ case "$TILO_RUST_LTO" in \
          DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-daemon --bin tilo-runtime -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
     && if [ "$tilolang_apps" != 0 ]; then \
-         TILOLANG_RELEASE_ARGS="-p tilolang-cli"; \
-         TILOLANG_RELEASE_BINS="--bin tilolang"; \
+         TILOLANG_RELEASE_ARGS="-p tilolang-cli -p tilolang"; \
+         TILOLANG_RELEASE_BINS="--bin tilolang --bin tilolang-std"; \
        else \
          TILOLANG_RELEASE_ARGS=""; \
          TILOLANG_RELEASE_BINS=""; \
@@ -445,8 +445,10 @@ case "$TILO_RUST_LTO" in \
     && if [ ! -f "$target/release/libpam_tilo.so" ]; then \
          printf 'Required build output is missing: %s\n' libpam_tilo.so >&2; missing=1; \
        fi \
-    && if [ -n "$TILOLANG_RELEASE_BINS" ] && [ ! -x "$target/release/tilolang" ]; then \
-         printf 'Required build output is missing: %s\n' tilolang >&2; missing=1; \
+    && if [ -n "$TILOLANG_RELEASE_BINS" ]; then \
+         for b in tilolang tilolang-std; do \
+           [ -x "$target/release/$b" ] || { printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; }; \
+         done; \
        fi \
     && [ "$missing" = 0 ] \
     && build_phase rust-stage-outputs \
@@ -522,7 +524,7 @@ case "$TILO_RUST_LTO" in \
           $target/release/osk \
           $target/release/tilolang-process \
           "$out"/ \
-    && if [ -n "$TILOLANG_RELEASE_BINS" ]; then cp $target/release/tilolang "$out"/; fi \
+    && if [ -n "$TILOLANG_RELEASE_BINS" ]; then cp $target/release/tilolang $target/release/tilolang-std "$out"/; fi \
     && ln -sfn app "$out"/store \
     && ln -sfn tilo "$out"/system \
     && mkdir -p "$out"/completions/bash "$out"/completions/fish "$out"/completions/zsh \

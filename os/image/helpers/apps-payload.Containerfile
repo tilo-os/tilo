@@ -135,7 +135,7 @@ RUN --mount=type=secret,id=publisher_identity \
            . /build/tools/apps/tilolang_packages.sh \
            && tilolang_version="$(tilolang_runtime_version /out)" \
            && tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-process \
-                /out/runtime-bundle-identity.json \
+                /out/tilolang-std /out /out/runtime-bundle-identity.json \
                 "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \
          fi \
       && language_runtimes="$(python3 -I -c 'import json,sys; plan=json.load(open(sys.argv[1])); print(" ".join(sorted({r.split("/", 1)[0] for r in plan.get("runtimes", [])} - {"tilo-runtime", "tilolang"})))' /out/app-plan.json 2>/dev/null || true)" \
