@@ -2806,10 +2806,10 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
 /// The checks a project's host approved: this device's work, kept as its jobs at
 /// `devices/<device>/jobs` and read through the one record API. What runs comes from this
 /// device's own `checks` setting, so a check an app names never brings its own commands. A
-/// check's commands are ush's own, which a phone's app carries none of. An app runs one as a
+/// check's commands are ush's own, which runs only on Linux. An app runs one as a
 /// step its own `run-approved-check` declares, for an invocation the dispatch delivered to it:
 /// that invocation names the project the check is for.
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(target_os = "linux")]
 fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
     let jobs = Arc::new(super::approved_checks::CheckJobs::at(
         parts.root,
@@ -2837,7 +2837,7 @@ fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
 }
 
 /// Elsewhere, a host approves no checks.
-#[cfg(not(all(unix, not(target_os = "android"))))]
+#[cfg(not(target_os = "linux"))]
 fn approved_checks(_parts: &BrokerParts<'_>) -> io::Result<()> {
     Ok(())
 }

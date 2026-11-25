@@ -27,8 +27,8 @@ mod agent_tools;
 #[cfg(test)]
 mod app_listing_tests;
 /// The project checks this device approved: its work, kept as its jobs. A check's commands are
-/// ush's own, which a phone's app carries none of.
-#[cfg(all(unix, not(target_os = "android")))]
+/// ush's own, which runs only on Linux.
+#[cfg(target_os = "linux")]
 pub(crate) mod approved_checks;
 mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.

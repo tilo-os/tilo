@@ -152,8 +152,8 @@ pub(super) fn launch(
             .entrypoint
             .script
             .iter()
-            .map(|script| app.payload_root.join(script).display().to_string())
-            .chain(open.map(str::to_owned))
+            .map(|script| app.payload_root.join(script).into_os_string())
+            .chain(open.map(OsString::from))
             .collect(),
         payload_dir: app.payload_root.clone(),
         runtime_dir: runtime,

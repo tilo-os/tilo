@@ -131,8 +131,12 @@ impl tilo_dialogs::chooser_service::Person for MacPerson {
         let exe = std::env::current_exe().map_err(|_| Asked::Failed)?;
         let mut helper = std::process::Command::new(exe);
         helper.arg(crate::cli::CHOOSER_HELPER_ARG);
-        tilo_dialogs::confined::show_in_helper(helper, &pick_request(question))
-            .map_err(|_| Asked::Failed)
+        // The helper answers nothing when the person closed the panel without choosing.
+        match tilo_dialogs::confined::show_in_helper(helper, &pick_request(question)) {
+            Ok(Some(paths)) => Ok(paths),
+            Ok(None) => Err(Asked::Cancelled),
+            Err(_) => Err(Asked::Failed),
+        }
     }
 }
 

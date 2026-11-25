@@ -31,7 +31,7 @@ pub mod net;
 mod own_process;
 pub mod requested_allocations;
 pub mod scenario;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod stand_in;
 pub mod swtpm;
 mod wall;
@@ -57,7 +57,7 @@ pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, wi
 pub use net::document::{FakeDocumentNet, at_path};
 pub use net::{Converged, FakeNet, Peer};
 pub use own_process::{in_own_process, in_own_process_here};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub use stand_in::{StandIn, stand_in};
 pub use wall::held_wall_clock;
 
