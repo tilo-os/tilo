@@ -508,6 +508,9 @@ exclude = [{ step = "unit" }]
 [[check.matrix.set]]
 when = { step = "format-migrations" }
 git = true
+# It fetches the released branch (stable), which a job's Git view doesn't hold, to keep every
+# format's floor at or below what released devices wrote. Not pinned: a new release reruns it.
+egress = { to = ["code.tilo.so:443"] }
 
 [[check.matrix.set]]
 when = { step = "image-builder-inputs" }

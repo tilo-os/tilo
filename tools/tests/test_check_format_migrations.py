@@ -102,6 +102,50 @@ class FormatMigrationTests(unittest.TestCase):
             path.write_text(declaration(2, version=3))
             self.assertEqual(formats.against("main", root), [])
 
+    def test_no_floor_rises_above_the_version_the_release_writes(self):
+        # A device updates from the release: main may have brought the
+        # release's version up for many builds, and a floor above it still
+        # refuses what every such device kept. The release's crate may live
+        # elsewhere, its version in a file of its own.
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            released = root / "crates/old/x"
+            (released / "src").mkdir(parents=True)
+            (released / "Cargo.toml").write_text("[package]\n")
+            (released / "src/version.rs").write_text("pub(crate) const STATE_VERSION: u32 = 2;\n")
+            (released / "src/lib.rs").write_text(
+                declaration(2).replace("pub(crate) const STATE_VERSION: u32 = 2;\n", "")
+            )
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "release")
+            self.git(root, "branch", "stable")
+            self.git(root, "rm", "-rq", "crates/old")
+            path = root / "crates/new/x/src/lib.rs"
+            path.parent.mkdir(parents=True)
+            path.write_text(declaration(3, version=4))
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "main")
+            found = formats.below_stable(root, "stable")
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("format 'fixture state' no longer brings up version 2, which stable "
+                          "writes: its new floor is `oldest: 3`", found[0])
+            path.write_text(declaration(2, version=4))
+            self.assertEqual(formats.below_stable(root, "stable"), [])
+
+    def test_a_release_that_cannot_be_read_fails_the_check(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            (root / "lib.rs").write_text(declaration(2))
+            found = formats.below_stable(root, "origin/stable", remote=str(root / "nowhere"))
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("'origin/stable' is not here and fetching it from", found[0])
+            found = formats.below_stable(root, "stable")
+            self.assertIn("'stable' does not name a commit", found[0])
+
     def loaded(self, files):
         """What `check` finds in a crate of `files` (path under src -> text)."""
         with tempfile.TemporaryDirectory() as root:

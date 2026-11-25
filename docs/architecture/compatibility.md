@@ -291,7 +291,9 @@ holds files the build before wrote, and a build that refused them would leave
 the device without what it kept (a desktop that refused its own workspaces'
 entries opened none of them, and kept nothing from then on). No older reader is
 kept; a file in a layout this build does not read is refused, saying which
-version it holds, and nothing guesses at its bytes.
+version it holds, and nothing guesses at its bytes. Devices update from the
+released build (`stable`), so a format never stops bringing up the version
+that build writes, however many main builds since brought it up.
 
 - **A version number always means the same bytes.** A stored format names its
   version and keeps the bytes that version wrote beside it

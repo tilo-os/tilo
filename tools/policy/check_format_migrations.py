@@ -28,6 +28,12 @@ what it kept (a desktop that refused its own workspaces' entries opened none and
 kept nothing). A format may bring up fewer versions than BASE did, and an older
 one may be gone with its step: that is a landing, not a regression.
 
+``check --stable REF`` (``origin/stable`` by default) fails the same way
+against the released build: a device updates from the release, not from main,
+so no format's ``oldest`` may rise above the version the release writes, however
+many main builds in between brought it up. A missing ``origin/<branch>`` is
+fetched first; one that can't be fetched fails the check rather than skipping it.
+
 Each step is tested against a file its previous version wrote, and only that
 (``assert_step_reads_previous``, beside each declaration).
 
@@ -1002,7 +1008,7 @@ def version_at(root: Path, base: str, path: str, expression: str) -> int | None:
     name = expression.rsplit("::", 1)[-1]
     if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
         return None
-    crate = crate_of(root, path).relative_to(root).as_posix()
+    crate = crate_at(root, base, path)
     found = subprocess.run(
         ["git", "grep", "-h", "-E", rf"\bconst\s+{name}\s*:\s*u32\s*=\s*[0-9]+", base, "--",
          f"{crate}/*.rs"],
@@ -1012,6 +1018,20 @@ def version_at(root: Path, base: str, path: str, expression: str) -> int | None:
     ).stdout
     number = re.search(r"=\s*([0-9]+)", found)
     return int(number.group(1)) if number else None
+
+
+def crate_at(root: Path, revision: str, path: str) -> str:
+    """The directory of the crate `path` belonged to at `revision`, or the
+    file's own directory when no manifest was above it: a crate may have moved
+    since (the stable release keeps crates where main no longer does)."""
+    directory = Path(path).parent
+    while directory != Path("."):
+        manifest = (directory / "Cargo.toml").as_posix()
+        if subprocess.run(["git", "cat-file", "-e", f"{revision}:{manifest}"], cwd=root,
+                          capture_output=True).returncode == 0:
+            return directory.as_posix()
+        directory = directory.parent
+    return Path(path).parent.as_posix()
 
 
 def dropped_versions(root: Path, base: str, then: dict[str, str], now: dict[str, str]) -> list[str]:
@@ -1029,9 +1049,10 @@ def dropped_versions(root: Path, base: str, then: dict[str, str], now: dict[str,
                 continue
             problems.append(
                 f"{now_path}: format {name!r} no longer brings up version {written}, which "
-                f"{base} writes: every device that updates holds that version, and would refuse "
-                "what it kept. Keep the step that brings it up (`oldest` at most "
-                f"{written}), tested with `assert_step_reads_previous`"
+                f"{base} writes: its new floor is `oldest: {oldest}`. Every device that updates "
+                "from it holds that version, and would refuse what it kept. Keep the step that "
+                f"brings it up (`oldest` at most {written}), tested with "
+                "`assert_step_reads_previous`"
             )
     return problems
 
@@ -1047,6 +1068,48 @@ def against(base: str, root: Path = ROOT) -> list[str]:
         + dropped_versions(root, base, then, now)
         + changed_layouts(root, base, now)
     )
+
+
+# Where `check` fetches the released build's branch from when its ref is missing (a t job's Git
+# view holds only the commit it checks and main).
+STABLE_REMOTE = "https://code.tilo.so/tilo/tilo.git"
+
+
+def below_stable(root: Path, stable: str, remote: str = STABLE_REMOTE) -> list[str]:
+    """Each format whose oldest version is above the one the released build
+    (`stable`) writes. A device updates from the release, not from main: a
+    floor above what the release writes refuses every file such a device kept,
+    however many main builds in between brought that version up. A ref that is
+    missing is fetched (`origin/<branch>` from `remote`); one that can't be is
+    a failure, never a skip."""
+    def resolves() -> bool:
+        return subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{stable}^{{commit}}"],
+                              cwd=root, capture_output=True).returncode == 0
+
+    if not resolves() and stable.startswith("origin/"):
+        branch = stable.removeprefix("origin/")
+        try:
+            fetched = subprocess.run(
+                ["git", "fetch", "--quiet", "--no-tags", "--depth=1", remote,
+                 f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                cwd=root, capture_output=True, text=True, timeout=120,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            reason = fetched.stderr.strip()
+        except subprocess.TimeoutExpired:
+            reason = "no answer within 120 s"
+        if not resolves():
+            return [
+                f"the released build's branch {stable!r} is not here and fetching it from "
+                f"{remote} failed ({reason or 'no such branch'}): without it no format's floor "
+                "can be checked against what released devices hold"
+            ]
+    if not resolves():
+        return [
+            f"the released build's ref {stable!r} does not name a commit: without it no "
+            "format's floor can be checked against what released devices hold"
+        ]
+    return dropped_versions(root, stable, sources_at(root, stable), sources(root))
 
 
 def stored_closure(root: Path = ROOT) -> set[tuple[str, str]]:
@@ -1070,7 +1133,9 @@ def stored_closure(root: Path = ROOT) -> set[tuple[str, str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("check")
+    checked = sub.add_parser("check")
+    checked.add_argument("--stable", default="origin/stable",
+                         help="the released build's ref, whose versions every floor stays at or below")
     sub.add_parser("pin")
     base = sub.add_parser("against")
     base.add_argument("base")
@@ -1080,7 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(problem)
     elif args.command == "check":
-        problems = check()
+        problems = check() + below_stable(ROOT, args.stable)
         for problem in problems:
             print(problem)
     else:
