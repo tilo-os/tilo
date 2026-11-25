@@ -38,12 +38,12 @@ mod engine {
         _input: &str,
         _moved: &JobSink,
     ) -> Result<(), String> {
-        tilo_chip_design_engine::start(op, "").map(|_| ())
+        Err(format!("`{op}` is no work this device starts"))
     }
 
     /// One job's progress: this engine runs no jobs.
-    fn status(_device: &Device, job: &str) -> Result<String, String> {
-        tilo_chip_design_engine::status(job)
+    fn status(_device: &Device, _job: &str) -> Result<String, String> {
+        Err("this engine runs no jobs".to_owned())
     }
 
     /// One stream: this engine runs none.
@@ -57,8 +57,8 @@ mod engine {
     }
 
     /// One stopped job: this engine runs none, so it holds none.
-    fn cancel(_device: &Device, job: &str) -> bool {
-        tilo_chip_design_engine::cancel(job)
+    fn cancel(_device: &Device, _job: &str) -> bool {
+        false
     }
 
     /// The one engine this library answers with.
