@@ -49,6 +49,9 @@ impl tilo_session_core::desktop::activity::GovernanceReader for GovernanceValues
                 person: hex::encode(person),
             },
             MembershipOpCommand::Governance { .. } => MembershipWrite::Recorded,
+            // The document's history starting over from a base: a record kept beside the member
+            // list that changes no membership, and nothing a person did.
+            MembershipOpCommand::Compact { .. } => MembershipWrite::Recorded,
         })
     }
 
