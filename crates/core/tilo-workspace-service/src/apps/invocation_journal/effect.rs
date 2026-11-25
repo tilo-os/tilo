@@ -72,7 +72,7 @@ impl PreparedEffect {
         {
             return Err("prepared effect identity, kind or bounds invalid".into());
         }
-        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+        let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
             serde_json::from_slice(&self.redacted).map_err(|_| "prepared receipt invalid")?;
         let owner_actor = match &record.key.owner {
             InvocationOwner::Local { actor } => Some(actor.clone()),
@@ -99,7 +99,7 @@ impl PreparedEffect {
                 .map_err(|_| "prepared context invalid")?;
         let status = tilo_actions::EffectReceiptStatus::from_terminal(&self.update)
             .ok_or("prepared effect is not terminal")?;
-        let expected = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        let expected = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
             record.key.invocation,
             &receipt.actor,
             context,
@@ -114,7 +114,7 @@ impl PreparedEffect {
             || record.intent.get("actor") != Some(&actor)
             || receipt.context != expected.context
             || receipt.status != expected.status
-            || !tilo_desktop_model::receipt::actor_is_bounded(&receipt.actor)
+            || !tilo_actions::receipt::actor_is_bounded(&receipt.actor)
             || receipt.completed_at < 0
             || serde_json::to_vec(&receipt).map_err(|_| "prepared receipt encoding")?
                 != self.redacted

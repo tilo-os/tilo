@@ -135,7 +135,7 @@ const RECEIPTS: usize = 20_000;
 /// The heap a copy of the fixture's receipt history needs at least.
 fn receipt_history_bytes() -> usize {
     RECEIPTS.saturating_mul(
-        std::mem::size_of::<tilo_desktop_model::WorkspaceEffectReceipt>().saturating_add(64),
+        std::mem::size_of::<tilo_actions::receipt::WorkspaceEffectReceipt>().saturating_add(64),
     )
 }
 
@@ -153,7 +153,7 @@ fn owned_workspace() -> (Layout, String) {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(91), "Sampled authority");
     workspace.policy.set_owner(owner());
     workspace.effect_receipts = (0..RECEIPTS)
-        .map(|index| tilo_desktop_model::WorkspaceEffectReceipt {
+        .map(|index| tilo_actions::receipt::WorkspaceEffectReceipt {
             invocation: tilo_actions::InvocationId::new(),
             actor: tilo_actions::MemberId::person(format!("{index:064}")).into(),
             context: tilo_actions::ActionContext::default(),

@@ -1265,7 +1265,7 @@ impl tilo_broker_core::workspace_commits::WorkspaceCommits for Engine {
         Box::pin(async move {
             let workspace_id = WorkspaceId::parse(&workspace)
                 .ok_or_else(|| format!("{workspace} is not a workspace"))?;
-            let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+            let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
                 serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
             owner.record_effect(workspace_id, &caller, &receipt, now)
         })

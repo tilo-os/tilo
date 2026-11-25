@@ -37,11 +37,11 @@ use crate::layout::{CanvasPlace, FloatPlace, LayoutKind, WorkspaceLayout};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY};
-use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
 use crate::tree::Layout;
 use crate::tree::Workspace;
 use crate::width::WindowWidth;
+use tilo_actions::receipt::WorkspaceEffectReceipt;
 
 const WORKSPACES_KEY: &str = "workspaces";
 pub(crate) const ACTIVE_KEY: &str = "active";
@@ -629,9 +629,9 @@ fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectR
         read_blob_map(doc, entry, WORKSPACE_EFFECT_RECEIPTS_KEY).unwrap_or_default();
     receipts.compact_sort_by_key(|receipt| receipt.completed_at);
     // The newest only: what the activity feed shows, and no more
-    // ([`crate::receipt::MAX_EFFECT_RECEIPTS`]). Writing the workspace trims
+    // ([`tilo_actions::receipt::MAX_EFFECT_RECEIPTS`]). Writing the workspace trims
     // what a layout kept before this bound.
-    crate::receipt::bounded_receipts(&mut receipts);
+    tilo_actions::receipt::bounded_receipts(&mut receipts);
     receipts
 }
 

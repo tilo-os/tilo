@@ -1411,7 +1411,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        receipt: Option<&tilo_desktop_model::WorkspaceEffectReceipt>,
+        receipt: Option<&tilo_actions::receipt::WorkspaceEffectReceipt>,
     ) -> Result<(GovernanceCompletion, Vec<Vec<u8>>), CollaborationError> {
         let device = &self.inner.host.cert;
         command.validate()?;

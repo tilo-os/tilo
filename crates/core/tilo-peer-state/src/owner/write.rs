@@ -604,7 +604,7 @@ impl DeviceWorkspaces {
         &self,
         workspace: WorkspaceId,
         caller: &tilo_user_identity::DeviceCert,
-        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+        receipt: &tilo_actions::receipt::WorkspaceEffectReceipt,
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();

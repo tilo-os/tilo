@@ -32,10 +32,10 @@ pub fn bounded_receipts(receipts: &mut Vec<WorkspaceEffectReceipt>) -> bool {
 /// and failure details are deliberately absent from this durable shape.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEffectReceipt {
-    pub invocation: tilo_actions::InvocationId,
-    pub actor: tilo_actions::Actor,
-    pub context: tilo_actions::ActionContext,
-    pub status: tilo_actions::EffectReceiptStatus,
+    pub invocation: crate::InvocationId,
+    pub actor: crate::Actor,
+    pub context: crate::ActionContext,
+    pub status: crate::EffectReceiptStatus,
     pub completed_at: i64,
 }
 
@@ -47,10 +47,10 @@ impl WorkspaceEffectReceipt {
     /// private values, so none enter this audit.
     #[must_use]
     pub fn redacted(
-        invocation: tilo_actions::InvocationId,
-        actor: &tilo_actions::Actor,
-        mut context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
+        invocation: crate::InvocationId,
+        actor: &crate::Actor,
+        mut context: crate::ActionContext,
+        status: crate::EffectReceiptStatus,
         completed_at: i64,
     ) -> Self {
         if let Some(what) = &mut context.what {
@@ -64,15 +64,15 @@ impl WorkspaceEffectReceipt {
     /// person gave.
     #[must_use]
     pub fn recorded(
-        invocation: tilo_actions::InvocationId,
-        actor: &tilo_actions::Actor,
-        mut context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
+        invocation: crate::InvocationId,
+        actor: &crate::Actor,
+        mut context: crate::ActionContext,
+        status: crate::EffectReceiptStatus,
         completed_at: i64,
     ) -> Self {
         context.facets = vec![
-            tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
-            tilo_actions::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
+            crate::ActionFacet::new("tilo.receipt", "effect"),
+            crate::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
         ];
         Self {
             invocation,
@@ -105,7 +105,7 @@ impl WorkspaceEffectReceipt {
 /// Whether `actor` names someone in no more than 160 characters, none of them control
 /// characters.
 #[must_use]
-pub fn actor_is_bounded(actor: &tilo_actions::Actor) -> bool {
+pub fn actor_is_bounded(actor: &crate::Actor) -> bool {
     let id = actor.id();
     !id.is_empty() && id.chars().count() <= 160 && !id.chars().any(char::is_control)
 }
@@ -120,9 +120,7 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
         .to_string()
 }
 
-fn bounded_receipt_context(
-    mut context: tilo_actions::ActionContext,
-) -> tilo_actions::ActionContext {
+fn bounded_receipt_context(mut context: crate::ActionContext) -> crate::ActionContext {
     if let Some(item) = &mut context.item {
         item.id = bounded_receipt_text(&item.id, 512);
         item.label = bounded_receipt_text(&item.label, 200);
@@ -159,34 +157,31 @@ fn bounded_receipt_context(
 mod effect_receipt_redaction_tests {
     #[test]
     fn only_broker_owned_terminal_facets_and_no_arguments_enter_public_receipts() {
-        let invocation = tilo_actions::InvocationId::new();
-        let context = tilo_actions::ActionContext {
+        let invocation = crate::InvocationId::new();
+        let context = crate::ActionContext {
             facets: vec![
-                tilo_actions::ActionFacet::new("private.argument", "secret text"),
-                tilo_actions::ActionFacet::new("tilo.invocation", "forged"),
-                tilo_actions::ActionFacet::new("tilo.receipt", "forged"),
+                crate::ActionFacet::new("private.argument", "secret text"),
+                crate::ActionFacet::new("tilo.invocation", "forged"),
+                crate::ActionFacet::new("tilo.receipt", "forged"),
             ],
-            what: Some(tilo_actions::Did::verb(
-                tilo_actions::ActionKey::new("so.tilo.notes", "note", "append"),
-                [(
-                    "text".to_owned(),
-                    tilo_actions::Scalar::text("secret words"),
-                )],
+            what: Some(crate::Did::verb(
+                crate::ActionKey::new("so.tilo.notes", "note", "append"),
+                [("text".to_owned(), crate::Scalar::text("secret words"))],
             )),
             ..Default::default()
         };
         let receipt = super::WorkspaceEffectReceipt::redacted(
             invocation,
-            &tilo_actions::MemberId::person("person").into(),
+            &crate::MemberId::person("person").into(),
             context,
-            tilo_actions::EffectReceiptStatus::Succeeded,
+            crate::EffectReceiptStatus::Succeeded,
             0,
         );
         assert_eq!(
             receipt.context.facets,
             vec![
-                tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
-                tilo_actions::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
+                crate::ActionFacet::new("tilo.receipt", "effect"),
+                crate::ActionFacet::new("tilo.invocation", invocation.0.to_string()),
             ]
         );
         let json = serde_json::to_string(&receipt).unwrap();
@@ -202,10 +197,10 @@ mod receipt_bound_tests {
 
     fn receipt(at: i64) -> WorkspaceEffectReceipt {
         WorkspaceEffectReceipt::redacted(
-            tilo_actions::InvocationId::new(),
-            &tilo_actions::MemberId::person("owner").into(),
-            tilo_actions::ActionContext::default(),
-            tilo_actions::EffectReceiptStatus::Succeeded,
+            crate::InvocationId::new(),
+            &crate::MemberId::person("owner").into(),
+            crate::ActionContext::default(),
+            crate::EffectReceiptStatus::Succeeded,
             at,
         )
     }

@@ -94,10 +94,10 @@ fn foundations(doc: &AutoCommit, key: &str) -> (Vec<String>, usize) {
 }
 
 /// A receipt of an effect `by`'s device served.
-fn receipt(by: &DeviceCert, at: i64) -> tilo_desktop_model::WorkspaceEffectReceipt {
+fn receipt(by: &DeviceCert, at: i64) -> tilo_actions::receipt::WorkspaceEffectReceipt {
     let invocation = tilo_actions::InvocationId::new();
     let context = tilo_actions::ActionContext::for_resource("workspace", "workspace", "Workspace");
-    tilo_desktop_model::WorkspaceEffectReceipt::recorded(
+    tilo_actions::receipt::WorkspaceEffectReceipt::recorded(
         invocation,
         &tilo_actions::MemberId::person(hex::encode(by.user_public_key)).into(),
         context,

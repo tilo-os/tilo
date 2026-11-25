@@ -19,8 +19,8 @@ use tilo_action_policy::{Grantee, Preset, Role, WorkspacePolicy, roles};
 
 use crate::layout::{Strip, WorkspaceLayout};
 use crate::present::Present;
-use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
+use tilo_actions::receipt::WorkspaceEffectReceipt;
 
 /// The shape of the persisted desktop this build writes and understands.
 /// Bump only when a change makes a file unreadable to an older build in a
@@ -198,7 +198,7 @@ impl Layout {
             return None;
         }
         workspace.effect_receipts.push(receipt.clone());
-        crate::receipt::bounded_receipts(&mut workspace.effect_receipts);
+        tilo_actions::receipt::bounded_receipts(&mut workspace.effect_receipts);
         Some(receipt)
     }
 

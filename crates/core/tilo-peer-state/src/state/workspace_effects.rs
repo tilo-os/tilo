@@ -1,6 +1,6 @@
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use tilo_desktop_model::WorkspaceEffectReceipt;
+use tilo_actions::receipt::WorkspaceEffectReceipt;
 
 impl PeerWorkspace<'_> {
     /// Decode the canonical, bounded broker terminal audit payload.

@@ -10,10 +10,11 @@ use collab_types::caps::CapOverride;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_actions::receipt::WorkspaceEffectReceipt;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
     AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceEffectReceipt, WorkspaceId,
+    WorkspaceId,
 };
 
 /// The local user every [`TestHost`] answers for.

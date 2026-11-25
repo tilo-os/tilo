@@ -1,6 +1,7 @@
 //! A workspace's append-only history stays out of what reads the desktop as
 //! it is now: [`history::without_history`] serialisation.
 
+use tilo_actions::receipt::WorkspaceEffectReceipt;
 use tilo_actions::{ActionContext, EffectReceiptStatus, InvocationId};
 use tilo_desktop_model::*;
 

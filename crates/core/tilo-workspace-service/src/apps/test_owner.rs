@@ -300,7 +300,7 @@ impl SessionOwner {
     fn apply(&mut self, change: &Change) -> Result<(), String> {
         let now = tilo_clock::wall();
         let mut candidate = self.peer.clone();
-        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+        let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
             serde_json::from_slice(&change.redacted).map_err(|e| e.to_string())?;
         let mut doc = candidate
             .admitted_workspace()

@@ -487,8 +487,8 @@ tilo_test_env::scenario! {
 fn effect(
     invocation: u128,
     actor: &tilo_actions::Actor,
-) -> tilo_desktop_model::WorkspaceEffectReceipt {
-    tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+) -> tilo_actions::receipt::WorkspaceEffectReceipt {
+    tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
         actor,
         tilo_actions::ActionContext::for_resource("resource", "kind", "Resource"),
@@ -501,7 +501,7 @@ fn effect(
 fn recording(
     before: &AutoCommit,
     person: [u8; 32],
-    receipts: &[tilo_desktop_model::WorkspaceEffectReceipt],
+    receipts: &[tilo_actions::receipt::WorkspaceEffectReceipt],
 ) -> Vec<Vec<u8>> {
     changes_after(before, |doc| {
         tilo_desktop_model::projection::project_effect_receipts(doc, &person_id(person), receipts)

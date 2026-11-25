@@ -29,7 +29,6 @@ pub mod place;
 pub mod present;
 pub mod projection;
 pub mod reading;
-pub mod receipt;
 pub mod recents;
 pub mod serde_ids;
 pub mod shared_resource;
@@ -54,7 +53,6 @@ pub use layout::{
 };
 pub use partition::{Display, OutputPartition};
 pub use present::{Present, Status};
-pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{Layout, STATE_SCHEMA_VERSION, Workspace, WorkspaceDefaultError};

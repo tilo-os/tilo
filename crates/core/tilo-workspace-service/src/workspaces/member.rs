@@ -1690,7 +1690,7 @@ impl Workspaces {
         if !self.is_member(workspace).await? {
             return Err("this workspace is not held here as a member copy".into());
         }
-        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+        let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
             serde_json::from_slice(redacted).map_err(|error| error.to_string())?;
         let device = self.member_identity()?;
         let state = self
@@ -1914,7 +1914,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        receipt: Option<&tilo_desktop_model::WorkspaceEffectReceipt>,
+        receipt: Option<&tilo_actions::receipt::WorkspaceEffectReceipt>,
     ) -> Result<(), String> {
         if self.is_member(workspace).await? {
             let commit = self.member_membership_write(workspace, command).await?;

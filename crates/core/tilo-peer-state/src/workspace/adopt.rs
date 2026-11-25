@@ -17,7 +17,7 @@ use tilo_desktop_model::{Workspace, projection};
 pub fn adopt_workspace(
     workspace: &mut Workspace,
     doc: &AutoCommit,
-    kept: &[tilo_desktop_model::WorkspaceEffectReceipt],
+    kept: &[tilo_actions::receipt::WorkspaceEffectReceipt],
 ) -> bool {
     let (name, mut policy) = super::extract_listed_fields(doc);
     let mut changed = false;
@@ -63,7 +63,7 @@ pub fn adopt_workspace(
         }
     }
     // The newest receipts only, as the layout keeps them.
-    tilo_desktop_model::receipt::bounded_receipts(&mut receipts);
+    tilo_actions::receipt::bounded_receipts(&mut receipts);
     changed |= replace_sorted(&mut workspace.effect_receipts, receipts, |receipt| {
         receipt.invocation.0
     });

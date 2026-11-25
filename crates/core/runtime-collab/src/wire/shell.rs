@@ -223,7 +223,7 @@ pub enum ShellCall {
     /// answered once the daemon serves it.
     Vouch(Vouch),
     /// Record the receipt of an effect an action the shell ran had, in `workspace`, as this
-    /// device's: `redacted` is the redacted `tilo_desktop_model::WorkspaceEffectReceipt` JSON.
+    /// device's: `redacted` is the redacted `tilo_actions::receipt::WorkspaceEffectReceipt` JSON.
     Receipt {
         workspace: String,
         redacted: Vec<u8>,

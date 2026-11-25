@@ -346,6 +346,7 @@ pub mod profiling;
 pub mod protocol;
 pub mod published;
 pub mod reaction;
+pub mod receipt;
 mod refusal;
 pub mod registry;
 pub mod remote;

@@ -152,7 +152,7 @@ fn receipt(
     workspace_id: WorkspaceId,
     invocation: uuid::Uuid,
 ) -> (String, Vec<u8>) {
-    let mut effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+    let mut effect = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
         tilo_actions::InvocationId(invocation),
         &tilo_actions::MemberId::person(hex::encode(device.person())).into(),
         tilo_actions::ActionContext::for_resource("groceries", "note", "Groceries"),

@@ -305,7 +305,7 @@ impl AppBrokerState {
                 }
                 previous.clone()
             } else {
-                let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+                let receipt = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
                     update.invocation(),
                     &pending.actor,
                     pending.context.clone(),

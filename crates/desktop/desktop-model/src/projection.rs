@@ -19,9 +19,9 @@ use tilo_sort::CompactSort as _;
 
 use crate::ids::WorkspaceId;
 use crate::layout::TileContent;
-use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::Layout;
 use crate::tree::Workspace;
+use tilo_actions::receipt::WorkspaceEffectReceipt;
 
 /// Key naming the workspace a document describes (a UUID string).
 pub const WORKSPACE_ID_KEY: &str = "workspace";

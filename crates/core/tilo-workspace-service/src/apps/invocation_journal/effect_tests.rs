@@ -33,7 +33,7 @@ fn fixture(
         invocation: key.invocation,
         output: tilo_actions::ActionOutput::default(),
     };
-    let mut receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+    let mut receipt = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
         key.invocation,
         &tilo_actions::MemberId::person("person").into(),
         context,

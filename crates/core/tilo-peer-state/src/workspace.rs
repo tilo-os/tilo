@@ -498,7 +498,7 @@ pub fn effect_slices_kept(
             continue;
         };
         let Ok(receipt) =
-            serde_json::from_slice::<tilo_desktop_model::WorkspaceEffectReceipt>(bytes)
+            serde_json::from_slice::<tilo_actions::receipt::WorkspaceEffectReceipt>(bytes)
         else {
             return false;
         };

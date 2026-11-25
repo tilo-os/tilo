@@ -39,7 +39,7 @@ impl WorkspaceCommits for NativeEffects {
             let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
                 .ok_or_else(|| "invalid workspace".to_owned())?;
             let (device, receipt) = owner.with_current(workspace, |view| {
-                let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+                let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
                     serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
                 Ok((view.device().clone(), receipt))
             })?;
@@ -169,7 +169,7 @@ fn prepare(f: &Fixture) -> DurableInvocation {
         invocation: key.invocation,
         output: tilo_actions::ActionOutput::default(),
     };
-    let mut receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+    let mut receipt = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
         key.invocation,
         &actor,
         context,

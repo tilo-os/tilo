@@ -515,7 +515,7 @@ impl JoinedChannel {
                 .records_effects_for(&surface.route.cluster_id)
         {
             context.purpose = None;
-            let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+            let receipt = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
                 update.invocation(),
                 &actor,
                 context,
