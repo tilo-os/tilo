@@ -194,12 +194,7 @@ impl Apps {
         // connection from it as the app it runs.
         let launched: Arc<Launched> = Arc::default();
         Self {
-            instances: instances::Instances::new(
-                profile,
-                &sockets,
-                finds_launcher,
-                Arc::clone(&launched),
-            ),
+            instances: instances::Instances::new(&sockets, finds_launcher, Arc::clone(&launched)),
             catalog,
             root: profile.to_path_buf(),
             sockets,

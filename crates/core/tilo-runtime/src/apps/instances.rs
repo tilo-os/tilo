@@ -293,13 +293,10 @@ impl tilo_dialogs::chooser_service::Opens for NoOpen {
 
 impl Instances {
     pub(crate) fn new(
-        profile: &Path,
         sockets: &crate::daemon::Sockets,
         launcher: FindsLauncher,
         launched: Arc<super::Launched>,
     ) -> Self {
-        #[cfg(not(target_os = "macos"))]
-        let _ = profile;
         Self {
             collab: sockets.collab.clone(),
             identity: sockets.identity.clone(),
@@ -577,12 +574,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_instance_reaches_the_collaboration_socket_its_daemon_listens_on() {
-        let profile = tempfile::tempdir().unwrap();
         let daemons_sockets = tempfile::tempdir().unwrap();
         let sockets = crate::daemon::Sockets::in_dir(daemons_sockets.path());
         let _listening = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
         let instances = Instances::new(
-            profile.path(),
             &sockets,
             Box::new(|| Err("no launcher".into())),
             Arc::default(),
@@ -607,7 +602,6 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let sockets = crate::daemon::Sockets::in_dir(profile.path());
         let instances = Instances::new(
-            profile.path(),
             &sockets,
             Box::new(|| Err("no launcher".into())),
             Arc::default(),
