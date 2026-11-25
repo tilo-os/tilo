@@ -1819,7 +1819,7 @@ async fn viewer(
             tilo_workspace_service::workspaces::SetMemberRoleRequest {
                 request_id: rand::random(),
                 user_public_key: cert.user_public_key,
-                role: tilo_peer_state::join::Role::Viewer,
+                role: tilo_server_protocol::workspaces::Role::Viewer,
             },
         )
         .await
@@ -1857,7 +1857,7 @@ async fn a_viewers_checkpoint_is_refused_by_the_workspaces_write_check() {
     let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
     let workspaces = server.workspaces().clone();
     let workspace = workspaces.create("Tasks").await.unwrap().workspace;
-    let (editor_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let (editor_key, _) = member_device(&workspaces, &workspace, &cert, 3).await;
     let mut editor = Writer::new(&workspaces, &workspace, editor_key).await;
     let fields = BTreeMap::from([("title".to_owned(), Cell::One(Value::Text("First".into())))]);
     let document = editor
