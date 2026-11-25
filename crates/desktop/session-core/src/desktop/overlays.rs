@@ -10,9 +10,8 @@
 //! assistive technology reads them in it, and Escape closes the first open one. It is not derived
 //! from kinds — a display question answered above onboarding is a fact about the session, not about
 //! either one's modality.
-//! Every part is the session's now: the Rust chrome that drew menus, the picker, the overview
-//! and the strip ribbon is gone, so the views draw what the stack names and the session's own
-//! verbs open and close every one of them (`Part::session_closes`).
+//! Every part is the session's: the views draw what the stack names, and the session's own verbs
+//! open and close every one of them.
 //! The stack also holds the shell's surface up ([`Overlay`]), what the person typed in its search,
 //! and Alt+Tab's walk: one reading, `desktop:overlays`, says all of it.
 
@@ -261,14 +260,6 @@ impl Part {
                 height: None,
             },
         }
-    }
-
-    /// Whether the session's own verbs open and close this part: every part, since the views that
-    /// draw them read the stack and keep no state of their own.
-    #[must_use]
-    pub const fn session_closes(self) -> bool {
-        let _ = self;
-        true
     }
 }
 
@@ -1012,7 +1003,7 @@ impl Overlays {
     #[must_use]
     pub fn escape(&self) -> Option<Part> {
         let stack = self.0.borrow();
-        let closes = |part: &Part| part.session_closes() && part.role().closes_on_escape();
+        let closes = |part: &Part| part.role().closes_on_escape();
         stack.over().filter(closes).or_else(|| {
             Part::ALL
                 .into_iter()
@@ -1036,11 +1027,10 @@ impl Overlays {
             };
             let place = match state.stands {
                 Some(place) => Some(place),
-                None if part.session_closes() => stack
+                None => stack
                     .entry(*part)
                     .and_then(|entry| entry.place)
                     .map(|placement| placement.room),
-                None => None,
             };
             place.is_some_and(|place| !place.contains(Point::new(x, y)))
         })

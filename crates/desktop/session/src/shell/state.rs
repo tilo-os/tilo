@@ -480,15 +480,6 @@ impl ShellService {
     /// widgets that draw them, and say so to the same stack.
     fn open_surface(&self, part: &str, anchor: Option<&str>) -> Result<(), ApiError> {
         let part = named(part)?;
-        if !part.session_closes() {
-            return Err(ApiError::Unavailable {
-                code: "not-mine".into(),
-                reason: format!(
-                    "The desktop shows {} itself, in the widget that owns it",
-                    part.as_str()
-                ),
-            });
-        }
         if part == Part::WindowMenu {
             return Err(ApiError::Unavailable {
                 code: "use-window-menu".into(),
@@ -522,15 +513,6 @@ impl ShellService {
             return Ok(());
         }
         let part = named(part)?;
-        if !part.session_closes() {
-            return Err(ApiError::Unavailable {
-                code: "not-mine".into(),
-                reason: format!(
-                    "The desktop shows {} itself, in the widget that owns it",
-                    part.as_str()
-                ),
-            });
-        }
         if part == Part::WindowMenu {
             // The menu keeps its window and place beside the stack; both go together.
             self.close();
@@ -684,10 +666,9 @@ impl Service for ShellService {
             OVERLAYS => {
                 match decode::<OverlayEffect>(&self.resources(), resource, action, arguments)? {
                     // A surface the shell draws opens through the shell's surfaces; the ones the
-                    // session puts up in the stack itself (quick settings) keep their place there.
+                    // stack holds (quick settings, the centre) keep their place there.
                     OverlayEffect::OpenSurface { part, anchor: None }
-                        if Overlay::named(&part).is_some()
-                            && !Part::named(&part).is_some_and(Part::session_closes) =>
+                        if Overlay::named(&part).is_some() && Part::named(&part).is_none() =>
                     {
                         self.surfaces.open(&part);
                     }
@@ -696,7 +677,7 @@ impl Service for ShellService {
                     }
                     OverlayEffect::CloseSurface { part } if Overlay::named(&part).is_some() => {
                         self.surfaces.close(&part);
-                        if Part::named(&part).is_some_and(Part::session_closes) {
+                        if Part::named(&part).is_some() {
                             self.close_surface(&part)?;
                         }
                     }
@@ -750,6 +731,16 @@ impl ShellService {
             // The held-Super card stands over the windows while the shell is otherwise at
             // rest: a picture, which the part draws over the windows without taking keys.
             crate::device_lists::PEEK
+        } else if self.surfaces.overlays.here() == Overlay::Rest {
+            // A surface the shell draws that the stack holds up (quick settings, the centre) is
+            // the one it shows: the stack opens and closes it, and the shell reads it here.
+            self.surfaces
+                .overlays
+                .entries()
+                .iter()
+                .map(|entry| entry.part.as_str())
+                .find(|part| Overlay::named(part).is_some())
+                .unwrap_or(Overlay::Rest.name())
         } else {
             self.surfaces.overlays.here().name()
         };
