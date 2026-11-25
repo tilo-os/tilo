@@ -62,7 +62,7 @@ pub struct Window {
     /// left).
     #[serde(default)]
     pub width: i32,
-    /// Its height in logical pixels, as [`Self::width`] tells it.
+    /// Its height in logical pixels, as its width is told.
     #[serde(default)]
     pub height: i32,
     /// Whether its app stopped answering the compositor's pings.
