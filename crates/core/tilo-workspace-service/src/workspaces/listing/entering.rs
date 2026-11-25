@@ -731,13 +731,24 @@ impl Workspaces {
         {
             return Err("the agent's key is not granted this workspace".to_owned());
         }
+        // The key comes in at its person's own place, an Editor's at most, as a device of
+        // theirs entering is invited: never above them, and for no one the workspace lacks. A
+        // redemption by a person the list has adds the key and leaves their place as it is.
+        let role = match self.member_role(workspace, cert.user_public_key).await {
+            Some(
+                role @ (tilo_peer_state::join::Role::Viewer
+                | tilo_peer_state::join::Role::Commenter),
+            ) => role,
+            Some(_) => tilo_peer_state::join::Role::Editor,
+            None => return Err("the agent's person is not in this workspace".to_owned()),
+        };
         let invitation = self
             .issue(
                 workspace,
                 &self.inner.host.cert,
                 crate::workspaces::IssueInvitationRequest {
                     request_id: rand::random(),
-                    role: tilo_peer_state::join::Role::Editor,
+                    role,
                     recipient_user_public_key: Some(cert.user_public_key),
                     invitee_name: None,
                     inviter_name: None,
@@ -1195,6 +1206,69 @@ mod tests {
                 Entered::Admitted { .. }
             ),
             "an unpaused host admits the stranger"
+        );
+        server.shutdown().await;
+    }
+
+    /// An agent's key comes into its workspace at its person's own place and never above it: a
+    /// Viewer's agent edits nothing, and the key of someone the workspace does not have is
+    /// refused.
+    #[tokio::test]
+    async fn an_agents_key_enters_at_its_persons_place_and_never_for_a_stranger() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
+        let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+        let scope = || {
+            DeviceCapabilities::agent_grant(AgentScope::agent_in(
+                *id.as_uuid().as_bytes(),
+                "scribe",
+            ))
+        };
+        let viewer = SigningKey::from_bytes(&rand::random());
+        member_at(workspaces, &owner, &workspace, &viewer, Role::Viewer).await;
+        let (agent_key, agent) = device_of(&viewer, scope());
+        workspaces
+            .enter_agent_key((&agent_key, &agent), &workspace, "Scribe")
+            .await
+            .expect("the viewer's agent comes in");
+        {
+            let hosted = workspaces.workspace(&workspace).await.unwrap();
+            let hosted = hosted.lock().await;
+            let now = tilo_clock::wall();
+            assert_eq!(
+                hosted.peer().role(&agent.device_public_key, now).unwrap(),
+                collab_types::Role::Viewer,
+                "the agent holds its person's place"
+            );
+            let access = hosted
+                .peer()
+                .permissions(agent.device_public_key, now)
+                .unwrap();
+            assert!(
+                !access.allows(
+                    &tilo_action_policy::TreePath::workspace(&workspace),
+                    tilo_action_policy::ActionKind::Undoable,
+                    now
+                ),
+                "a viewer's agent edits nothing"
+            );
+        }
+        assert!(
+            role_of(workspaces, &workspace, viewer.verifying_key().to_bytes())
+                .await
+                .is_some_and(|role| role.contains("Viewer")),
+            "the person keeps their place"
+        );
+        let stranger = SigningKey::from_bytes(&rand::random());
+        let (stranger_key, strangers) = device_of(&stranger, scope());
+        assert_eq!(
+            workspaces
+                .enter_agent_key((&stranger_key, &strangers), &workspace, "Scribe")
+                .await,
+            Err("the agent's person is not in this workspace".to_owned())
         );
         server.shutdown().await;
     }
