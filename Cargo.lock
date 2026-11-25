@@ -17414,7 +17414,6 @@ dependencies = [
 name = "tilo-fs"
 version = "0.1.0"
 dependencies = [
- "account-credentials",
  "anyhow",
  "bao-tree",
  "blake3",
@@ -22009,6 +22008,7 @@ dependencies = [
  "tilo-browser-continuity-core",
  "tilo-canonical-json",
  "tilo-clock",
+ "tilo-cloud-source",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-contact-directory",

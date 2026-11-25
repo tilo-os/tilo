@@ -16,6 +16,7 @@ import os
 import re
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -49,6 +50,40 @@ RETRY_DEADLINE = 60.0
 # The refusals that say the workspace is not ready for the call yet.
 # `unavailable` is the one an HTTP 503 without a typed body gets.
 RETRY_CODES = frozenset({"not_ready", "unanswered", "unavailable"})
+
+
+@dataclass(frozen=True)
+class CallFrame:
+    """One 20 ms Opus frame of a call (48 kHz), untouched, and the account that said it.
+
+    `skipped` is how many frames of this stream the device dropped just before
+    this one: a sender leaves their place in its timeline (RTP sequence and
+    timestamp), so the receiver conceals the gap.
+    """
+
+    speaker: str
+    opus: bytes
+    skipped: int = 0
+
+
+@dataclass(frozen=True)
+class CallAsk:
+    """Where the device asks the app to be in the outside call: in `call`, showing
+    `status` to its people about who is on the workspace's side, or in none
+    (`call` is `None`)."""
+
+    call: str | None
+    status: str | None
+
+
+def _lane_answered(text: str) -> None:
+    """A lane call's answer: nothing, or its refusal raised."""
+    body = json.loads(text)
+    refused = body.get("refused")
+    if refused is not None:
+        raise refusal_of(refused)
+    if "answer" not in body:
+        raise ProtocolError("the daemon answered a call lane in a shape the SDK does not know")
 
 
 @runtime_checkable
@@ -179,6 +214,42 @@ class DaemonTransport:
         if not isinstance(secret, str):
             raise ProtocolError("the vault answered a release with no secret")
         return secret
+
+    async def carry_call(self, pair: Mapping[str, Any] | None) -> None:
+        """Carry the outside call `pair` names into the workspace call, or let go (`None`)."""
+        _lane_answered(
+            await self.daemon.carry_call(json.dumps(None if pair is None else dict(pair)))
+        )
+
+    async def report_call(self, report: Mapping[str, Any]) -> None:
+        """Say who is in the outside calls this connection carries, and where it stands."""
+        _lane_answered(await self.daemon.report_call(json.dumps(dict(report))))
+
+    def hear_call(self, speaker: str, opus: bytes) -> None:
+        """Hand the workspace's call one frame an outside person said; nothing answers it."""
+        refused = self.daemon.hear_call(speaker, bytes(opus))
+        if refused is not None:
+            raise refusal_of(json.loads(refused))
+
+    def take_call(self) -> tuple[list[CallFrame], CallAsk | None]:
+        """What the workspace's call said since the last time, and a new ask, if there is one."""
+        body = json.loads(self.daemon.said_call())
+        refused = body.get("refused")
+        if refused is not None:
+            raise refusal_of(refused)
+        answer = body.get("answer") or {}
+        frames = [
+            CallFrame(
+                speaker=str(frame["speaker"]),
+                opus=bytes(frame["opus"]),
+                skipped=int(frame.get("skipped", 0)),
+            )
+            for frame in answer.get("frames", [])
+        ]
+        asked = answer.get("asked")
+        return frames, None if asked is None else CallAsk(
+            call=asked.get("call"), status=asked.get("status")
+        )
 
     async def aclose(self) -> None:
         """Close the connection to the daemon."""

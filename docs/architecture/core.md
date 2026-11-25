@@ -1221,7 +1221,9 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   channel's moderators grant and revoke access to that channel through the system's
   grant actions, scoped to it. A theme is applied by one device action that
   takes an installed theme package by id and loads its painters compiled at install;
-  the person's appearance setting names it, and nothing else applies a theme. A project
+  the person's appearance setting names it, and nothing else applies a theme. Whether a
+  call's answer is secret is decided from its action's declaration where every invocation
+  record is written, never per path; a secret answer is never kept in a record. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds

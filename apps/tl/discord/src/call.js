@@ -359,7 +359,7 @@ export class Carried {
       for (const frame of said ?? []) {
         for (const carried of this.carried.values()) {
           if (!carried.voice || carried.voice.muted) continue;
-          carried.voice.say(frame.opus);
+          carried.voice.say(frame.opus, frame.skipped ?? 0);
         }
       }
     } catch (error) {

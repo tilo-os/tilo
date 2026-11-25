@@ -23,6 +23,19 @@ export function fit(text) {
   return chars.length <= MAX_CONTENT ? (text ?? "") : `${chars.slice(0, MAX_CONTENT - 1).join("")}…`;
 }
 
+/// `bytes` as the shortest whole unit it fits: "943 B", "1.4 MB".
+export function sizeOf(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Number(bytes) || 0;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  if (unit === 0) return `${value} B`;
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
 /// A file's bytes as Discord's worker reads them: the bare blake3 hex of the content address.
 export function bareBlob(address) {
   const scheme = "tilo-blob://";
@@ -80,6 +93,17 @@ export function carried(state, conversation) {
   return null;
 }
 
+/// The Discord text channel a conversation's messages are sent to and the conversation whose
+/// webhook they go through: the conversation's own channel, or a thread's root channel.
+export function webhookChannel(state, conversation) {
+  const channel = mapping(state, "channel", conversation);
+  if (channel) return { channel: channel.discord, tilo: conversation };
+  const thread = mapping(state, "thread", conversation);
+  if (!thread?.root) return null;
+  const root = mapping(state, "channel", thread.root);
+  return root ? { channel: root.discord, tilo: thread.root } : null;
+}
+
 /// Whether this bridge made a change: an app acting by itself, this one. What the bridge wrote
 /// is never carried back to Discord, so nothing echoes.
 export function byThisBridge(event) {
@@ -114,7 +138,9 @@ export function changeTarget(state, resource) {
   if (!record || !item) return null;
   const at = /^(?:(.*?)\/)?messages\/([^/]+)$/.exec(item);
   const conversation = published(at?.[1] ? `${record}/${at[1]}` : record);
-  if (!carried(state, conversation)) return null;
+  // A conversation joined to a Discord text channel, or a thread of one, is carried: its webhook
+  // is made the first time a message goes.
+  if (!webhookChannel(state, conversation)) return null;
   const id = at ? at[2] : item.split("/").pop();
   return {
     conversation,
@@ -375,7 +401,18 @@ export function toDiscord(state, conversation, message) {
     media: file.media ?? "",
     size: file.size ?? 0,
   }));
-  if (files.some((file) => file.size > MAX_UPLOAD_BYTES) || files.length > MAX_UPLOADS) return [];
+  // A file Discord does not take, or one past the most a message carries, is said by its name
+  // and size, so the message still goes and nobody there misses that it had the file.
+  const sent = [];
+  const said = [];
+  for (const file of files) {
+    if (file.size > MAX_UPLOAD_BYTES || sent.length >= MAX_UPLOADS) {
+      said.push(`📎 ${file.name} (${sizeOf(file.size)}), in the workspace`);
+    } else {
+      sent.push(file);
+    }
+  }
+  const text = [message.text ?? "", ...said].filter((line) => line !== "").join("\n");
   return [
     {
       op: "send",
@@ -385,8 +422,8 @@ export function toDiscord(state, conversation, message) {
       username: author.name,
       avatar_url: author.avatar || null,
       avatar_blob: null,
-      content: fit(message.text ?? ""),
-      attachments: files,
+      content: fit(text),
+      attachments: sent,
       created_ms: message.written ?? 0,
       tilo: published(message.id),
     },

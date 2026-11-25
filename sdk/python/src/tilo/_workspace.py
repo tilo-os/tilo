@@ -25,6 +25,7 @@ from ._models import (
     WorkspaceInfo,
 )
 from ._resource import Resource
+from ._transport import CallAsk, CallFrame
 
 INVOCATION_PREFIX = "sdk:"
 
@@ -265,6 +266,90 @@ def _invocation_id(title: str) -> str:
     return f"{INVOCATION_PREFIX}{slug or 'invocation'}:{uuid.uuid4().hex[:8]}"
 
 
+_NO_CALL_LANE = (
+    "a call is carried only by an app this computer's daemon started, over the connection it "
+    "was handed"
+)
+
+
+class CallLane:
+    """The call lane of an app's held connection: an outside service's call carried
+    into a workspace call.
+
+    The app says which outside call is one with which of the workspace's voice
+    channels (`carry`), who is in the outside call and where it stands
+    (`report`), and hands over what the outside call's people say (`heard`); it
+    takes what the workspace's people say (`said`) and where the device wants
+    it (`asked`). The device's daemon holds the call's rule and its media keys,
+    so the app never sees either, and a workspace that grants the app no call
+    refuses the lane.
+    """
+
+    def __init__(self, workspace: Workspace) -> None:
+        self.workspace = workspace
+        self._frames: list[CallFrame] = []
+        self._asked: CallAsk | None = None
+
+    async def _lane(self) -> Any:
+        transport = await self.workspace.client._transport()
+        if getattr(transport, "carry_call", None) is None:
+            raise Refused("not_permitted", _NO_CALL_LANE)
+        return transport
+
+    def carry(self, pair: Mapping[str, str] | None) -> Any:
+        """Carry the outside call `pair["outside"]` into the workspace call
+        `pair["tilo"]`, or let go of the one carried (`None`), which leaves the
+        workspace's call. The first carry joins the call as the app; a workspace
+        that grants the app no call raises `Refused` with why."""
+        return self.workspace.client.handoff(self._carry(pair))
+
+    async def _carry(self, pair: Mapping[str, str] | None) -> None:
+        await (await self._lane()).carry_call(pair)
+
+    def report(self, report: Mapping[str, Any]) -> Any:
+        """Say who is in the outside calls (`{"calls": [{"call", "people"}],
+        "link": {...}, "status"}`), by the names and pictures the service shows,
+        and where the app stands in them."""
+        return self.workspace.client.handoff(self._report(report))
+
+    async def _report(self, report: Mapping[str, Any]) -> None:
+        await (await self._lane()).report_call(report)
+
+    def heard(self, speaker: str, opus: bytes) -> Any:
+        """Hand the workspace's call one 20 ms Opus frame the outside account
+        `speaker` said."""
+        return self.workspace.client.handoff(self._heard(speaker, opus))
+
+    async def _heard(self, speaker: str, opus: bytes) -> None:
+        (await self._lane()).hear_call(speaker, opus)
+
+    def said(self) -> Any:
+        """The frames the workspace's people said since the last time, oldest
+        first, as one stream: mixed when several speak at once."""
+        return self.workspace.client.handoff(self._said())
+
+    async def _said(self) -> list[CallFrame]:
+        await self._take()
+        frames, self._frames = self._frames, []
+        return frames
+
+    def asked(self) -> Any:
+        """Where the device last asked the app to be in the outside call, once:
+        `None` when it asked nothing new since."""
+        return self.workspace.client.handoff(self._asked_now())
+
+    async def _asked_now(self) -> CallAsk | None:
+        await self._take()
+        asked, self._asked = self._asked, None
+        return asked
+
+    async def _take(self) -> None:
+        frames, asked = (await self._lane()).take_call()
+        self._frames.extend(frames)
+        if asked is not None:
+            self._asked = asked
+
+
 class Workspace:
     """One workspace, named by its id, by its name, or by neither.
 
@@ -281,6 +366,7 @@ class Workspace:
         self.keys = WorkspaceKeys(self)
         self.members = Members(self)
         self.vault = Vault(self)
+        self.call_lane = CallLane(self)
 
     # -- identity --------------------------------------------------------
 

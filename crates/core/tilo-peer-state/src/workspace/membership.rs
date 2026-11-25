@@ -164,18 +164,65 @@ pub fn admit_operations(
         .iter()
         .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
         .collect();
-    let mut held_rows = super::changed_rows_by(before, candidate, &written, false);
+    operations_name_rows(
+        (before, candidate),
+        (&at, &after),
+        Some(&written),
+        workspace,
+        (now_ns, keeps_checkpoints),
+    )
+}
+
+/// Whether a newer base a device keeping the workspace's history made changes only what the
+/// operations it adds admit, as [`admit_operations`] decides for a batch: each judged by its
+/// author's grants as `before` holds them, the copy that adopts the base. A base does not
+/// apply on `before`, so the operations are not positioned at their own dependencies, and
+/// the two are read whole; one whose author `before` gives no grant for what it changes is
+/// refused.
+///
+/// # Errors
+/// As [`admit_operations`].
+pub fn admit_base_operations(
+    before: &AutoCommit,
+    candidate: &AutoCommit,
+    workspace: &str,
+    (now_ns, keeps_checkpoints): (u64, bool),
+) -> Result<(), MembershipRefusal> {
+    operations_name_rows(
+        (before, candidate),
+        (before, candidate),
+        None,
+        workspace,
+        (now_ns, keeps_checkpoints),
+    )
+}
+
+/// Whether every governed part `candidate` changes from `before` is one an operation it adds
+/// names, permitted to its author from `at` to `after`. `written` is what the batch wrote on
+/// `before`, read where it wrote it; with none, both are read whole.
+fn operations_name_rows(
+    (before, candidate): (&AutoCommit, &AutoCommit),
+    (at, after): (&AutoCommit, &AutoCommit),
+    written: Option<&[automerge::Change]>,
+    workspace: &str,
+    (now_ns, keeps_checkpoints): (u64, bool),
+) -> Result<(), MembershipRefusal> {
+    let mut held_rows = match written {
+        Some(written) => super::changed_rows_by(before, candidate, written, false),
+        None => super::changed_rows(Some(before), Some(candidate), false),
+    };
     if keeps_checkpoints {
         held_rows.retain(|row| *row != GovernanceRow::Checkpoints);
     }
     held_rows.sort_unstable();
     // What the batch wrote, read where it wrote it: a change to a workspace of
     // many costs what it wrote, not a reading of every member's row.
-    let governance = written_rows((&at, &after), &written)
-        .unwrap_or_else(|| (governance_of(Some(&at)), governance_of(Some(&after))));
+    let governance = written
+        .and_then(|written| written_rows((at, after), written))
+        .unwrap_or_else(|| (governance_of(Some(at)), governance_of(Some(after))));
     let mut declared: Vec<GovernanceRow> = Vec::new();
     let mut admitted = false;
-    for op in added_ops(before, candidate, &written) {
+    for op in added_ops(before, candidate, written) {
         let rows: &[GovernanceRow] = match &op.command {
             MembershipOpCommand::Governance { rows } => rows,
             // An admission writes the device it admits, and names that row
@@ -185,7 +232,7 @@ pub fn admit_operations(
                 // invitation its authority, or by a member: a device whose
                 // person holds no role signs nobody else in.
                 if *person != op.author.user_public_key
-                    && crate::workspace::policy_of(&at, workspace)
+                    && crate::workspace::policy_of(at, workspace)
                         .active_role(&op.person())
                         .is_none()
                 {
@@ -197,7 +244,7 @@ pub fn admit_operations(
                     let identities = [GovernanceRow::Identities];
                     rows_permitted(
                         workspace,
-                        (&at, &after),
+                        (at, after),
                         (&governance.0, &governance.1),
                         &op,
                         &identities,
@@ -219,7 +266,7 @@ pub fn admit_operations(
         }
         rows_permitted(
             workspace,
-            (&at, &after),
+            (at, after),
             (&governance.0, &governance.1),
             &op,
             rows,
@@ -241,13 +288,14 @@ pub fn admit_operations(
 
 /// The operations `candidate`, `before` with `written` on it, adds to the
 /// ones `before` holds: each one kept under a key `written` wrote that
-/// `before` does not hold.
+/// `before` does not hold, or with nothing written, every one `before` does
+/// not hold.
 fn added_ops(
     before: &AutoCommit,
     candidate: &AutoCommit,
-    written: &[automerge::Change],
+    written: Option<&[automerge::Change]>,
 ) -> Vec<SignedMembershipOp> {
-    let Some(touched) = super::rows::touched(candidate, written) else {
+    let Some(touched) = written.and_then(|written| super::rows::touched(candidate, written)) else {
         let held = crate::members::ops(before);
         return crate::members::ops(candidate)
             .into_iter()

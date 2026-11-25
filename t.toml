@@ -1843,10 +1843,12 @@ heavy = true
 [[check]]
 name = "window-connector"
 # A window with no session keeping the video site's types in step with YouTube through the
-# connector the window reaches: the origin path a window outside a tilolang host takes. The
-# package checks key on what cargo reads, which leaves apps/tl out of their tree; this names the
-# package the window runs, and the test that moves with the connector.
-run = "test -d apps/tl/tube\ncargo test --locked -p tilolang-process --test window hosted::origins::a_window_without_a_session_browses_and_plays_through_the_connector -- --exact --nocapture"
+# connector the window reaches: the origin path a window outside a tilolang host takes. The test
+# installs the Tube app from apps/tl, which a cargo-keyed tree leaves out, so this reads Git: the
+# job gets the repository's files and the check is keyed by the commit. It fails when the app is
+# not there and when no test ran, so a renamed or filtered-out test is red, never green.
+git = true
+run = "set -eu\ntest -d apps/tl/tube || { echo 'the Tube app is not in this tree'; exit 1; }\nout=$(cargo test --locked -p tilolang-process --test window hosted::origins::a_window_without_a_session_browses_and_plays_through_the_connector -- --exact --nocapture 2>&1) || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\nprintf '%s\\n' \"$out\" | grep -q 'test result: ok. 1 passed' || { echo 'the connector window test did not run'; exit 1; }"
 
 [[check]]
 name = "apps-macos"

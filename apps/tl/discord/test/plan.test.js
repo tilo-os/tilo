@@ -12,6 +12,7 @@ import {
   chatChanges,
   changeTarget,
   messageOf,
+  sizeOf,
 } from "../src/plan.js";
 import { callsOf } from "../main.js";
 import { looksLikeToken, webhookSend } from "../src/rest.js";
@@ -484,4 +485,28 @@ test("a webhook post with files names workspace content as parts, never the byte
   expect(plain.bodyParts).toBeUndefined();
   expect(plain.headers["content-type"]).toBe("application/json");
   expect(JSON.parse(plain.body).content).toBe("look");
+  // Nothing the workspace writes pings `@everyone`, `@here` or a role there.
+  expect(JSON.parse(plain.body).allowed_mentions).toEqual({ parse: ["users"] });
+  expect(call.bodyParts[0].json.allowed_mentions).toEqual({ parse: ["users"] });
+});
+
+test("a file Discord does not take goes as its name and size, and the message still goes", () => {
+  const files = Array.from({ length: 11 }, (_, n) => ({
+    blob: `tilo-blob://f${n}`,
+    name: `f${n}.png`,
+    size: 10,
+  }));
+  files[2] = { blob: "tilo-blob://big", name: "talk.mp4", size: 123_400_000 };
+  const [op] = toDiscord(state(), "tl:so.tilo.chat:design", {
+    id: "m9",
+    text: "the recording",
+    author: ADA,
+    attachments: files,
+  });
+  expect(op.attachments.map((file) => file.name)).toEqual(
+    ["f0", "f1", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10"].map((name) => `${name}.png`),
+  );
+  expect(op.content).toBe("the recording\n📎 talk.mp4 (123 MB), in the workspace");
+  expect(sizeOf(943)).toBe("943 B");
+  expect(sizeOf(1_400_000)).toBe("1.4 MB");
 });

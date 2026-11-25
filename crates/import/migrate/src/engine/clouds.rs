@@ -305,22 +305,23 @@ pub(crate) fn open_with(
     )
 }
 
-/// The drive the connected `source` is, reached with the grant the workspace's vault keeps for
-/// `account`: a password as it is, a provider's grant renewed as Files renews it.
+/// The drive the connected `source` is, reached with the grant the vault at this computer's
+/// root keeps for `account`: a password as it is, a provider's grant renewed as the accounts
+/// provider renews it, the renewed sign-in kept back in that vault.
 fn open(account: &Account, source: &Source) -> Result<Arc<dyn CloudSource>> {
     let root = config_root()?;
+    let secret = accounts::SecretVault::open_in(&root)
+        .get(&account.id)
+        .ok_or_else(|| {
+            anyhow!(
+                "{} has no sign-in in this computer's vault: sign it in again in Settings",
+                source.title
+            )
+        })?;
     if matches!(
         account.type_id.as_str(),
         cloud_types::WEBDAV | cloud_types::NEXTCLOUD
     ) {
-        let secret = accounts::SecretVault::open_in(&root)
-            .get(&account.id)
-            .ok_or_else(|| {
-                anyhow!(
-                    "{} has no password in this workspace's vault: sign it in again in Settings",
-                    source.title
-                )
-            })?;
         let username = account
             .config
             .get("username")
@@ -337,8 +338,63 @@ fn open(account: &Account, source: &Source) -> Result<Arc<dyn CloudSource>> {
             )),
         );
     }
-    let credential = account_credentials::DriveSignIn::new(credentials(&root), account.clone());
-    open_with(account, Arc::new(credential))
+    open_with(
+        account,
+        Arc::new(GrantDrive {
+            store: credentials(&root),
+            root,
+            account: account.clone(),
+            secret: Mutex::new(secret),
+            rejected: std::sync::atomic::AtomicBool::new(false),
+        }),
+    )
+}
+
+/// A drive's sign-in over the grant the vault at `root` keeps for `account`: made by the one
+/// credential store, renewed when due or after the drive refused it, and the renewed grant
+/// kept back in that vault.
+struct GrantDrive {
+    store: CredentialStore,
+    root: std::path::PathBuf,
+    account: Account,
+    secret: Mutex<accounts::Secret>,
+    rejected: std::sync::atomic::AtomicBool,
+}
+
+impl cloud_source::CredentialSource for GrantDrive {
+    fn credential(&self) -> cloud_source::Result<cloud_source::Credential> {
+        let secret = self
+            .secret
+            .lock()
+            .map_err(|_| cloud_source::Error::Unauthorized)?
+            .clone();
+        let force = self
+            .rejected
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        let made = self
+            .store
+            .drive_credential(&self.account, &secret, force)
+            .map_err(|error| match error {
+                account_credentials::CredentialError::Offline => cloud_source::Error::Offline,
+                _ => cloud_source::Error::Unauthorized,
+            })?;
+        if let Some(renewed) = made.renewed {
+            let mut vault = accounts::SecretVault::open_in(&self.root);
+            vault.put(&self.account.id, &renewed);
+            if let Err(error) = vault.try_save() {
+                return Err(cloud_source::Error::Io(std::io::Error::other(error)));
+            }
+            if let Ok(mut kept) = self.secret.lock() {
+                *kept = renewed;
+            }
+        }
+        made.credential.ok_or(cloud_source::Error::Unauthorized)
+    }
+
+    fn rejected(&self) {
+        self.rejected
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Drives tests read in place of a provider, by the id of the account they stand for.

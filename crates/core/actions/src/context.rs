@@ -332,45 +332,6 @@ impl ActionContext {
         self
     }
 
-    /// Fill app ownership from the registered action type when a generic
-    /// palette/API caller has only resource metadata. Explicit app context
-    /// always wins. Action types conventionally start with the package stem
-    /// (`word-processor.action`, `api_tester.action`).
-    #[must_use]
-    pub fn with_inferred_app(mut self, type_id: &str) -> Self {
-        if self.app.is_some() {
-            return self;
-        }
-        let stem = type_id.split('.').next().unwrap_or("").trim();
-        let words: Vec<&str> = stem
-            .split(['-', '_'])
-            .filter(|word| !word.is_empty())
-            .collect();
-        if words.is_empty() {
-            return self;
-        }
-        let title_word = |word: &str| {
-            let mut chars = word.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        };
-        let component = words
-            .iter()
-            .map(|word| title_word(word))
-            .collect::<String>();
-        let label = words
-            .iter()
-            .map(|word| title_word(word))
-            .collect::<Vec<_>>()
-            .join(" ");
-        self.app = Some(ActionApp {
-            id: format!("org.tilo.{component}"),
-            label,
-        });
-        self
-    }
-
     #[must_use]
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
         let purpose = purpose.into();
@@ -826,13 +787,8 @@ mod wire {
     #[derive(Default, Serialize, Deserialize)]
     #[serde(default)]
     pub(super) struct Entry {
-        /// Absent: the app the action's type names; `null`: none.
-        #[serde(
-            rename = "p",
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "present"
-        )]
-        app: Option<App>,
+        #[serde(rename = "p", skip_serializing_if = "Option::is_none")]
+        app: Option<ActionApp>,
         #[serde(rename = "r", skip_serializing_if = "Option::is_none")]
         resource: Option<Resource>,
         #[serde(rename = "i", skip_serializing_if = "Option::is_none")]
@@ -1035,35 +991,6 @@ mod wire {
         }
     }
 
-    /// An app named in the entry, or `null` for none.
-    #[derive(Serialize, Deserialize)]
-    #[serde(untagged)]
-    enum App {
-        Named(ActionApp),
-        None(()),
-    }
-
-    impl App {
-        fn of(app: Option<ActionApp>) -> Self {
-            app.map_or(Self::None(()), Self::Named)
-        }
-
-        fn into_app(self) -> Option<ActionApp> {
-            match self {
-                Self::Named(app) => Some(app),
-                Self::None(()) => None,
-            }
-        }
-    }
-
-    /// A field that is there, `null` included.
-    fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-        T: Deserialize<'de>,
-    {
-        T::deserialize(deserializer).map(Some)
-    }
 
     /// A field read as `None` when it does not parse, as [`Head`] reads it: an
     /// invoker written in an older form leaves the rest of its entry (the
@@ -1252,13 +1179,6 @@ mod wire {
         }
     }
 
-    /// The app a reader infers from the action's type.
-    fn inferred(action: Option<&crate::EncodedAction>) -> Option<ActionApp> {
-        ActionContext::default()
-            .with_inferred_app(&action?.type_id)
-            .app
-    }
-
     impl Entry {
         pub(super) fn of(context: &ActionContext) -> Self {
             let undoable = context.action.is_some() && context.kind == Some(ActionKind::Undoable);
@@ -1267,8 +1187,7 @@ mod wire {
                 .as_ref()
                 .and_then(|what| action_paths(context.action.as_ref(), what));
             Self {
-                app: (context.app != inferred(context.action.as_ref()))
-                    .then(|| App::of(context.app.clone())),
+                app: context.app.clone(),
                 resource: context.resource.as_ref().map(Resource::of),
                 item: context
                     .item
@@ -1305,9 +1224,7 @@ mod wire {
             let action = self.action.and_then(Action::into_encoded);
             let resource = self.resource.map(Resource::into_resource);
             ActionContext {
-                app: self
-                    .app
-                    .map_or_else(|| inferred(action.as_ref()), App::into_app),
+                app: self.app,
                 resource: resource.clone(),
                 item: self.item.map(|item| item.into_item(resource.as_ref())),
                 what: self.what.map(|what| {
@@ -2076,12 +1993,12 @@ mod tests {
                 action: Some(action),
                 gesture: Some(crate::ActionId::new()),
                 ..ActionContext::for_resource("doc:1", "word-processor.document", "Plan")
-                    .with_inferred_app("word-processor.edit")
+                    .with_app("org.tilo.WordProcessor", "Word Processor")
             };
             let message = entry.change_message().unwrap();
-            // The app the action's type names, an undoable kind and a path that
-            // is just the field are left out; the payload is inline JSON.
-            for derived in ["org.tilo.WordProcessor", "undoable", "path", "[123,"] {
+            // An undoable kind and a path that is just the field are left out;
+            // the payload is inline JSON.
+            for derived in ["undoable", "path", "[123,"] {
                 assert!(!message.contains(derived), "{derived} in {message}");
             }
             assert!(message.len() < 230, "{} B: {message}", message.len());
@@ -2266,19 +2183,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn ambient_context_fills_what_the_action_leaves_open;
-
-        phase generic_palette_context_infers_stable_app_ownership;
-        {
-            let context = ActionContext::for_resource("doc:1", "document", "Brief")
-                .with_inferred_app("word-processor.action");
-            assert_eq!(
-                context.app,
-                Some(ActionApp {
-                    id: "org.tilo.WordProcessor".into(),
-                    label: "Word Processor".into(),
-                })
-            );
-        }
 
         phase ambient_context_fills_intent_without_overwriting_the_action;
         {

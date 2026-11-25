@@ -1426,6 +1426,36 @@ impl Workspaces {
                 tracing::debug!(%workspace, %error, "a write made while the serving device was away did not go");
             }
         }
+        drop(away);
+        // What this device wrote before the link was made went to the device store, which keeps
+        // it: the queue above holds only this run's, so a copy that restarted before its link
+        // was made sends them from the store, as it sends the ones it made while away.
+        let workspaces = self.downgrade();
+        tokio::spawn(async move {
+            let Some(workspaces) = workspaces.upgrade() else {
+                return;
+            };
+            let Ok(retained) = workspaces.inner.records.retained(workspace).await else {
+                return;
+            };
+            let own = workspaces.inner.records.device();
+            for frame in retained {
+                if frame.author != own {
+                    continue;
+                }
+                let Ok(message) = NeighbourMsg::decode(&frame.body) else {
+                    continue;
+                };
+                // The workspace's own document's changes, which no record sync carries: a
+                // record's write is the link's own to bring.
+                if !matches!(message, NeighbourMsg::SyncResp { .. }) {
+                    continue;
+                }
+                if let Err(error) = link.send(message) {
+                    tracing::debug!(%workspace, %error, "a write this device kept for the serving device did not go");
+                }
+            }
+        });
     }
 
     /// Say `workspace`'s link to the device serving it is down, as when that device cannot be
@@ -1439,6 +1469,23 @@ impl Workspaces {
         {
             link.send_replace(false);
         }
+    }
+
+    /// Take this copy's link to the device serving `workspace` out, as a copy whose link is not
+    /// made yet holds none.
+    #[cfg(test)]
+    pub(super) fn take_member_link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
+        self.inner.member.links.lock().ok()?.remove(&workspace)
+    }
+
+    /// Give `workspace`'s copy the link `take_member_link` took out, as a copy makes it: what it
+    /// wrote meanwhile goes first.
+    #[cfg(test)]
+    pub(super) fn give_member_link(&self, workspace: WorkspaceId, link: DirectSync) {
+        if let Ok(mut links) = self.inner.member.links.lock() {
+            links.insert(workspace, link);
+        }
+        self.member_link_reached(workspace);
     }
 
     /// Waits until the member copy's link is up, for a write that must reach the device serving
@@ -1467,19 +1514,21 @@ impl Workspaces {
     /// Send `message`, this device's write, to the device serving `workspace_id`: now while the
     /// link is up, else the moment it is, after the writes made before it.
     pub(super) fn forward_member_document(&self, workspace_id: WorkspaceId, message: NeighbourMsg) {
-        let Some(link) = self.member_link(workspace_id) else {
-            return;
-        };
+        let link = self.member_link(workspace_id);
         // Under the queue's lock, as the link drains it when it comes up: no write slips between.
         let Ok(mut away) = self.inner.member.away.lock() else {
             return;
         };
-        if !self.member_up_now(workspace_id) {
+        // A write made before this copy's link is made is kept as one made while the device
+        // serving it is away: it goes, in the order it was written, once the link reaches it.
+        if link.is_none() || !self.member_up_now(workspace_id) {
             away.entry(workspace_id).or_default().push(message);
             return;
         }
         drop(away);
-        if let Err(error) = link.send(message) {
+        if let Some(link) = link
+            && let Err(error) = link.send(message)
+        {
             tracing::debug!(%workspace_id, %error, "a member write did not reach the serving device");
         }
     }

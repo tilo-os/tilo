@@ -11,7 +11,7 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 18] = [
+const VERBS: [Verb; 21] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
@@ -138,7 +138,61 @@ const VERBS: [Verb; 18] = [
         kind: ActionKind::Undoable,
         params: account_params,
     },
+    Verb {
+        id: person_accounts::CLOUD_ACCOUNTS,
+        label: "Read the accounts a cloud mount keeps",
+        check: "",
+        kind: ActionKind::Read,
+        params: no_params,
+    },
+    Verb {
+        id: person_accounts::CLOUD_CREDENTIAL,
+        label: "Sign a cloud mount in",
+        check: "",
+        kind: ActionKind::Read,
+        params: cloud_credential_params,
+    },
+    Verb {
+        id: person_accounts::REPORT_SYNC_VERB,
+        label: "Say how a cloud mount's sync went",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: report_sync_params,
+    },
 ];
+
+pub(super) fn cloud_credential_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("account", ParamType::Text, "The account's id."),
+        ActionParam::optional(
+            "rejected",
+            ParamType::Boolean,
+            "The mount refused the last sign-in, so its grant is renewed once more.",
+        ),
+    ]
+}
+
+pub(super) fn report_sync_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("account", ParamType::Text, "The account's id."),
+        ActionParam::required(
+            "health",
+            ParamType::Text,
+            "How its sync went: `healthy`, `offline`, `needs_sign_in`, `error`, `syncing` or \
+             `never`.",
+        ),
+        ActionParam::optional(
+            "signedIn",
+            ParamType::Boolean,
+            "Whether its person just signed in to it.",
+        ),
+        ActionParam::optional(
+            "message",
+            ParamType::Text,
+            "A short summary a person reads.",
+        ),
+    ]
+}
 
 fn begin_sign_in_params() -> Vec<ActionParam> {
     vec![

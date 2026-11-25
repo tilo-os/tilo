@@ -101,6 +101,62 @@ impl Daemon {
             Ok(answer.to_string())
         })
     }
+
+    /// Carry the outside call `pair` (JSON text of `{outside, tilo}`, or `null`: let go of the
+    /// one carried) into the workspace call, on this app's connection: awaits JSON text of
+    /// `{"answer": {}}` or `{"refused": {"error": {...}}}`. The first carry joins the call as the
+    /// app, which the workspace's grants decide.
+    fn carry_call<'py>(&self, py: Python<'py>, pair: &str) -> PyResult<Bound<'py, PyAny>> {
+        let pair: serde_json::Value = serde_json::from_str(pair)
+            .map_err(|error| PyValueError::new_err(format!("the pair: {error}")))?;
+        let calls = Arc::clone(&self.calls);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(answered(calls.carry_call(pair).await).to_string())
+        })
+    }
+
+    /// Say who is in the outside calls and where the app stands in them (JSON text of `{calls,
+    /// link, status}`): awaits JSON text of `{"answer": {}}` or `{"refused": {"error": {...}}}`.
+    fn report_call<'py>(&self, py: Python<'py>, report: &str) -> PyResult<Bound<'py, PyAny>> {
+        let report: serde_json::Value = serde_json::from_str(report)
+            .map_err(|error| PyValueError::new_err(format!("the report: {error}")))?;
+        let calls = Arc::clone(&self.calls);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(answered(calls.report_call(report).await).to_string())
+        })
+    }
+
+    /// Hand the workspace's call one Opus frame `speaker`, an outside account, said: `None`, or
+    /// JSON text of the refusal's body. Nothing waits for an answer, as nothing waits in a call.
+    fn hear_call(&self, speaker: String, opus: Vec<u8>) -> Option<String> {
+        self.calls
+            .hear_call(speaker, opus)
+            .err()
+            .map(|refused| refused.to_string())
+    }
+
+    /// What the workspace's call said since the last time, and where the device asks the app to
+    /// be, when that is new: JSON text of `{"answer": {"frames": [{speaker, opus, skipped}],
+    /// "asked": {call, status} | null}}`, `opus` as a list of bytes, or `{"refused": ...}`.
+    fn said_call(&self) -> String {
+        let said = self.calls.said_call().map(|said| {
+            serde_json::json!({
+                "frames": said.frames,
+                "asked": said
+                    .asked
+                    .map(|(call, status)| serde_json::json!({ "call": call, "status": status })),
+            })
+        });
+        answered(said).to_string()
+    }
+}
+
+/// A call's outcome as the SDK reads it: `{"answer": ...}` or `{"refused": ...}`.
+fn answered(outcome: Result<serde_json::Value, serde_json::Value>) -> serde_json::Value {
+    match outcome {
+        Ok(answer) => serde_json::json!({ "answer": answer }),
+        Err(refused) => serde_json::json!({ "refused": refused }),
+    }
 }
 
 /// Connect to the daemon's native endpoint ([`Calls::connect`]): the connection the launcher

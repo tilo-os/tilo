@@ -22,6 +22,6 @@ pub mod providers;
 pub mod service;
 pub mod volume;
 
-pub use account_source::{AccountSource, AccountsWatch, SessionAccounts};
+pub use account_source::{AccountSource, AccountsWatch, Ask, Asked, Daemon, SessionAccounts};
 pub use service::{CloudService, InProcessLauncher, Launcher, ProcessLauncher, ServiceConfig};
 pub use volume::{CloudVolume, VolumeConfig};

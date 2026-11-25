@@ -3,19 +3,17 @@
 //! posted into the same way, a batch of posts is one step a single undo takes back, and what
 //! the agent posted is held in the workspace's records.
 //!
-//! The daemon runs its workspace's apps (a tilolang app's windowless instance per app), so an
-//! open reaches the app, its records are read as either side of the app reads them, and its
+//! The daemon runs its workspace's apps (a tilolang app's windowless instance per app), so a
+//! test reaches the app, its records are read as either side of the app reads them, and its
 //! actions run. A test that lists or acts on Chat before that piece runs stops at the app's
-//! open. Chat starts empty, so the channel is one the test makes, as a person makes one.
+//! start. Chat starts empty, so the channel is one the test makes, as a person makes one.
 
 use serde_json::{Value, json};
-use tilo_actions::remote::ActionProvider as _;
-use tilo_actions::remote::{ActionCallError, ReceiptStatus, application_open_target};
 
 use crate::host;
 
 const CHAT: &str = ui::apps::CHAT;
-/// Chat's package under the tree's `apps/tl`, which the device installs to run it: the open a
+/// Chat's package under the tree's `apps/tl`, which the device installs to run it: the start a
 /// test makes reaches the app's windowless instance.
 const CHAT_PACKAGE: &str = "chat";
 /// The channel a test makes in the workspace's chat, and posts into.
@@ -72,22 +70,13 @@ pub(crate) async fn chat_holds(host: &host::Host, needle: &str) -> Result<bool, 
     Ok(false)
 }
 
-/// The person's app open in their workspace, as their desktop's window makes it.
+/// The person's app started in their workspace with no window, as the daemon runs its
+/// workspace's apps: its instance opens its own record there and answers its actions.
 pub(crate) async fn opens(host: &host::Host) -> Result<(), String> {
-    let target = application_open_target(host.workspace(), CHAT);
-    let receipt = host
-        .dispatch()
-        .invoke(
-            &host.caller(),
-            host::call(&target.provider, target.address, &json!({})),
-        )
+    host::start_app(host, CHAT)
         .await
-        .expect("the dispatch answers")
-        .map_err(|refused: ActionCallError| format!("{refused:?}"))?;
-    match &receipt.status {
-        ReceiptStatus::Completed { .. } => Ok(()),
-        other => Err(format!("{other:?}")),
-    }
+        .map(drop)
+        .map_err(|refused| format!("{refused:?}"))
 }
 
 /// What `result`, a tool's answer to a call that made something, names it by.
@@ -109,7 +98,7 @@ fn made(result: &Value) -> String {
 /// into it goes to.
 pub(crate) async fn made_channel(agent: &host::Agent, name: &str) -> String {
     let answer = agent
-        .tool(
+        .tool_structured(
             "tilo_do",
             &json!({"path": "so.tilo.chat#new_channel", "args": {"name": name}}),
         )
@@ -214,7 +203,7 @@ fn an_agent_posts_to_chat_a_persons_own_workspace_began_with() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
-            .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
+            .unwrap_or_else(|status| panic!("the person's workspace starts Chat: {status}"));
         let agent = host.agent();
         let channel = made_channel(&agent, CHANNEL).await;
 
@@ -250,7 +239,7 @@ fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
-            .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
+            .unwrap_or_else(|status| panic!("the person's workspace starts Chat: {status}"));
         let agent = host.agent();
         let channel = made_channel(&agent, CHANNEL).await;
 
@@ -299,7 +288,7 @@ fn the_chats_api_posts_are_held_in_the_workspaces_records() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
             .await
-            .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
+            .unwrap_or_else(|status| panic!("the person's workspace starts Chat: {status}"));
         let agent = host.agent();
         let channel = made_channel(&agent, CHANNEL).await;
         let key = host.key("Lounge");

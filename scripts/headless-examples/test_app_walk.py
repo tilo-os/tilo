@@ -210,6 +210,30 @@ class TheSessionAWalkStartsIn(unittest.TestCase):
         self.assertEqual(two[walk.LAN_NETWORKS_ENV], "127.0.0.1")
 
 
+class TheListTheMachinesDaemonEnforces(unittest.TestCase):
+    """The machine's files daemon enforces a list the session decides, and keeps what it was
+    told for its next start. In a walk that list lives in the walk's state, seeded from the
+    tree's shipped copy, as a device keeps its own at `/var/lib/tilo/fs-capabilities.json`:
+    kept in the tree, it would change the tree a build's provenance is of, and the next
+    session's prepare would refuse the build it was given."""
+
+    def test_the_walks_own_copy_is_kept_and_the_trees_stays_the_shipped_list(self):
+        import tempfile
+
+        shipped = walk.REPO / "os/usr/share/tilo/fs-capabilities.json"
+        before = shipped.read_bytes()
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root)
+            acl = walk.machine_acl(state)
+            self.assertEqual(acl, state / "files/fs-capabilities.json")
+            self.assertEqual(acl.read_bytes(), before, "the shipped list seeds the walk's own")
+            # What the session told the mount, kept for its next start.
+            decided = b'{"capabilities":[{"id":"decided"}]}'
+            acl.write_bytes(decided)
+            self.assertEqual(walk.machine_acl(state).read_bytes(), decided)
+        self.assertEqual(shipped.read_bytes(), before, "a walk never writes into the tree it walks")
+
+
 class ThePageItWrites(unittest.TestCase):
     def test_a_step_shows_both_versions_snapshots_and_what_each_found(self):
         import tempfile

@@ -1561,13 +1561,15 @@ mod tests {
         let mut peer = AutoCommit::load(&doc.save()).unwrap();
 
         let caller: &[u8] = b"maren-device-key";
+        // A caller names the app its change belongs to, as a record's host does.
+        let notes = ActionContext::default().with_app("org.tilo.Notes", "Notes");
         let mut transport = LocalTransport::new();
         let dispatched = invoke(
             &mut doc,
             &open(),
             &star(),
             None,
-            InvocationProvenance::caller(caller),
+            InvocationProvenance::caller(caller).within(&notes),
             &registry(),
             &mut transport,
         )

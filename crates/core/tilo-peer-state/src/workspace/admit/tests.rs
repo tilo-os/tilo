@@ -1578,3 +1578,119 @@ fn a_workspace_founded_again_under_its_id_replaces_nothing_its_host_holds() {
         "the base holds the workspace's authority as the document held it"
     );
 }
+
+/// An administrator keeping the workspace's history makes someone else an administrator, then
+/// the workspace's next base: a device keeping it adopts that base, whose governance the
+/// operation it adds says it changes, as it would take the operation in a batch. Handing the
+/// workspace to someone, which only its owner does, changes nothing in a base as in a batch.
+#[test]
+fn a_newer_base_an_administrator_made_carries_the_administrators_it_made() {
+    let (_, host) = owner_device();
+    let mut held = founded_by(&host, 1);
+    sign(
+        &mut held,
+        &owner_device(),
+        vec![
+            Change::AddMember {
+                person: person_id(admin_root()),
+                role: Role::Editor,
+            },
+            Change::Grant(roles::administrator_grant(
+                WORKSPACE,
+                &person_id(admin_root()),
+                Grantee::person(person_id(owner_root())),
+            )),
+        ],
+    );
+    held.commit();
+    let admin = admin_device();
+    let admin_key = hex::encode(admin.1.device_public_key);
+    let rebased_after = |edit: &dyn Fn(&mut AutoCommit)| {
+        let mut made = held.clone();
+        edit(&mut made);
+        made.commit();
+        all_changes(&super::super::base::rebase(&made, automerge::ActorId::random()).unwrap())
+    };
+    let based = |changes: Vec<Change>| {
+        rebased_after(&|made: &mut AutoCommit| sign(made, &admin, changes.clone()))
+    };
+    let adopted = |changes: &[Vec<u8>]| {
+        admit_workspace_changes(
+            WorkspaceAdmission {
+                before: Some(&held),
+                workspace: WORKSPACE,
+                source: member(&admin_key, admin_root()),
+                owner: &owner_root(),
+                administrators: &[admin_root()],
+                now_ns: crate::workspace::saved_shortcut::ns_at(NOW),
+                anchors: &[],
+            },
+            changes,
+        )
+    };
+
+    let made = adopted(&based(vec![
+        Change::AddMember {
+            person: person_id(newcomer_root()),
+            role: Role::Editor,
+        },
+        Change::Grant(roles::administrator_grant(
+            WORKSPACE,
+            &person_id(newcomer_root()),
+            Grantee::person(person_id(admin_root())),
+        )),
+    ]))
+    .unwrap_or_else(|failure| panic!("the administrator's base is adopted: {failure:?}"));
+    assert!(made.rebased, "the base replaces the document");
+    assert!(
+        crate::workspace::policy_of(&made.candidate, WORKSPACE)
+            .is_administrator(&person_id(newcomer_root())),
+        "the base carries the administrator it made"
+    );
+
+    let handed = adopted(&based(vec![Change::TransferOwnership {
+        person: person_id(newcomer_root()),
+    }]))
+    .unwrap_or_else(|failure| panic!("the administrator's base is kept: {failure:?}"));
+    let policy = crate::workspace::policy_of(&handed.candidate, WORKSPACE);
+    assert!(
+        policy.is_owner(&person_id(owner_root())) && !policy.is_owner(&person_id(newcomer_root())),
+        "an administrator's base does not hand the workspace to anyone"
+    );
+
+    // A base whose operation names a change its author has no grant for is refused whole, as
+    // is one changing the workspace's governance with no operation naming the change.
+    let (stranger_key, stranger) = rooted(0x71);
+    let reached = crate::members::heads(&crate::members::ops(&held));
+    let renamed_by_stranger = rebased_after(&|made: &mut AutoCommit| {
+        made.put(ROOT, "name", "Renamed").unwrap();
+        let op = governing(
+            &stranger,
+            &stranger_key,
+            reached.clone(),
+            &[GovernanceRow::Settings],
+        );
+        crate::members::put_op(made, &op).unwrap();
+    });
+    match adopted(&renamed_by_stranger) {
+        Err(AdmissionFailure::Refused(WorkspaceRefusal::Membership(refusal))) => assert!(
+            refusal.contains("is not the writer's"),
+            "the refusal names what the stranger changed: {refusal}"
+        ),
+        other => {
+            panic!("a base renamed by someone the workspace grants nothing is refused: {other:?}")
+        }
+    }
+    let renamed_unnamed = rebased_after(&|made: &mut AutoCommit| {
+        made.put(ROOT, "name", "Renamed").unwrap();
+    });
+    assert!(
+        matches!(
+            adopted(&renamed_unnamed),
+            Err(AdmissionFailure::Refused(
+                WorkspaceRefusal::GovernanceWriter
+            ))
+        ),
+        "a base renaming the workspace with no operation naming it is refused"
+    );
+}

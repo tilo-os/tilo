@@ -1,0 +1,191 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] composefs: boot entries survive a power cut
+
+bootc writes a boot entry, a UKI or a grub configuration and then fsyncs the
+directory that holds it. That makes the directory durable, not the file's
+contents: on the ESP's FAT filesystem the entry's data stays in the page
+cache until writeback, about half a minute later. A machine that loses power
+in that time (a board with no shutdown button, an update staged just before a
+power cut) boots with an entry that has a name and no contents, and from then
+on every `bootc status` fails on it ("Parsing bls config: Missing 'version'
+value"), so neither the next update nor a fallback can run.
+
+Each of those syncs now flushes the whole boot filesystem (syncfs), which
+writes the files' contents along with their directory. The boot filesystems
+are small and these syncs happen once per update, rollback or finalize.
+---
+--- a/crates/lib/src/bootc_composefs/backwards_compat/bcompat_boot.rs
++++ b/crates/lib/src/bootc_composefs/backwards_compat/bcompat_boot.rs
+@@ -26,7 +26,7 @@ use cap_std_ext::{cap_std::fs::Dir, dirext::CapStdExtDirExt};
+ use composefs_ctl::composefs_boot::bootloader::{EFI_ADDON_DIR_EXT, EFI_EXT};
+ use fn_error_context::context;
+ use ocidir::cap_std::ambient_authority;
+-use rustix::fs::{RenameFlags, fsync, renameat_with};
++use rustix::fs::{RenameFlags, syncfs, renameat_with};
+ 
+ /// Represents a pending rename operation to be executed atomically
+ #[derive(Debug)]
+@@ -244,7 +244,7 @@ fn create_staged_bls_entries(boot_dir: &Dir, entries: &Vec<(String, BLSConfig)>)
+         staged_entries.atomic_write(filename, new_entry.to_string().as_bytes())?;
+     }
+ 
+-    fsync(staged_entries.reopen_as_ownedfd()?).context("fsync")
++    syncfs(staged_entries.reopen_as_ownedfd()?).context("syncfs")
+ }
+ 
+ fn get_boot_type(storage: &Storage, cfs_cmdline: &ComposefsCmdline) -> Result<BootType> {
+@@ -303,7 +303,7 @@ fn handle_bls_conf(
+         .execute_transaction(&binaries_dir)
+         .context("Failed to execute EFI binary rename transaction")?;
+ 
+-    fsync(binaries_dir.reopen_as_ownedfd()?)?;
++    syncfs(binaries_dir.reopen_as_ownedfd()?)?;
+ 
+     let loader_dir = boot_dir.open_dir("loader").context("Opening loader dir")?;
+     rename_exchange_bls_entries(&loader_dir)?;
+@@ -384,7 +384,7 @@ pub(crate) async fn prepend_custom_prefix(
+                     .execute_transaction(&uki_dir)
+                     .context("Failed to execute EFI binary rename transaction")?;
+ 
+-                fsync(uki_dir.reopen_as_ownedfd()?)?;
++                syncfs(uki_dir.reopen_as_ownedfd()?)?;
+                 rename_exchange_user_cfg(&grub_dir)?;
+             }
+ 
+--- a/crates/lib/src/bootc_composefs/boot.rs
++++ b/crates/lib/src/bootc_composefs/boot.rs
+@@ -609,12 +609,12 @@ fn write_bls_boot_entries_to_disk(
+         )
+         .context("Writing initrd to path")?;
+ 
+-    // Can't call fsync on O_PATH fds, so re-open it as a non O_PATH fd
++    // Can't call syncfs on O_PATH fds, so re-open it as a non O_PATH fd
+     let owned_fd = entries_dir
+         .reopen_as_ownedfd()
+         .context("Reopen as owned fd")?;
+ 
+-    rustix::fs::fsync(owned_fd).context("fsync")?;
++    rustix::fs::syncfs(owned_fd).context("syncfs")?;
+ 
+     Ok(())
+ }
+@@ -953,7 +953,7 @@ pub(crate) fn setup_composefs_bls_boot(
+         .reopen_as_ownedfd()
+         .context("Reopening as owned fd")?;
+ 
+-    rustix::fs::fsync(owned_loader_entries_fd).context("fsync")?;
++    rustix::fs::syncfs(owned_loader_entries_fd).context("syncfs")?;
+ 
+     Ok(boot_digest)
+ }
+@@ -1102,12 +1102,12 @@ fn write_pe_to_esp(
+         .atomic_replace_with(pe_name, |writer| std::io::copy(&mut uki_reader, writer))
+         .context("Writing UKI")?;
+ 
+-    rustix::fs::fsync(
++    rustix::fs::syncfs(
+         pe_dir
+             .reopen_as_ownedfd()
+             .context("Reopening as owned fd")?,
+     )
+-    .context("fsync")?;
++    .context("syncfs")?;
+ 
+     Ok(boot_label)
+ }
+@@ -1161,7 +1161,7 @@ fn write_grub_uki_menuentry(
+             })
+             .with_context(|| format!("Writing to {user_cfg_name}"))?;
+ 
+-        rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
++        rustix::fs::syncfs(grub_dir.reopen_as_ownedfd()?).context("syncfs")?;
+ 
+         return Ok(());
+     }
+@@ -1191,7 +1191,7 @@ fn write_grub_uki_menuentry(
+         })
+         .with_context(|| format!("Writing to {user_cfg_name}"))?;
+ 
+-    rustix::fs::fsync(grub_dir.reopen_as_ownedfd()?).context("fsync")?;
++    rustix::fs::syncfs(grub_dir.reopen_as_ownedfd()?).context("syncfs")?;
+ 
+     Ok(())
+ }
+@@ -1264,7 +1264,7 @@ fn write_systemd_uki_config(
+     let esp_dir = esp_dir
+         .reopen_as_ownedfd()
+         .context("Reopening as owned fd")?;
+-    rustix::fs::fsync(esp_dir).context("fsync")?;
++    rustix::fs::syncfs(esp_dir).context("syncfs")?;
+ 
+     Ok(())
+ }
+--- a/crates/lib/src/bootc_composefs/delete.rs
++++ b/crates/lib/src/bootc_composefs/delete.rs
+@@ -132,7 +132,7 @@ fn remove_grub_menucfg_entry(id: &str, boot_dir: &Dir, deleting_staged: bool) ->
+         })
+         .with_context(|| format!("Writing to {USER_CFG_STAGED}"))?;
+ 
+-    rustix::fs::fsync(grub_dir.reopen_as_ownedfd().context("Reopening")?).context("fsync")?;
++    rustix::fs::syncfs(grub_dir.reopen_as_ownedfd().context("Reopening")?).context("syncfs")?;
+ 
+     rename_exchange_user_cfg(&grub_dir)
+ }
+--- a/crates/lib/src/bootc_composefs/finalize.rs
++++ b/crates/lib/src/bootc_composefs/finalize.rs
+@@ -15,7 +15,7 @@ use cap_std_ext::dirext::CapStdExtDirExt;
+ use composefs::generic_tree::{FileSystem, Stat};
+ use composefs_ctl::composefs;
+ use etc_merge::{Diff, compute_diff, merge_deployment_etc, traverse_etc};
+-use rustix::fs::fsync;
++use rustix::fs::syncfs;
+ 
+ use fn_error_context::context;
+ 
+@@ -194,7 +194,7 @@ fn finalize_staged_grub_uki(boot_fd: &Dir) -> Result<()> {
+     rename_exchange_user_cfg(&entries_dir)?;
+ 
+     let entries_dir = entries_dir.reopen_as_ownedfd()?;
+-    fsync(entries_dir).context("fsync")?;
++    syncfs(entries_dir).context("syncfs")?;
+ 
+     Ok(())
+ }
+--- a/crates/lib/src/bootc_composefs/rollback.rs
++++ b/crates/lib/src/bootc_composefs/rollback.rs
+@@ -5,7 +5,7 @@ use cap_std_ext::cap_std::fs::Dir;
+ use cap_std_ext::dirext::CapStdExtDirExt;
+ use fn_error_context::context;
+ use ocidir::cap_std::ambient_authority;
+-use rustix::fs::{AtFlags, RenameFlags, fsync, renameat_with};
++use rustix::fs::{AtFlags, RenameFlags, syncfs, renameat_with};
+ 
+ use crate::bootc_composefs::boot::{
+     BootType, FILENAME_PRIORITY_PRIMARY, FILENAME_PRIORITY_SECONDARY, primary_sort_key,
+@@ -48,7 +48,7 @@ pub(crate) fn rename_exchange_user_cfg(grub2_dir: &Dir) -> Result<()> {
+         .reopen_as_ownedfd()
+         .context("Reopening entries dir as owned fd")?;
+ 
+-    fsync(entries_dir).context("fsync entries dir")?;
++    syncfs(entries_dir).context("syncfs of the entries dir's filesystem")?;
+ 
+     Ok(())
+ }
+@@ -80,7 +80,7 @@ pub(crate) fn rename_exchange_bls_entries(entries_dir: &Dir) -> Result<()> {
+         .reopen_as_ownedfd()
+         .context("Reopening as owned fd")?;
+ 
+-    fsync(entries_dir).context("fsync")?;
++    syncfs(entries_dir).context("syncfs")?;
+ 
+     Ok(())
+ }
+@@ -203,7 +203,7 @@ fn rollback_composefs_entries(host: &Host, boot_dir: &Dir, bootloader: Bootloade
+         .context("Reopening as owned fd")?;
+ 
+     // Should we sync after every write?
+-    fsync(rollback_entries_dir).context("fsync")?;
++    syncfs(rollback_entries_dir).context("syncfs")?;
+ 
+     // Atomically exchange "entries" <-> "entries.rollback"
+     let dir = boot_dir.open_dir("loader").context("Opening loader dir")?;

@@ -15,7 +15,35 @@ function at(origin) {
   return String(origin || API);
 }
 
-/// Sends a message through a webhook, answering the message it made there.
+/// The name of the webhooks the bridge makes: one per bridged text channel.
+export const WEBHOOK_NAME = "Tilo";
+
+/// The webhooks of a channel. Discord answers a webhook's token only for the ones this bot made,
+/// so the bridge finds its own there again after a restart and keeps no token anywhere.
+export function channelWebhooks({ tokenItem, origin = API }, channel) {
+  return {
+    url: `${at(origin)}/channels/${channel}/webhooks`,
+    key: tokenItem,
+    method: "GET",
+    reason: "the webhook messages from the workspace are sent through",
+  };
+}
+
+/// Makes the bridge's webhook in a channel: what messages from the workspace are sent through,
+/// each under its author's name and picture.
+export function createWebhook({ tokenItem, origin = API }, channel) {
+  return {
+    url: `${at(origin)}/channels/${channel}/webhooks`,
+    key: tokenItem,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: WEBHOOK_NAME }),
+    reason: "the webhook messages from the workspace are sent through",
+  };
+}
+
+/// Sends a message through a webhook, answering the message it made there. `webhook` is the
+/// webhook's `id/token`, the address Discord executes it at.
 ///
 /// Files go as a multipart body: `payload_json` and one `files[n]` per file, each naming the
 /// content the workspace keeps by its BLAKE3 address. The vault reads those bytes from the
@@ -26,6 +54,9 @@ export function webhookSend({ webhook, tokenItem, origin = API }, op) {
     username: op.username,
     avatar_url: op.avatar_url ?? undefined,
     content: op.content,
+    // Only a user written as `<@id>` is pinged: never `@everyone`, `@here` or a role, whatever
+    // the workspace's text says.
+    allowed_mentions: ONLY_USERS,
     thread_id: op.thread ?? undefined,
     attachments: op.attachments.map((file, index) => ({
       id: index,
@@ -62,6 +93,9 @@ export function webhookSend({ webhook, tokenItem, origin = API }, op) {
   };
 }
 
+/// What a message from the workspace may ping in Discord: the users it names, nobody else.
+const ONLY_USERS = { parse: ["users"] };
+
 /// Edits a message the bridge sent.
 export function webhookEdit({ webhook, tokenItem, origin = API }, op) {
   return {
@@ -69,7 +103,7 @@ export function webhookEdit({ webhook, tokenItem, origin = API }, op) {
     key: tokenItem,
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: op.content }),
+    body: JSON.stringify({ content: op.content, allowed_mentions: ONLY_USERS }),
     reason: "an edit made in the workspace",
   };
 }

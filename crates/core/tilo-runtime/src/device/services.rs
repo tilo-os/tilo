@@ -5075,6 +5075,11 @@ impl RuntimeActionProvider {
             Some(&self.workspace),
             (Arc::clone(&session.provider), runs_as.clone()),
         );
+        // A device's cloud mount is handed its account's sign-in in the receipt alone: what
+        // is kept of the call says only that it was given.
+        if tilo_actions::remote::person_accounts::is_cloud_credential(&request.target) {
+            self.invocations.keep_secret(&request.invocation);
+        }
         let records = Arc::clone(&self.invocations);
         session
             .provider

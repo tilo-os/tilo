@@ -405,6 +405,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
         app.hear_call(CallAudio {
             speaker: "7001".into(),
             opus: vec![1, 2, 3],
+            skipped: 0,
         })
         .unwrap();
         grace
@@ -439,6 +440,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
         app.hear_call(CallAudio {
             speaker: "7001".into(),
             opus: vec![4, 4],
+            skipped: 0,
         })
         .unwrap();
         grace.pump();
@@ -490,6 +492,7 @@ fn an_app_without_the_grant_is_refused_its_call() {
     app.hear_call(CallAudio {
         speaker: "7001".into(),
         opus: vec![1],
+        skipped: 0,
     })
     .unwrap();
     app.report_call(SaidReport::default())

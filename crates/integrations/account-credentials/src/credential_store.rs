@@ -1,7 +1,8 @@
 //! The credential store: the one place that turns a sealed long-lived grant into a
-//! short-lived credential, for a drive this process reads (an access token or session
-//! headers, made in memory: [`DriveSignIn`]) and for Mail (an access token for `XOAUTH2`). A `WebDAV` or
-//! Nextcloud password is no grant of this device's: it is the workspace's vault entry's.
+//! short-lived credential, for a drive that reads it (an access token or session
+//! headers, made in memory: [`CredentialStore::drive_credential`]) and for Mail (an access token
+//! for `XOAUTH2`). A `WebDAV` or Nextcloud password is no grant of this device's: it is the
+//! workspace's vault entry's.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1094,45 +1095,55 @@ impl CredentialStore {
         Ok(tokens)
     }
 
-    /// What `account`'s drive signs in with now, made in memory from the grant this device
-    /// keeps: an `OAuth` account's current access token, renewed when it is due (or when
-    /// `force`, after the drive refused it), or an iCloud account's session headers. Nothing of
-    /// it is written anywhere but the renewed grant, back into the vault. A grant the provider
-    /// no longer takes is [`CredentialError::NeedsAuthentication`]: its person signs in again.
+    /// What `account`'s drive signs in with, from the sign-in `secret` the workspace's vault
+    /// keeps for it, and the secret to keep in its place where it was renewed: an `OAuth`
+    /// account's current access token, renewed when it is due (or when `force`, after the drive
+    /// refused it), or an iCloud account's session headers. No vault is opened here: whoever
+    /// keeps the account keeps the renewed secret too. A grant the provider no longer takes is
+    /// [`CredentialError::NeedsAuthentication`]: its person signs in again.
     ///
     /// # Errors
-    /// The account is disabled, signs in with no grant here, or its grant was not renewed.
-    pub fn file_credential(
+    /// The account is disabled, signs in with no grant, or its grant was not renewed.
+    pub fn drive_credential(
         &self,
         account: &Account,
+        secret: &Secret,
         force: bool,
-    ) -> Result<cloud_source::Credential, CredentialError> {
-        let id = &account.id;
+    ) -> Result<DriveCredential, CredentialError> {
         if !account.enabled {
             return Err(CredentialError::Account("account is disabled".into()));
         }
         if matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE) {
-            // Its password is the workspace's vault entry's, which the session releases to the
-            // cloud service in memory: no grant of this device's signs it in.
+            // Its password is the workspace's vault entry's, which the accounts provider
+            // releases where the account is: no grant signs it in.
             return Err(CredentialError::NeedsAuthentication);
         }
-        let mut credentials = self.credentials()?;
-        let secret = credentials
-            .get(id)
-            .ok_or(CredentialError::NeedsAuthentication)?;
-        let credential = if let Some(cloud) = OAuthCloud::from_type_id(account.type_id.as_str()) {
-            let tokens = self.fresh_oauth_tokens(&mut credentials, id, cloud.oauth_use(), force)?;
-            cloud_source::Credential::Bearer {
-                token: Zeroizing::new(tokens.access_token.clone()),
-                expires: expires_at(tokens.expires_at()),
-            }
+        let (credential, renewed) = if let Some(cloud) =
+            OAuthCloud::from_type_id(account.type_id.as_str())
+        {
+            let renewing = self.renew_grant(secret, cloud.oauth_use(), force)?;
+            let Some(tokens) = renewing.tokens else {
+                // The provider will not renew it any more: what is left is kept so its
+                // person is asked to sign in again.
+                return Ok(DriveCredential {
+                    credential: None,
+                    renewed: renewing.keep,
+                });
+            };
+            (
+                Some(cloud_source::Credential::Bearer {
+                    token: Zeroizing::new(tokens.access_token.clone()),
+                    expires: expires_at(tokens.expires_at()),
+                }),
+                renewing.keep,
+            )
         } else if account.type_id.as_str() == ICLOUD_DRIVE_TYPE {
             let Some(Grant::Icloud {
                 apple_id,
                 session,
                 copied,
                 copy_origin,
-            }) = grant_of(&secret)
+            }) = grant_of(secret)
             else {
                 return Err(CredentialError::NeedsAuthentication);
             };
@@ -1145,21 +1156,27 @@ impl CredentialStore {
                     ICloudAuthError::Offline => CredentialError::Offline,
                     other => CredentialError::SignIn(other.to_string()),
                 })?;
-            credentials.put(
-                id,
-                &icloud_secret_with_provenance(&apple_id, &renewed, copied, copy_origin),
-            );
-            credentials.try_save().map_err(CredentialError::Storage)?;
-            cloud_source::Credential::Session {
-                headers: headers.headers,
-                expires: expires_at(headers.expires_unix),
-            }
+            (
+                Some(cloud_source::Credential::Session {
+                    headers: headers.headers,
+                    expires: expires_at(headers.expires_unix),
+                }),
+                Some(icloud_secret_with_provenance(
+                    &apple_id,
+                    &renewed,
+                    copied,
+                    copy_origin,
+                )),
+            )
         } else {
             return Err(CredentialError::Account(
                 "this account type is not a file provider".into(),
             ));
         };
-        Ok(credential)
+        Ok(DriveCredential {
+            credential,
+            renewed,
+        })
     }
 
     pub fn revoke(&self, account: &Account, secret: &Secret) {
@@ -1218,41 +1235,23 @@ fn expires_at(unix: Option<u64>) -> Option<std::time::SystemTime> {
     unix.and_then(|secs| std::time::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
 }
 
-/// What a drive of `account` signs in with, made by the credential store in this process each
-/// time the drive asks ([`CredentialStore::file_credential`]): renewed when the drive refused
-/// the last one.
-pub struct DriveSignIn {
-    store: CredentialStore,
-    account: Account,
-    rejected: std::sync::atomic::AtomicBool,
+/// A drive's credential, and the sign-in to keep in its place where it was renewed
+/// ([`CredentialStore::drive_credential`]). Prints neither.
+pub struct DriveCredential {
+    /// What the drive signs in with now; none where the provider will not renew the grant any
+    /// more, and its person signs in again.
+    pub credential: Option<cloud_source::Credential>,
+    /// What to keep where the secret read was, when the grant changed: a renewed one, or
+    /// the emptied one a provider will not renew any more.
+    pub renewed: Option<Secret>,
 }
 
-impl DriveSignIn {
-    #[must_use]
-    pub fn new(store: CredentialStore, account: Account) -> Self {
-        Self {
-            store,
-            account,
-            rejected: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-}
-
-impl cloud_source::CredentialSource for DriveSignIn {
-    fn credential(&self) -> cloud_source::Result<cloud_source::Credential> {
-        let force = self
-            .rejected
-            .swap(false, std::sync::atomic::Ordering::SeqCst);
-        self.store
-            .file_credential(&self.account, force)
-            .map_err(|error| match error {
-                CredentialError::Offline => cloud_source::Error::Offline,
-                _ => cloud_source::Error::Unauthorized,
-            })
-    }
-
-    fn rejected(&self) {
-        self.rejected
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+impl std::fmt::Debug for DriveCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DriveCredential")
+            .field("credential", &self.credential)
+            .field("renewed", &self.renewed.is_some())
+            .finish()
     }
 }

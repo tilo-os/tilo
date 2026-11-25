@@ -88,6 +88,19 @@ pub const SIGN_INS: &str = "sign-ins";
 /// the workspace once ([`SetFilesMode`]), answering the accounts as
 /// [`MailAccounts`].
 pub const SET_FILES_MODE: &str = "set-files-mode";
+/// The cloud-storage accounts the workspace keeps, as a device's cloud mount reads
+/// them: each account's settings, and whether its person signed in, never its secret
+/// (a [`CloudAccounts`]). Answered only to the person on a connection of their own.
+pub const CLOUD_ACCOUNTS: &str = "cloud-accounts";
+/// What a device's cloud mount for `account` signs in with now ([`CloudCredentialAt`]),
+/// answered as a [`CloudCredential`] in the receipt alone: its password, or the access
+/// token of the grant the workspace's vault keeps, renewed when it was due or when the
+/// mount refused the last one. The renewed grant is kept in the workspace's vault, never
+/// by the mount. Answered only to the person on a connection of their own.
+pub const CLOUD_CREDENTIAL: &str = "cloud-credential";
+/// How a cloud mount's sync of `account` went on this device ([`SyncReport`]), as every
+/// member's Settings reads it: what its own device could not say itself.
+pub const REPORT_SYNC_VERB: &str = "report-sync";
 /// Sync a cloud-storage account now, cutting a failure's wait short and trying
 /// an account whose mount could not start ([`SyncControl`]).
 pub const SYNC_NOW: &str = "sync-now";
@@ -147,6 +160,10 @@ pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
         ),
         (RESOURCE, SET_CALENDARS) => (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT]),
         (RESOURCE, SET_FILES_MODE) => (&[], &[SAVE_ACCOUNT]),
+        // A mount asking for its account's sign-in writes down the use, as every sign-in to a
+        // server with what the workspace's vault keeps does; what it reports is the record's.
+        (RESOURCE, CLOUD_CREDENTIAL) => (&[KEEP_USES], &[]),
+        (RESOURCE, REPORT_SYNC_VERB) => (&[], &[REPORT_SYNC]),
         _ => (&[], &[]),
     };
     vault
@@ -593,6 +610,119 @@ pub struct SetFilesMode {
     pub account: String,
     /// `sync` or `import`.
     pub mode: String,
+}
+
+/// One cloud-storage account as a device's mount reads it ([`CLOUD_ACCOUNTS`]): its
+/// settings, without its secret.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccount {
+    /// The account as the workspace keeps it: its id, type and settings, which say
+    /// where its mount goes and how.
+    pub account: serde_json::Value,
+    /// Its person signed in to it, and no device reported a sync since.
+    #[serde(default)]
+    pub signed_in: bool,
+}
+
+/// The cloud-storage accounts one workspace keeps ([`CLOUD_ACCOUNTS`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAccounts {
+    pub accounts: Vec<CloudAccount>,
+}
+
+/// A cloud mount's ask for what its account signs in with ([`CLOUD_CREDENTIAL`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudCredentialAt {
+    /// The account's id, as [`CLOUD_ACCOUNTS`] names it.
+    pub account: String,
+    /// The mount refused the credential it was handed, so its grant is renewed once
+    /// more rather than read as it is.
+    #[serde(default)]
+    pub rejected: bool,
+}
+
+/// What a cloud mount signs in with ([`CLOUD_CREDENTIAL`]): one of a password, an
+/// `OAuth` access token, or an iCloud web session's headers.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudCredential {
+    pub kind: CloudCredentialKind,
+    /// The sign-in name a password belongs to; empty for a token.
+    #[serde(default)]
+    pub username: String,
+    /// The password or token itself. It prints nothing, and nothing keeps it.
+    pub secret: String,
+    /// A web session's headers, each sent with every request.
+    #[serde(default)]
+    pub headers: Vec<CloudHeader>,
+    /// When a token or session stops being accepted, in milliseconds since the Unix
+    /// epoch, where its provider says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+impl std::fmt::Debug for CloudCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CloudCredential")
+            .field("kind", &self.kind)
+            .field("username", &self.username)
+            .field("headers", &self.headers.len())
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a cloud mount signs in with ([`CloudCredential`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CloudCredentialKind {
+    Basic,
+    Bearer,
+    Session,
+}
+
+/// One header of a cloud mount's web session ([`CloudCredential`]).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudHeader {
+    pub name: String,
+    /// The header's value, a cookie or a trust token. It prints nothing.
+    pub value: String,
+}
+
+impl std::fmt::Debug for CloudHeader {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CloudHeader")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How a cloud mount's sync of one account went on this device ([`REPORT_SYNC_VERB`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReport {
+    pub account: String,
+    /// The health, as the workspace's `SyncHealth` words it.
+    pub health: String,
+    /// Its person just signed in to it.
+    #[serde(default)]
+    pub signed_in: bool,
+    /// A short summary a person reads, never a server's own words.
+    #[serde(default)]
+    pub message: String,
+}
+
+/// Whether `target` is the cloud mount's ask for its account's credential, whose answer
+/// is a secret ([`crate::SECRET_ANSWER_TAG`]).
+#[must_use]
+pub fn is_cloud_credential(asked: &RemoteActionTarget) -> bool {
+    *asked == target(CLOUD_CREDENTIAL)
 }
 
 /// One cloud-storage account whose sync is controlled ([`SYNC_NOW`],

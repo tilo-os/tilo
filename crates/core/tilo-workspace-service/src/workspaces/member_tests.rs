@@ -867,6 +867,67 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
     serving.shutdown().await;
 }
 
+/// A member's own change of the workspace, saved before its link to the device serving the
+/// workspace is made, is kept rather than dropped: the serving device holds it once the link is
+/// there, as it holds one written while that device was away.
+#[tokio::test]
+async fn a_change_saved_before_the_link_is_made_reaches_the_serving_device() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Linked", 49).await;
+    let workspace = created.workspace.clone();
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+
+    // The link this copy writes over is not made yet, as it is not while the copy is still
+    // taking the workspace in.
+    let link = copies
+        .take_member_link(workspace_id)
+        .expect("the copy has a link to take out");
+    let shortcut = crate::workspaces::fixtures::on_issue_change();
+    let id = shortcut.id.clone();
+    copies
+        .change_own_shortcuts(
+            &workspace,
+            tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+        )
+        .await
+        .expect("the person saves their shortcut while no link is made");
+    assert!(
+        !serving_shortcuts(&serving, &workspace).await.contains(&id),
+        "the serving device holds a shortcut this copy has not sent"
+    );
+
+    copies.give_member_link(workspace_id, link);
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    while !serving_shortcuts(&serving, &workspace).await.contains(&id) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the serving device never took the shortcut this copy saved before its link was made"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
+/// The ids of the shortcuts `host` holds of `workspace`.
+async fn serving_shortcuts(host: &TestHost, workspace: &str) -> Vec<String> {
+    host.workspaces()
+        .described()
+        .await
+        .iter()
+        .filter(|held| held.id().to_string() == workspace)
+        .flat_map(|held| held.shortcuts.iter().map(|saved| saved.id().to_owned()))
+        .collect()
+}
+
 /// A write made while this device is still taking a workspace in (it joins, or opens the
 /// workspace as it starts) waits rather than being refused: the person hears nothing, and the same
 /// write, made again once the device holds the workspace, is kept and reaches its serving device.

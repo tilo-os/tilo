@@ -13,6 +13,7 @@ import {
   reactToDiscord,
   threadToDiscord,
   mapping,
+  webhookChannel,
   published,
   mappings,
   byThisBridge,
@@ -32,6 +33,9 @@ import {
   webhookSend,
   webhookEdit,
   webhookDelete,
+  channelWebhooks,
+  createWebhook,
+  WEBHOOK_NAME,
   react,
   startThread,
   whyRefused,
@@ -511,6 +515,7 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
       });
     }
   }
+  const hooks = webhooksOf(calls, log);
   for await (const event of calls.watch()) {
     if (stop.stopped) break;
     if (byThisBridge(event)) continue;
@@ -521,7 +526,7 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
       const target = changeTarget(account, resource);
       if (!target) continue;
       try {
-        await carryChange({ calls, account, event, target, known, log });
+        await carryChange({ calls, account, event, target, known, hooks, log });
       } catch (error) {
         log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
       }
@@ -530,8 +535,10 @@ export async function carryFromWorkspace({ calls, current, log = () => {}, stop 
 }
 
 /// What one change of a bridged conversation's message means, done on Discord's side.
-async function carryChange({ calls, account, event, target, known, log }) {
+async function carryChange({ calls, account, event, target, known, hooks, log }) {
   const there = known.get(target.message) ?? null;
+  // The webhook the conversation's messages go through, made in Discord the first time one does.
+  const webhook = await hooks.of(account, target.conversation);
   // What the change is says whether the message is gone, which needs no read: a record can still
   // read while the change that removed it arrives.
   const fields = event.what === "removed" ? null : await readMessage(calls, target);
@@ -543,7 +550,7 @@ async function carryChange({ calls, account, event, target, known, log }) {
       if (!(await carries(calls, "delete_there", op, log))) continue;
       await calls.webCall(
         webhookDelete(
-          { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+          { webhook, tokenItem: account.token_item, origin: account.api_origin },
           op,
         ),
       );
@@ -571,7 +578,7 @@ async function carryChange({ calls, account, event, target, known, log }) {
       if (!(await carries(calls, "send_there", op, log))) continue;
       const answer = await calls.webCall(
         webhookSend(
-          { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+          { webhook, tokenItem: account.token_item, origin: account.api_origin },
           op,
         ),
       );
@@ -626,7 +633,7 @@ async function carryChange({ calls, account, event, target, known, log }) {
       if (!(await carries(calls, "edit_there", op, log))) continue;
       await calls.webCall(
         webhookEdit(
-          { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+          { webhook, tokenItem: account.token_item, origin: account.api_origin },
           op,
         ),
       );
@@ -651,6 +658,67 @@ async function carryChange({ calls, account, event, target, known, log }) {
       there.emoji.delete(emoji);
     }
   }
+}
+
+/// The bridge's webhooks, one per bridged text channel, by the conversation whose messages go
+/// through it: found among the channel's webhooks the bot made, else made there. Discord answers
+/// a webhook's token only to the bot that made it, so the token is held in this process alone,
+/// never written down, and read back from Discord after a restart; the record joins the
+/// conversation to the webhook's id.
+export function webhooksOf(calls, log = () => {}) {
+  const held = new Map();
+  return {
+    /// The `id/token` a message of `conversation` is sent through, or `null` when the
+    /// conversation reaches no text channel or Discord made no webhook.
+    async of(account, conversation) {
+      const place = webhookChannel(account, conversation);
+      if (!place) return null;
+      if (held.has(place.channel)) return held.get(place.channel);
+      const rest = { tokenItem: account.token_item, origin: account.api_origin };
+      let hook = (listedOf(await calls.webCall(channelWebhooks(rest, place.channel))) ?? []).find(
+        (made) => made?.name === WEBHOOK_NAME && typeof made?.token === "string",
+      );
+      if (!hook) {
+        const op = { channel: place.channel, tilo: place.tilo };
+        if (!(await carries(calls, "create_webhook", op, log))) return null;
+        hook = listedOf(await calls.webCall(createWebhook(rest, place.channel)));
+      }
+      if (typeof hook?.id !== "string" || typeof hook?.token !== "string") {
+        log("Discord made no webhook for a bridged channel: its messages from here wait");
+        return null;
+      }
+      const address = `${hook.id}/${hook.token}`;
+      held.set(place.channel, address);
+      if (mapping(account, "webhook", place.tilo)?.discord !== hook.id) {
+        await calls.do({
+          app: SELF,
+          action: "map",
+          args: { kind: "webhook", tilo: place.tilo, discord: hook.id, origin: "tilo" },
+        });
+        // What this change plans reads the record it read: the webhook is in it from now on.
+        const entry = { kind: "webhook", tilo: place.tilo, discord: hook.id, origin: "tilo" };
+        if (Array.isArray(account.map)) {
+          account.map = [...account.map.filter((m) => !(m.kind === "webhook" && m.tilo === place.tilo)), entry];
+        } else {
+          account.map = { ...(account.map ?? {}), [`webhook:${place.tilo}`]: entry };
+        }
+      }
+      return address;
+    },
+  };
+}
+
+/// The JSON a web call answered: its body read, or `null`.
+function listedOf(answer) {
+  let body = answer?.body ?? answer;
+  if (typeof body === "string") {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+  return body ?? null;
 }
 
 /// A message's record as the workspace reads it (`chat/root-…/c1/messages/m1`), or `null` for

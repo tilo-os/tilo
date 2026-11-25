@@ -19,7 +19,7 @@ itself.
 # The SDK's version, which its transports name themselves with: set before they are imported.
 __version__ = "0.1.0"
 
-from ._transport import Transport, DaemonTransport, KeyTransport
+from ._transport import Transport, DaemonTransport, KeyTransport, CallAsk, CallFrame
 from ._client import AccountKeys, AsyncTilo, Tilo, Workspaces
 from ._endpoint import InvocationGroup
 from ._errors import (
@@ -62,6 +62,7 @@ from ._workspace import (
     InvocationOpening,
     Members,
     Vault,
+    CallLane,
     Workspace,
     WorkspaceKeys,
 )
@@ -108,6 +109,9 @@ __all__ = [
     "Unreachable",
     "Usage",
     "Vault",
+    "CallLane",
+    "CallAsk",
+    "CallFrame",
     "Workspace",
     "WorkspaceExport",
     "WorkspaceInfo",

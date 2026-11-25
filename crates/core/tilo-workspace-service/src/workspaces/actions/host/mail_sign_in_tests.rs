@@ -965,3 +965,128 @@ async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
     assert_eq!(account["paused"], json!(true));
     assert_eq!(account["filesMode"], json!("import"));
 }
+
+/// A request of the accounts' action `action`, as the daemon's own connection makes one.
+fn cloud_request(action: &str, argument: Value) -> InvokeRequest {
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: person_accounts::target(action),
+        argument: match argument {
+            Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
+            _ => InvokeArgument::None,
+        },
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// A cloud mount on this computer is handed its account's sign-in by the workspace that keeps
+/// it, as the person's own connection, and no page of theirs is: the secret never crosses an
+/// app's or a page's connection.
+#[tokio::test]
+async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
+    use tilo_actions::remote::Caller;
+    use zeroize::Zeroizing;
+
+    let setup = Setup::new().await;
+    let workspace = setup.workspace.to_string();
+    let person = hex::encode(setup.owner.user_public_key);
+    let kept_by = caller(&setup.device);
+    let place = accounts::vault_items::Place::parse("https://dav.example.test").unwrap();
+    let reference = setup
+        .workspaces
+        .keep_account_password(
+            &workspace,
+            (&kept_by, None),
+            None,
+            crate::workspaces::account_logins::AccountLogin {
+                title: "Work files".into(),
+                username: "ada".into(),
+                places: vec![place],
+            },
+            Zeroizing::new("dav-password".to_owned()),
+        )
+        .await
+        .expect("the workspace's vault keeps the account's password");
+    let mut account = accounts::Account::new("files-1", "webdav");
+    account.display_name = "Work files".into();
+    account.config = json!({"server_url": "https://dav.example.test", "username": "ada"});
+    accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
+    setup
+        .workspaces
+        .keep_workspace_account((&workspace, kept_by.acting(), None), &account)
+        .await
+        .expect("the workspace keeps the account");
+
+    let own = Caller::own_person(person).in_workspace(workspace.clone());
+    let listed = setup
+        .workspaces
+        .person_accounts_invoke(
+            Some(setup.workspace),
+            &own,
+            None,
+            &cloud_request(person_accounts::CLOUD_ACCOUNTS, Value::Null),
+        )
+        .await
+        .expect("the mount reads the accounts it keeps");
+    assert_eq!(listed["accounts"][0]["account"]["id"], json!("files-1"));
+    assert_eq!(listed["accounts"][0]["account"]["type_id"], json!("webdav"));
+
+    let credential = setup
+        .workspaces
+        .person_accounts_invoke(
+            Some(setup.workspace),
+            &own,
+            None,
+            &cloud_request(
+                person_accounts::CLOUD_CREDENTIAL,
+                json!({"account": "files-1"}),
+            ),
+        )
+        .await
+        .expect("the mount is handed the account's password");
+    assert_eq!(credential["kind"], json!("basic"));
+    assert_eq!(credential["username"], json!("ada"));
+    assert_eq!(credential["secret"], json!("dav-password"));
+
+    // A page of the member's is not a connection of their own: the same ask there is refused.
+    let refused = setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::CLOUD_CREDENTIAL,
+            json!({"account": "files-1"}),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(ActionCallError::Refused { .. })),
+        "a page is handed no sign-in: {refused:?}"
+    );
+
+    setup
+        .workspaces
+        .person_accounts_invoke(
+            Some(setup.workspace),
+            &own,
+            None,
+            &cloud_request(
+                person_accounts::REPORT_SYNC_VERB,
+                json!({"account": "files-1", "health": "healthy"}),
+            ),
+        )
+        .await
+        .expect("the mount reports its sync");
+    let held = setup
+        .workspaces
+        .workspace_accounts(&workspace)
+        .await
+        .unwrap();
+    assert_eq!(
+        held.sync_of("files-1").map(|sync| sync.health),
+        Some(accounts::SyncHealth::Healthy)
+    );
+}

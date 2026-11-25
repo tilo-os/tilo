@@ -299,16 +299,33 @@ def device_identity_gid(account) -> int:
         return account.pw_gid
 
 
+def machine_acl(state: Path) -> Path:
+    """The capability list the machine's files daemon enforces, in this walk's state: the tree's
+    shipped list seeds it, as it seeds a device's ``/var/lib/tilo/fs-capabilities.json``.
+
+    The session decides the list its mount enforces and the daemon keeps what it was told for
+    the mount's next start (``crates/core/fs/src/caps_file.rs``). Pointing ``--acl`` at the
+    tree's own copy would write the session's list into the tree a build's provenance is of
+    (``dist/dev/build-provenance.sh``), and the next session's prepare would refuse the build it
+    was given; a list kept here belongs to the device the walk is. ``dist/dev/nested-session.sh``
+    keeps its list the same way."""
+    path = state / "files/fs-capabilities.json"
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / "os/usr/share/tilo/fs-capabilities.json", path)
+    return path
+
+
 class MachineFiles:
     """The machine's files daemon, started the way a device's service starts it.
 
     The walk's session runs as the person, as a seat's does, and a FUSE mount by an ordinary
     account is refused where the machine gives the person no fusermount3 privilege. So the
     daemon is the machine's, as it is on a device: root, mounting the person's workspace at
-    ``/var/workspace`` with them as its owner and the shipped capability list in force, its
-    document-media socket group-connectable by the launcher. The session is told
-    ``TILO_SESSION_MACHINE_FILES`` and uses what this serves instead of starting one of its
-    own (``dist/dev/nested-session.sh``).
+    ``/var/workspace`` with them as its owner and the device's capability list in force, seeded
+    from the shipped one (``machine_acl``), its document-media socket group-connectable by the
+    launcher. The session is told ``TILO_SESSION_MACHINE_FILES`` and uses what this serves
+    instead of starting one of its own (``dist/dev/nested-session.sh``).
 
     The machine's start waits for the person's identity, which the session mints as it comes
     up: the daemon presents that identity, so it starts beside the session and the session
@@ -399,7 +416,7 @@ class MachineFiles:
             "--cache-dir", "/var/cache/quick-fs",
             "--storage-sock", "/run/tilo/fs-storage/storage.sock",
             "--blob-sock", str(self.BLOB_SOCKET),
-            "--acl", str(REPO / "os/usr/share/tilo/fs-capabilities.json"),
+            "--acl", str(machine_acl(self.state)),
             "--member", "person:local",
             "--backend", "fuse",
             "--native-owner", f"{self.account.pw_uid}:{self.account.pw_gid}",

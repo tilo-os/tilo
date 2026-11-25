@@ -517,16 +517,21 @@ impl Watch {
 #[derive(Default)]
 struct History {
     all: Option<Vec<Version>>,
-    first: Option<Option<Version>>,
-    last: Option<Option<Version>>,
+    first: Option<End>,
+    last: Option<End>,
 }
+
+/// One end of a history, as it was read: its version, or none for a history with no changes.
+struct End(Option<Version>);
 
 impl History {
     fn end(&self, last: bool) -> Option<&Option<Version>> {
-        if last { &self.last } else { &self.first }.as_ref()
+        if last { &self.last } else { &self.first }
+            .as_ref()
+            .map(|end| &end.0)
     }
 
-    fn end_mut(&mut self, last: bool) -> &mut Option<Option<Version>> {
+    fn end_mut(&mut self, last: bool) -> &mut Option<End> {
         if last {
             &mut self.last
         } else {
@@ -5523,7 +5528,7 @@ impl Store for ResourceStore {
             .borrow_mut()
             .entry(id_of(at))
             .or_default()
-            .end_mut(last) = Some(end.clone());
+            .end_mut(last) = Some(End(end.clone()));
         Ok(end)
     }
 

@@ -63,7 +63,7 @@ export interface Daemon {
    * to be, when that is new. Throws the refusal's body, as JSON, on a connection that is no app's.
    */
   saidCall(): {
-    frames: { speaker: string; opus: Buffer }[];
+    frames: { speaker: string; opus: Buffer; skipped: number }[];
     asked?: { call?: string | null; status?: string | null } | null;
   };
 }

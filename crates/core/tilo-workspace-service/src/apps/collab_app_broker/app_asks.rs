@@ -347,11 +347,15 @@ impl AppBrokerState {
                 }))
             }
             RemoteActionMessage::Cancel { invocation } => {
-                let at = {
-                    let calls = asks.calls.lock_recover();
-                    let kept = calls.by_id.get(invocation).filter(|kept| ours(kept))?;
-                    kept.waiting.as_ref().map(|(_, at)| at.clone())
-                };
+                let at = asks
+                    .calls
+                    .lock_recover()
+                    .by_id
+                    .get(invocation)
+                    .filter(|kept| ours(kept))?
+                    .waiting
+                    .as_ref()
+                    .map(|(_, at)| at.clone());
                 // The store ends the call cancelled through this dispatch's withdrawn.
                 if let (Some(at), Some((_, store))) = (at, asks.records.get()) {
                     store.withdraw(&at, NO_LONGER_ASKED);

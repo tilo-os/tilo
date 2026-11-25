@@ -249,12 +249,12 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::))"
+filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::) or test(chat::) or test(hosted_turns::))"
 setup = "view-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::))"
+filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::) or test(chat::) or test(hosted_turns::))"
 setup = "view-siblings"
 
 # The sizes the throughput test fills workspaces to, for that test alone: the same values the

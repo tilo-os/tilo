@@ -993,7 +993,17 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
 fn the_styles_settings_offer_the_canvas_and_a_press_there_shows_it_live() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
-    let (mut session, _note) = session_at(WIDTH, HEIGHT);
+    // This computer's daemon: the styles a shell offers are the style packages its daemon lists,
+    // so the session starts as its shell.
+    let device = crate::common::device_daemon(crate::common::device_home(), None);
+    let state = tempfile::tempdir().expect("a state directory");
+    let (notebook, _notes) = notebook();
+    let mut session = device.session_with(Options {
+        state: Some(state.path().to_path_buf()),
+        collab: false,
+        services: vec![Box::new(notebook)],
+        ..Options::default()
+    });
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
@@ -2020,9 +2030,12 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
     // bounds are where its edge's pixels are.
     let cards = switcher::page_of(&session);
     let frame = shot(&mut session, "switcher-ring");
-    // The shell draws the reached card's edge in the person's accent of the theme it draws with:
-    // these sessions draw in Tilo dark, as the headless runner's inputs say.
+    // The shell draws the reached card's edge in the accent of the theme it draws with: Tilo dark,
+    // as the headless runner's inputs say, worn in the colour of the person at this machine. They
+    // chose none, so it is the one their identity derives.
+    let person = Options::default().person;
     let ring = ui::theme::Theme::dark()
+        .with_your_colour(ui::tokens::PresenceHue::of_identity(&person))
         .tokens
         .colors
         .intent

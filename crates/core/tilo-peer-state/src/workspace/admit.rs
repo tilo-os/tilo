@@ -324,11 +324,26 @@ pub fn admit_workspace_changes(
             // governance change made since the receiver's copy: an admission,
             // a hand-over. The owner's base is taken whole when it keeps every
             // membership operation the receiver holds and each one it adds
-            // proves its author, as a first governance is; anyone else's base
-            // changes no governance.
-            crate::members::growth(input.before, &candidate)
+            // proves its author, as a first governance is. Another keeper's
+            // base changes what the operations it adds say it changes, each
+            // its author's to make, as in a batch: a server keeping the
+            // workspace hands on what the owner's device signed.
+            let grown = crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
-            let governed = input.source.person() == Some(input.owner);
+            let governed = if input.source.person() == Some(input.owner) {
+                true
+            } else if let (Some(before), true) = (input.before, grown > 0) {
+                super::membership::admit_base_operations(
+                    before,
+                    &candidate,
+                    input.workspace,
+                    (input.now_ns, keeps_checkpoints(&input)),
+                )
+                .map_err(membership)?;
+                true
+            } else {
+                false
+            };
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
             checked(&input, &candidate, governed)?;

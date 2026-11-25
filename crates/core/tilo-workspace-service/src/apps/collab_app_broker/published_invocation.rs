@@ -364,17 +364,6 @@ impl OriginalInvocationData {
                 .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
     }
 
-    pub(super) fn launch_person_certificate(
-        &self,
-        state: &AppBrokerState,
-        workspace: &str,
-    ) -> Result<tilo_user_identity::DeviceCert, String> {
-        if !self.permits_launch_in(workspace) {
-            return Err("original invocation cannot authorize this launch".into());
-        }
-        self.current_person_certificate(state)
-    }
-
     pub(super) fn capture(
         request: InvocationRequest,
         route: CrdtRoute,

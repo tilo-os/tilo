@@ -149,6 +149,7 @@ export function open(cipher, packet) {
   return {
     ssrc: packet.readUInt32BE(8),
     sequence: packet.readUInt16BE(2),
+    timestamp: packet.readUInt32BE(4),
     frame: plain.subarray(skip),
   };
 }
