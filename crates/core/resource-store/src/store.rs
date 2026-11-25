@@ -216,6 +216,10 @@ pub struct Store {
     /// The workspace's one read decision, for the reader fields the store places: given by the
     /// host that made this store, so an agent in a field is read as the person it acts for.
     reader: Option<std::sync::Arc<dyn RecordReader>>,
+    /// Who the writes drafted now are made by, and at which second, when the store drafts one
+    /// every device makes alike ([`Self::drafting`]): a repair, which two devices must write as
+    /// the one change.
+    drafting: Option<(automerge::ActorId, i64)>,
     /// Per document, the changes it refused: kept beside it, never applied, and refusing
     /// every change built on them.
     refused: HashMap<String, BTreeSet<ChangeHash>>,
@@ -316,6 +320,7 @@ impl Store {
             schema: self.schema.clone(),
             rules: self.rules.clone(),
             reader: self.reader.clone(),
+            drafting: self.drafting.clone(),
             ..Self::default()
         };
         let result = command(&mut staged);
@@ -951,6 +956,14 @@ impl Store {
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))
     }
 
+    /// Drafts the writes made from now on as `actor`'s, at the second `time` (Unix seconds),
+    /// which every device repairing the same record derives alike: the two devices' repairs are
+    /// then the one change, and a workspace that takes both holds one copy. `None` drafts them
+    /// as this device writes them.
+    pub fn drafting(&mut self, under: Option<(automerge::ActorId, i64)>) {
+        self.drafting = under;
+    }
+
     /// The document a new resource of `kind` nested in `parent`, read by `readers`, goes to.
     fn place(&mut self, kind: &str, parent: Option<&str>, readers: &str) -> String {
         let owner = parent.unwrap_or(kind).to_owned();
@@ -989,6 +1002,7 @@ impl Store {
         stamp: &Stamp,
     ) -> Result<Vec<Written>, StoreError> {
         let mut written = Vec::with_capacity(1);
+        let under = self.drafting.clone();
         let held = self.index.get(kind, id).map(|held| held.doc.clone());
         let doc_id = match held {
             Some(doc) if self.index.readers(&doc) == Some(resource.readers.as_str()) => doc,
@@ -1002,7 +1016,7 @@ impl Store {
         };
         let doc = self.doc(&doc_id)?;
         // A put of what the document holds already changes nothing, and writes nothing.
-        let change = put_fields(doc, kind, id, &resource, stamp)?;
+        let change = put_fields(doc, kind, id, &resource, stamp, under.as_ref())?;
         let heads = doc.get_heads();
         self.commit(&Commit {
             doc: &doc_id,
@@ -1058,7 +1072,7 @@ impl Store {
         // wrote the document locally.
         draft.set_actor(automerge::ActorId::from(author.as_slice()));
         let Some(change) =
-            put_fields(&mut draft, kind, id, resource, stamp).map_err(|error| error.to_string())?
+            put_fields(&mut draft, kind, id, resource, stamp, None).map_err(|e| e.to_string())?
         else {
             return Ok(None);
         };
@@ -1088,12 +1102,16 @@ impl Store {
         };
         let doc_id = self.index.get(kind, id).ok_or_else(missing)?.doc.clone();
         let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
+        let under = self.drafting.clone();
         let doc = self.doc(&doc_id)?;
+        if let Some((actor, _)) = &under {
+            doc.set_actor(actor.clone());
+        }
         let mut tx = doc.transaction();
         if tx.get(ROOT, held_key(id))?.is_some() {
             tx.delete(ROOT, held_key(id))?;
         }
-        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
+        tx.commit_with(commit_options(under.as_ref(), stamp));
         let change = doc
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -1486,6 +1504,7 @@ impl Store {
         stamp: &Stamp,
     ) -> Result<Vec<Written>, StoreError> {
         let old_id = content_id(from, kind, id);
+        let under = self.drafting.clone();
         let Some(old) = self.existing(&old_id)? else {
             return Ok(Vec::new());
         };
@@ -1493,20 +1512,26 @@ impl Store {
             return Ok(Vec::new());
         }
         let copy = old.fork();
+        if let Some((actor, _)) = &under {
+            old.set_actor(actor.clone());
+        }
         let mut tx = old.transaction();
         let keys: Vec<String> = tx.keys(ROOT).collect();
         for key in keys {
             tx.delete(ROOT, key.as_str())?;
         }
-        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
+        tx.commit_with(commit_options(under.as_ref(), stamp));
         let emptied = old
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
         let new_id = content_id(to, kind, id);
         let new = self.doc(&new_id)?;
+        if let Some((actor, _)) = &under {
+            new.set_actor(actor.clone());
+        }
         let mut tx = new.transaction();
         copy_object(&copy, &ROOT, &mut tx, &ROOT)?;
-        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
+        tx.commit_with(commit_options(under.as_ref(), stamp));
         let copied = new
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -2069,7 +2094,9 @@ impl Store {
         // A record whose type names its readers is listed to them, wherever it is held.
         newest.retain(|(kind, id, _)| {
             !self.rules.contains_key(kind.as_str())
-                || self.readers_of(kind, id).is_some_and(|readers| may_read(&readers))
+                || self
+                    .readers_of(kind, id)
+                    .is_some_and(|readers| may_read(&readers))
         });
         newest.sort_by_key(|(_, _, version)| std::cmp::Reverse(order(version)));
         let more = newest.len() > limit;
@@ -2930,13 +2957,27 @@ fn read_as_of(
     ))
 }
 
+/// The options a change drafted under `under` commits with: its message, and the second it says
+/// it was made at, so the change every device drafts alike is the same change.
+fn commit_options(under: Option<&(automerge::ActorId, i64)>, stamp: &Stamp) -> CommitOptions {
+    let options = CommitOptions::default().with_message(stamp.message());
+    match under {
+        Some((_, time)) => options.with_time(*time),
+        None => options,
+    }
+}
+
 fn put_fields(
     doc: &mut Automerge,
     kind: &str,
     id: &str,
     resource: &Resource,
     stamp: &Stamp,
+    under: Option<&(automerge::ActorId, i64)>,
 ) -> Result<Option<AmChange>, StoreError> {
+    if let Some((actor, _)) = under {
+        doc.set_actor(actor.clone());
+    }
     let mut tx = doc.transaction();
     if text_at(&tx, &ROOT, READERS).as_deref() != Some(resource.readers.as_str()) {
         tx.put(ROOT, READERS, resource.readers.as_str())?;
@@ -2989,7 +3030,7 @@ fn put_fields(
             }
         }
     }
-    let (hash, _) = tx.commit_with(CommitOptions::default().with_message(stamp.message()));
+    let (hash, _) = tx.commit_with(commit_options(under, stamp));
     Ok(hash.and_then(|_| doc.get_last_local_change()))
 }
 

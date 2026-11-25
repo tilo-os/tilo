@@ -77,6 +77,7 @@ mod follow;
 mod founding;
 pub mod providers;
 mod removals;
+mod replacing;
 pub mod task_programs;
 #[cfg(test)]
 mod work_tests;
@@ -471,7 +472,6 @@ impl GovernedWorkspace {
     fn seals(&self) -> bool {
         self.device.is_some()
     }
-
     fn open(path: PathBuf, device: Option<&DeviceKeys>) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
         let (version, _) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| {
@@ -1677,6 +1677,13 @@ impl Workspaces {
             tracing::info!("desktop record ready");
             // What the server's log revoked while the workspace was closed.
             self.carry_revocations(&mut workspace, &[]).await?;
+            let workspace_id = workspace.workspace().to_owned();
+            drop(workspace);
+            // A record written where its type's rule does not place it moves into the document
+            // its rule gives, so what it holds and its history reach its readers alone.
+            if let Err(error) = self.replace_misplaced(&workspace_id).await {
+                tracing::warn!(workspace = %workspace_id, %error, "a misplaced record was not moved");
+            }
         }
         Ok(())
     }

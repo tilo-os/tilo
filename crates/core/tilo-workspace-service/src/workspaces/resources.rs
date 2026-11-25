@@ -2089,7 +2089,7 @@ impl Workspaces {
     /// none. `action` is the action they are part of when its other writes come apart (an app's
     /// write of several records, one record at a time): the store takes these once the others
     /// are here.
-    async fn keep_writes(
+    pub(super) async fn keep_writes(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
         device: std::sync::Arc<super::MemberDevice>,

@@ -150,6 +150,24 @@ impl Store {
             })
     }
 
+    /// Every resource held where its type's rule does not place it ([`Self::misplaced`]), by
+    /// kind and id, in kind then id order: what a workspace moves into its rule's document when
+    /// it opens, and what an operator counts.
+    #[must_use]
+    pub fn misplaced_records(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for kind in self.rules.keys() {
+            let mut ids: Vec<&str> = self.index.ids_of(kind).collect();
+            ids.sort_unstable();
+            for id in ids {
+                if self.misplaced(kind, id) {
+                    out.push((kind.clone(), id.to_owned()));
+                }
+            }
+        }
+        out
+    }
+
     /// Who reads the history of the removed resource `id` of `kind`, whose type names its
     /// readers, when it was held where every member read it: those its rule gives a record of
     /// no fields, its author for `readers: author`, and nobody where the rule names no one.
@@ -173,6 +191,14 @@ impl Store {
         let kind = self.index.kind_anywhere(id)?;
         let held = self.index.get(&kind, id)?;
         self.index.readers(&held.doc).map(str::to_owned)
+    }
+
+    /// Who made the resource `id` of `kind`, as its reader set names them: the person whose
+    /// record it is, when a person made it. What a repair of a record whose type names its
+    /// readers acts for, so the moved record reads as its rule says.
+    #[must_use]
+    pub fn author_person(&self, kind: &str, id: &str) -> Option<String> {
+        self.author(kind, id).person()
     }
 
     /// Who made the resource `id` of `kind`: the invoker of its first version, and the person it
