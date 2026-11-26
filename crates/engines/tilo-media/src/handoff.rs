@@ -511,3 +511,116 @@ fn source_identity(source: &Source) -> (String, String) {
         Source::Remote { url } => ("Streaming media".into(), format!("remote:{url}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(id: &str, bus_name: &str) -> PlaybackReport {
+        PlaybackReport {
+            session: PlaybackSession {
+                id: format!("so.tilo.player:{id}"),
+                app_id: "so.tilo.player".into(),
+                title: id.into(),
+                content_id: format!("blake3:{}", "0".repeat(64)),
+                position_ms: 0,
+                duration_ms: None,
+                playing: true,
+                has_video: false,
+            },
+            workspace_id: String::new(),
+            source: HandoffSource::RemoteStream {
+                url: "https://example.test/media".into(),
+            },
+            controller_bus_name: Some(bus_name.into()),
+            accepted_handoff_request: None,
+        }
+    }
+
+    #[test]
+    fn handoff_reports_expose_identity_not_uris_and_expire_when_stale() {
+        {
+            let source = Source::Remote {
+                url: "https://example.test/video?token=secret".into(),
+            };
+            update(
+                9001,
+                EnginePlayback {
+                    source: Some(&source),
+                    audible: true,
+                    position_ms: 42,
+                    duration_ms: Some(100),
+                    playing: true,
+                    has_video: true,
+                    controller_bus_name: None,
+                },
+            );
+            let session = playback_sessions()
+                .into_iter()
+                .find(|session| session.id.ends_with(":9001"))
+                .unwrap();
+            assert!(!session.content_id.contains("secret"));
+            assert_eq!(session.title, "Streaming media");
+            remove(9001);
+        }
+        {
+            let handle = AppPlaybackHandle::new();
+            handle.publish(AppPlayback {
+                resource_uri: "music://track/track-42",
+                title: "A durable song",
+                position_ms: 4_200,
+                duration_ms: Some(9_000),
+                playing: true,
+                has_video: false,
+                audible: true,
+                controller_bus_name: Some("org.mpris.MediaPlayer2.tilo-music"),
+            });
+            let session = playback_sessions()
+                .into_iter()
+                .find(|session| session.title == "A durable song")
+                .expect("app-owned playback is reported");
+            let report = playback_report(&session.id).expect("its source resolves");
+            assert!(matches!(
+                report.source,
+                HandoffSource::AppResource { ref uri } if uri == "music://track/track-42"
+            ));
+            assert!(!format!("{report:?}").contains("googlevideo"));
+        }
+        {
+            let handle = AppPlaybackHandle::new();
+            handle.publish(AppPlayback {
+                resource_uri: "1music://track/foreign",
+                title: "Foreign",
+                position_ms: 0,
+                duration_ms: None,
+                playing: true,
+                has_video: false,
+                audible: true,
+                controller_bus_name: None,
+            });
+            assert!(
+                playback_sessions()
+                    .iter()
+                    .all(|session| session.title != "Foreign")
+            );
+        }
+        {
+            let explicit = report("explicit", "org.mpris.MediaPlayer2.player");
+            let discovered = report("discovered", "org.mpris.MediaPlayer2.player");
+            let other = report("other", "org.mpris.MediaPlayer2.other");
+            let mut reports = vec![explicit.clone()];
+
+            append_discovered_reports(&mut reports, &[discovered, other.clone()]);
+
+            assert_eq!(reports, vec![explicit, other]);
+        }
+        {
+            let now = tilo_clock::now();
+            assert!(system_reports_are_fresh(Some(now), now));
+            assert!(!system_report_age_is_fresh(
+                SYSTEM_REPORT_TTL.saturating_add(Duration::from_millis(1))
+            ));
+            assert!(!system_reports_are_fresh(None, now));
+        }
+    }
+}

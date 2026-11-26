@@ -1883,3 +1883,6 @@ fn decode_png(encoded: &str) -> Option<Vec<u8>> {
     }
     Some(bytes)
 }
+
+#[cfg(test)]
+mod tests;

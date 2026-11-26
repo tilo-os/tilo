@@ -1114,3 +1114,6 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
     }
     s
 }
+
+#[cfg(test)]
+mod tests;

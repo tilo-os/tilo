@@ -575,3 +575,239 @@ fn color_hex(colors: &[Option<String>], idx: usize) -> Option<String> {
     }
     colors.get(idx).cloned().flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_doc::Document;
+    use tilo_doc::snapshot::DocSnapshot;
+
+    fn import(src: &str) -> DocSnapshot {
+        let mut d = Document::new();
+        RtfCodec
+            .import(
+                src.as_bytes(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        d.materialize()
+    }
+
+    fn rtf_import_paragraphs_text_and_destinations() {
+        {
+            let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");
+            let paras: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "paragraph")
+                .collect();
+            assert_eq!(paras.len(), 1, "{snap:?}");
+            assert_eq!(paras[0].text, "Hello world");
+        }
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard First\\par}{\\pard Second\\par}}");
+            let texts: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "paragraph")
+                .map(|b| b.text.clone())
+                .collect();
+            assert_eq!(texts, vec!["First".to_string(), "Second".to_string()]);
+        }
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard a\\\\b\\{c\\} \\'e9 \\u10003?z\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "a\\b{c} é ✓z");
+        }
+        {
+            // The font table and a `\*\generator` destination must not leak into body.
+            let snap = import(
+                "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\generator Tilo;}\n{\\pard Body\\par}}",
+            );
+            let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
+            assert_eq!(
+                texts,
+                vec!["Body".to_string()],
+                "only body text survives: {snap:?}"
+            );
+        }
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard\\bullet\\tab Item one\\par}}");
+            let li = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "list_item")
+                .expect("list_item block");
+            assert!(li.text.contains("Item one"), "got {:?}", li.text);
+        }
+        {
+            let d = Document::new();
+            let err = RtfCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap_err();
+            assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
+        }
+        {
+            let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\
+    {\\pard\\fs22 {\\fs22 Hello }{\\b\\fs22 world}{\\fs22  today}\\par}}";
+            let snap = import(rtf);
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("a paragraph survives");
+            assert_eq!(p.text, "Hello world today", "text round-trips: {snap:?}");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("bold run survives");
+            assert_eq!(
+                p.text
+                    .get(strong.start..strong.end)
+                    .expect("strong span is within text bounds"),
+                "world",
+                "bold covers the right run: {:?}",
+                p.marks
+            );
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn rtf_import_control_words_become_marks() {
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard a{\\b bold}c\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "aboldc");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("strong mark present");
+            assert_eq!((strong.start, strong.end), (1, 5), "{:?}", p.marks);
+        }
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard x\\b on\\b0 y\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "xony");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("strong mark");
+            assert_eq!(
+                (strong.start, strong.end),
+                (1, 3),
+                "covers 'on': {:?}",
+                p.marks
+            );
+        }
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard {\\i it}{\\ul un}{\\strike st}\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "itunst");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "em" && m.start == 0 && m.end == 2),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "underline" && m.start == 2 && m.end == 4),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strike" && m.start == 4 && m.end == 6),
+                "{:?}",
+                p.marks
+            );
+        }
+        {
+            // colortbl: index 1 = red. `\cf1 red\cf0` applies it.
+            let snap = import(
+                "{\\rtf1\\ansi{\\colortbl;\\red255\\green0\\blue0;}\n{\\pard {\\cf1 red}\\par}}",
+            );
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "red");
+            let color = p
+                .marks
+                .iter()
+                .find(|m| m.name == "color")
+                .expect("color mark");
+            assert_eq!(
+                color.value,
+                tilo_doc::document::MarkValue::Str("#ff0000".into()),
+                "{:?}",
+                p.marks
+            );
+            assert_eq!((color.start, color.end), (0, 3));
+        }
+        {
+            let snap = import("{\\rtf1\\ansi\n{\\pard {\\fs40 big}\\par}}");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            let size = p
+                .marks
+                .iter()
+                .find(|m| m.name == "fontSize")
+                .expect("fontSize mark");
+            assert_eq!(
+                size.value,
+                tilo_doc::document::MarkValue::Int(20),
+                "{:?}",
+                p.marks
+            );
+        }
+    }
+
+    #[test]
+    fn rtf_imports_paragraphs_destinations_and_marks() {
+        let cases: [(&str, fn()); 2] = [
+            (
+                "rtf import paragraphs text and destinations",
+                rtf_import_paragraphs_text_and_destinations,
+            ),
+            (
+                "rtf import control words become marks",
+                rtf_import_control_words_become_marks,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
+    }
+}

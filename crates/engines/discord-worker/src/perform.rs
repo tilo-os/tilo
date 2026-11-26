@@ -1165,3 +1165,18 @@ fn shows(shown: &str, content: &str) -> bool {
         || shown.ends_with(&format!("\n{content}"))
         || shown.contains(&format!("\n{content}\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merged_texts_count_as_shown() {
+        assert!(shows("a", "a"));
+        assert!(shows("a\nb\nc", "a"));
+        assert!(shows("a\nb\nc", "b"));
+        assert!(shows("a\nb\nc", "c"));
+        assert!(!shows("ab", "a"));
+        assert!(!shows("a\nbc", "b"));
+    }
+}

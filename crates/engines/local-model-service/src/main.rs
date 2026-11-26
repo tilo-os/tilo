@@ -33,6 +33,11 @@ use local_model_service::supervision::SystemdSupervisor;
 use local_model_service::{
     HttpsTransport, LocalModelService, ServiceError, SignedRuntime, user_model_root,
 };
+#[cfg(test)]
+use local_model_service::{
+    VllmCommand,
+    supervision::{model_endpoint_ready, podman_vllm_argv},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -1883,5 +1888,765 @@ impl Workers<'_> {
             let _ = std::fs::remove_file(token_file);
         }
         started
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_provider_config::local::{LocalEndpoint, RuntimeKind};
+
+    tilo_test_env::scenario! {
+        /// The two operator-only modes of the manager's command line.
+        fn developer_and_recovery_modes_are_direct_unconfined_operator_routes;
+
+        phase offline_developer_cli_requires_complete_unconfined_direct_mode;
+        {
+            let args = [
+                "manager",
+                "--root",
+                "/private/store",
+                "--catalog",
+                "/private/catalog",
+                "--keys",
+                "/private/keys",
+                "--artifact-dir",
+                "/private/artifacts",
+                "worker",
+                "--model",
+                "pinned",
+            ];
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(validate_developer_inputs(&cli, 1000, false).is_ok());
+            assert!(validate_developer_inputs(&cli, 0, false).is_err());
+            assert!(validate_developer_inputs(&cli, 1000, true).is_err());
+            for missing in ["--root", "--catalog", "--keys"] {
+                let mut filtered = Vec::new();
+                let mut skip = false;
+                for arg in args {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+                    if arg == missing {
+                        skip = true;
+                        continue;
+                    }
+                    filtered.push(arg);
+                }
+                assert!(
+                    validate_developer_inputs(&Cli::try_parse_from(filtered).unwrap(), 1000, false)
+                        .is_err()
+                );
+            }
+            let serve = Cli::try_parse_from([
+                "manager",
+                "--root",
+                "/private/store",
+                "--catalog",
+                "/private/catalog",
+                "--keys",
+                "/private/keys",
+                "--artifact-dir",
+                "/private/artifacts",
+                "serve",
+                "--socket",
+                "/private/socket",
+            ])
+            .unwrap();
+            assert!(validate_developer_inputs(&serve, 1000, false).is_err());
+            let plain = cli_for_rpc(RpcAction::Snapshot).unwrap();
+            assert!(plain.artifact_dir.is_none());
+        }
+
+        phase orphan_recovery_has_no_app_rpc_or_confined_operator_route;
+        {
+            let cli = Cli::try_parse_from([
+                "manager",
+                "--root",
+                "/private/store",
+                "recover-orphan",
+                "--run-id",
+                &"b".repeat(64),
+            ])
+            .unwrap();
+            assert!(validate_developer_inputs(&cli, 1000, false).is_ok());
+            assert!(validate_developer_inputs(&cli, 1000, true).is_err());
+            assert!(validate_developer_inputs(&cli, 0, false).is_err());
+            assert!(rpc_action(&cli.command).is_err());
+            let no_root =
+                Cli::try_parse_from(["manager", "recover-orphan", "--run-id", &"b".repeat(64)])
+                    .unwrap();
+            assert!(validate_developer_inputs(&no_root, 1000, false).is_err());
+        }
+    }
+
+    #[test]
+    fn checked_in_catalog_signature_survives_speech_format_support() {
+        let image_inputs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/system-extensions");
+        let catalog = load_catalog(
+            &image_inputs.join("local-model-catalog.json"),
+            &image_inputs.join("local-model-keys.json"),
+        )
+        .expect("the existing image catalogue must retain its trusted signature");
+        assert!(catalog.models.iter().any(|model| model.segmentation));
+    }
+
+    #[test]
+    fn readiness_requires_healthy_http_and_exact_model_identity() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let responses = [
+                ("/health", 503, r#"{"error":"Loading model"}"#),
+                ("/health", 200, r#"{"status":"ok"}"#),
+                ("/v1/models", 200, r#"{"data":[{"id":"foreign-model"}]}"#),
+                ("/health", 200, r#"{"status":"ok"}"#),
+                ("/v1/models", 200, r#"{"data":[{"id":"selected-model"}]}"#),
+            ];
+            for (path, status, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..count])
+                        .starts_with(&format!("GET {path} HTTP/1.1"))
+                );
+                write!(stream, "HTTP/1.1 {status} response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let client = tilo_net::http::blocking_client()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(tilo_test_env::hang_bound())
+            .build()
+            .unwrap();
+        let endpoint = LocalEndpoint {
+            url: format!("http://{address}/v1"),
+            model_id: "selected-model".into(),
+        };
+        for url in [
+            "http://example.invalid/v1",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:80/other",
+        ] {
+            assert!(!model_endpoint_ready(
+                &client,
+                &LocalEndpoint {
+                    url: url.into(),
+                    model_id: endpoint.model_id.clone()
+                }
+            ));
+        }
+        assert!(
+            !model_endpoint_ready(&client, &endpoint),
+            "listening while loading must remain pending"
+        );
+        assert!(
+            !model_endpoint_ready(&client, &endpoint),
+            "healthy wrong alias must remain pending"
+        );
+        assert!(model_endpoint_ready(&client, &endpoint));
+        server.join().unwrap();
+    }
+
+    tilo_test_env::scenario! {
+        /// What the manager's snapshot says about an empty legacy state and about in-process models.
+        fn the_snapshot_reports_legacy_state_and_every_in_process_model;
+
+        phase snapshot_observation_fields_are_absent_for_legacy_empty_state;
+        {
+            let payload = ServiceSnapshot {
+                snapshot: LocalModelSnapshot {
+                    hardware: recommendation(
+                        &HardwareSnapshot::default(),
+                        Err("unavailable".into()),
+                        false,
+                    ),
+                    recommendation: None,
+                    models: Vec::new(),
+                    in_process: Vec::new(),
+                    accelerator_setup: None,
+                },
+                runtime_observations: BTreeMap::new(),
+                retained_run_observations: None,
+            };
+            let wire = serde_json::to_value(payload).unwrap();
+            assert!(wire.get("runtime_observations").is_none());
+            assert!(wire.get("retained_run_observations").is_none());
+            let old = serde_json::json!({"models":{}, "accepted_licenses":{}});
+            let state: local_model_service::ServiceState = serde_json::from_value(old.clone()).unwrap();
+            assert_eq!(serde_json::to_value(state).unwrap(), old);
+        }
+
+        phase the_snapshot_offers_every_in_process_model_with_its_state;
+        // Every in-process catalog model is offered with its install state —
+        // absent until set up — and runtime models never join that list or
+        // accept a start for an in-process one.
+        {
+            let models = [
+                release("chat", false),
+                release("subject", true),
+                release("other-subject", true),
+            ];
+            let mut state = local_model_service::ServiceState::default();
+            state.models.insert(
+                "subject".into(),
+                local_model_service::ManagedModel {
+                    model_sha256: "e".repeat(64),
+                    status: LocalModelStatus::Installed,
+                    process: None,
+                    in_process: None,
+                    objects: Vec::new(),
+                },
+            );
+            let listed = in_process_models(&models, &state);
+            let json = serde_json::to_value(&listed).unwrap();
+            assert_eq!(json.as_array().unwrap().len(), 2);
+            assert_eq!(json[0]["package"]["id"], "subject");
+            assert_eq!(json[0]["package"]["in_process"], true);
+            assert_eq!(json[0]["package"]["segmentation"], true);
+            assert_eq!(json[0]["phase"]["state"], "ready");
+            assert_eq!(json[0]["phase"]["running"], false);
+            assert_eq!(json[1]["package"]["id"], "other-subject");
+            assert!(json[1]["phase"].is_null());
+            assert!(refuse_in_process(&models[1]).is_err());
+            assert!(refuse_in_process(&models[0]).is_ok());
+        }
+    }
+
+    fn catalog_fixture() -> CatalogPayload {
+        let inputs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/system-extensions");
+        load_catalog(
+            &inputs.join("local-model-catalog.json"),
+            &inputs.join("local-model-keys.json"),
+        )
+        .unwrap()
+    }
+
+    fn signed_selector_runtime() -> SignedRuntime {
+        use agent_provider_config::local::{PinnedArtifact, RuntimeExecution, RuntimeRelease};
+        let pin = PinnedArtifact {
+            url: "https://artifacts.example.invalid/runtime".into(),
+            sha256: "a".repeat(64),
+            size_bytes: 10,
+        };
+        let manifest = tilo_extension::system_extension::ExtensionManifest {
+            schema_version: tilo_extension::system_extension::SCHEMA_VERSION,
+            id: "selector-runtime".into(),
+            kind: tilo_extension::system_extension::ExtensionKind::LocalModelRuntime,
+            version: "test".into(),
+            artifact: tilo_extension::system_extension::PinnedArtifact {
+                source: pin.url.clone(),
+                sha256: pin.sha256.clone(),
+                size_bytes: pin.size_bytes,
+            },
+            target: tilo_extension::system_extension::ImageConstraint {
+                base_image_digest: format!("sha256:{}", "b".repeat(64)),
+                architecture: None,
+                kernel_abi: None,
+            },
+            requires_reboot: false,
+        };
+        let signed = tilo_extension::system_extension::SignedExtensionManifest::sign(
+            manifest,
+            "selector-test-key",
+            &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
+        )
+        .unwrap();
+        let runtime = SignedRuntime {
+            accepted: tilo_extension::system_extension::AcceptedExtension {
+                signed,
+                artifact: tilo_extension::system_extension::ArtifactReceipt {
+                    sha256: pin.sha256.clone(),
+                    size_bytes: pin.size_bytes,
+                },
+                committed_revision: 1,
+            },
+            release: RuntimeRelease {
+                id: "selector-runtime".into(),
+                kind: RuntimeKind::NvidiaCuda,
+                version: "test".into(),
+                artifact: pin,
+                oci_image: format!("registry.example.invalid/llama@sha256:{}", "b".repeat(64)),
+                execution: Some(RuntimeExecution::LlamaCpp {
+                    max_context_tokens: 4096,
+                    gpu_layers: 8,
+                    parallel_slots: None,
+                }),
+            },
+        };
+        runtime.validate().unwrap();
+        runtime
+    }
+
+    tilo_test_env::scenario! {
+        /// Engine selection, snapshot fit and the capacity probes behind them.
+        fn selection_and_capacity_follow_model_memory_and_the_effective_limits;
+
+        phase explicit_signed_engine_selection_and_recommendation_use_model_memory;
+        {
+            use agent_provider_config::local::{ModelArtifactFormat, RuntimeExecution};
+            // Mutated release metadata is confined to this selector fixture. Catalog
+            // trust verification remains exercised separately on the image inputs.
+            let mut catalog = catalog_fixture();
+            let mut model = runtime_model();
+            model.required_accelerator_mib = 4096;
+            model.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            catalog.models = vec![model];
+            catalog.runtimes = vec![signed_selector_runtime()];
+            let mut hardware = HardwareSnapshot {
+                cpu_threads: 8,
+                memory_mib: 32768,
+                free_storage_mib: 1024,
+                accelerators: vec![
+                    Accelerator::Amd {
+                        vram_mib: 512,
+                        rocm: None,
+                    },
+                    Accelerator::Nvidia {
+                        vram_mib: 8188,
+                        driver: "615.71.09".into(),
+                    },
+                ],
+            };
+            assert_eq!(
+                signed_runtime_for(&catalog, &hardware, &catalog.models[0])
+                    .unwrap()
+                    .release
+                    .kind,
+                RuntimeKind::NvidiaCuda
+            );
+            assert_eq!(
+                recommended_model(&catalog, &hardware).unwrap().1,
+                RuntimeKind::NvidiaCuda
+            );
+            catalog.models[0].required_accelerator_mib = 8189;
+            assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+            assert!(recommended_model(&catalog, &hardware).is_err());
+            catalog.models[0].required_accelerator_mib = 4096;
+            catalog.runtimes[0].release.execution = None;
+            assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+            catalog.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 4096,
+                gpu_layers: 8,
+                parallel_slots: None,
+            });
+            // Free storage must fit the complete installed artifact, rounded up.
+            catalog.models[0].installed_size_bytes = 1024 * 1024 + 1;
+            hardware.free_storage_mib = 1;
+            assert!(recommended_model(&catalog, &hardware).is_err());
+            hardware.free_storage_mib = 2;
+            assert!(recommended_model(&catalog, &hardware).is_ok());
+            // A build for another architecture never serves this machine.
+            let other = if std::env::consts::ARCH == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            };
+            catalog.runtimes[0]
+                .accepted
+                .signed
+                .manifest
+                .target
+                .architecture = Some(other.into());
+            assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+            catalog.runtimes[0]
+                .accepted
+                .signed
+                .manifest
+                .target
+                .architecture = Some(std::env::consts::ARCH.into());
+            assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_ok());
+        }
+
+        phase runtime_selection_and_snapshot_fit_use_effective_slice_capacity;
+        {
+            use agent_provider_config::local::ModelArtifactFormat;
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join("user.slice/app.slice")).unwrap();
+            std::fs::write(root.path().join("cgroup.controllers"), "memory\n").unwrap();
+            std::fs::write(root.path().join("user.slice/memory.max"), "max\n").unwrap();
+            let limit = root.path().join("user.slice/app.slice/memory.max");
+            std::fs::write(&limit, "21474836480\n").unwrap();
+            let properties = "LoadState=loaded\nControlGroup=/user.slice/app.slice\n";
+            let meminfo = "MemTotal: 33554432 kB\nMemAvailable: 1024 kB\n";
+            let mut model = runtime_model();
+            model.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+            model.required_memory_mib = 24576;
+            let mut catalog = catalog_fixture();
+            catalog.models = vec![model];
+            catalog.runtimes = vec![signed_selector_runtime()];
+            let mut hardware = HardwareSnapshot {
+                cpu_threads: 8,
+                memory_mib: memory_capacity::capacity_mib(meminfo, properties, root.path()).unwrap(),
+                free_storage_mib: 1024,
+                accelerators: vec![Accelerator::Nvidia {
+                    vram_mib: 8188,
+                    driver: "test".into(),
+                }],
+            };
+            assert!(signed_runtime_for(&catalog, &hardware, &catalog.models[0]).is_err());
+            assert!(recommended_model(&catalog, &hardware).is_err());
+            let report = recommendation(
+                &hardware,
+                Err("Insufficient runtime memory capacity".into()),
+                false,
+            );
+            assert!(matches!(report.fit, HardwareFit::Unsupported));
+            assert_eq!(report.memory_gib, 20);
+            // Unlimited limits restore physical capacity, not the 1 MiB headroom.
+            std::fs::write(limit, "max\n").unwrap();
+            hardware.memory_mib =
+                memory_capacity::capacity_mib(meminfo, properties, root.path()).unwrap();
+            assert_eq!(
+                signed_runtime_for(&catalog, &hardware, &catalog.models[0])
+                    .unwrap()
+                    .release
+                    .kind,
+                RuntimeKind::NvidiaCuda
+            );
+            assert_eq!(
+                recommended_model(&catalog, &hardware).unwrap().1,
+                RuntimeKind::NvidiaCuda
+            );
+        }
+
+        phase capacity_probes_selected_store_and_only_bounded_normal_missing_parents;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let store = temporary.path().join("selected-store");
+            std::fs::create_dir(&store).unwrap();
+            // Record the one actual probe used by each production-path invocation.
+            // Free bytes can change between independent statvfs calls on a live store.
+            let expected = std::cell::Cell::new(None);
+            let calls = std::cell::RefCell::new(Vec::new());
+            let mut probe = |path: &Path| {
+                assert_eq!(path, store);
+                calls.borrow_mut().push(path.to_owned());
+                let available = free_storage_mib(path).expect("actual filesystem must be observable");
+                assert!(available > 0);
+                expected.set(Some(available));
+                Some(available)
+            };
+            let observed = store_free_storage_mib_with(&store, &mut probe);
+            assert_eq!(observed, expected.get());
+            assert_eq!(calls.borrow().as_slice(), std::slice::from_ref(&store));
+            let observed = store_free_storage_mib_with(&store.join("not-created/models"), &mut probe);
+            assert_eq!(observed, expected.get());
+            assert_eq!(calls.borrow().as_slice(), [store.clone(), store.clone()]);
+            let file = temporary.path().join("file");
+            std::fs::write(&file, "not a directory").unwrap();
+            assert_eq!(store_free_storage_mib(&file), None);
+            assert_eq!(store_free_storage_mib(&file.join("child")), None);
+            let link = temporary.path().join("link");
+            std::os::unix::fs::symlink(&store, &link).unwrap();
+            assert_eq!(store_free_storage_mib(&link), None);
+            assert_eq!(store_free_storage_mib(Path::new("relative/models")), None);
+            assert_eq!(store_free_storage_mib(&store.join("../other")), None);
+            let deep = (0..33).fold(store, |path, _| path.join("absent"));
+            assert_eq!(store_free_storage_mib(&deep), None);
+        }
+    }
+
+    fn runtime_model() -> LocalModelRelease {
+        let mut model = release("chat", false);
+        model.allowed_runtimes = [
+            RuntimeKind::Cpu,
+            RuntimeKind::NvidiaCuda,
+            RuntimeKind::AmdRocm,
+        ]
+        .into();
+        model
+    }
+
+    fn release(id: &str, in_process: bool) -> LocalModelRelease {
+        LocalModelRelease {
+            id: id.into(),
+            label: id.into(),
+            description: "test".into(),
+            version: "d".repeat(64),
+            artifact: agent_provider_config::local::PinnedArtifact {
+                url: format!("https://artifacts.example.invalid/{}/model", "d".repeat(64)),
+                sha256: "e".repeat(64),
+                size_bytes: 10,
+            },
+            artifact_format: if in_process {
+                agent_provider_config::local::ModelArtifactFormat::OnnxFile
+            } else {
+                agent_provider_config::local::ModelArtifactFormat::VllmGguf
+            },
+            license_id: "Apache-2.0".into(),
+            license_url: "https://artifacts.example.invalid/LICENSE".into(),
+            requires_acceptance: false,
+            installed_size_bytes: 10,
+            allowed_runtimes: if in_process {
+                std::collections::BTreeSet::new()
+            } else {
+                [RuntimeKind::Cpu].into()
+            },
+            required_memory_mib: 1,
+            required_accelerator_mib: 0,
+            context_window: if in_process { 0 } else { 4096 },
+            vision: false,
+            face_recognition: false,
+            segmentation: in_process,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The RPC wire bytes are pinned and one service connection serves two sequential requests.
+        fn the_model_service_rpc_is_pinned_and_serves_sequential_requests;
+
+        phase rpc_wire_bytes_are_pinned;
+        // The model service RPC bytes: a big-endian `u32` length, then JSON. A
+        // close before the length is a clean end of the connection.
+        {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            write_rpc(&mut client, &serde_json::json!({"k": 1})).unwrap();
+            let mut sent = [0_u8; 11];
+            server.read_exact(&mut sent).unwrap();
+            assert_eq!(sent, *b"\0\0\0\x07{\"k\":1}");
+            server.write_all(b"\0\0\0\x07{\"k\":2}").unwrap();
+            let value: serde_json::Value = read_rpc(&mut client).unwrap_or_else(|_| panic!("read"));
+            assert_eq!(value["k"], 2);
+            drop(server);
+            assert!(matches!(
+                read_rpc::<serde_json::Value>(&mut client),
+                Err(RpcReadError::Closed)
+            ));
+        }
+
+        phase a_chosen_file_arrives_as_a_descriptor_after_its_request;
+        {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                serve_requests(&mut server, |action, file| match (action, file) {
+                    (RpcAction::ImportFile { name }, Some(mut file)) => {
+                        let mut bytes = String::new();
+                        file.read_to_string(&mut bytes).unwrap();
+                        Ok(Some(format!("{name}:{bytes}")))
+                    }
+                    _ => Err("no file".into()),
+                });
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let chosen = dir.path().join("chosen");
+            std::fs::write(&chosen, "GGUF bytes").unwrap();
+            write_rpc(
+                &mut client,
+                &RpcRequest {
+                    version: RPC_VERSION,
+                    action: RpcAction::ImportFile {
+                        name: "tune.gguf".into(),
+                    },
+                },
+            )
+            .unwrap();
+            runtime_portal::fd_transport::send_with_fd(&client, b"f", File::open(&chosen).unwrap())
+                .unwrap();
+            let answer: RpcResponse = read_rpc(&mut client).unwrap_or_else(|_| panic!("answer"));
+            assert_eq!(answer.output.as_deref(), Some("tune.gguf:GGUF bytes"));
+            drop(client);
+            worker.join().unwrap();
+        }
+
+        phase service_connection_serves_two_sequential_requests;
+        {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                serve_requests(&mut server, |action, _| match action {
+                    RpcAction::Snapshot => Ok(Some("snapshot".into())),
+                    RpcAction::Start { model } => Ok(Some(format!("started:{model}"))),
+                    _ => Err("unexpected test action".into()),
+                });
+            });
+            write_rpc(
+                &mut client,
+                &RpcRequest {
+                    version: RPC_VERSION,
+                    action: RpcAction::Snapshot,
+                },
+            )
+            .unwrap();
+            let first: RpcResponse =
+                read_rpc(&mut client).unwrap_or_else(|_| panic!("response one"));
+            assert!(first.ok);
+            assert_eq!(first.output.as_deref(), Some("snapshot"));
+            write_rpc(
+                &mut client,
+                &RpcRequest {
+                    version: RPC_VERSION,
+                    action: RpcAction::Start {
+                        model: "tiny".into(),
+                    },
+                },
+            )
+            .unwrap();
+            let second: RpcResponse =
+                read_rpc(&mut client).unwrap_or_else(|_| panic!("response two"));
+            assert!(second.ok);
+            assert_eq!(second.output.as_deref(), Some("started:tiny"));
+            drop(client);
+            worker.join().unwrap();
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Podman mounts only the verified model path at its container path; runtime selection prefers a
+        /// confirmed NVIDIA over CPU, uses `ROCm` only when the driver is present, and uses CPU when no
+        /// supported accelerator exists.
+        fn the_model_runtime_matches_the_verified_hardware;
+
+        phase podman_mounts_only_verified_model_path_and_uses_container_path;
+        {
+            let command = VllmCommand {
+                runtime_image: "registry.example/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                runtime_kind: RuntimeKind::Cpu,
+                args: vec!["serve".into(), "/models/model".into()],
+                model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
+                model_container_path: "/models/model".into(),
+                endpoint: LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
+                runtime_extension_id: "runtime".into(),
+            };
+            let argv = podman_vllm_argv(&command);
+            assert!(argv.windows(2).any(|pair| pair
+                == [
+                    "--mount",
+                    "type=bind,src=/home/ada/.local/share/tilo/models/sha256/abc,dst=/models/model,ro"
+                ]));
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair == ["--security-opt", "label=disable"])
+            );
+            assert!(argv.ends_with(&["serve".into(), "/models/model".into()]));
+            assert!(
+                !argv
+                    .iter()
+                    .any(|arg| arg == "/home/ada/.local/share/tilo/models/sha256/abc")
+            );
+        }
+
+        phase runtime_selection_prefers_confirmed_nvidia_over_cpu;
+        {
+            let hardware = HardwareSnapshot {
+                cpu_threads: 8,
+                memory_mib: 32 * 1024,
+                free_storage_mib: 100 * 1024,
+                accelerators: vec![Accelerator::Nvidia {
+                    vram_mib: 12 * 1024,
+                    driver: "560.35".into(),
+                }],
+            };
+            assert_eq!(
+                runtime_kind_for(
+                    &hardware,
+                    &runtime_model(),
+                    [RuntimeKind::Cpu, RuntimeKind::NvidiaCuda]
+                )
+                .unwrap(),
+                RuntimeKind::NvidiaCuda
+            );
+            let error =
+                runtime_kind_for(&hardware, &runtime_model(), [RuntimeKind::Cpu]).unwrap_err();
+            assert!(error.contains("boot pack"));
+        }
+
+        phase runtime_selection_uses_rocm_only_when_driver_is_present;
+        {
+            let hardware = HardwareSnapshot {
+                cpu_threads: 8,
+                memory_mib: 32 * 1024,
+                free_storage_mib: 100 * 1024,
+                accelerators: vec![Accelerator::Amd {
+                    vram_mib: 16 * 1024,
+                    rocm: Some("6.2".into()),
+                }],
+            };
+            assert_eq!(
+                runtime_kind_for(&hardware, &runtime_model(), [RuntimeKind::AmdRocm]).unwrap(),
+                RuntimeKind::AmdRocm
+            );
+            let mut missing_driver = hardware;
+            missing_driver.accelerators = vec![Accelerator::Amd {
+                vram_mib: 16 * 1024,
+                rocm: None,
+            }];
+            let error = runtime_kind_for(&missing_driver, &runtime_model(), [RuntimeKind::Cpu])
+                .unwrap_err();
+            assert!(error.contains("boot pack"));
+        }
+
+        phase runtime_selection_uses_cpu_when_no_supported_accelerator_exists;
+        {
+            let hardware = HardwareSnapshot {
+                cpu_threads: 4,
+                memory_mib: 8 * 1024,
+                free_storage_mib: 100 * 1024,
+                accelerators: vec![],
+            };
+            assert_eq!(
+                runtime_kind_for(&hardware, &runtime_model(), [RuntimeKind::Cpu]).unwrap(),
+                RuntimeKind::Cpu
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Which fetches and which verbs the hub is involved in.
+        fn only_hub_requests_reach_the_hub_and_its_worker_stays_behind_the_service;
+
+        phase only_hub_urls_go_to_the_hub;
+        // A person's own model downloads from the Hub with their token, and the runtime that serves
+        // it from the signed catalog's origin, which never sees the token.
+        {
+            assert!(from_hub(
+                "https://huggingface.co/acme/Chat-GGUF/resolve/abc/model.gguf"
+            ));
+            assert!(!from_hub("https://huggingface.co.example/acme/model.gguf"));
+            assert!(!from_hub(
+                "https://code.tilo.so/api/packages/tilo/generic/local-model-runtime-llama-cpp-cpu-x86_64/x/y.oci.tar"
+            ));
+        }
+
+        phase the_hub_verbs_are_the_providers_and_a_terminal_has_none;
+        // The workspace's models provider asks the Hub through the service; a
+        // terminal has no verb for a search, a description or a download, and
+        // the worker that downloads a pick is never proxied.
+        {
+            for verb in ["hub-search", "hub-model", "hub-install", "hub-account"] {
+                assert!(Cli::try_parse_from(["manager", verb]).is_err(), "{verb}");
+            }
+            let install = RpcAction::HubInstall {
+                repo: "acme/Chat-GGUF".into(),
+                revision: "a".repeat(40),
+                variant: "Q4_K_M".into(),
+                accept_license: true,
+                token: Some("hf_asked".into()),
+            };
+            let wire = serde_json::to_string(&install).unwrap();
+            let back: RpcAction = serde_json::from_str(&wire).unwrap();
+            assert!(matches!(
+                back,
+                RpcAction::HubInstall { accept_license: true, ref token, .. } if token.as_deref() == Some("hf_asked")
+            ));
+            assert!(cli_for_rpc(back).is_none());
+            let worker =
+                Cli::try_parse_from(["manager", "worker-user", "--model", "hf/acme/x/q4_0"]).unwrap();
+            assert!(rpc_action(&worker.command).is_err());
+            assert!(hub_search("chat", "pickle", None).is_err());
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("x.gguf");
+            std::fs::write(&file, b"not a model").unwrap();
+            assert!(gguf_file_size(&File::open(&file).unwrap()).is_err());
+            std::fs::write(&file, b"GGUF weights").unwrap();
+            assert_eq!(gguf_file_size(&File::open(&file).unwrap()).unwrap(), 12);
+        }
     }
 }

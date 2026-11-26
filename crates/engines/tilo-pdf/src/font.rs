@@ -670,3 +670,25 @@ pub(crate) fn deflate(data: &[u8]) -> Vec<u8> {
     }
     encoder.finish().unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_breaking_segments_keep_marks_and_break_between_words_and_ideographs() {
+        fn segments_keep_marks_with_their_base() {
+            let faces = library();
+            if faces.is_empty() {
+                return;
+            }
+            let segments = font_segments(faces, "e\u{301}x");
+            assert_eq!(segments.len(), 1, "{segments:?}");
+        }
+        {
+            assert_eq!(break_opportunities("ab cd  ef"), vec!["ab ", "cd  ", "ef"]);
+            assert_eq!(break_opportunities("你好a"), vec!["你", "好", "a"]);
+        }
+        segments_keep_marks_with_their_base();
+    }
+}

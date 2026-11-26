@@ -303,3 +303,70 @@ fn to_s16(samples: &[f32]) -> Vec<i16> {
         .map(|s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_before_the_demuxer_has_settled_is_not_proof_of_no_audio() {
+        // Nothing pulled, nothing linked, pads still arriving: an empty pull
+        // is a statement about the clock, not the file. A loaded machine
+        // produces exactly this.
+        assert!(!no_audio_concluded(false, false));
+        assert!(no_audio_concluded(true, false));
+        // An audio pad is linked, so quiet means it has not got going yet.
+        assert!(!no_audio_concluded(true, true));
+        assert!(!no_audio_concluded(false, true));
+    }
+
+    #[test]
+    fn samples_become_sixteen_bit_clipped_to_full_scale() {
+        let rows: [(&str, &[f32], &[i16]); 8] = [
+            ("nothing", &[], &[]),
+            ("silence", &[0.0, -0.0], &[0, 0]),
+            ("full scale", &[1.0, -1.0], &[32767, -32767]),
+            (
+                "beyond full scale clips",
+                &[1.5, -1.5, 1000.0],
+                &[32767, -32767, 32767],
+            ),
+            (
+                "infinity clips",
+                &[f32::INFINITY, f32::NEG_INFINITY],
+                &[32767, -32767],
+            ),
+            (
+                "half a step rounds away from zero",
+                &[0.5, -0.5],
+                &[16384, -16384],
+            ),
+            ("under half a step is silence", &[1e-6, -1e-6], &[0, 0]),
+            ("not a number is silence", &[f32::NAN], &[0]),
+        ];
+        for (row, samples, expected) in rows {
+            assert_eq!(to_s16(samples), expected, "{row}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_source_fails_without_waiting_out_the_budget() {
+        crate::test_gst::shared_registry();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let junk = dir.path().join("junk.mp4");
+        std::fs::write(&junk, b"not a container, not even close").expect("write");
+        let mut samples = 0usize;
+        let end = decode(
+            &Source::LocalFile(junk),
+            8_000,
+            1,
+            Duration::from_secs(600),
+            |s| samples = samples.saturating_add(s.len()),
+        );
+        assert_eq!(samples, 0, "there is no audio in junk");
+        assert!(
+            matches!(end, PcmEnd::Failed | PcmEnd::NoAudio),
+            "the pipeline's own failure ends the wait, got {end:?}"
+        );
+    }
+}

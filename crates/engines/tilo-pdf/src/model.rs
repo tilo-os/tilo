@@ -452,3 +452,60 @@ pub(crate) fn parse_default_appearance(da: &str) -> (Option<f32>, Option<Rgba>) 
     }
     (size, color)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tiles_cover_the_visible_region_at_stable_scales() {
+        {
+            let page = PageSize {
+                width: 600.0,
+                height: 800.0,
+            };
+            let options = RenderOptions {
+                scale: 2.0,
+                ..RenderOptions::default()
+            };
+            let grid = TileGrid { tile: 512 };
+            let all = grid.tiles(
+                page,
+                &options,
+                PixelRect {
+                    x: 0,
+                    y: 0,
+                    width: u32::MAX,
+                    height: u32::MAX,
+                },
+            );
+            // 1200 x 1600 px → 3 x 4 tiles.
+            assert_eq!(all.len(), 12);
+            let covered: u64 = all
+                .iter()
+                .map(|t| u64::from(t.region.width) * u64::from(t.region.height))
+                .sum();
+            assert_eq!(covered, 1200 * 1600);
+            let some = grid.tiles(
+                page,
+                &options,
+                PixelRect {
+                    x: 600,
+                    y: 600,
+                    width: 10,
+                    height: 10,
+                },
+            );
+            assert_eq!(some.len(), 1);
+            assert_eq!((some[0].col, some[0].row), (1, 1));
+        }
+        {
+            assert_eq!(TileGrid::snap_scale(1.0), 1.0);
+            assert_eq!(TileGrid::snap_scale(2.05), 2.0);
+            assert_eq!(
+                TileGrid::snap_scale(TileGrid::snap_scale(3.3)),
+                TileGrid::snap_scale(3.3)
+            );
+        }
+    }
+}

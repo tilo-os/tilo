@@ -525,3 +525,6 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
     let column = before.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
     (line, column)
 }
+
+#[cfg(test)]
+mod tests;

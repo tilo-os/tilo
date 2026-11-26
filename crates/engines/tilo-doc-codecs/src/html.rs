@@ -958,3 +958,430 @@ fn finish_inline(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_doc::Document;
+    use tilo_doc::snapshot::DocSnapshot;
+
+    fn import(src: &str) -> DocSnapshot {
+        import_with_inputs(src).0
+    }
+
+    fn import_with_inputs(src: &str) -> (DocSnapshot, ContentInputs) {
+        let mut d = Document::new();
+        let mut inputs = ContentInputs::new();
+        HtmlCodec
+            .import(src.as_bytes(), &mut d.as_mut(), &mut inputs)
+            .unwrap();
+        (d.materialize(), inputs)
+    }
+
+    fn import_html_under(
+        doc: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+        html: &str,
+        inputs: &mut ContentInputs,
+    ) {
+        let c = tilo_doc::model::init(doc, root);
+        let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
+        let mut dm = DocMut {
+            doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.bulk(|dm| import_html(html, dm, inputs));
+        if tilo_doc::model::blocks_in_order(dm.doc, &c).is_empty() {
+            dm.insert_block(None, "paragraph");
+        }
+    }
+
+    #[test]
+    fn html_round_trips_through_a_field_of_another_document() {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        let message = doc
+            .put_object(automerge::ROOT, "message", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(&message, "subject", "untouched").unwrap();
+        let body = doc
+            .put_object(&message, "body", automerge::ObjType::Map)
+            .unwrap();
+        import_html_under(
+            &mut doc,
+            &body,
+            "<h2>Plan</h2><p><b>ship</b> it</p>",
+            &mut ContentInputs::new(),
+        );
+        let html =
+            crate::export_html::render_html_fragment_under(&doc, &body, &tilo_content::NoContent)
+                .unwrap();
+        assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
+        assert!(html.contains("<strong>ship</strong> it"), "got: {html}");
+        assert!(
+            crate::export_html::render_html_fragment_under(
+                &doc,
+                &message,
+                &tilo_content::NoContent
+            )
+            .is_none(),
+            "the message itself holds no rich text"
+        );
+
+        let empty = doc
+            .put_object(&message, "empty", automerge::ObjType::Map)
+            .unwrap();
+        import_html_under(&mut doc, &empty, "", &mut ContentInputs::new());
+        let c = tilo_doc::model::open(&doc, &empty).unwrap();
+        assert_eq!(tilo_doc::model::blocks_in_order(&doc, &c).len(), 1);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn html_import_block_structure_and_tolerance() {
+        {
+            let snap = import("<h1>Title</h1><h2>Sub</h2><p>Body text</p>");
+            assert_eq!(snap.blocks[0].kind, "heading");
+            assert_eq!(snap.blocks[0].text, "Title");
+            assert_eq!(
+                snap.blocks[0].attrs.get("level"),
+                Some(&tilo_doc::AttrVal::Int(1))
+            );
+            assert_eq!(snap.blocks[1].kind, "heading");
+            assert_eq!(
+                snap.blocks[1].attrs.get("level"),
+                Some(&tilo_doc::AttrVal::Int(2))
+            );
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "Body text");
+        }
+        {
+            let snap = import("<blockquote><p>quoted line</p></blockquote>");
+            let q = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "quote")
+                .expect("quote block");
+            assert!(q.text.contains("quoted line"), "got {:?}", q.text);
+        }
+        {
+            let snap =
+                import("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
+            let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
+            assert_eq!(cells.len(), 4, "{snap:?}");
+            assert_eq!(
+                cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>(),
+                vec!["a", "b", "1", "2"]
+            );
+            assert_eq!(cells[0].attrs.get("row"), Some(&tilo_doc::AttrVal::Int(0)));
+            assert_eq!(cells[0].attrs.get("col"), Some(&tilo_doc::AttrVal::Int(0)));
+            assert_eq!(cells[3].attrs.get("row"), Some(&tilo_doc::AttrVal::Int(1)));
+            assert_eq!(cells[3].attrs.get("col"), Some(&tilo_doc::AttrVal::Int(1)));
+        }
+        {
+            let snap = import("<pre><code>let x = 1;\nlet y = 2;\n</code></pre>");
+            let code = snap
+                .blocks
+                .iter()
+                .find(|b| matches!(b.attrs.get("code"), Some(&tilo_doc::AttrVal::Bool(true))))
+                .expect("code block");
+            assert_eq!(code.text, "let x = 1;\nlet y = 2;\n");
+        }
+        {
+            let snap = import("<p>a &amp; b &lt; c &gt; d &#65; &#x42; &nbsp;e</p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "a & b < c > d A B \u{a0}e");
+        }
+        {
+            let snap = import("<head><title>Doc Title</title></head><body><p>Body</p></body>");
+            let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
+            assert_eq!(
+                texts,
+                vec!["Body".to_string()],
+                "title must not leak into body: {snap:?}"
+            );
+        }
+        {
+            let snap = import("<p>a   b\n  c</p>");
+            assert_eq!(snap.blocks[0].text, "a b c");
+        }
+        {
+            // No closing `</b>`/`</p>`; the importer must still produce sane blocks.
+            let snap = import("<p>start <b>bold and more");
+            let p = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("paragraph");
+            assert_eq!(p.text, "start bold and more");
+            assert!(
+                p.marks.iter().any(|m| m.name == "strong"),
+                "unclosed bold still marks: {:?}",
+                p.marks
+            );
+        }
+        {
+            let d = Document::new();
+            let err = HtmlCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap_err();
+            assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn html_import_marks_and_styles() {
+        {
+            let snap = import("<p>a<strong>b</strong><em>c</em><u>d</u><s>e</s></p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "abcde");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strong" && m.start == 1 && m.end == 2),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "em" && m.start == 2 && m.end == 3),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "underline" && m.start == 3 && m.end == 4),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "strike" && m.start == 4 && m.end == 5),
+                "{:?}",
+                p.marks
+            );
+        }
+        {
+            let snap = import("<p><b>x</b> <i>y</i></p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "x y");
+            assert!(p.marks.iter().any(|m| m.name == "strong"), "{:?}", p.marks);
+            assert!(p.marks.iter().any(|m| m.name == "em"), "{:?}", p.marks);
+        }
+        {
+            let snap = import(r#"<p>See <a href="https://tilo.so/">the docs</a> now</p>"#);
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "See the docs now");
+            let link = p
+                .marks
+                .iter()
+                .find(|m| m.name == "link")
+                .expect("link mark");
+            assert_eq!(
+                link.value,
+                tilo_doc::document::MarkValue::Str("https://tilo.so/".into())
+            );
+            assert_eq!(p.text.get(link.start..link.end), Some("the docs"));
+        }
+        {
+            let snap = import(
+                r#"<p><span style="color: #ff0000; font-size: 20pt; font-family: serif">styled</span></p>"#,
+            );
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "styled");
+            assert!(
+                p.marks.iter().any(|m| m.name == "color"
+                    && m.value == tilo_doc::document::MarkValue::Str("#ff0000".into())),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "fontSize"
+                        && m.value == tilo_doc::document::MarkValue::Int(20)),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks.iter().any(|m| m.name == "fontFamily"
+                    && m.value == tilo_doc::document::MarkValue::Str("serif".into())),
+                "{:?}",
+                p.marks
+            );
+        }
+        {
+            let snap = import(r#"<p><span style="background: #ffff00">hi</span></p>"#);
+            let p = &snap.blocks[0];
+            assert!(
+                p.marks.iter().any(|m| m.name == "highlight"
+                    && m.value == tilo_doc::document::MarkValue::Str("#ffff00".into())),
+                "{:?}",
+                p.marks
+            );
+        }
+        {
+            let snap = import("<p>x<sup>2</sup>y<sub>n</sub></p>");
+            let p = &snap.blocks[0];
+            assert_eq!(p.text, "x2yn");
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "super" && m.start == 1 && m.end == 2),
+                "{:?}",
+                p.marks
+            );
+            assert!(
+                p.marks
+                    .iter()
+                    .any(|m| m.name == "sub" && m.start == 3 && m.end == 4),
+                "{:?}",
+                p.marks
+            );
+        }
+    }
+
+    fn html_import_lists_carry_kind_and_level() {
+        {
+            let snap = import("<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>");
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 3, "{snap:?}");
+            assert_eq!(items[0].text, "one");
+            assert_eq!(
+                items[0].attrs.get("ordered"),
+                Some(&tilo_doc::AttrVal::Bool(false))
+            );
+            assert_eq!(
+                items[2].attrs.get("ordered"),
+                Some(&tilo_doc::AttrVal::Bool(true))
+            );
+        }
+        {
+            let snap = import("<ul><li>top</li><ul><li>sub</li></ul></ul>");
+            let items: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "list_item")
+                .collect();
+            assert_eq!(items.len(), 2);
+            let sub = items.iter().find(|b| b.text == "sub").expect("sub item");
+            assert_eq!(
+                sub.attrs.get("level"),
+                Some(&tilo_doc::AttrVal::Int(1)),
+                "{:?}",
+                sub.attrs
+            );
+        }
+    }
+
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "the embedded CSS `p{color:red}` is opaque test fixture text, not a format string"
+    )]
+    fn script_and_style_are_skipped() {
+        let snap = import(
+            "<p>before</p><script>alert('x'); 1 < 2;</script><style>p{color:red}</style><p>after</p>",
+        );
+        let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
+        assert_eq!(
+            texts,
+            vec!["before".to_string(), "after".to_string()],
+            "{snap:?}"
+        );
+    }
+
+    fn html_import_images_decode_data_uris_and_keep_remote_src() {
+        {
+            assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
+            assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
+            assert_eq!(
+                base64_decode(" Zm9v\r\n YmFy\t").as_deref(),
+                Some(&b"foobar"[..])
+            );
+            assert_eq!(
+                base64_decode("+/+/").as_deref(),
+                Some(&[0xfb, 0xff, 0xbf][..])
+            );
+            assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
+            assert_eq!(base64_decode(" \n").as_deref(), Some(&[][..]));
+            assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
+            assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
+            assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
+            assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
+            assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
+            assert_eq!(base64_decode("Zm9v-_"), None);
+            assert_eq!(base64_decode("Zm9vY!"), None);
+            assert_eq!(base64_decode("!"), None);
+            assert_eq!(base64_decode("Zm9v\u{a0}"), None);
+        }
+        {
+            let (snap, inputs) =
+                import_with_inputs(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
+            let img = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "image")
+                .expect("image block");
+            assert_eq!(img.text, "pic");
+            let blob = match img.attrs.get("blob") {
+                Some(tilo_doc::AttrVal::Str(s)) => s.clone(),
+                other => panic!("expected blob attr, got {other:?}"),
+            };
+            assert_eq!(inputs.get(&blob), Some(b"A".as_slice()), "{inputs:?}");
+        }
+        {
+            let snap = import(r#"<img src="https://example.com/p.png" alt="remote">"#);
+            let img = snap
+                .blocks
+                .iter()
+                .find(|b| b.kind == "image")
+                .expect("image block");
+            assert_eq!(img.text, "remote");
+            assert_eq!(
+                img.attrs.get("src"),
+                Some(&tilo_doc::AttrVal::Str("https://example.com/p.png".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn html_imports_blocks_marks_lists_and_images_and_skips_script_and_style() {
+        let cases: [(&str, fn()); 5] = [
+            (
+                "html import block structure and tolerance",
+                html_import_block_structure_and_tolerance,
+            ),
+            ("html import marks and styles", html_import_marks_and_styles),
+            (
+                "html import lists carry kind and level",
+                html_import_lists_carry_kind_and_level,
+            ),
+            ("script and style are skipped", script_and_style_are_skipped),
+            (
+                "html import images decode data uris and keep remote src",
+                html_import_images_decode_data_uris_and_keep_remote_src,
+            ),
+        ];
+        for (case, run) in cases {
+            eprintln!("case: {case}");
+            run();
+        }
+    }
+}

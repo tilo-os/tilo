@@ -179,3 +179,31 @@ impl Drop for Session {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_session_publishes_to_the_info_center_and_withdraws() {
+        let mut session = Session::start(&(Arc::new(|_| {}) as NowPlayingHandler));
+        session.update(
+            &NowPlaying {
+                title: "Aria".into(),
+                artist: "Tilo".into(),
+                album: String::new(),
+                artwork_url: None,
+            },
+            &NowPlayingState {
+                status: PlaybackStatus::Playing,
+                position: Duration::from_secs(3),
+                duration: Some(Duration::from_secs(180)),
+                rate: 1.0,
+            },
+        );
+        assert_eq!(session.published_title().as_deref(), Some("Aria"));
+        let center = session.center.clone();
+        drop(session);
+        assert!(unsafe { center.nowPlayingInfo() }.is_none());
+    }
+}

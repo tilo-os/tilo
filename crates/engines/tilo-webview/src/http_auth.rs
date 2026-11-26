@@ -171,3 +171,128 @@ pub fn answers(asker: &str, credentials: Option<&HttpAuthCredentials>) -> bool {
         && asker.len() <= MAX_HTTP_AUTH_ASKER
         && credentials.is_none_or(HttpAuthCredentials::within_limits)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn challenge(asker: &str, proxy: bool) -> HttpAuthChallenge {
+        HttpAuthChallenge {
+            id: 1,
+            asker: asker.into(),
+            proxy,
+            realm: "Staff room".into(),
+            scheme: "basic".into(),
+            retry: false,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_sign_in_challenge_and_its_credentials_are_well_formed_and_bounded;
+
+        phase an_asker_is_an_origin_or_a_proxys_host_and_port_and_nothing_more;
+        {
+            for (asker, proxy) in [
+                ("https://example.org", false),
+                ("http://127.0.0.1:8080", false),
+                ("http://[::1]:8080", false),
+                ("proxy.example:3128", true),
+            ] {
+                assert!(challenge(asker, proxy).well_formed(), "{asker}");
+            }
+            for (asker, proxy) in [
+                ("", false),
+                ("example.org", false),
+                ("https://", false),
+                ("https://example.org/login", false),
+                ("https://ada@example.org", false),
+                ("https://example.org?x", false),
+                ("https://exa mple.org", false),
+                ("ftp://example.org", false),
+                ("https://example.org", true),
+                ("proxy.example", true),
+                ("proxy.example:", true),
+                ("proxy.example:http", true),
+            ] {
+                assert!(!challenge(asker, proxy).well_formed(), "{asker}");
+            }
+            let long = format!("https://{}", "a".repeat(MAX_HTTP_AUTH_ASKER));
+            assert!(!challenge(&long, false).well_formed());
+            let mut odd = challenge("https://example.org", false);
+            odd.realm = "Staff\nroom".into();
+            assert!(!odd.well_formed(), "a realm is one line of text");
+            odd.realm = "x".repeat(MAX_HTTP_AUTH_REALM + 1);
+            assert!(!odd.well_formed());
+            odd.realm = String::new();
+            odd.scheme = "Basic realm".into();
+            assert!(!odd.well_formed());
+            odd.scheme = String::new();
+            assert!(odd.well_formed(), "a realm and a scheme may be empty");
+            odd.id = 0;
+            assert!(!odd.well_formed());
+        }
+
+        phase a_site_is_read_without_its_scheme_and_plain_http_is_said;
+        {
+            assert_eq!(
+                challenge("https://example.org", false).site(),
+                "example.org"
+            );
+            assert_eq!(
+                challenge("http://192.168.1.1:8080", false).site(),
+                "192.168.1.1:8080"
+            );
+            assert_eq!(
+                challenge("proxy.example:3128", true).site(),
+                "proxy.example:3128"
+            );
+            for clear in [
+                "http://example.org",
+                "http://192.168.1.1",
+                "http://router.lan:8080",
+                "http://localhost.example",
+                "http://[2001:db8::1]:8080",
+            ] {
+                assert!(challenge(clear, false).sends_in_the_clear(), "{clear}");
+            }
+            for kept in [
+                "https://example.org",
+                "http://localhost",
+                "http://localhost:8080",
+                "http://app.localhost:3000",
+                "http://127.0.0.1:8080",
+                "http://127.9.9.9",
+                "http://[::1]:8080",
+            ] {
+                assert!(!challenge(kept, false).sends_in_the_clear(), "{kept}");
+            }
+            assert!(!challenge("proxy.example:3128", true).sends_in_the_clear());
+        }
+
+        phase credentials_are_never_printed_and_stay_within_their_bounds;
+        {
+            let credentials = HttpAuthCredentials::new("ada", "correct-horse-9");
+            let printed = format!("{credentials:?}");
+            assert!(!printed.contains("correct-horse-9") && !printed.contains("ada"));
+            assert_eq!(credentials.username(), "ada");
+            assert_eq!(credentials.password(), "correct-horse-9");
+            assert!(answers("https://example.org", Some(&credentials)));
+            assert!(answers("https://example.org", None), "none cancels");
+            assert!(!answers("", None));
+            assert!(!answers(&"a".repeat(MAX_HTTP_AUTH_ASKER + 1), None));
+            let long = "x".repeat(MAX_HTTP_AUTH_CREDENTIAL + 1);
+            assert!(!answers(
+                "https://example.org",
+                Some(&HttpAuthCredentials::new(long.clone(), "p"))
+            ));
+            assert!(!answers(
+                "https://example.org",
+                Some(&HttpAuthCredentials::new("u", long))
+            ));
+            assert!(answers(
+                "https://example.org",
+                Some(&HttpAuthCredentials::new("", ""))
+            ));
+        }
+    }
+}

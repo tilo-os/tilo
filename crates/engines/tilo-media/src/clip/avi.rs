@@ -338,3 +338,122 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::ImageEncoder as _;
+
+    /// A JPEG encoder for the tests, the same one an app hands the recorder.
+    fn encode(rgb: &[u8], w: u32, h: u32, quality: u8) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
+            .write_image(rgb, w, h, image::ExtendedColorType::Rgb8)
+            .ok()?;
+        Some(bytes)
+    }
+
+    fn solid(width: u32, height: u32, red: u8, green: u8, blue: u8) -> Vec<u8> {
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        for px in rgba.chunks_exact_mut(4) {
+            px[0] = red;
+            px[1] = green;
+            px[2] = blue;
+            px[3] = 255;
+        }
+        rgba
+    }
+
+    fn push(rec: &mut Recorder, width: u32, height: u32, red: u8, green: u8, blue: u8) -> bool {
+        let rgba = solid(width, height, red, green, blue);
+        rec.push(&Frame {
+            width,
+            height,
+            rgba: &rgba,
+        })
+    }
+
+    fn finish(rec: Recorder) -> Option<(Vec<u8>, i64)> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        rec.finish(Box::new(move |clip| {
+            let _ = tx.send(clip);
+        }));
+        rx.recv().ok().and_then(Result::ok)
+    }
+
+    #[test]
+    fn recorder_writes_probeable_avi_of_real_jpeg_frames_and_rejects_bad_input() {
+        {
+            let mut rec = Recorder::new(FPS, encode);
+            assert!(rec.is_empty());
+            for i in 0..5u8 {
+                assert!(push(&mut rec, 64, 48, i * 40, 100, 200));
+            }
+            assert_eq!(rec.frame_count(), 5);
+            // 5 frames at 30fps ≈ 166 ms.
+            assert_eq!(rec.duration_ms(), 166);
+            let (avi, duration) = finish(rec).expect("non-empty clip encodes");
+            assert_eq!(duration, 166);
+
+            assert_eq!(&avi[0..4], b"RIFF");
+            assert_eq!(&avi[8..12], b"AVI ");
+            let riff_size = u32::from_le_bytes([avi[4], avi[5], avi[6], avi[7]]) as usize;
+            assert_eq!(riff_size, avi.len() - 8);
+            // The movi list and a per-frame index are present.
+            assert!(find(&avi, b"movi").is_some());
+            assert!(find(&avi, b"idx1").is_some());
+            // Exactly five "00dc" frame chunks were written into movi.
+            let dc = avi.windows(4).filter(|w| *w == b"00dc").count();
+            // Each frame appears once in movi and once in idx1.
+            assert_eq!(dc, 5 * 2);
+        }
+        {
+            let mut rec = Recorder::new(FPS, encode);
+            push(&mut rec, 80, 60, 10, 220, 30);
+            let (avi, _) = finish(rec).unwrap();
+
+            // Locate the first "00dc" chunk and pull its payload.
+            let movi = find(&avi, b"movi").unwrap();
+            let dc = find(&avi[movi..], b"00dc").unwrap() + movi;
+            let size =
+                u32::from_le_bytes([avi[dc + 4], avi[dc + 5], avi[dc + 6], avi[dc + 7]]) as usize;
+            let payload = &avi[dc + 8..dc + 8 + size];
+            assert_eq!(&payload[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
+
+            let decoded = image::load_from_memory_with_format(payload, image::ImageFormat::Jpeg)
+                .expect("embedded frame decodes as JPEG");
+            assert_eq!((decoded.width(), decoded.height()), (80, 60));
+        }
+        {
+            let mut rec = Recorder::new(FPS, encode);
+            for _ in 0..12 {
+                push(&mut rec, 48, 32, 90, 90, 90);
+            }
+            let (bytes, _) = finish(rec).unwrap();
+
+            let dir = std::env::temp_dir().join(format!("clip-probe-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("VID_20260101_000000_000.avi");
+            std::fs::write(&path, &bytes).unwrap();
+
+            let (w, h, dur) = probe_avi(&path).expect("probe the written clip");
+            assert_eq!((w, h), (48, 32));
+            // 12 frames at 30 fps ≈ 400 ms.
+            assert_eq!(dur, 400);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            Recorder::new(FPS, encode).finish(Box::new(move |clip| {
+                let _ = tx.send(clip);
+            }));
+            assert!(matches!(rx.recv(), Ok(Err(_))));
+        }
+        {
+            let mut rec = Recorder::new(FPS, encode);
+            assert!(push(&mut rec, 32, 32, 1, 2, 3));
+            assert!(!push(&mut rec, 64, 64, 4, 5, 6), "size change rejected");
+            assert_eq!(rec.frame_count(), 1);
+        }
+    }
+}

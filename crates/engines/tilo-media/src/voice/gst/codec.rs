@@ -6,6 +6,10 @@ use super::{
 };
 use gst::prelude::*;
 
+#[cfg(test)]
+const RATE: i32 = 48_000;
+#[cfg(test)]
+const CHANNELS: i32 = 1;
 /// One encode covers at most 5 s of 48 kHz mono: long enough to observe the
 /// encoder settle into DTX.
 const MAX_ENCODE_SAMPLES: usize = 5 * 48_000;
@@ -164,5 +168,36 @@ impl OpusDecoder {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shared_real_codec_roundtrip_is_device_free_and_bounded() {
+        crate::test_gst::shared_registry();
+        let mut encoder = OpusEncoder::new().expect("required Opus encoder");
+        let mut decoder = OpusDecoder::new().expect("required Opus decoder");
+        let pcm = test_tone(RATE, CHANNELS, 60);
+        assert_eq!(pcm.len(), 2880);
+        assert!(pcm.iter().any(|sample| sample.abs() > 1000));
+        assert!(test_tone(RATE, CHANNELS, 1001).is_empty());
+        let packets = encoder.encode(&pcm);
+        assert!(!packets.is_empty());
+        assert!(
+            packets
+                .iter()
+                .all(|packet| !packet.is_empty() && packet.len() <= MAX_PACKET_BYTES)
+        );
+        assert!(
+            packets
+                .iter()
+                .map(|packet| decoder.decode(packet).len())
+                .sum::<usize>()
+                >= 1920
+        );
+        assert!(encoder.encode(&vec![0; MAX_ENCODE_SAMPLES + 1]).is_empty());
+        assert!(decoder.decode(&vec![0; MAX_PACKET_BYTES + 1]).is_empty());
     }
 }

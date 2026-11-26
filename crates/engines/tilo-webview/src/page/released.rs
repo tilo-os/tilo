@@ -317,3 +317,180 @@ fn hex(digit: u8) -> Option<u8> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::super::{PageFieldChange, PageNavigation};
+    use super::*;
+
+    /// A text with what an address escapes: a blank, a slash, a plus and a percent sign.
+    const TEXT: &str = "correct horse/battery staple+1%";
+    const CODE: &str = "481516";
+
+    #[test]
+    fn a_released_text_is_held_once_and_prints_nothing() {
+        let released = ReleasedText::new(TEXT.to_owned());
+        let copy = released.clone();
+        assert_eq!(released, copy, "a copy is the same text");
+        assert_ne!(
+            released,
+            ReleasedText::new(TEXT.to_owned()),
+            "what two hold is never compared"
+        );
+        assert_eq!(released.held_bytes(), Some(TEXT.len()));
+        assert_eq!(format!("{released:?}"), "ReleasedText(..)");
+        assert_eq!(copy.read(|text| text == TEXT), Some(true));
+
+        // The one write takes it, and then no copy holds it.
+        let taken = copy.take().unwrap();
+        assert_eq!(taken.as_str(), TEXT);
+        assert!(released.take().is_none());
+        assert_eq!(released.held_bytes(), None);
+        assert_eq!(released.read(str::len), None);
+
+        for (into, word) in [
+            (FillInto::Password, "password"),
+            (FillInto::Code, "code"),
+            (FillInto::Value, "value"),
+        ] {
+            assert_eq!(into.as_str(), word);
+        }
+    }
+
+    #[test]
+    fn what_a_window_sent_is_struck_out_however_the_page_writes_it() {
+        let mut struck = StruckTexts::default();
+        assert!(struck.is_empty());
+        struck.hold(&ReleasedText::new(TEXT.to_owned()));
+        struck.hold(&ReleasedText::new(CODE.to_owned()));
+        assert!(!struck.is_empty());
+        let printed = format!("{struck:?}");
+        assert!(
+            !printed.contains(CODE) && !printed.contains("horse"),
+            "{printed}"
+        );
+
+        for said in [
+            format!("signed in with {TEXT}"),
+            // As a script escapes it for an address, in either case of the digits.
+            "q=correct%20horse%2Fbattery%20staple%2B1%25&x=1".to_owned(),
+            "q=correct%20horse%2fbattery%20staple%2b1%25&x=1".to_owned(),
+            // As a sent form writes it: a blank is a plus sign.
+            "https://example.test/in?p=correct+horse%2Fbattery+staple%2B1%25".to_owned(),
+            // Some bytes escaped that need not be, and the last percent sign as it is.
+            "%63%6f%72%72%65%63%74 horse/battery%20staple+1%".to_owned(),
+            format!("code {CODE}, twice: {CODE}"),
+        ] {
+            let mut text = said.clone();
+            assert!(struck.strike(&mut text), "{said}");
+            assert!(text.contains(STRUCK), "{text}");
+            for held in ["correct", "horse", "staple", CODE] {
+                assert!(!text.contains(held), "{text}");
+            }
+        }
+        let mut whole = "q=correct%20horse%2Fbattery%20staple%2B1%25&x=1".to_owned();
+        struck.strike(&mut whole);
+        assert_eq!(whole, format!("q={STRUCK}&x=1"));
+
+        // A part of it is no use of it, and is left as the page wrote it.
+        let mut apart = "nothing of it: correct horse, 48151".to_owned();
+        assert!(!struck.strike(&mut apart));
+        assert_eq!(apart, "nothing of it: correct horse, 48151");
+
+        let mut data = serde_json::json!({
+            "entries": [
+                {"level": "log", "text": format!("pw={TEXT}")},
+                {"url": format!("https://example.test/in?code={CODE}"), "status": 200},
+                {"args": [481_516, "x", null, true]},
+            ],
+            CODE: true,
+        });
+        assert!(struck.strike_json(&mut data));
+        let written = data.to_string();
+        assert!(
+            !written.contains(CODE) && !written.contains("horse"),
+            "{written}"
+        );
+        assert_eq!(data["entries"][2]["args"][0], STRUCK);
+        assert_eq!(data["entries"][2]["args"][1], "x");
+        assert_eq!(data["entries"][1]["status"], 200);
+        assert_eq!(data[STRUCK], true);
+        let mut clean = serde_json::json!({"entries": [{"text": "nothing"}], "n": 7});
+        assert!(!struck.strike_json(&mut clean));
+        assert_eq!(
+            clean,
+            serde_json::json!({"entries": [{"text": "nothing"}], "n": 7})
+        );
+    }
+
+    #[test]
+    fn an_answer_a_refusal_and_a_change_are_struck_whole() {
+        let mut struck = StruckTexts::default();
+        struck.hold(&ReleasedText::new(TEXT.to_owned()));
+        let mut reply = PageReply {
+            url: "https://example.test/in?p=correct+horse%2Fbattery+staple%2B1%25".into(),
+            message: format!("Filled with {TEXT}"),
+            outline: Some(format!("- textbox \"{TEXT}\"")),
+            data: Some(serde_json::json!({"entries": [{"text": TEXT}]})),
+            image: None,
+            navigation: PageNavigation::None,
+            loading: false,
+            record: PageResourceNote {
+                seq: Some(3),
+                others: vec![serde_json::json!({"text": TEXT})],
+                others_earlier: 0,
+            },
+        };
+        struck.strike_reply(&mut reply);
+        let printed = format!("{reply:?}");
+        assert!(
+            !printed.contains("horse") && printed.contains(STRUCK),
+            "{printed}"
+        );
+        assert_eq!(reply.url, format!("https://example.test/in?p={STRUCK}"));
+
+        let mut failure = PageFailure::new("refused", format!("no field takes {TEXT}"));
+        struck.strike_failure(&mut failure);
+        let printed = format!("{failure:?}");
+        assert!(!printed.contains("horse"), "{printed}");
+        assert_eq!(failure.code, "refused");
+
+        let mut change = PageChange::default();
+        change.fields.push(PageFieldChange {
+            name: TEXT.into(),
+            question: Some(format!("Is it {TEXT}?")),
+            ..PageFieldChange::default()
+        });
+        struck.strike_change(&mut change);
+        let printed = format!("{change:?}");
+        assert!(!printed.contains("horse"), "{printed}");
+
+        // A window that sent nothing changes nothing.
+        let nothing = StruckTexts::default();
+        let mut said = format!("pw={TEXT}");
+        assert!(!nothing.strike(&mut said));
+        assert_eq!(said, format!("pw={TEXT}"));
+    }
+
+    #[test]
+    fn a_window_keeps_the_newest_texts_and_nothing_of_one_taken() {
+        let mut struck = StruckTexts::default();
+        let taken = ReleasedText::new("taken-before-it-was-kept".to_owned());
+        drop(taken.take());
+        struck.hold(&taken);
+        struck.hold(&ReleasedText::new(String::new()));
+        assert!(struck.is_empty());
+
+        for number in 0..=MAX_STRUCK {
+            struck.hold(&ReleasedText::new(format!("released-{number}-text")));
+        }
+        let mut said = format!("released-0-text and released-{MAX_STRUCK}-text");
+        assert!(struck.strike(&mut said));
+        assert_eq!(said, format!("released-0-text and {STRUCK}"));
+    }
+}

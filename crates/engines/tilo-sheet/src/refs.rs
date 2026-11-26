@@ -3,6 +3,9 @@
 //! names. Everything works on the raw text, so a formula keeps its spelling through every
 //! rewrite.
 
+#[cfg(test)]
+use std::collections::HashMap;
+
 use crate::model::{Addr, GridEdit, a1_to_addr, addr_to_a1};
 
 /// A bounds-checked cursor over a formula's characters: every read goes through it, so a
@@ -137,6 +140,18 @@ pub fn references(body: &str) -> Vec<RefSpan> {
     out
 }
 
+/// A colour slot per span, in first-appearance order, so identical references share one.
+#[cfg(test)]
+pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
+    let mut map: HashMap<&str, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(spans.len());
+    for s in spans {
+        let next = map.len();
+        out.push(*map.entry(s.key.as_str()).or_insert(next));
+    }
+    out
+}
+
 /// A formula whose relative references shift by `(dcol, drow)`, as a copy or fill moves them:
 /// `$A1` locks the column, `A$1` the row, `$A$1` both; a range shifts each end; literals,
 /// function names and exponents stay as written. A component never underflows past column `A`
@@ -227,6 +242,17 @@ pub fn remap_sheet_refs(raw: &str, edit: GridEdit, own: bool, named: Option<&str
     })
 }
 
+/// Each reference of a formula: the sheet it names as written (`None` for the formula's own)
+/// and the corners of what it reads. Whole rows and columns reach the last column and row.
+#[cfg(test)]
+pub fn each_reference(raw: &str, mut visit: impl FnMut(Option<&str>, Addr, Addr)) {
+    drop(rewrite_refs(raw, &mut |sheet, reference| {
+        let (start, end) = reference.corners();
+        visit(sheet, start, end);
+        Moved::Kept
+    }));
+}
+
 /// A formula with each reference to another sheet renamed by `rename`, which gets the name as
 /// written and answers the one to write instead.
 pub fn rename_sheets(raw: &str, rename: &mut dyn FnMut(&str) -> Option<String>) -> String {
@@ -287,7 +313,33 @@ pub(crate) enum Ref {
     Lines(Line, String, Line),
 }
 
-impl Ref {}
+impl Ref {
+    /// The top-left and bottom-right cells it reads.
+    #[cfg(test)]
+    fn corners(&self) -> (Addr, Addr) {
+        match self {
+            Self::Cell(cell) => (cell.addr, cell.addr),
+            Self::Range(first, _, second) => (
+                (
+                    first.addr.0.min(second.addr.0),
+                    first.addr.1.min(second.addr.1),
+                ),
+                (
+                    first.addr.0.max(second.addr.0),
+                    first.addr.1.max(second.addr.1),
+                ),
+            ),
+            Self::Lines(first, _, second) => {
+                let (low, high) = (first.at.min(second.at), first.at.max(second.at));
+                if first.rows {
+                    ((0, low), (u32::MAX, high))
+                } else {
+                    ((low, 0), (high, u32::MAX))
+                }
+            }
+        }
+    }
+}
 
 /// What a rewrite does with one reference.
 pub(crate) enum Moved {
@@ -602,5 +654,240 @@ impl RefToken {
         }
         result.push_str(&row.saturating_add(1).to_string());
         result
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::string_slice, reason = "test fixtures")]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn references_parse_move_and_remap;
+
+        phase references_report_spans_targets_and_colours;
+        {
+            {
+                let spans = references("B9-B7");
+                assert_eq!(spans.len(), 2);
+                assert_eq!(spans[0].tl, a1_to_addr("B9").unwrap());
+                assert_eq!(spans[0].br, a1_to_addr("B9").unwrap());
+                assert_eq!(spans[1].tl, a1_to_addr("B7").unwrap());
+                assert_eq!(&"B9-B7"[spans[0].start..spans[0].end], "B9");
+                assert_eq!(&"B9-B7"[spans[1].start..spans[1].end], "B7");
+                let slots = ref_color_slots(&spans);
+                assert_eq!(slots, vec![0, 1], "two different refs → two colours");
+            }
+
+            {
+                let spans = references("SUM(B2:D2)+B2");
+                assert_eq!(spans.len(), 2, "SUM is a call, not a ref");
+                assert_eq!(spans[0].key, "B2:D2");
+                assert_eq!(spans[0].tl, a1_to_addr("B2").unwrap());
+                assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
+                assert_eq!(spans[1].key, "B2");
+
+                let dup = references("A1+A1");
+                let slots = ref_color_slots(&dup);
+                assert_eq!(slots, vec![0, 0]);
+            }
+
+            {
+                let spans = references("IF(B7>B9,\"A1\",\"B2\")");
+                let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
+                assert_eq!(keys, vec!["B7", "B9"]);
+            }
+        }
+
+        phase reference_offsets_and_structural_remaps;
+        {
+            {
+                assert_eq!(offset_refs("=A1", 0, 1), "=A2");
+                assert_eq!(offset_refs("=A1", 1, 0), "=B1");
+                assert_eq!(offset_refs("=A1", 1, 1), "=B2");
+
+                // `$A$1` is fully anchored and never moves anywhere.
+                assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
+                assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
+                assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
+
+                assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
+                assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
+            }
+
+            {
+                // Function names and quoted string literals are never references.
+                assert_eq!(
+                    offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+                    "=IF(A2>0,\"A1\",B3)"
+                );
+                assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
+                assert_eq!(offset_refs("1200", 3, 3), "1200");
+                assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
+                // A relative component never underflows past the grid origin.
+                assert_eq!(offset_refs("=A1", -5, -5), "=A1");
+            }
+
+            {
+                let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
+                assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
+
+                let deleted = remap_refs("=SUM(A1:A3)+B2", GridEdit::DeleteRow(1));
+                assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
+            }
+
+            {
+                let row = |raw| remap_refs(raw, GridEdit::DeleteRow(1));
+                assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B2)");
+                assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B1)");
+                assert_eq!(row("=SUM(B1:B3)"), "=SUM(B1:B2)");
+                assert_eq!(row("=SUM(B3:B4)"), "=SUM(B2:B3)");
+                assert_eq!(row("=SUM(B1:C1)"), "=SUM(B1:C1)");
+                assert_eq!(row("=SUM(B2:D2)"), "=SUM(#REF!)");
+                assert_eq!(row("=SUM($B$2:$B$3)"), "=SUM($B$2:$B$2)");
+                assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
+                assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
+                assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
+                assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
+
+                let col = |raw| remap_refs(raw, GridEdit::DeleteColumn(1));
+                assert_eq!(col("=SUM(B1:C1)"), "=SUM(B1:B1)");
+                assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:A1)");
+                assert_eq!(col("=SUM($A$1:$C$9)"), "=SUM($A$1:$B$9)");
+                assert_eq!(col("=SUM(C1:D1)"), "=SUM(B1:C1)");
+                assert_eq!(col("=SUM(B1:B9)"), "=SUM(#REF!)");
+                assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
+            }
+
+            {
+                let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
+                assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");
+                assert_eq!(row("=SUM(B3:B4)"), "=SUM(B4:B5)");
+                assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B2)");
+                let col = |raw| remap_refs(raw, GridEdit::InsertColumn(1));
+                assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
+                assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
+            }
+        }
+
+        phase whole_rows_and_columns_move_like_ranges;
+        {
+            assert_eq!(offset_refs("=SUM(1:1)", 3, 1), "=SUM(2:2)");
+            assert_eq!(offset_refs("=SUM(A:A)", 1, 3), "=SUM(B:B)");
+            assert_eq!(offset_refs("=SUM($1:3)", 0, 2), "=SUM($1:5)");
+            assert_eq!(offset_refs("=SUM(A:$C)", 2, 0), "=SUM(C:$C)");
+            assert_eq!(offset_refs("=SUM(2 : 4)", 0, -5), "=SUM(1 : 1)");
+            assert_eq!(offset_refs("=SUM(Rates!B:C)", 1, 0), "=SUM(Rates!C:D)");
+            assert_eq!(offset_refs("=1+2*A1", 0, 1), "=1+2*A2");
+            assert_eq!(offset_refs("=A1:B2", 0, 1), "=A2:B3");
+            assert_eq!(offset_refs("=\"1:1\"&A1", 0, 1), "=\"1:1\"&A2");
+
+            assert_eq!(remap_refs("=SUM(2:3)", GridEdit::InsertRow(0)), "=SUM(3:4)");
+            assert_eq!(
+                remap_refs("=SUM($2:$3)", GridEdit::InsertRow(2)),
+                "=SUM($2:$4)"
+            );
+            assert_eq!(remap_refs("=SUM(2:3)", GridEdit::DeleteRow(1)), "=SUM(2:2)");
+            assert_eq!(
+                remap_refs("=SUM(2:2)", GridEdit::DeleteRow(1)),
+                "=SUM(#REF!)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(2:3)", GridEdit::InsertColumn(0)),
+                "=SUM(2:3)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(B:C)", GridEdit::InsertColumn(0)),
+                "=SUM(C:D)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(B:C)", GridEdit::DeleteColumn(2)),
+                "=SUM(B:B)"
+            );
+            assert_eq!(
+                remap_refs("=SUM(A:A)", GridEdit::DeleteColumn(0)),
+                "=SUM(#REF!)"
+            );
+            assert_eq!(remap_refs("=SUM(B:C)", GridEdit::DeleteRow(0)), "=SUM(B:C)");
+            assert_eq!(
+                remap_refs("=SUM(Rates!2:3)", GridEdit::InsertRow(0)),
+                "=SUM(Rates!2:3)"
+            );
+        }
+
+        phase references_to_other_sheets;
+        {
+            assert_eq!(
+                remap_refs("=A2+Rates!A2+'Q 3'!B2:B4", GridEdit::InsertRow(0)),
+                "=A3+Rates!A2+'Q 3'!B2:B4",
+                "rows inserted on this sheet do not move them"
+            );
+            assert_eq!(
+                offset_refs("=Rates!A2", 0, 1),
+                "=Rates!A3",
+                "a copy shifts them as any other"
+            );
+            assert_eq!(references("Rates!A2+B1").len(), 1);
+            let renamed = |raw: &str| {
+                rename_sheets(raw, &mut |written| {
+                    (fold_sheet(written) == "rates").then(|| "Q3 rates".to_owned())
+                })
+            };
+            assert_eq!(
+                renamed("=rates!A1+'Rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"),
+                "='Q3 rates'!A1+'Q3 rates'!B2:B3+\"Rates!A1\"+Other!A1+A1"
+            );
+            assert_eq!(renamed("Rates!A1"), "Rates!A1", "no formula");
+        }
+
+        phase references_naming_the_changed_sheet_move_wherever_they_are_written;
+        {
+            let elsewhere = |raw, edit| remap_sheet_refs(raw, edit, false, Some("q 3"));
+            assert_eq!(
+                elsewhere(
+                    "=A2+'Q 3'!A2+SUM('q 3'!B2:B4)+Rates!A2+\"'Q 3'!A2\"",
+                    GridEdit::InsertRow(0)
+                ),
+                "=A2+'Q 3'!A3+SUM('q 3'!B3:B5)+Rates!A2+\"'Q 3'!A2\"",
+                "only what names the changed sheet moves"
+            );
+            assert_eq!(
+                elsewhere(
+                    "='Q 3'!A2+SUM('Q 3'!B2:B4)+SUM('Q 3'!2:2)+'Q 3'!$A$9",
+                    GridEdit::DeleteRow(1)
+                ),
+                "=#REF!+SUM('Q 3'!B2:B3)+SUM(#REF!)+'Q 3'!$A$8",
+                "a deleted target is the error alone, without the name"
+            );
+            assert_eq!(
+                elsewhere("=SUM('Q 3'!B:C)+'Q 3'!b1", GridEdit::InsertColumn(0)),
+                "=SUM('Q 3'!C:D)+'Q 3'!C1"
+            );
+            assert_eq!(
+                elsewhere("=SUM('Q 3'!b:c)+'Q 3'!b1", GridEdit::InsertRow(4)),
+                "=SUM('Q 3'!b:c)+'Q 3'!b1",
+                "what does not move keeps its spelling"
+            );
+            let own = |raw| remap_sheet_refs(raw, GridEdit::InsertRow(0), true, Some("data"));
+            assert_eq!(own("=A2+Data!A2+Rates!A2"), "=A3+Data!A3+Rates!A2");
+            assert_eq!(
+                remap_sheet_refs("=A2+Data!A2", GridEdit::InsertRow(0), true, None),
+                "=A3+Data!A2",
+                "a sheet no name reaches moves only its bare references"
+            );
+            let mut read = Vec::new();
+            each_reference("=A2+SUM(Data!B2:C4)+SUM('Q 3'!2:3)+SUM(D:D)", |sheet, start, end| {
+                read.push((sheet.map(str::to_owned), start, end));
+            });
+            assert_eq!(
+                read,
+                [
+                    (None, (0, 1), (0, 1)),
+                    (Some("Data".to_owned()), (1, 1), (2, 3)),
+                    (Some("Q 3".to_owned()), (0, 1), (u32::MAX, 2)),
+                    (None, (3, 0), (3, u32::MAX)),
+                ]
+            );
+        }
     }
 }

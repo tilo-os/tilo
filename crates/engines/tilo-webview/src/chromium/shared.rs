@@ -172,6 +172,24 @@ impl Outbox {
         true
     }
 
+    /// What is queued of a tab's frame's changes, without waiting.
+    #[cfg(test)]
+    pub(super) fn take_damage(&self) -> Option<(u32, damage::WireDamage)> {
+        match self.state.lock_recover().next_frame()? {
+            (tab, Queued::Damage(damage)) => Some((tab, damage)),
+            (_, Queued::Whole(_)) => None,
+        }
+    }
+
+    /// The next queued whole frame, without waiting.
+    #[cfg(test)]
+    pub(super) fn take_frame(&self) -> Option<(u32, protocol::WireFrame)> {
+        match self.state.lock_recover().next_frame()? {
+            (tab, Queued::Whole(frame)) => Some((tab, frame)),
+            (_, Queued::Damage(_)) => None,
+        }
+    }
+
     fn close(&self) {
         let mut state = self.state.lock_recover();
         state.closed = true;

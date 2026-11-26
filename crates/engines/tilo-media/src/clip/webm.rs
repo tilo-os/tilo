@@ -312,3 +312,252 @@ fn vint_size(value: u64) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One element as the tests read it back: id, body.
+    struct Parsed {
+        id: Vec<u8>,
+        body: Vec<u8>,
+    }
+
+    fn id_length(first: u8) -> usize {
+        (1..=4)
+            .find(|length| first & (0x80 >> (length - 1)) != 0)
+            .unwrap_or(0)
+    }
+
+    fn size_length(first: u8) -> usize {
+        (1..=8)
+            .find(|length| first & (0x80 >> (length - 1)) != 0)
+            .unwrap_or(0)
+    }
+
+    fn read_id(data: &[u8]) -> Option<(Vec<u8>, usize)> {
+        let length = id_length(*data.first()?);
+        (length > 0 && data.len() >= length).then(|| (data[..length].to_vec(), length))
+    }
+
+    fn read_size(data: &[u8]) -> Option<(usize, usize)> {
+        let length = size_length(*data.first()?);
+        if length == 0 || data.len() < length {
+            return None;
+        }
+        let mut value = u64::from(data[0]) & (0xFFu64 >> length);
+        for byte in &data[1..length] {
+            value = value * 256 + u64::from(*byte);
+        }
+        Some((usize::try_from(value).ok()?, length))
+    }
+
+    /// The children of a master element's body, parsed exactly: a size that
+    /// reaches past the body or leaves bytes over is a bug, not leniency.
+    fn children(body: &[u8]) -> Vec<Parsed> {
+        let mut out = Vec::new();
+        let mut at = 0usize;
+        while at < body.len() {
+            let (id, id_len) = read_id(&body[at..]).expect("element id");
+            let (size, size_len) = read_size(&body[at + id_len..]).expect("element size");
+            let start = at + id_len + size_len;
+            let end = start + size;
+            assert!(end <= body.len(), "element size reaches past its parent");
+            out.push(Parsed {
+                id,
+                body: body[start..end].to_vec(),
+            });
+            at = end;
+        }
+        assert_eq!(at, body.len(), "children fill their parent exactly");
+        out
+    }
+
+    fn find<'a>(nodes: &'a [Parsed], id: &[u8]) -> Option<&'a Parsed> {
+        nodes.iter().find(|node| node.id == id)
+    }
+
+    fn uint_of(node: &Parsed) -> u64 {
+        node.body
+            .iter()
+            .fold(0u64, |value, byte| value * 256 + u64::from(*byte))
+    }
+
+    fn text_of(node: &Parsed) -> String {
+        String::from_utf8(node.body.clone()).expect("utf-8")
+    }
+
+    /// Five frames of three bytes at 30fps: the smallest clip carrying
+    /// more than one frame, its timing, its key frames and a cluster.
+    fn five_frames() -> Muxer {
+        let mut muxer = Muxer::new(64, 48, 30);
+        for index in 0..5u64 {
+            muxer.push(index * 33_333, index == 0, vec![0x10, index as u8, 0xAA]);
+        }
+        muxer
+    }
+
+    /// The Segment's body of a well-formed clip: an EBML header naming `WebM`,
+    /// then a segment that holds the whole file.
+    fn segment_body(webm: &[u8]) -> &[u8] {
+        let (header_id, header_len) = read_id(webm).expect("header id");
+        assert_eq!(header_id, EBML_HEADER);
+        let (header_size, header_size_len) = read_size(&webm[header_len..]).expect("header size");
+        let header = children(&webm[header_len + header_size_len..][..header_size]);
+        assert_eq!(
+            text_of(find(&header, DOC_TYPE).expect("doctype")),
+            "webm",
+            "the document type is WebM"
+        );
+        let segment_at = header_len + header_size_len + header_size;
+        let (segment_id, segment_len) = read_id(&webm[segment_at..]).expect("segment id");
+        assert_eq!(segment_id, SEGMENT);
+        let (segment_size, segment_size_len) =
+            read_size(&webm[segment_at + segment_len..]).expect("segment size");
+        assert_eq!(
+            segment_at + segment_len + segment_size_len + segment_size,
+            webm.len(),
+            "the segment holds the whole file"
+        );
+        &webm[segment_at + segment_len + segment_size_len..][..segment_size]
+    }
+
+    #[test]
+    fn encoded_frames_mux_into_webm_with_their_timing() {
+        assert!(
+            Muxer::new(64, 48, 30).bytes().is_none(),
+            "no frames, no clip"
+        );
+        let muxer = five_frames();
+        assert_eq!(muxer.duration_ms(), 166, "five frames at 30fps");
+        let webm = muxer.bytes().expect("a clip");
+        let segment = children(segment_body(&webm));
+
+        let info = children(&find(&segment, INFO).expect("info").body);
+        assert_eq!(
+            uint_of(find(&info, TIMECODE_SCALE).expect("scale")),
+            1_000_000
+        );
+        let duration = f64::from_bits(u64::from_be_bytes(
+            find(&info, DURATION).expect("duration").body[..8]
+                .try_into()
+                .expect("eight bytes"),
+        ));
+        assert!((duration - 166.666).abs() < 0.01, "duration {duration}");
+
+        let tracks = children(&find(&segment, TRACKS).expect("tracks").body);
+        let track = find(&tracks, TRACK_ENTRY).expect("track entry");
+        let track = children(&track.body);
+        assert_eq!(
+            uint_of(find(&track, TRACK_NUMBER).expect("track number")),
+            1
+        );
+        assert_eq!(
+            uint_of(find(&track, TRACK_TYPE).expect("track type")),
+            1,
+            "a video track"
+        );
+        assert_eq!(text_of(find(&track, CODEC_ID).expect("codec")), "V_VP8");
+        assert_eq!(
+            uint_of(find(&track, DEFAULT_DURATION).expect("default duration")),
+            33_333_333
+        );
+        let video = children(&find(&track, VIDEO).expect("video").body);
+        assert_eq!(uint_of(find(&video, PIXEL_WIDTH).expect("width")), 64);
+        assert_eq!(uint_of(find(&video, PIXEL_HEIGHT).expect("height")), 48);
+
+        let clusters: Vec<&Parsed> = segment.iter().filter(|node| node.id == CLUSTER).collect();
+        assert_eq!(clusters.len(), 1, "five frames make one cluster");
+        let cluster = children(&clusters[0].body);
+        assert_eq!(uint_of(find(&cluster, TIMECODE).expect("cluster time")), 0);
+        let mut blocks = cluster.iter().filter(|node| node.id == SIMPLE_BLOCK);
+        for index in 0..5u64 {
+            let block = blocks.next().expect("one block per frame");
+            assert_eq!(block.body[0], 0x81, "track number 1");
+            let relative = i16::from_be_bytes([block.body[1], block.body[2]]);
+            assert_eq!(
+                relative,
+                i16::try_from((index * 33_333) / 1000).expect("relative ms")
+            );
+            assert_eq!(
+                block.body[3],
+                if index == 0 { 0x80 } else { 0x00 },
+                "the first frame is a key frame and the rest are not"
+            );
+            assert_eq!(
+                &block.body[4..],
+                &[0x10, index as u8, 0xAA],
+                "frame bytes are carried whole"
+            );
+        }
+        assert!(blocks.next().is_none(), "no more blocks");
+    }
+
+    #[test]
+    fn a_clip_is_webm_by_its_bytes_and_its_cues_point_at_its_clusters() {
+        let webm = five_frames().bytes().expect("a clip");
+
+        let body = segment_body(&webm);
+        let segment = children(body);
+        let cues = children(&find(&segment, CUES).expect("cues").body);
+        let cue_points: Vec<&Parsed> = cues.iter().filter(|node| node.id == CUE_POINT).collect();
+        assert_eq!(cue_points.len(), 1, "one cue per cluster");
+        let cue = children(&cue_points[0].body);
+        assert_eq!(uint_of(find(&cue, CUE_TIME).expect("cue time")), 0);
+        let positions = children(
+            &find(&cue, CUE_TRACK_POSITIONS)
+                .expect("cue track positions")
+                .body,
+        );
+        assert_eq!(uint_of(find(&positions, CUE_TRACK).expect("cue track")), 1);
+        let position = uint_of(find(&positions, CUE_CLUSTER_POSITION).expect("position"));
+        let position = usize::try_from(position).expect("in range");
+        let (at, _) = read_id(&body[position..]).expect("a cluster at the cue's position");
+        assert_eq!(at, CLUSTER, "the cue points at its cluster");
+    }
+
+    #[test]
+    fn a_second_of_frames_starts_a_new_cluster_and_the_cues_follow_them() {
+        let mut muxer = Muxer::new(320, 240, 30);
+        // Three seconds of frames, a key frame every 30, as the page's
+        // encoder is asked for.
+        for index in 0..90u64 {
+            muxer.push(index * 33_333, index % 30 == 0, vec![index as u8; 4]);
+        }
+        let webm = muxer.bytes().expect("a clip");
+        let (_, header_len) = read_id(&webm).expect("header id");
+        let (header_size, header_size_len) = read_size(&webm[header_len..]).expect("header size");
+        let segment_at = header_len + header_size_len + header_size;
+        let (segment_id, segment_len) = read_id(&webm[segment_at..]).expect("segment id");
+        assert_eq!(segment_id, SEGMENT);
+        let (size, size_len) = read_size(&webm[segment_at + segment_len..]).expect("segment size");
+        let body = &webm[segment_at + segment_len + size_len..][..size];
+        let segment = children(body);
+        let clusters: Vec<&Parsed> = segment.iter().filter(|node| node.id == CLUSTER).collect();
+        assert_eq!(clusters.len(), 3, "one cluster per second of key frames");
+        let cues = children(&find(&segment, CUES).expect("cues").body);
+        let cue_points: Vec<&Parsed> = cues.iter().filter(|node| node.id == CUE_POINT).collect();
+        assert_eq!(cue_points.len(), 3);
+        for (index, cue) in cue_points.iter().enumerate() {
+            let cue = children(&cue.body);
+            let positions = children(&find(&cue, CUE_TRACK_POSITIONS).expect("positions").body);
+            let at = usize::try_from(uint_of(
+                find(&positions, CUE_CLUSTER_POSITION).expect("position"),
+            ))
+            .expect("in range");
+            let (id, _) = read_id(&body[at..]).expect("a cluster at the cue's position");
+            assert_eq!(id, CLUSTER, "cue {index} points at a cluster");
+            let time = uint_of(find(&cue, CUE_TIME).expect("cue time"));
+            let expected = u64::try_from(index).expect("small") * 1000;
+            assert!(
+                time.abs_diff(expected) <= 1,
+                "cue {index} names its cluster's second ({time}ms)"
+            );
+            assert_eq!(
+                uint_of(find(&children(&clusters[index].body), TIMECODE).expect("cluster time")),
+                time,
+                "the cue and its cluster agree on the time"
+            );
+        }
+    }
+}

@@ -814,3 +814,6 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
     plan.renames.extend(values(inbound.renames));
     plan.photos.extend(values(inbound.photos));
 }
+
+#[cfg(test)]
+mod tests;

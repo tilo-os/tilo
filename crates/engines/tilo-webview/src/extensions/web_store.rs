@@ -167,3 +167,87 @@ pub fn fetch(
     // none newer than the one installed.
     Ok((!bytes.is_empty()).then_some(bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ONEPASSWORD: &str = "aeblfdkhhhdcdjpifhhbdiojplfjncoa";
+    const UBLOCK_LITE: &str = "ddkjiahejlhfcafbddmgiahcphecmpfh";
+
+    #[test]
+    fn store_pages_are_recognised_and_lookalikes_are_not() {
+        let id = |url: &str| item_from_url(url).map(|item| item.id);
+        assert_eq!(
+            id(&format!(
+                "https://chromewebstore.google.com/detail/1password/{ONEPASSWORD}?hl=en"
+            )),
+            Some(ONEPASSWORD.to_owned())
+        );
+        assert_eq!(
+            id(&format!(
+                "https://chromewebstore.google.com/detail/{UBLOCK_LITE}#reviews"
+            )),
+            Some(UBLOCK_LITE.to_owned())
+        );
+        assert_eq!(
+            id(&format!(
+                "https://chrome.google.com/webstore/detail/ublock-origin-lite/{UBLOCK_LITE}"
+            )),
+            Some(UBLOCK_LITE.to_owned())
+        );
+        // An id on its own names the same item.
+        assert_eq!(
+            item(ONEPASSWORD).map(|item| item.id),
+            Some(ONEPASSWORD.to_owned())
+        );
+        for other in [
+            "http://chromewebstore.google.com/detail/x/aeblfdkhhhdcdjpifhhbdiojplfjncoa",
+            "https://chromewebstore.google.com.evil.example/detail/x/aeblfdkhhhdcdjpifhhbdiojplfjncoa",
+            "https://chromewebstore.google.com/detail/x/zzzz",
+            "https://chrome.google.com/detail/x/aeblfdkhhhdcdjpifhhbdiojplfjncoa",
+            "https://example.org/",
+            "not an address",
+        ] {
+            assert_eq!(id(other), None, "{other} is no store item");
+        }
+    }
+
+    #[test]
+    fn the_update_service_is_asked_for_the_right_package() {
+        let url = crx_url(ONEPASSWORD, None, "152.0.7977.83").expect("an address");
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("clients2.google.com"));
+        let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        let field = |name: &str| {
+            query
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(field("prod").as_deref(), Some("chromecrx"));
+        assert_eq!(field("prodversion").as_deref(), Some("152.0.7977.83"));
+        assert_eq!(field("acceptformat").as_deref(), Some("crx3"));
+        assert_eq!(
+            field("x").as_deref(),
+            Some(format!("id={ONEPASSWORD}&installsource=ondemand&uc").as_str())
+        );
+        let update = crx_url(ONEPASSWORD, Some("1.2.3"), "152.0.7977.83").expect("an address");
+        let asked = update
+            .query_pairs()
+            .find(|(key, _)| key == "x")
+            .map(|(_, value)| value.into_owned());
+        assert_eq!(
+            asked.as_deref(),
+            Some(format!("id={ONEPASSWORD}&v=1.2.3&installsource=ondemand&uc").as_str())
+        );
+        for bad in [
+            crx_url("zzzz", None, "152.0.7977.83"),
+            crx_url(ONEPASSWORD, Some(""), "152.0.7977.83"),
+            crx_url(ONEPASSWORD, Some("1.2.x"), "152.0.7977.83"),
+            crx_url(ONEPASSWORD, None, ""),
+        ] {
+            assert!(bad.is_none());
+        }
+    }
+}

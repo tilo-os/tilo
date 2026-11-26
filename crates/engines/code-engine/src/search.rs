@@ -96,6 +96,15 @@ impl Job {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
+
+    #[cfg(test)]
+    pub fn drain(&mut self) -> Vec<Msg> {
+        let mut out = Vec::new();
+        while let Ok(msg) = self.rx.try_recv() {
+            out.push(msg);
+        }
+        out
+    }
 }
 
 impl Drop for Job {
@@ -322,4 +331,229 @@ pub fn relative_display(root: &Path, path: &Path) -> String {
         |_| path.to_string_lossy().to_string(),
         |p| p.to_string_lossy().to_string(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(n: &str) -> Query {
+        Query::new(n)
+    }
+
+    tilo_test_env::scenario! {
+        fn search_matches_lines_walks_trees_and_stops_when_told;
+
+        phase line_matches_use_character_columns_and_honour_query_options;
+        {
+            finds_every_occurrence_in_a_line();
+            overlapping_matches_are_not_double_counted();
+            case_insensitive_by_default_and_exact_when_asked();
+            columns_are_characters_not_bytes();
+            case_folding_that_changes_length_does_not_shift_columns();
+            whole_word_rejects_substrings();
+            an_empty_needle_matches_nothing();
+        }
+
+        phase tree_search_reports_source_hits_skips_non_source_and_clips_previews;
+        {
+            searches_the_tree_and_reports_file_line_and_column();
+            build_output_and_vcs_directories_are_never_searched();
+            binary_files_are_skipped();
+            an_empty_query_finishes_immediately_without_walking();
+            a_long_line_is_clipped_around_the_match();
+        }
+
+        phase search_walk_stops_on_cancel_or_closed_receiver_and_streams_in_background;
+        {
+            a_cancelled_walk_stops_early();
+            a_dropped_receiver_ends_the_walk();
+            the_background_job_streams_results_and_finishes();
+        }
+    }
+
+    fn finds_every_occurrence_in_a_line() {
+        assert_eq!(line_matches("foo bar foo", &q("foo")), vec![(0, 3), (8, 3)]);
+    }
+
+    fn overlapping_matches_are_not_double_counted() {
+        assert_eq!(line_matches("aaaa", &q("aa")), vec![(0, 2), (2, 2)]);
+    }
+
+    fn case_insensitive_by_default_and_exact_when_asked() {
+        assert_eq!(line_matches("Foo foo FOO", &q("foo")).len(), 3);
+        assert_eq!(
+            line_matches("Foo foo FOO", &q("foo").case_sensitive(true)),
+            vec![(4, 3)]
+        );
+    }
+
+    fn columns_are_characters_not_bytes() {
+        // Each `é` is two bytes. A byte-indexed matcher would report column 8
+        // for `x`; the caret model counts characters, so it must be 4.
+        let line = "ééé x";
+        assert_eq!(line_matches(line, &q("x")), vec![(4, 1)]);
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(chars[4], 'x');
+    }
+
+    fn case_folding_that_changes_length_does_not_shift_columns() {
+        let line = "straße x";
+        let hits = line_matches(line, &q("x"));
+        assert_eq!(hits, vec![(7, 1)]);
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(chars[7], 'x', "the reported column indexes the real char");
+    }
+
+    fn whole_word_rejects_substrings() {
+        let line = "fs offset refs fs_read fs";
+        assert_eq!(line_matches(line, &q("fs")).len(), 5);
+        let whole = line_matches(line, &q("fs").whole_word(true));
+        assert_eq!(whole.len(), 2, "only the standalone `fs` occurrences");
+        assert_eq!(whole[0].0, 0);
+        assert_eq!(whole[1].0, 23);
+    }
+
+    fn an_empty_needle_matches_nothing() {
+        assert!(line_matches("anything", &q("")).is_empty());
+        assert!(q("").is_empty());
+    }
+
+    fn run(root: &Path, query: &Query) -> (Vec<Hit>, Option<(usize, bool)>) {
+        let cancel = AtomicBool::new(false);
+        let mut hits = Vec::new();
+        let mut done = None;
+        walk(root, query, &cancel, &mut |msg| {
+            match msg {
+                Msg::Hits(h) => hits.extend(h),
+                Msg::Done { files, truncated } => done = Some((files, truncated)),
+            }
+            true
+        });
+        (hits, done)
+    }
+
+    fn fixture() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        std::fs::create_dir_all(r.join("src")).unwrap();
+        std::fs::create_dir_all(r.join("target/debug")).unwrap();
+        std::fs::create_dir_all(r.join(".git")).unwrap();
+        std::fs::write(
+            r.join("src/main.rs"),
+            "fn main() {\n    let needle = 1;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(r.join("src/lib.rs"), "// no match here\n").unwrap();
+        std::fs::write(r.join("README.md"), "the needle and the haystack\n").unwrap();
+        // Both of these contain the needle but must never be searched.
+        std::fs::write(r.join("target/debug/out.txt"), "needle\n").unwrap();
+        std::fs::write(r.join(".git/COMMIT_EDITMSG"), "needle\n").unwrap();
+        d
+    }
+
+    fn searches_the_tree_and_reports_file_line_and_column() {
+        let d = fixture();
+        let (hits, done) = run(d.path(), &q("needle"));
+        assert_eq!(hits.len(), 2, "one in src/main.rs, one in README.md");
+
+        let main_hit = hits.iter().find(|h| h.rel.ends_with("main.rs")).unwrap();
+        assert_eq!(main_hit.line, 2, "line numbers are 1-based");
+        assert_eq!(
+            main_hit.col, 8,
+            "column is the character index of the match"
+        );
+        assert_eq!(main_hit.len, 6);
+        assert_eq!(Path::new(&main_hit.rel), Path::new("src/main.rs"));
+        assert_eq!(
+            main_hit.preview, "let needle = 1;",
+            "the preview drops indentation but keeps the code"
+        );
+
+        let (files, truncated) = done.expect("the walk reports completion");
+        assert_eq!(files, 3, "only the three real source files were read");
+        assert!(!truncated);
+    }
+
+    fn build_output_and_vcs_directories_are_never_searched() {
+        let d = fixture();
+        let (hits, _) = run(d.path(), &q("needle"));
+        for h in &hits {
+            assert!(
+                !h.rel.starts_with("target") && !h.rel.starts_with(".git"),
+                "{} was searched but must be skipped",
+                h.rel
+            );
+        }
+        assert!(
+            std::fs::read_to_string(d.path().join("target/debug/out.txt"))
+                .unwrap()
+                .contains("needle")
+        );
+    }
+
+    fn binary_files_are_skipped() {
+        let d = fixture();
+        std::fs::write(d.path().join("src/blob.bin"), b"needle\x00\x01\x02").unwrap();
+        let (hits, _) = run(d.path(), &q("needle"));
+        assert!(
+            hits.iter().all(|h| !h.rel.ends_with("blob.bin")),
+            "a NUL-bearing file is not text and must not produce hits"
+        );
+    }
+
+    fn a_cancelled_walk_stops_early() {
+        let d = fixture();
+        let cancel = AtomicBool::new(true); // cancelled before it starts
+        let mut saw_any = false;
+        walk(d.path(), &q("needle"), &cancel, &mut |_| {
+            saw_any = true;
+            true
+        });
+        assert!(!saw_any, "a cancelled walk emits nothing at all");
+    }
+
+    fn a_dropped_receiver_ends_the_walk() {
+        let d = fixture();
+        let cancel = AtomicBool::new(false);
+        let mut calls = 0;
+        walk(d.path(), &q("needle"), &cancel, &mut |_| {
+            calls += 1;
+            false
+        });
+        assert_eq!(calls, 1, "the walk stops at the first failed send");
+    }
+
+    fn the_background_job_streams_results_and_finishes() {
+        let d = fixture();
+        let mut job = start(d.path(), q("needle"));
+        let mut hits = Vec::new();
+        let mut finished = false;
+        tilo_test_env::wait_until("the worker to report Done", || {
+            for msg in job.drain() {
+                match msg {
+                    Msg::Hits(h) => hits.extend(h),
+                    Msg::Done { .. } => finished = true,
+                }
+            }
+            finished
+        });
+        assert_eq!(hits.len(), 2);
+    }
+
+    fn an_empty_query_finishes_immediately_without_walking() {
+        let d = fixture();
+        let (hits, done) = run(d.path(), &q(""));
+        assert!(hits.is_empty());
+        assert_eq!(done, Some((0, false)), "no file was even opened");
+    }
+
+    fn a_long_line_is_clipped_around_the_match() {
+        let filler = "x".repeat(400);
+        let line = format!("{filler}needle{filler}");
+        let (preview, offset) = clip_preview(&line, 400);
+        assert!(preview.chars().count() <= PREVIEW_LIMIT);
+        assert!(preview.contains("needle"), "the match stays visible");
+        assert_eq!(offset, 400 - PREVIEW_LIMIT / 2);
+    }
 }

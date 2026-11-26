@@ -151,3 +151,6 @@ pub fn plan(guild: &Guild, wanted: &[Wanted]) -> EmojiPlan {
     }
     plan
 }
+
+#[cfg(test)]
+mod tests;

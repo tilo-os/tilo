@@ -325,3 +325,186 @@ pub fn mouse_bytes(
         vec![0x1b, b'[', b'M', legacy + 32, x, y]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain() -> TermModes {
+        TermModes {
+            cursor_visible: true,
+            ..TermModes::default()
+        }
+    }
+
+    fn ctrl_arrow(key: Named, expected: &[u8], what: &str) {
+        assert_eq!(
+            encode_key(Key::Named(key), None, Held::CTRL, plain()).as_deref(),
+            Some(expected),
+            "{what}"
+        );
+    }
+
+    /// Cursor keys carry the xterm modifier parameter, F1–F4 keep their SS3 form, and a program
+    /// that asked for application cursor keys gets `ESC O` for an unmodified arrow.
+    #[test]
+    fn keys_send_the_sequences_a_shell_decodes() {
+        ctrl_arrow(Named::ArrowLeft, b"\x1b[1;5D", "Ctrl+Left is word-left");
+        ctrl_arrow(Named::ArrowRight, b"\x1b[1;5C", "Ctrl+Right is word-right");
+        ctrl_arrow(Named::ArrowUp, b"\x1b[1;5A", "Ctrl+Up");
+        ctrl_arrow(Named::ArrowDown, b"\x1b[1;5B", "Ctrl+Down");
+
+        assert_eq!(
+            encode_key(Key::Named(Named::ArrowLeft), None, Held::default(), plain()).as_deref(),
+            Some(&b"\x1b[D"[..]),
+            "an unmodified arrow is CSI when the program did not ask for application keys"
+        );
+        let app = TermModes {
+            app_cursor_keys: true,
+            ..plain()
+        };
+        assert_eq!(
+            encode_key(Key::Named(Named::ArrowLeft), None, Held::default(), app).as_deref(),
+            Some(&b"\x1bOD"[..]),
+            "DECCKM sends SS3"
+        );
+
+        assert_eq!(
+            encode_key(Key::Named(Named::Tab), None, Held::SHIFT, plain()).as_deref(),
+            Some(&b"\x1b[Z"[..]),
+            "Shift+Tab is back-tab"
+        );
+        assert_eq!(
+            encode_key(
+                Key::Named(Named::Function(1)),
+                None,
+                Held::default(),
+                plain()
+            )
+            .as_deref(),
+            Some(&b"\x1bOP"[..]),
+            "F1 keeps its SS3 form"
+        );
+        assert_eq!(
+            encode_key(Key::Named(Named::Function(1)), None, Held::CTRL, plain()).as_deref(),
+            Some(&b"\x1b[1;5P"[..]),
+            "a held modifier takes the CSI form"
+        );
+        assert_eq!(
+            encode_key(
+                Key::Named(Named::Function(5)),
+                None,
+                Held::default(),
+                plain()
+            )
+            .as_deref(),
+            Some(&b"\x1b[15~"[..])
+        );
+        assert_eq!(
+            encode_key(Key::Named(Named::Delete), None, Held::default(), plain()).as_deref(),
+            Some(&b"\x1b[3~"[..])
+        );
+        assert_eq!(
+            encode_key(Key::Named(Named::Enter), None, Held::default(), plain()).as_deref(),
+            Some(&b"\r"[..])
+        );
+        assert_eq!(
+            encode_key(Key::Named(Named::Escape), None, Held::default(), plain()).as_deref(),
+            Some(&b"\x1b"[..])
+        );
+    }
+
+    /// Ctrl+letter is its C0 code, Alt is Meta, and a composed character sends its text.
+    #[test]
+    fn control_alt_and_composed_text_send_what_the_shell_expects() {
+        let ctrl = Held::CTRL;
+        assert_eq!(
+            encode_key(Key::Char('c'), None, ctrl, plain()).as_deref(),
+            Some(&b"\x03"[..]),
+            "Ctrl+C interrupts"
+        );
+        assert_eq!(
+            encode_key(Key::Char(' '), None, ctrl, plain()).as_deref(),
+            Some(&b"\x00"[..]),
+            "Ctrl+Space is NUL"
+        );
+        assert_eq!(
+            encode_key(Key::Char('a'), None, Held::ALT, plain()).as_deref(),
+            Some(&b"\x1ba"[..]),
+            "Alt+a is Meta-a"
+        );
+        assert_eq!(
+            encode_key(Key::Char('ä'), Some("ä"), Held::ALT, plain()).as_deref(),
+            Some("ä".as_bytes()),
+            "AltGr keeps the character it composed"
+        );
+        assert_eq!(
+            encode_key(Key::Named(Named::Backspace), None, Held::CTRL, plain()).as_deref(),
+            Some(&b"\x17"[..]),
+            "Ctrl+Backspace deletes a word"
+        );
+        assert_eq!(
+            encode_key(Key::Char('中'), Some("中"), Held::default(), plain()).as_deref(),
+            Some("中".as_bytes()),
+            "a character with no ASCII form sends its bytes"
+        );
+    }
+
+    /// A paste's line breaks are Enters, wrapped only when the program asked for bracketed paste.
+    #[test]
+    fn paste_carries_its_lines_and_the_programs_brackets() {
+        assert_eq!(encode_paste("a\nb\r\nc", plain()), b"a\rb\rc");
+        let bracketed = TermModes {
+            bracketed_paste: true,
+            ..plain()
+        };
+        assert_eq!(encode_paste("a\nb", bracketed), b"\x1b[200~a\rb\x1b[201~");
+    }
+
+    /// The pointer is reported only when the program asked, in the mode it asked for, and a
+    /// program that asked for nothing gets nothing so the view selects instead.
+    #[test]
+    fn mice_are_reported_in_the_mode_the_program_asked_for() {
+        assert_eq!(
+            encode_mouse(plain(), Button::Left, true, Held::default(), 3, 4),
+            None,
+            "no report without a request"
+        );
+        let sgr = TermModes {
+            mouse_report: true,
+            mouse_sgr: true,
+            mouse_tracking: 1000,
+            ..plain()
+        };
+        assert_eq!(
+            encode_mouse(sgr, Button::Left, true, Held::default(), 3, 4).as_deref(),
+            Some(&b"\x1b[<0;3;4M"[..])
+        );
+        assert_eq!(
+            encode_mouse(sgr, Button::Left, false, Held::default(), 3, 4).as_deref(),
+            Some(&b"\x1b[<0;3;4m"[..]),
+            "a release is its own final byte in SGR"
+        );
+        assert_eq!(
+            encode_mouse(sgr, Button::Right, true, Held::SHIFT, 1, 1).as_deref(),
+            Some(&b"\x1b[<6;1;1M"[..]),
+            "Shift is reported for a program that ignores it"
+        );
+
+        let x10 = TermModes {
+            mouse_report: true,
+            mouse_sgr: false,
+            mouse_tracking: 1000,
+            ..plain()
+        };
+        let bytes = encode_mouse(x10, Button::Left, true, Held::default(), 1, 1).expect("a report");
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 33, 33]);
+        let release =
+            encode_mouse(x10, Button::Left, false, Held::default(), 1, 1).expect("a report");
+        assert_eq!(
+            release,
+            vec![0x1b, b'[', b'M', 35, 33, 33],
+            "X10 releases as button 3"
+        );
+    }
+}

@@ -455,3 +455,6 @@ fn read_retained(root: &Path) -> Result<Vec<RunCheckpoint>, String> {
     }
     Ok(records)
 }
+
+#[cfg(test)]
+mod tests;

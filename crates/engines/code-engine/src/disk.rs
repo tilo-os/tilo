@@ -177,3 +177,208 @@ pub fn is_ignored_dir(name: &str) -> bool {
 pub fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create tempdir")
+    }
+
+    tilo_test_env::scenario! {
+        fn files_save_load_and_refuse_what_they_must;
+
+        phase save_and_load_round_trip_bytes_parents_and_utf8;
+        {
+            save_writes_the_bytes_and_load_reads_them_back();
+            save_creates_missing_parent_directories();
+            utf8_survives_a_save_load_round_trip();
+        }
+
+        phase stamped_saves_refuse_to_clobber_external_changes;
+        {
+            a_second_save_against_a_current_stamp_succeeds();
+            a_file_changed_underneath_refuses_to_be_clobbered();
+            an_explicit_overwrite_after_a_conflict_wins();
+            a_deleted_file_counts_as_changed();
+        }
+
+        phase load_refuses_binary_and_oversized_files;
+        {
+            binary_files_are_refused_rather_than_opened_as_text();
+            oversized_files_are_refused_before_being_read();
+            too_large_message_uses_si_units();
+        }
+
+        phase actual_read_refuses_a_file_that_grows_after_its_metadata_was_checked;
+        {
+            let directory = tmpdir();
+            let path = directory.path().join("growing.rs");
+            std::fs::write(&path, "small source").unwrap();
+            let reader = std::fs::File::open(&path).unwrap();
+            assert!(reader.metadata().unwrap().len() < MAX_TEXT_BYTES);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(MAX_TEXT_BYTES + 1)
+                .unwrap();
+            assert!(
+                matches!(read_body(reader), Err(LoadError::TooLarge(size)) if size == MAX_TEXT_BYTES + 1)
+            );
+        }
+
+        phase build_output_and_vcs_dirs_are_ignored;
+        {
+            assert!(is_ignored_dir("target"));
+            assert!(is_ignored_dir(".git"));
+            assert!(is_ignored_dir("node_modules"));
+            assert!(!is_ignored_dir("src"));
+            assert!(!is_ignored_dir("targets"));
+        }
+    }
+
+    fn save_writes_the_bytes_and_load_reads_them_back() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stamp = save(&p, "fn main() {}\n", None).expect("first save creates the file");
+        // The bytes are really on disk, read back through the filesystem and
+        // not through any cache of ours.
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "fn main() {}\n");
+        assert_eq!(stamp.len, 13);
+
+        let loaded = load(&p).expect("load the file we just wrote");
+        assert_eq!(loaded.text, "fn main() {}\n");
+        assert_eq!(loaded.stamp, stamp);
+    }
+
+    fn save_creates_missing_parent_directories() {
+        let d = tmpdir();
+        let p = d.path().join("nested/deeper/new.rs");
+        save(&p, "x", None).expect("save creates the parent chain");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "x");
+    }
+
+    fn a_second_save_against_a_current_stamp_succeeds() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let s1 = save(&p, "one", None).unwrap();
+        let s2 = save(&p, "two!", Some(&s1)).expect("we are still in agreement with the file");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two!");
+        assert_ne!(s1, s2, "the stamp advances with the content");
+    }
+
+    fn a_file_changed_underneath_refuses_to_be_clobbered() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stale = save(&p, "original", None).unwrap();
+
+        std::fs::write(&p, "rewritten by someone else").unwrap();
+
+        assert!(matches!(
+            save(&p, "my edit", Some(&stale)),
+            Err(SaveError::Conflict)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "rewritten by someone else",
+            "a refused save must not have written anything"
+        );
+
+        assert!(changed_on_disk(&p, &stale));
+    }
+
+    fn an_explicit_overwrite_after_a_conflict_wins() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stale = save(&p, "original", None).unwrap();
+        std::fs::write(&p, "theirs").unwrap();
+        assert!(matches!(
+            save(&p, "mine", Some(&stale)),
+            Err(SaveError::Conflict)
+        ));
+        save(&p, "mine", None).expect("an unconditional save always writes");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "mine");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_the_files_permissions_and_its_symbolic_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tmpdir();
+        let script = d.path().join("build.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let stamp = Stamp::of(&script).unwrap();
+        save(&script, "#!/bin/sh\necho built\n", Some(&stamp)).expect("the script saves");
+        assert_eq!(
+            std::fs::metadata(&script).unwrap().permissions().mode() & 0o7777,
+            0o755,
+            "a saved script stays executable"
+        );
+
+        let target = d.path().join("dotfiles/bashrc");
+        std::fs::create_dir(d.path().join("dotfiles")).unwrap();
+        std::fs::write(&target, "export A=1\n").unwrap();
+        let link = d.path().join(".bashrc");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let stamp = load(&link).unwrap().stamp;
+        let saved = save(&link, "export A=2\n", Some(&stamp)).expect("the link saves");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link is still a link"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "export A=2\n");
+        assert!(
+            !changed_on_disk(&link, &saved),
+            "the stamp is the one the next save checks against"
+        );
+    }
+
+    fn a_deleted_file_counts_as_changed() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stamp = save(&p, "x", None).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        assert!(changed_on_disk(&p, &stamp));
+        save(&p, "x", Some(&stamp)).expect("recreating a deleted file is not a conflict");
+    }
+
+    fn binary_files_are_refused_rather_than_opened_as_text() {
+        let d = tmpdir();
+        let p = d.path().join("thing.bin");
+        std::fs::write(&p, [0x7f, b'E', b'L', b'F', 0x00, 0x01, 0x02]).unwrap();
+        assert!(matches!(load(&p), Err(LoadError::NotText)));
+    }
+
+    fn oversized_files_are_refused_before_being_read() {
+        let d = tmpdir();
+        let p = d.path().join("huge.log");
+        let big = vec![b'a'; (MAX_TEXT_BYTES + 1) as usize];
+        std::fs::write(&p, &big).unwrap();
+        match load(&p) {
+            Err(LoadError::TooLarge(n)) => assert_eq!(n, MAX_TEXT_BYTES + 1),
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    fn utf8_survives_a_save_load_round_trip() {
+        let d = tmpdir();
+        let p = d.path().join("é.rs");
+        let body = "// héllo wörld — 日本語\nfn main() {}\n";
+        save(&p, body, None).unwrap();
+        assert_eq!(load(&p).unwrap().text, body);
+    }
+
+    fn too_large_message_uses_si_units() {
+        let message = LoadError::TooLarge(MAX_TEXT_BYTES + 1).to_string();
+        assert!(
+            message.ends_with("too large to open as text (limit 25165824 bytes)"),
+            "{message}"
+        );
+    }
+}

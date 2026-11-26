@@ -510,3 +510,322 @@ pub fn is_swipe(path: &[Point], key_scale: f64) -> bool {
     }
     polyline_length(path) > key_scale * 0.9
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{KeyboardLayout, ShiftState, key_rects};
+
+    /// Build the QWERTY key geometry the widget would, at a phone-ish size.
+    fn qwerty_geom() -> (KeyboardLayout, Vec<(KeyId, Rect)>) {
+        let layout = KeyboardLayout::qwerty();
+        // Key area only (the widget gives keys the area below the toolbar);
+        // exact origin doesn't matter, the decoder is translation-invariant
+        // within its own coordinate space.
+        let area = Rect::new(0.0, 0.0, 720.0, 260.0);
+        let geom = key_rects(&layout, area, ShiftState::Off);
+        (layout, geom)
+    }
+
+    /// Build a swipe path that visits each letter's key centre in order.
+    fn path_through(word: &str, geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> Vec<Point> {
+        let centres = letter_centres(geom, layout);
+        let mut pts = Vec::new();
+        for c in word.chars() {
+            let centre = centres[&c];
+            if let Some(prev) = pts.last().copied() {
+                let prev: Point = prev;
+                for k in 1..=4 {
+                    let t = f64::from(k) / 4.0;
+                    pts.push(Point::new(
+                        prev.x + (centre.x - prev.x) * t,
+                        prev.y + (centre.y - prev.y) * t,
+                    ));
+                }
+            } else {
+                pts.push(centre);
+            }
+        }
+        pts
+    }
+
+    #[test]
+    fn editing_key_width_does_not_change_letter_path_recognition() {
+        for (layout, model, word) in [
+            (
+                KeyboardLayout::qwerty(),
+                GeometricSwipeModel::english(),
+                "quick",
+            ),
+            (
+                KeyboardLayout::azerty(),
+                GeometricSwipeModel::for_language(Language::French),
+                "été",
+            ),
+        ] {
+            let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 720.0, 260.0), ShiftState::Off);
+            let path = path_through(
+                &word.chars().map(fold_char).collect::<String>(),
+                &geometry,
+                &layout,
+            );
+            let letters: Vec<_> = geometry
+                .iter()
+                .copied()
+                .filter(|(id, _)| layout.key(*id).is_some_and(Key::is_letter))
+                .collect();
+            let mut wide = geometry.clone();
+            for (id, rect) in &mut wide {
+                if layout.key(*id).is_some_and(|key| !key.is_letter()) {
+                    *rect = Rect::new(rect.x0, rect.y0, rect.x1 + 10_000.0, rect.y1);
+                }
+            }
+            let model = model.with_elastic_alignment();
+            let expected = model.decode_top(&path, &letters, &layout, 8);
+            assert!(
+                expected.iter().any(|candidate| candidate.word == word),
+                "missing {word}"
+            );
+            for actual in [&geometry, &wide] {
+                let actual = model.decode_top(&path, actual, &layout, 8);
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(&expected) {
+                    assert_eq!(actual.word, expected.word);
+                    assert_eq!(actual.score.to_bits(), expected.score.to_bits());
+                }
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn swipe_decoding_follows_geometry_paths_and_endpoints;
+
+        phase elastic_recognition_follows_scaled_translated_geometry_and_language;
+        {
+            let (layout, geometry) = qwerty_geom();
+            let model = GeometricSwipeModel::english().with_elastic_alignment();
+            let path = path_through("quick", &geometry, &layout);
+            let expected = model.decode_top(&path, &geometry, &layout, 8);
+            assert_eq!(
+                expected.first().map(|candidate| candidate.word.as_str()),
+                Some("quick")
+            );
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let transform =
+                    vello::kurbo::Affine::translate((71.0, 43.0)) * vello::kurbo::Affine::scale(scale);
+                let geometry: Vec<_> = geometry
+                    .iter()
+                    .map(|(id, rect)| (*id, transform.transform_rect_bbox(*rect)))
+                    .collect();
+                let path: Vec<_> = path.iter().map(|point| transform * *point).collect();
+                let actual = model.decode_top(&path, &geometry, &layout, 8);
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(&expected) {
+                    assert_eq!(actual.word, expected.word);
+                    assert!((actual.score - expected.score).abs() < 0.000_01);
+                }
+            }
+            let mut model = model;
+            model.set_language(Language::French);
+            let layout = KeyboardLayout::azerty();
+            let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 220.0), ShiftState::Off);
+            let path = path_through("bonjour", &geometry, &layout);
+            assert_eq!(
+                model
+                    .decode_top(&path, &geometry, &layout, 8)
+                    .first()
+                    .map(|candidate| candidate.word.as_str()),
+                Some("bonjour")
+            );
+        }
+
+        phase swipe_paths_resample_and_distinguish_taps_from_drags;
+        {
+            eprintln!("phase empty_or_trivial_path_yields_nothing");
+            {
+                let (layout, geom) = qwerty_geom();
+                let model = GeometricSwipeModel::english();
+                assert!(model.decode_top(&[], &geom, &layout, 8).is_empty());
+                assert!(
+                    model
+                        .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
+                        .is_empty()
+                );
+                // A real path, but no keys to read it against, or nothing asked for.
+                let path = path_through("the", &geom, &layout);
+                assert!(model.decode_top(&path, &[], &layout, 8).is_empty());
+                assert!(model.decode_top(&path, &geom, &layout, 0).is_empty());
+                let one = model.decode_top(&path, &geom, &layout, 1);
+                assert_eq!(one.len(), 1, "no more than asked for");
+                assert_eq!(one[0].word, "the");
+            }
+
+            eprintln!("phase is_swipe_distinguishes_tap_from_drag");
+            {
+                let (layout, geom) = qwerty_geom();
+                let scale = letter_key_scale(&geom, &layout).expect("QWERTY has letter keys");
+                let tap = vec![
+                    Point::new(100.0, 100.0),
+                    Point::new(101.0, 100.5),
+                    Point::new(100.5, 101.0),
+                ];
+                assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
+                let drag = vec![
+                    Point::new(0.0, 100.0),
+                    Point::new(200.0, 100.0),
+                    Point::new(400.0, 100.0),
+                ];
+                assert!(is_swipe(&drag, scale), "long drag is a swipe");
+            }
+
+            eprintln!("phase resample_produces_exact_count_and_endpoints");
+            {
+                let path = vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(10.0, 0.0),
+                    Point::new(10.0, 10.0),
+                ];
+                let rs = resample(&path, 16);
+                assert_eq!(rs.len(), 16);
+                assert_eq!(rs[0], Point::new(0.0, 0.0));
+                assert_eq!(*rs.last().unwrap(), Point::new(10.0, 10.0));
+            }
+        }
+
+        phase a_decode_scores_only_words_its_endpoints_allow;
+        {
+            let (layout, geom) = qwerty_geom();
+            let model = GeometricSwipeModel::english();
+            let path = path_through("keyboard", &geom, &layout);
+            SHAPES_SCORED.with(|count| count.set(0));
+            let top = model.decode_top(&path, &geom, &layout, 8);
+            let scored = SHAPES_SCORED.with(std::cell::Cell::get);
+            assert_eq!(top.first().map(|c| c.word.as_str()), Some("keyboard"));
+            let words = model.dictionary().len();
+            assert!(
+                scored.saturating_mul(4) < words,
+                "the endpoint index prunes the dictionary: {scored} of {words} words scored"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_swipes_follow_language_switches_and_folded_accents() {
+        let layout = KeyboardLayout::azerty();
+        let geom = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 224.0), ShiftState::Off);
+        let mut model = GeometricSwipeModel::english();
+        model.set_language(Language::French);
+        let path = path_through("bonjour", &geom, &layout);
+        let candidates = model.decode_top(&path, &geom, &layout, 8);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.word == "bonjour")
+        );
+        let model =
+            GeometricSwipeModel::with_dictionary(Dictionary::from_str("été\t8000\nétude\t7000\n"));
+        let path = path_through("ete", &geom, &layout);
+        assert_eq!(model.decode_top(&path, &geom, &layout, 1)[0].word, "été");
+    }
+
+    /// One model over one geometry decodes every row: `decode_top` takes
+    /// `&self`, and no row reads the count of shapes scored.
+    #[test]
+    fn swipe_decoder_recovers_common_words() {
+        let (layout, geom) = qwerty_geom();
+        let model = GeometricSwipeModel::english();
+        for (word, leads) in [("quick", true), ("hello", false), ("the", true)] {
+            let path = path_through(word, &geom, &layout);
+            let cands = model.decode_top(&path, &geom, &layout, 8);
+            assert!(!cands.is_empty(), "{word}: swipe produced candidates");
+            let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
+            assert!(
+                words.contains(&word),
+                "expected {word:?} in top-8, got {words:?}"
+            );
+            if leads {
+                assert_eq!(cands[0].word, word, "got {words:?}");
+            }
+        }
+    }
+
+    /// Held-out swipes from FUTO's swipe.futo.org dataset (MIT, see
+    /// `tests/data/README.md`), one `word<TAB>x,y x,y ...` per line in
+    /// hundredths of a key unit (x: tenths of the key area's width, y: rows).
+    /// Never fit constants on it; `swipe_tune.txt` holds other contributors'
+    /// swipes for that.
+    const FUTO_EVAL: &str = include_str!("../tests/data/swipe_eval.txt");
+
+    /// The key area the fixtures are decoded on: the dataset's most common
+    /// canvas (406 px wide, 170 px for three letter rows) plus the function
+    /// row.
+    const FUTO_AREA: Rect = Rect::new(0.0, 0.0, 406.0, 227.0);
+
+    const FLOOR_TOP1: usize = 1339;
+    const FLOOR_TOP3: usize = 1451;
+
+    fn futo_swipes(fixture: &str) -> Vec<(&str, Vec<Point>)> {
+        let (sx, sy) = (FUTO_AREA.width() / 1000.0, FUTO_AREA.height() / 400.0);
+        fixture
+            .lines()
+            .map(|line| {
+                let (word, coords) = line.split_once('\t').expect("word<TAB>path");
+                let path = coords
+                    .split(' ')
+                    .map(|xy| {
+                        let (x, y) = xy.split_once(',').expect("x,y");
+                        let x: f64 = x.parse().expect("x");
+                        let y: f64 = y.parse().expect("y");
+                        Point::new(x * sx, y * sy)
+                    })
+                    .collect();
+                (word, path)
+            })
+            .collect()
+    }
+
+    fn hits(model: &GeometricSwipeModel, swipes: &[(&str, Vec<Point>)]) -> (usize, usize) {
+        let layout = KeyboardLayout::qwerty();
+        let geom = key_rects(&layout, FUTO_AREA, ShiftState::Off);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(32));
+        let chunk = swipes.len().div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for part in swipes.chunks(chunk) {
+                let (layout, geom) = (&layout, &geom);
+                workers.push(scope.spawn(move || {
+                    let (mut top1, mut top3) = (0usize, 0usize);
+                    for (word, path) in part {
+                        let top = model.decode_top(path, geom, layout, 3);
+                        match top.iter().position(|c| c.word == *word) {
+                            Some(0) => {
+                                (top1, top3) = (top1.saturating_add(1), top3.saturating_add(1));
+                            }
+                            Some(_) => top3 = top3.saturating_add(1),
+                            None => {}
+                        }
+                    }
+                    (top1, top3)
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|w| w.join().expect("decode worker"))
+                .fold((0usize, 0usize), |a, b| {
+                    (a.0.saturating_add(b.0), a.1.saturating_add(b.1))
+                })
+        })
+    }
+
+    #[test]
+    fn futo_held_out_accuracy() {
+        let swipes = futo_swipes(FUTO_EVAL);
+        let (top1, top3) = hits(&GeometricSwipeModel::english(), &swipes);
+        let n = swipes.len();
+        eprintln!("held-out swipes: n={n} top-1={top1} top-3={top3}");
+        assert!(
+            top1 >= FLOOR_TOP1 && top3 >= FLOOR_TOP3,
+            "swipe accuracy regressed: top-1 {top1}, top-3 {top3} of {n}, floors {FLOOR_TOP1}/{FLOOR_TOP3}"
+        );
+    }
+}

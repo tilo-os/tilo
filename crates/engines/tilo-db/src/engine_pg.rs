@@ -697,3 +697,192 @@ impl PostgresEngine {
 fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Engine, Profile};
+
+    fn numeric(weight: i16, sign: u16, scale: u16, digits: &[u16]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let held = i16::try_from(digits.len()).expect("a fixture's digit count fits a header");
+        out.extend_from_slice(&held.to_be_bytes());
+        out.extend_from_slice(&weight.to_be_bytes());
+        out.extend_from_slice(&sign.to_be_bytes());
+        out.extend_from_slice(&scale.to_be_bytes());
+        for digit in digits {
+            out.extend_from_slice(&digit.to_be_bytes());
+        }
+        out
+    }
+
+    tilo_test_env::scenario! {
+        fn postgres_values_and_profiles_map_faithfully;
+
+        phase pg_binary_values_preserve_numeric_and_array_semantics;
+        {
+            {
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 2, &[1, 2300]))
+                        .unwrap()
+                        .0,
+                    "1.23"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(-1, 0, 4, &[12]))
+                        .unwrap()
+                        .0,
+                    "0.0012"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(2, 0, 0, &[1, 2345]))
+                        .unwrap()
+                        .0,
+                    "123450000"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x4000, 4, &[42, 5000]))
+                        .unwrap()
+                        .0,
+                    "-42.5000"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 3, &[0]))
+                        .unwrap()
+                        .0,
+                    "0.000"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xC000, 0, &[]))
+                        .unwrap()
+                        .0,
+                    "NaN"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xD000, 0, &[]))
+                        .unwrap()
+                        .0,
+                    "Infinity"
+                );
+                assert_eq!(
+                    PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0xF000, 0, &[]))
+                        .unwrap()
+                        .0,
+                    "-Infinity"
+                );
+                assert!(PgNumeric::from_sql(&Type::NUMERIC, &[0; 7]).is_err());
+                let mut short_numeric = numeric(0, 0, 0, &[]);
+                short_numeric[..2].copy_from_slice(&1i16.to_be_bytes());
+                assert!(PgNumeric::from_sql(&Type::NUMERIC, &short_numeric).is_err());
+                assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0, 0, &[10_000])).is_err());
+                assert!(PgNumeric::from_sql(&Type::NUMERIC, &numeric(0, 0x1234, 0, &[])).is_err());
+            }
+
+            {
+                let ints = array_1d(
+                    23,
+                    &[
+                        Some(&1i32.to_be_bytes()),
+                        None,
+                        Some(&(-2i32).to_be_bytes()),
+                    ],
+                );
+                assert_eq!(
+                    PgArray::from_sql(&Type::INT4_ARRAY, &ints).unwrap().0,
+                    "[1, NULL, -2]"
+                );
+                let text = array_1d(25, &[Some(b"alpha"), None, Some(b"two words")]);
+                assert_eq!(
+                    PgArray::from_sql(&Type::TEXT_ARRAY, &text).unwrap().0,
+                    r#"["alpha", NULL, "two words"]"#
+                );
+                let mut empty = Vec::new();
+                empty.extend_from_slice(&0i32.to_be_bytes());
+                empty.extend_from_slice(&0i32.to_be_bytes());
+                empty.extend_from_slice(&23u32.to_be_bytes());
+                assert_eq!(
+                    PgArray::from_sql(&Type::INT4_ARRAY, &empty).unwrap().0,
+                    "[]"
+                );
+                let mut multidimensional = Vec::new();
+                multidimensional.extend_from_slice(&2i32.to_be_bytes());
+                multidimensional.extend_from_slice(&0i32.to_be_bytes());
+                multidimensional.extend_from_slice(&23u32.to_be_bytes());
+                multidimensional.extend_from_slice(&1i32.to_be_bytes());
+                multidimensional.extend_from_slice(&1i32.to_be_bytes());
+                multidimensional.extend_from_slice(&1i32.to_be_bytes());
+                multidimensional.extend_from_slice(&1i32.to_be_bytes());
+                assert_eq!(
+                    PgArray::from_sql(&Type::INT4_ARRAY, &multidimensional)
+                        .unwrap()
+                        .0,
+                    "<int4[]: 2-dimensional array unsupported>"
+                );
+                let mut huge = Vec::new();
+                huge.extend_from_slice(&1i32.to_be_bytes());
+                huge.extend_from_slice(&0i32.to_be_bytes());
+                huge.extend_from_slice(&23u32.to_be_bytes());
+                huge.extend_from_slice(&100_001i32.to_be_bytes());
+                huge.extend_from_slice(&1i32.to_be_bytes());
+                assert_eq!(
+                    PgArray::from_sql(&Type::INT4_ARRAY, &huge).unwrap().0,
+                    "<int4[]: 100001 elements exceeds display limit of 100000>"
+                );
+                assert!(PgArray::from_sql(&Type::INT4_ARRAY, &[0; 11]).is_err());
+                let wrong_oid = array_1d(25, &[Some(&1i32.to_be_bytes())]);
+                assert!(PgArray::from_sql(&Type::INT4_ARRAY, &wrong_oid).is_err());
+            }
+        }
+
+        phase pg_config_carries_profile_fields_and_default_port;
+        {
+            {
+                let mut p = Profile::new(Engine::Postgres);
+                p.host = "db.example".into();
+                p.port = 6543;
+                p.database = "analytics".into();
+                p.user = "reader".into();
+                p.password = "secret".into();
+                let cfg = pg_config(&p);
+                assert_eq!(cfg.get_ports(), &[6543]);
+                assert_eq!(cfg.get_user(), Some("reader"));
+                assert_eq!(cfg.get_dbname(), Some("analytics"));
+                assert!(
+                    cfg.get_hosts()
+                        .iter()
+                        .any(|h| matches!(h, postgres::config::Host::Tcp(t) if t == "db.example")),
+                    "host not set on config"
+                );
+            }
+
+            {
+                let mut p = Profile::new(Engine::Postgres);
+                p.port = 0;
+                p.host = String::new();
+                let cfg = pg_config(&p);
+                assert_eq!(cfg.get_ports(), &[5432]);
+            }
+        }
+    }
+
+    fn array_1d(element_oid: u32, values: &[Option<&[u8]>]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1i32.to_be_bytes());
+        raw.extend_from_slice(&i32::from(values.iter().any(Option::is_none)).to_be_bytes());
+        raw.extend_from_slice(&element_oid.to_be_bytes());
+        let count = i32::try_from(values.len()).expect("a fixture's array length fits");
+        raw.extend_from_slice(&count.to_be_bytes());
+        raw.extend_from_slice(&1i32.to_be_bytes());
+        for value in values {
+            match value {
+                Some(value) => {
+                    let held = i32::try_from(value.len()).expect("a fixture's value length fits");
+                    raw.extend_from_slice(&held.to_be_bytes());
+                    raw.extend_from_slice(value);
+                }
+                None => raw.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
+        }
+        raw
+    }
+}

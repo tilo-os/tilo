@@ -583,3 +583,82 @@ fn closed(code: u16, reason: &str) -> End {
         _ => End::Resume,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::panic,
+        clippy::unwrap_used,
+        reason = "in a test these are the assertion"
+    )]
+
+    use super::*;
+
+    #[test]
+    fn close_codes_resume_identify_or_end() {
+        assert!(matches!(closed(4015, ""), End::Resume));
+        assert!(matches!(closed(1006, ""), End::Resume));
+        assert!(matches!(closed(4006, ""), End::Identify));
+        assert!(matches!(closed(4014, ""), End::Fatal(_)));
+        let End::Fatal(reason) = closed(4017, "E2EE/DAVE protocol required") else {
+            panic!("4017 ends the call");
+        };
+        assert!(reason.contains("E2EE/DAVE protocol required (4017)"));
+    }
+
+    #[test]
+    fn a_voice_endpoint_with_a_port_is_reached_on_443() {
+        let discord = Egress::default();
+        let url = voice_url(discord, "c-sjc01-1371dab6.discord.media:2096").unwrap();
+        assert_eq!(url.as_str(), "wss://c-sjc01-1371dab6.discord.media/?v=8");
+        let url = voice_url(discord, "c-sjc01-1371dab6.discord.media").unwrap();
+        assert_eq!(url.as_str(), "wss://c-sjc01-1371dab6.discord.media/?v=8");
+        assert!(voice_url(discord, "evil.example:2096").is_err());
+        let fake = Egress {
+            allow_loopback: true,
+        };
+        let url = voice_url(fake, "127.0.0.1:34187").unwrap();
+        assert_eq!(url.as_str(), "ws://127.0.0.1:34187/?v=8");
+    }
+
+    /// What Discord names as the voice server is one of its own hosts and
+    /// nothing else: an endpoint that names none, carries another host
+    /// behind Discord's name, or points at this machine is refused before
+    /// anything connects, by its host alone.
+    #[test]
+    fn a_voice_endpoint_that_is_not_discords_is_refused() {
+        for (endpoint, error) in [
+            ("", "Discord named a voice server that is not a host: "),
+            (
+                "c-sjc01.discord.media:443@evil.example",
+                "voice server refused: evil.example: credentials in a URL are not allowed",
+            ),
+            (
+                "evil.example/c-sjc01.discord.media",
+                "voice server refused: evil.example is not one of Discord's Voice hosts",
+            ),
+            (
+                "evil.example#.discord.media",
+                "voice server refused: evil.example is not one of Discord's Voice hosts",
+            ),
+            (
+                "discord.media",
+                "voice server refused: discord.media is not one of Discord's Voice hosts",
+            ),
+            (
+                "127.0.0.1:34187",
+                "voice server refused: 127.0.0.1 is not one of Discord's Voice hosts",
+            ),
+            (
+                "localhost:34187",
+                "voice server refused: localhost is not one of Discord's Voice hosts",
+            ),
+        ] {
+            assert_eq!(
+                voice_url(Egress::default(), endpoint).map(String::from),
+                Err(error.to_owned()),
+                "{endpoint:?}"
+            );
+        }
+    }
+}

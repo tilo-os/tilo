@@ -1751,3 +1751,79 @@ fn flatpak_ref(content: &str) -> Option<FlatpakRef> {
         branch,
     })
 }
+
+#[cfg(test)]
+mod bot_tests {
+    use super::*;
+
+    /// What the Bots view reads of a listed bot: what its program does and reaches, where it
+    /// comes from, and that it has no version to fetch on this computer.
+    #[test]
+    fn a_listed_bot_carries_what_its_program_does_and_reaches() {
+        let bot = app_cli::bots::CatalogueBot {
+            package_id: "so.tilo.bots.echo".into(),
+            name: "Echo".into(),
+            tagline: "Says what it is told".into(),
+            description: "A program that posts on a schedule.".into(),
+            icon_url: Some("https://example.test/echo.png".into()),
+            publisher_pubkey_hex: "ab".repeat(32),
+            registry_name: "Tilo main".into(),
+            version: "1.2.0".into(),
+            artifact: registry_types::BotArtifact {
+                program_url: "https://example.test/echo.program".into(),
+                program_blake3_hex: "00".repeat(32),
+                program_size_bytes: 64,
+                requires: registry_types::BotRequirements {
+                    connectors: Vec::new(),
+                    apps: vec!["so.tilo.chat".into()],
+                    appearance: true,
+                    triggers: vec!["schedule".into(), "resource_changed".into()],
+                },
+            },
+        };
+        let item = tilo_bot_item(&bot);
+        assert!(item.bot, "the Store filters it among bots");
+        assert_eq!(item.identity, "so.tilo.bots.echo");
+        assert_eq!(item.registry, "Tilo main");
+        assert_eq!(item.available, "1.2.0");
+        assert_eq!(item.bot_triggers, ["schedule", "resource_changed"]);
+        assert_eq!(item.bot_apps, ["so.tilo.chat"]);
+        assert!(item.bot_appearance, "it may post under other names");
+        assert!(
+            item.installed.is_empty(),
+            "nothing is fetched on this computer"
+        );
+        assert!(item.runnable, "a bot is always added, never built here");
+    }
+
+    #[test]
+    fn a_flathub_app_the_device_runs_says_so_and_offers_its_update() {
+        let listing = "org.gnome.Editor\tText Editor\tEdits text\t47.1\tstable\tflathub\n\
+                       org.gnome.Maps\tMaps\tFinds places\t46.0\tstable\tflathub\n";
+        let offers = flatpak_offers(listing);
+        assert_eq!(offers.len(), 2);
+        assert_eq!(offers[0].app, "org.gnome.Editor");
+        assert_eq!(offers[0].name, "Text Editor");
+        assert_eq!(offers[0].version, "47.1");
+
+        let mut installed = Installed::default();
+        installed
+            .version
+            .insert("org.gnome.Editor".to_owned(), "47.1".to_owned());
+        installed
+            .version
+            .insert("org.gnome.Maps".to_owned(), "45.2".to_owned());
+
+        let current = flathub_item(&offers[0], &installed);
+        assert_eq!(current.installed, "47.1", "the version this device runs");
+        assert!(!current.updatable, "it is the version Flathub offers");
+
+        let older = flathub_item(&offers[1], &installed);
+        assert_eq!(older.installed, "45.2");
+        assert!(older.updatable, "Flathub offers a newer one");
+
+        let nowhere = flathub_item(&offers[1], &Installed::default());
+        assert!(nowhere.installed.is_empty(), "a device that runs none");
+        assert!(!nowhere.updatable, "and one that runs none is not updated");
+    }
+}

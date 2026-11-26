@@ -554,3 +554,6 @@ pub fn to_discord(guild: &Guild, workspace: &WorkspaceChat) -> Option<ArrangeOp>
     }
     (!op.categories.is_empty() || !op.channels.is_empty()).then_some(op)
 }
+
+#[cfg(test)]
+mod tests;

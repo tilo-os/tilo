@@ -549,3 +549,6 @@ pub fn mix_frames(frames: &[&[i16]]) -> Result<Vec<i16>, AudioError> {
         .map(|s| i16::try_from(s).unwrap_or(if s < 0 { i16::MIN } else { i16::MAX }))
         .collect())
 }
+
+#[cfg(test)]
+mod tests;

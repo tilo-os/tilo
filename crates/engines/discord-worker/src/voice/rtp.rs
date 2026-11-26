@@ -105,3 +105,169 @@ pub fn open(cipher: &Cipher, packet: &[u8]) -> Option<Received> {
         frame: plain,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: [u8; 32] = [7; 32];
+
+    #[test]
+    fn packets_round_trip_in_both_modes() {
+        for mode in [AES_GCM, XCHACHA] {
+            let cipher = Cipher::new(mode, &KEY).unwrap();
+            let mut sender = Sender::new(42, [0xff, 0xff, 0, 0, 0, 1, 0, 0, 0, 9]);
+            let first = sender.packet(&cipher, b"opus one").unwrap();
+            let second = sender.packet(&cipher, b"opus two").unwrap();
+            assert_eq!(&first[..2], &[0x80, 0x78]);
+            assert_eq!(
+                &first[first.len() - 4..],
+                &9_u32.to_be_bytes(),
+                "counter appended"
+            );
+            let opened = open(&cipher, &first).unwrap();
+            assert_eq!(opened.ssrc, 42);
+            assert_eq!(opened.sequence, 0xffff);
+            assert_eq!(opened.frame, b"opus one");
+            assert_eq!(
+                open(&cipher, &second).unwrap().sequence,
+                0,
+                "sequence wraps"
+            );
+            let mut tampered = first.clone();
+            tampered[3] ^= 1;
+            assert!(
+                open(&cipher, &tampered).is_none(),
+                "the header is authenticated"
+            );
+        }
+    }
+
+    #[test]
+    fn a_header_extension_body_is_encrypted_and_stripped() {
+        let cipher = Cipher::new(AES_GCM, &KEY).unwrap();
+        let mut packet = vec![0x90, 0x78, 0, 1, 0, 0, 0, 2, 0, 0, 0, 5];
+        packet.extend_from_slice(&[0xbe, 0xde, 0, 1]);
+        let mut body = vec![0x10, 0xaa, 0, 0];
+        body.extend_from_slice(b"voice");
+        let sealed = cipher.seal(3, &packet, &body).unwrap();
+        packet.extend_from_slice(&sealed);
+        packet.extend_from_slice(&3_u32.to_be_bytes());
+        let opened = open(&cipher, &packet).unwrap();
+        assert_eq!(opened.frame, b"voice");
+        assert_eq!(opened.ssrc, 5);
+    }
+
+    #[test]
+    fn rtcp_and_garbage_are_ignored() {
+        let cipher = Cipher::new(XCHACHA, &KEY).unwrap();
+        assert!(open(&cipher, &[0x80, 0xc9, 0, 1, 0, 0, 0, 0]).is_none());
+        assert!(open(&cipher, &[0x80]).is_none());
+        assert!(
+            open(
+                &cipher,
+                &[0x80, 0x78, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3]
+            )
+            .is_none()
+        );
+        assert!(Cipher::new(AES_GCM, &[1; 16]).is_err());
+        assert!(Cipher::new("xsalsa20_poly1305", &KEY).is_err());
+    }
+
+    #[test]
+    fn a_cut_packet_is_ignored_at_every_length() {
+        for mode in [AES_GCM, XCHACHA] {
+            let cipher = Cipher::new(mode, &KEY).unwrap();
+            let whole = Sender::new(42, [0; 10]).packet(&cipher, b"opus").unwrap();
+            assert_eq!(open(&cipher, &whole).unwrap().frame, b"opus");
+            for len in 0..whole.len() {
+                assert!(
+                    open(&cipher, &whole[..len]).is_none(),
+                    "{mode}: {len} of {} bytes",
+                    whole.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_timestamp_and_the_counter_wrap() {
+        let cipher = Cipher::new(XCHACHA, &KEY).unwrap();
+        let mut sender = Sender::new(7, [0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        let last = sender.packet(&cipher, b"last").unwrap();
+        let next = sender.packet(&cipher, b"next").unwrap();
+        assert_eq!(&last[4..8], &u32::MAX.to_be_bytes(), "the timestamp");
+        assert!(last.ends_with(&u32::MAX.to_be_bytes()), "the counter");
+        assert_eq!(
+            &next[4..8],
+            &959_u32.to_be_bytes(),
+            "the timestamp wraps, one frame on"
+        );
+        assert!(next.ends_with(&0_u32.to_be_bytes()), "the counter wraps");
+        assert_eq!(open(&cipher, &last).unwrap().frame, b"last");
+        assert_eq!(open(&cipher, &next).unwrap().frame, b"next");
+    }
+
+    /// What the first byte declares (contributing sources, an extension) is
+    /// read past, and an extension said to be longer than the body is no
+    /// packet.
+    #[test]
+    fn what_the_header_declares_is_skipped_or_the_packet_ignored() {
+        // What it is, the first byte, what follows the fixed header in the
+        // clear, the sealed body, and the frame it opens to.
+        type Row = (
+            &'static str,
+            u8,
+            &'static [u8],
+            &'static [u8],
+            Option<&'static [u8]>,
+        );
+        let cipher = Cipher::new(AES_GCM, &KEY).unwrap();
+        let rows: [Row; 5] = [
+            (
+                "one contributing source",
+                0x81,
+                &[0, 0, 0, 9],
+                b"opus",
+                Some(&b"opus"[..]),
+            ),
+            (
+                "an empty extension",
+                0x90,
+                &[0xbe, 0xde, 0, 0],
+                b"opus",
+                Some(&b"opus"[..]),
+            ),
+            (
+                "an extension the size of the body",
+                0x90,
+                &[0xbe, 0xde, 0, 2],
+                b"12345678",
+                Some(&b""[..]),
+            ),
+            (
+                "an extension longer than the body",
+                0x90,
+                &[0xbe, 0xde, 0, 3],
+                b"too short",
+                None,
+            ),
+            (
+                "a source and an extension",
+                0x91,
+                &[0, 0, 0, 9, 0xbe, 0xde, 0, 1],
+                b"\x10\xaa\0\0voice",
+                Some(&b"voice"[..]),
+            ),
+        ];
+        for (what, first, clear, body, frame) in rows {
+            let mut packet = vec![first, 0x78, 0, 1, 0, 0, 0, 2, 0, 0, 0, 5];
+            packet.extend_from_slice(clear);
+            let sealed = cipher.seal(3, &packet, body).unwrap();
+            packet.extend_from_slice(&sealed);
+            packet.extend_from_slice(&3_u32.to_be_bytes());
+            let opened = open(&cipher, &packet).map(|received| received.frame);
+            assert_eq!(opened.as_deref(), frame, "{what}");
+        }
+    }
+}

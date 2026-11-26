@@ -165,3 +165,160 @@ fn cover_media(href: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Write};
+
+    use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
+
+    use super::*;
+
+    fn archive(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, data) in entries {
+            zw.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zw.write_all(data.as_bytes()).unwrap();
+        }
+        zw.finish().unwrap().into_inner()
+    }
+
+    const CONTAINER: &str = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+
+    fn package(spine: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>The Tide Glass</dc:title>
+    <dc:creator>Ada Ferrer</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:subject>Fable</dc:subject>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>{spine}</spine>
+</package>"#
+        )
+    }
+
+    const NAV: &str = r#"<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<body><nav epub:type="toc"><ol>
+  <li><a href="c1.xhtml">The Glass</a></li>
+  <li><a href="c2.xhtml">The Tide</a></li>
+</ol></nav></body></html>"#;
+
+    #[test]
+    fn a_book_reads_its_facts_and_chapters_in_spine_order() {
+        let bytes = archive(&[
+            ("META-INF/container.xml", CONTAINER),
+            (
+                "OEBPS/content.opf",
+                &package(r#"<itemref idref="c1"/><itemref idref="c2"/>"#),
+            ),
+            ("OEBPS/nav.xhtml", NAV),
+            (
+                "OEBPS/c1.xhtml",
+                "<html><body><h1>The Glass</h1><p>One.</p></body></html>",
+            ),
+            (
+                "OEBPS/c2.xhtml",
+                "<html><body><h1>The Tide</h1><p>Two.</p></body></html>",
+            ),
+        ]);
+        let book = read(&bytes).unwrap();
+        assert_eq!(book.title, "The Tide Glass");
+        assert_eq!(book.author, "Ada Ferrer");
+        assert_eq!(book.subject, "Fable");
+        assert_eq!(book.language, "en");
+        assert_eq!(book.chapters.len(), 2);
+        assert_eq!(book.chapters[0].title, "The Glass");
+        assert!(book.chapters[0].xhtml.contains("One."));
+        assert_eq!(book.chapters[1].title, "The Tide");
+    }
+
+    #[test]
+    fn a_spine_in_the_package_order_is_the_reading_order_it_names() {
+        let bytes = archive(&[
+            ("META-INF/container.xml", CONTAINER),
+            (
+                "OEBPS/content.opf",
+                &package(r#"<itemref idref="c2"/><itemref idref="c1"/>"#),
+            ),
+            ("OEBPS/nav.xhtml", NAV),
+            ("OEBPS/c1.xhtml", "<html><body><p>One.</p></body></html>"),
+            ("OEBPS/c2.xhtml", "<html><body><p>Two.</p></body></html>"),
+        ]);
+        let book = read(&bytes).unwrap();
+        assert_eq!(book.chapters[0].title, "The Tide");
+        assert!(book.chapters[0].xhtml.contains("Two."));
+    }
+
+    #[test]
+    fn a_missing_chapter_fails_rather_than_opening_a_short_book() {
+        let bytes = archive(&[
+            ("META-INF/container.xml", CONTAINER),
+            (
+                "OEBPS/content.opf",
+                &package(r#"<itemref idref="c1"/><itemref idref="c2"/>"#),
+            ),
+            ("OEBPS/c1.xhtml", "<html><body><p>One.</p></body></html>"),
+        ]);
+        assert_eq!(
+            read(&bytes).unwrap_err().to_string(),
+            CodecError::Unsupported("part of the book is missing or damaged".into()).to_string()
+        );
+    }
+
+    #[test]
+    fn a_package_without_a_spine_is_not_a_book() {
+        let bytes = archive(&[
+            ("META-INF/container.xml", CONTAINER),
+            ("OEBPS/content.opf", &package("")),
+        ]);
+        assert!(read(&bytes).is_err());
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_zip_are_damaged() {
+        assert_eq!(
+            read(b"not a zip").unwrap_err().to_string(),
+            CodecError::Unsupported(BookProblem::Damaged.to_string()).to_string()
+        );
+    }
+
+    #[test]
+    fn a_cover_is_read_when_the_package_declares_one() {
+        let png = [0x89u8, b'P', b'N', b'G'];
+        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
+        zw.start_file("META-INF/container.xml", SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(CONTAINER.as_bytes()).unwrap();
+        let package = package(r#"<itemref idref="c1"/>"#).replace(
+            "</manifest>",
+            r#"<item id="x" href="cover.png" media-type="image/png" properties="cover-image"/></manifest>"#,
+        );
+        zw.start_file("OEBPS/content.opf", SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(package.as_bytes()).unwrap();
+        zw.start_file("OEBPS/c1.xhtml", SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"<html><body><p>One.</p></body></html>")
+            .unwrap();
+        zw.start_file("OEBPS/cover.png", SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(&png).unwrap();
+        let bytes = zw.finish().unwrap().into_inner();
+        let book = read(&bytes).unwrap();
+        assert_eq!(book.cover, Some(("image/png".to_owned(), png.to_vec())));
+        assert_eq!(cover_media("a/b/Cover.JPEG"), Some("image/jpeg"));
+    }
+}

@@ -86,3 +86,54 @@ pub(super) fn answer(request_id: u32, text: Option<&str>) -> Option<Value> {
         None => json!({"op": "clipboard_contents", "request_id": request_id}),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn the_page_clipboard_crosses_the_host_protocol_within_its_bounds;
+
+        phase a_copy_is_taken_with_its_markup_and_whether_it_is_secret;
+        {
+            let event =
+                decode(&json!({"event": "clipboard", "tab": 3, "text": "hunter2", "secret": true}));
+            assert!(
+                matches!(event, Some(WebViewEvent::ClipboardWrite { ref text, html: None, secret: true }) if text == "hunter2")
+            );
+            let event = decode(
+                &json!({"event": "clipboard", "tab": 3, "text": "a link", "html": "<a href=\"/x\">a link</a>", "secret": false}),
+            );
+            assert!(
+                matches!(event, Some(WebViewEvent::ClipboardWrite { html: Some(ref html), secret: false, .. }) if html.starts_with("<a "))
+            );
+        }
+
+        phase a_copy_the_host_would_not_send_is_refused;
+        {
+            for value in [
+                json!({"event": "clipboard", "text": "", "secret": false}),
+                json!({"event": "clipboard", "text": "x"}),
+                json!({"event": "clipboard", "text": "x", "secret": false, "extra": 1}),
+                json!({"event": "clipboard", "text": "x".repeat(MAX_TEXT + 1), "secret": false}),
+                json!({"event": "clipboard_read", "request_id": 0}),
+                json!({"event": "clipboard_read", "request_id": 1_u64 << 31}),
+            ] {
+                assert!(decode(&value).is_none(), "{value}");
+            }
+        }
+
+        phase a_read_is_answered_with_the_text_or_nothing;
+        {
+            assert_eq!(
+                answer(7, Some("pasted")),
+                Some(json!({"op": "clipboard_contents", "request_id": 7, "text": "pasted"}))
+            );
+            assert_eq!(
+                answer(7, None),
+                Some(json!({"op": "clipboard_contents", "request_id": 7}))
+            );
+            assert_eq!(answer(0, Some("x")), None);
+        }
+    }
+}

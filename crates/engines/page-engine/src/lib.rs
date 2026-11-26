@@ -994,3 +994,985 @@ impl Drop for PageSession {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_webview::{MediaElementInfo, test_engine::TestEngine};
+
+    /// A document that finished loading is asked what video it shows: the answer waits in the
+    /// asks for the app and its window, and the app is told the page's video changed so it reads
+    /// it. A document with no video says so the same way.
+    #[test]
+    fn a_loaded_page_is_asked_what_video_it_shows_and_tells_the_app_when_it_changes() {
+        let test = TestEngine::new();
+        let engine: SharedEngine = test.clone();
+        let mut session = PageSession::new(engine);
+        let video = MediaElementInfo {
+            element_id: "video:1".to_owned(),
+            viewport_rect: [0.0, 0.1, 1.0, 0.5],
+            intrinsic_size: [1_280, 720],
+            label: "A talk on maps".to_owned(),
+        };
+        test.set_media_element(Some(video.clone()));
+        test.push_event(WebViewEvent::LoadFinished);
+        session.poll();
+        assert!(
+            test.commands()
+                .iter()
+                .any(|command| matches!(command, WebViewCommand::RequestMediaElement { .. })),
+            "the loaded page is asked what video it shows"
+        );
+        session.poll();
+        assert_eq!(
+            session.asks().media.as_ref(),
+            Some(&video),
+            "the video waits in the asks for the app and its window"
+        );
+        assert!(session.has_notes(), "the app is told the page's video");
+        let notes = session.notes();
+        assert!(
+            notes.iter().any(|note| note.contains(r#""note":"media""#)),
+            "a media note: {notes:?}"
+        );
+
+        // The page went elsewhere and shows no video: what waited is gone, and the app is told
+        // once the new document says it shows none.
+        test.set_media_element(None);
+        test.push_event(WebViewEvent::UriChanged("https://example.org/".to_owned()));
+        session.poll();
+        assert_eq!(
+            session.asks().media,
+            None,
+            "another document shows no video"
+        );
+        test.push_event(WebViewEvent::LoadFinished);
+        session.poll();
+        session.poll();
+        assert_eq!(session.asks().media, None);
+        assert!(
+            session
+                .notes()
+                .iter()
+                .any(|note| note.contains(r#""note":"media""#)),
+            "the app is told the page shows no video"
+        );
+    }
+
+    /// A page's outline is asked once and answered once, and the page's own events stay theirs.
+    #[test]
+    fn an_answer_comes_once_and_the_pages_events_reach_its_view() {
+        let test = TestEngine::new();
+        let engine: SharedEngine = test.clone();
+        let mut session = PageSession::new(engine);
+        let action = session.ask(
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        );
+        assert!(session.waiting_for(action));
+        session.poll();
+        let answers = session.answers();
+        assert_eq!(answers.len(), 1, "one answer, for one action");
+        assert_eq!(answers[0].0, action);
+        assert!(
+            answers[0].1.is_ok(),
+            "the outline answers: {:?}",
+            answers[0].1
+        );
+        assert!(!session.waiting_for(action), "the action is answered");
+
+        // What the page reports of itself is the view's, not an answer's: it waits in order.
+        test.push_event(WebViewEvent::UriChanged("https://example.org/".to_owned()));
+        session.poll();
+        assert!(matches!(
+            session.next_event(),
+            Some(WebViewEvent::UriChanged(uri)) if uri == "https://example.org/"
+        ));
+        assert!(session.next_event().is_none());
+        assert!(session.answers().is_empty(), "events are not answers");
+    }
+
+    /// A file input's chooser is the window's to ask with the host's picker, never the page's
+    /// own event, and the answer goes back with exactly the paths the person chose.
+    #[test]
+    fn a_file_chooser_is_the_windows_and_its_answer_is_the_persons_paths() {
+        let test = TestEngine::new();
+        let engine: SharedEngine = test.clone();
+        let mut session = PageSession::new(engine);
+        test.push_event(WebViewEvent::FileChooser(tilo_webview::FileChooser {
+            id: 7,
+            mode: tilo_webview::FileChooserMode::One,
+            title: "Upload".to_owned(),
+            accept: vec!["image/png".to_owned()],
+        }));
+        session.poll();
+        assert!(session.has_choosers());
+        let choosers = session.choosers();
+        assert_eq!(choosers.len(), 1, "one chooser waits: {choosers:?}");
+        assert_eq!(choosers[0].id, 7);
+        assert!(
+            session.next_event().is_none(),
+            "the chooser is not an event the page's view draws"
+        );
+
+        session.answer_chooser(7, vec!["/home/ada/picture.png".to_owned()]);
+        assert!(
+            test.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::AnswerFileChooser { id, paths }
+                    if *id == 7 && paths == &["/home/ada/picture.png".to_owned()]
+            )),
+            "the page is answered with the person's path: {:?}",
+            test.commands()
+        );
+    }
+
+    /// A vault that answers at once, keeping what it was asked: the logins it lists, and what
+    /// filling answers.
+    /// A login the fake vault was handed: its site, name, password and the login it replaces.
+    type Kept = (String, String, String, Option<String>);
+
+    #[derive(Default)]
+    struct FakeVault {
+        asked: std::cell::RefCell<Vec<String>>,
+        kept: std::cell::RefCell<Vec<Kept>>,
+        refuse_fill: Option<String>,
+    }
+
+    const TYPED: &str = "synthetic-typed-password";
+    const KEPT: &str = "synthetic-vault-password";
+
+    fn login(item: &str, username: &str) -> VaultLogin {
+        VaultLogin {
+            item: item.to_owned(),
+            title: "example.org".to_owned(),
+            username: username.to_owned(),
+            own: true,
+        }
+    }
+
+    impl LoginVault for FakeVault {
+        fn logins(&self, site: &str, done: Answered<Vec<VaultLogin>>) {
+            self.asked.borrow_mut().push(format!("logins {site}"));
+            done(Ok(vec![login("vault.item:1", "ada")]));
+        }
+        fn keep(
+            &self,
+            site: &str,
+            username: &str,
+            password: tilo_webview::ReleasedText,
+            replacing: Option<&str>,
+            done: Answered<()>,
+        ) {
+            let secret = password.take().map(|p| p.to_string()).unwrap_or_default();
+            self.kept.borrow_mut().push((
+                site.to_owned(),
+                username.to_owned(),
+                secret,
+                replacing.map(str::to_owned),
+            ));
+            done(Ok(()));
+        }
+        fn forget(&self, site: &str, item: &str, done: Answered<Vec<VaultLogin>>) {
+            self.asked
+                .borrow_mut()
+                .push(format!("forget {item} {site}"));
+            done(Ok(Vec::new()));
+        }
+        fn fill(
+            &self,
+            site: &str,
+            item: &str,
+            done: Answered<(String, tilo_webview::ReleasedText)>,
+        ) {
+            self.asked.borrow_mut().push(format!("fill {item} {site}"));
+            done(match &self.refuse_fill {
+                Some(why) => Err(why.clone()),
+                None => Ok((
+                    "ada".to_owned(),
+                    tilo_webview::ReleasedText::new(KEPT.to_owned()),
+                )),
+            });
+        }
+    }
+
+    /// The engine's answer to a login action.
+    fn reply(
+        action: &str,
+        success: bool,
+        origin: &str,
+        document: &str,
+    ) -> tilo_webview::CredentialReply {
+        tilo_webview::CredentialReply {
+            request_id: 1,
+            action: action.to_owned(),
+            origin: origin.to_owned(),
+            document: document.to_owned(),
+            success,
+            message: if success {
+                "Ready"
+            } else {
+                "Page changed or secure form access is unavailable"
+            }
+            .to_owned(),
+            forms: Vec::new(),
+            capture: None,
+            username: None,
+            late: false,
+            password: None,
+        }
+    }
+
+    fn last_credential(test: &std::sync::Arc<TestEngine>) -> CredentialRequest {
+        match test.commands().last() {
+            Some(WebViewCommand::Credentials(request)) => request.clone(),
+            other => panic!("a credential action was sent: {other:?}"),
+        }
+    }
+
+    fn with_vault(vault: FakeVault) -> (std::sync::Arc<TestEngine>, PageSession, Rc<FakeVault>) {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let vault = Rc::new(vault);
+        session.set_vault(vault.clone());
+        (test, session, vault)
+    }
+
+    /// A login action asks the engine where the page is first, and acts on the document and the
+    /// site the engine names, whatever the app said: the question itself is not the person's
+    /// to see.
+    #[test]
+    fn a_login_action_names_the_pages_own_document_and_site() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://elsewhere.example",
+            LoginAsk::Engine(CredentialAction::Discover),
+        );
+        assert!(matches!(
+            last_credential(&test).action,
+            CredentialAction::Status
+        ));
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        let discover = last_credential(&test);
+        assert!(matches!(discover.action, CredentialAction::Discover));
+        assert_eq!(
+            (discover.origin.as_str(), discover.document.as_str()),
+            ("https://example.org", "4")
+        );
+        assert!(
+            session.notes().is_empty(),
+            "the status is not the person's to see"
+        );
+
+        session.login("https://elsewhere.example", LoginAsk::List);
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        assert_eq!(*vault.asked.borrow(), ["logins https://example.org"]);
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "list");
+        let accounts: serde_json::Value =
+            serde_json::from_str(note["accounts"].as_str().unwrap()).unwrap();
+        assert_eq!(accounts[0]["account"], "vault.item:1");
+        assert_eq!(accounts[0]["username"], "ada");
+    }
+
+    /// What a person typed goes from the engine to the vault, for the site the page is at, and
+    /// into no note: the app hears it was saved, and the site's logins as they are now.
+    #[test]
+    fn a_saved_login_goes_from_the_engine_to_the_vault_alone() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://example.org",
+            LoginAsk::Update {
+                capture: "3".to_owned(),
+                item: "vault.item:1".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        let take = last_credential(&test);
+        assert!(matches!(&take.action, CredentialAction::Take { capture } if capture == "3"));
+        let mut taken = reply("take", true, "https://example.org", "4");
+        taken.request_id = take.request_id;
+        taken.username = Some("ada".to_owned());
+        taken.password = Some(tilo_webview::ReleasedText::new(TYPED.to_owned()));
+        test.push_event(WebViewEvent::CredentialResult(taken));
+        session.poll();
+        assert_eq!(
+            *vault.kept.borrow(),
+            [(
+                "https://example.org".to_owned(),
+                "ada".to_owned(),
+                TYPED.to_owned(),
+                Some("vault.item:1".to_owned())
+            )]
+        );
+        let notes = session.notes();
+        assert!(notes.iter().all(|note| !note.contains(TYPED)), "{notes:?}");
+        let said: Vec<serde_json::Value> = notes
+            .iter()
+            .map(|note| serde_json::from_str(note).unwrap())
+            .collect();
+        assert_eq!(said[0]["did"], "update");
+        assert_eq!(said[0]["success"], true);
+        assert_eq!(said[1]["did"], "list");
+        while session.next_event().is_some() {}
+        assert!(!session.busy(), "nothing waits on the engine or the vault");
+    }
+
+    /// Filling asks the vault for the site the engine says the page is at, and hands the engine
+    /// the login for that document; a fill the vault refuses fills nothing and says why.
+    #[test]
+    fn a_fill_hands_the_vaults_login_to_the_engine_or_says_why_not() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://elsewhere.example",
+            LoginAsk::Fill {
+                form: "2".to_owned(),
+                item: "vault.item:1".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        assert_eq!(
+            *vault.asked.borrow(),
+            ["fill vault.item:1 https://example.org"]
+        );
+        let fill = last_credential(&test);
+        assert_eq!(
+            (fill.origin.as_str(), fill.document.as_str()),
+            ("https://example.org", "4")
+        );
+        match &fill.action {
+            CredentialAction::Fill {
+                form,
+                username,
+                password,
+            } => {
+                assert_eq!((form.as_str(), username.as_str()), ("2", "ada"));
+                assert_eq!(password.take().as_deref().map(String::as_str), Some(KEPT));
+            }
+            other => panic!("a fill: {other:?}"),
+        }
+        assert!(session.notes().iter().all(|note| !note.contains(KEPT)));
+
+        let (test, mut session, _) = with_vault(FakeVault {
+            refuse_fill: Some("Browser may not fill this login yet".to_owned()),
+            ..FakeVault::default()
+        });
+        session.login(
+            "https://example.org",
+            LoginAsk::Fill {
+                form: "2".to_owned(),
+                item: "vault.item:9".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        assert!(
+            matches!(last_credential(&test).action, CredentialAction::Status),
+            "nothing filled"
+        );
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "fill");
+        assert_eq!(note["success"], false);
+        assert_eq!(note["message"], "Browser may not fill this login yet");
+    }
+
+    /// A page the engine will not reach (not secure, or moved on) says so in the action's own
+    /// answer, and nothing is asked of the engine or the vault for it.
+    #[test]
+    fn a_login_action_the_engine_refuses_is_answered_in_its_own_words() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login("http://example.org", LoginAsk::List);
+        let before = test.commands().len();
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            false,
+            "http://example.org",
+            "",
+        )));
+        session.poll();
+        assert_eq!(test.commands().len(), before);
+        assert!(vault.asked.borrow().is_empty());
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "list");
+        assert_eq!(note["success"], false);
+        assert_eq!(
+            note["message"],
+            "Page changed or secure form access is unavailable"
+        );
+    }
+
+    /// A page with no vault to ask (a private one) is offered no logins and keeps none.
+    #[test]
+    fn a_page_without_a_vault_offers_and_keeps_no_logins() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.login(
+            "https://example.org",
+            LoginAsk::Save {
+                capture: "3".to_owned(),
+            },
+        );
+        assert!(test.commands().is_empty(), "nothing is taken from the form");
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "save");
+        assert_eq!(note["success"], false);
+        assert_eq!(note["message"], logins::NO_VAULT);
+    }
+
+    /// A private page's profile is its window's alone and goes when the page does: nothing it
+    /// read or signed in to is kept for the next window.
+    #[test]
+    fn a_private_page_owns_the_profile_it_goes_with() {
+        let root = tilo_webview::chromium::allocate_private_root().expect("a private root");
+        assert!(
+            tilo_webview::chromium::is_owned_private_root(&root),
+            "a root this browser made is one it may remove"
+        );
+        let session = PageSession::new_private(TestEngine::new(), root.clone());
+        assert!(session.is_private());
+        drop(session);
+        assert!(!root.exists(), "the private profile goes with the page");
+    }
+
+    /// A page that is not private keeps this device's profile.
+    #[test]
+    fn an_ordinary_page_is_not_private() {
+        assert!(!PageSession::new(TestEngine::new()).is_private());
+    }
+
+    /// The page written as a PDF is the app's note, naming the file the engine wrote and what
+    /// it is called.
+    #[test]
+    fn a_printed_page_is_a_note_naming_the_pdf() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::PrintResult {
+            request_id: 1,
+            ok: true,
+            path: "/home/ada/.local/share/tilo/chromium/print/Example page.pdf".into(),
+            name: "Example page.pdf".into(),
+            message: String::new(),
+        });
+        session.poll();
+        let note: serde_json::Value =
+            serde_json::from_str(&session.notes()[0]).expect("the note is JSON");
+        assert_eq!(note["note"], "print");
+        assert_eq!(note["ok"], true);
+        assert_eq!(
+            note["path"],
+            "/home/ada/.local/share/tilo/chromium/print/Example page.pdf"
+        );
+        assert_eq!(note["name"], "Example page.pdf");
+    }
+
+    /// An extension's toolbar button is what the engine last said of it, and a reset takes them
+    /// all away; the button a press opens a page from is a popup the app keeps as a page.
+    #[test]
+    fn an_extensions_toolbar_button_is_what_the_engine_last_said() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionAction {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            global: false,
+            change: tilo_webview::ExtensionActionChange {
+                badge: Some(Some("3".to_owned())),
+                title: Some(Some("Read later".to_owned())),
+                popup: None,
+                enabled: None,
+                icon: None,
+            },
+        });
+        test.push_event(WebViewEvent::ExtensionAction {
+            id: "ponmlkjihgfedcbaponmlkjihgfedcba".to_owned(),
+            global: false,
+            change: tilo_webview::ExtensionActionChange {
+                enabled: Some(Some(false)),
+                ..Default::default()
+            },
+        });
+        session.poll();
+        let buttons = &session.asks().extension_buttons;
+        assert_eq!(buttons.len(), 2, "two buttons: {buttons:?}");
+        assert!(buttons[0].enabled, "a button nobody dimmed takes a press");
+        assert!(
+            !buttons[1].enabled,
+            "a button its extension dimmed does not"
+        );
+        assert_eq!(buttons[0].badge, "3");
+        assert_eq!(buttons[0].title, "Read later");
+
+        test.push_event(WebViewEvent::ExtensionActionReset);
+        session.poll();
+        assert!(
+            session.asks().extension_buttons.is_empty(),
+            "a reset takes them all away"
+        );
+
+        test.push_event(WebViewEvent::ExtensionOpenPopup {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            url: "https://example.org/popup".to_owned(),
+        });
+        session.poll();
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).expect("a note");
+        assert_eq!(note["note"], "open");
+        assert_eq!(note["url"], "https://example.org/popup");
+        assert_eq!(note["popup"], true, "a popup is shown as a page of its own");
+    }
+
+    /// An extension's notification is kept while it shows and gone when the extension takes it
+    /// back, and the person's press on one of its buttons reaches the engine by number.
+    #[test]
+    fn an_extensions_notification_is_kept_until_the_extension_takes_it_back() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionNotification {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            notification: "n1".to_owned(),
+            notice: Some(tilo_webview::ExtensionNotice {
+                title: "Saved".to_owned(),
+                message: "Three pages kept".to_owned(),
+                context: String::new(),
+                items: Vec::new(),
+                buttons: vec!["Open".to_owned(), "Later".to_owned()],
+                progress: None,
+                silent: false,
+            }),
+        });
+        session.poll();
+        let notices = &session.asks().extension_notices;
+        assert_eq!(notices.len(), 1, "one notification: {notices:?}");
+        assert_eq!(notices[0].title, "Saved");
+        assert_eq!(notices[0].buttons, ["Open", "Later"]);
+
+        test.push_event(WebViewEvent::ExtensionNotification {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            notification: "n1".to_owned(),
+            notice: None,
+        });
+        session.poll();
+        assert!(
+            session.asks().extension_notices.is_empty(),
+            "the extension took it back"
+        );
+    }
+
+    /// A page a script opened (a popup the site sized, a plain new tab) is a note the window
+    /// hands the app, never the page's own event.
+    #[test]
+    fn pages_a_script_opens_are_notes_for_the_app() {
+        let test = TestEngine::new();
+        let engine: SharedEngine = test.clone();
+        let mut session = PageSession::new(engine.clone());
+        test.push_new_tab_request("https://example.org/new");
+        // The page holds a popup for a window that asked for them, which is what the session
+        // says at each poll.
+        engine.accept_popups();
+        test.push_popup(9, "https://example.org/sign-in", 420, 640);
+        session.poll();
+        let notes = session.notes();
+        assert_eq!(notes.len(), 2, "a new tab and a popup: {notes:?}");
+        let parsed: Vec<serde_json::Value> = notes
+            .iter()
+            .map(|note| serde_json::from_str(note).expect("a note is JSON"))
+            .collect();
+        assert_eq!(parsed[0]["note"], "open");
+        assert_eq!(parsed[0]["url"], "https://example.org/new");
+        assert_eq!(parsed[0]["popup"], false);
+        // The popup is adopted into the window's second engine, which is the panel the window
+        // draws beside the page, and it is there the app is told of it.
+        assert_eq!(parsed[1]["note"], "panel");
+        assert_eq!(parsed[1]["open"], true);
+        assert_eq!(parsed[1]["kind"], "popup");
+        assert_eq!(parsed[1]["url"], "https://example.org/sign-in");
+        let panel = session.panel().expect("the popup is shown beside the page");
+        assert_eq!(panel.kind, "popup");
+        assert_eq!(panel.url, "https://example.org/sign-in");
+        assert!(session.panel_engine().is_some());
+    }
+
+    /// An action nobody waits for any more is dropped, and the page is told to stop it.
+    #[test]
+    fn a_cancelled_action_holds_neither_the_page_nor_an_answer() {
+        let engine: SharedEngine = TestEngine::new();
+        let mut session = PageSession::new(engine.clone());
+        let action = session.ask(
+            None,
+            PageRequest::Outline {
+                from: None,
+                frame: None,
+            },
+        );
+        session.cancel(action);
+        assert!(!session.waiting_for(action));
+        session.poll();
+        assert!(
+            session.answers().is_empty(),
+            "a cancelled action has no answer"
+        );
+    }
+
+    fn note_of(notes: &[String]) -> serde_json::Value {
+        serde_json::from_str(notes.last().expect("a note")).expect("a note is JSON")
+    }
+
+    /// An extension's side panel opens in a page of its own, in a second engine of the window's
+    /// that is told whose panel it is first, and closes when the extension or the person says so.
+    #[test]
+    fn an_extensions_side_panel_opens_beside_the_page_and_closes() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
+        let url = format!("chrome-extension://{id}/panel.html");
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id: id.clone(),
+            change: ExtensionSidePanelChange::Open(url.clone()),
+        });
+        session.poll();
+        let tabs = test.created_tabs();
+        assert_eq!(tabs.len(), 1, "the panel is a page of its own");
+        let commands = tabs[0].commands();
+        assert!(
+            commands.contains(&WebViewCommand::ExtensionSidePanelPage { id: id.clone() }),
+            "the panel is told whose it is: {commands:?}"
+        );
+        assert!(
+            commands.contains(&WebViewCommand::Navigate(url.clone())),
+            "the panel opens its page: {commands:?}"
+        );
+        let panel = session.panel().expect("the window shows it");
+        assert_eq!(panel.kind, "side");
+        assert_eq!(panel.id, id);
+        assert_eq!(panel.url, url);
+        assert!(session.panel_engine().is_some());
+        let note = note_of(&session.notes());
+        assert_eq!(note["note"], "panel");
+        assert_eq!(note["open"], true);
+        assert_eq!(note["url"], url);
+
+        // A toggle of the panel that shows closes it, and the app hears of that.
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id: id.clone(),
+            change: ExtensionSidePanelChange::Toggle(url.clone()),
+        });
+        session.poll();
+        assert!(session.panel_engine().is_none(), "the panel closed");
+        let note = note_of(&session.notes());
+        assert_eq!(note["note"], "panel");
+        assert_eq!(note["open"], false);
+
+        // And one the person closes goes the same way.
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id,
+            change: ExtensionSidePanelChange::Open(url),
+        });
+        session.poll();
+        assert!(session.panel_engine().is_some());
+        session.close_panel();
+        assert!(session.panel_engine().is_none());
+        assert_eq!(note_of(&session.notes())["open"], false);
+    }
+
+    /// A panel whose engine closes it (the page went, the sign-in ended) leaves the window, and
+    /// the app hears of it.
+    #[test]
+    fn a_panel_its_engine_closed_leaves_the_window() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionSignIn {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            url: "https://accounts.example.org/sign-in".to_owned(),
+            interactive: true,
+            flow: 3,
+        });
+        session.poll();
+        let tabs = test.created_tabs();
+        assert_eq!(tabs.len(), 1, "the sign-in page is a page of its own");
+        assert!(
+            tabs[0]
+                .commands()
+                .contains(&WebViewCommand::ExtensionSignInPanel {
+                    id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+                    flow: 3,
+                }),
+            "the host watches the page for where the sign-in ends: {:?}",
+            tabs[0].commands()
+        );
+        assert_eq!(session.panel().expect("shown").kind, "sign-in");
+        drop(session.notes());
+
+        tabs[0].push_event(WebViewEvent::TabClosed);
+        session.poll();
+        assert!(
+            session.panel_engine().is_none(),
+            "the window shows it no more"
+        );
+        assert_eq!(note_of(&session.notes())["open"], false);
+    }
+
+    /// A sign-in the extension may not ask the person about loads out of sight: a page of its
+    /// own, which the window does not show.
+    #[test]
+    fn a_quiet_sign_in_loads_without_a_window_showing_it() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionSignIn {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            url: "https://accounts.example.org/sign-in".to_owned(),
+            interactive: false,
+            flow: 4,
+        });
+        session.poll();
+        let tabs = test.created_tabs();
+        assert_eq!(tabs.len(), 1, "it is still loaded");
+        assert!(
+            tabs[0].commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::ExtensionSignInPanel { flow: 4, .. }
+            )),
+            "the host watches it too: {:?}",
+            tabs[0].commands()
+        );
+        assert!(
+            session.panel_engine().is_none(),
+            "nobody is shown it, and the notes say nothing of a panel"
+        );
+        assert!(
+            session
+                .notes()
+                .iter()
+                .all(|note| !note.contains("\"panel\""))
+        );
+    }
+
+    /// The address hears an extension's keyword: the extension hears the person start and each
+    /// change, offers its rows, and hears Enter and their leaving.
+    #[test]
+    fn the_address_hears_an_extensions_keyword_and_offers_its_rows() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
+        session.address_typed(
+            "kw ca",
+            Some(&Addressed {
+                id: id.clone(),
+                name: "Kw finder".to_owned(),
+                text: "ca".to_owned(),
+            }),
+        );
+        let told: Vec<_> = test
+            .commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                WebViewCommand::ExtensionOmnibox { input, .. } => Some(input),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                told.as_slice(),
+                [
+                    tilo_webview::OmniboxInput::Started,
+                    tilo_webview::OmniboxInput::Changed { text, request: 1 }
+                ] if text == "ca"
+            ),
+            "the extension hears it started and what is typed: {told:?}"
+        );
+        let note = note_of(&session.notes());
+        assert_eq!(note["note"], "omnibox");
+        assert_eq!(note["name"], "Kw finder");
+
+        test.push_event(WebViewEvent::ExtensionOmniboxDefault {
+            id: id.clone(),
+            description: Some("Look up <match>%s</match>".to_owned()),
+        });
+        test.push_event(WebViewEvent::ExtensionOmniboxSuggestions {
+            id: id.clone(),
+            request: 1,
+            suggestions: vec![tilo_webview::OmniboxSuggestion {
+                content: "cat".to_owned(),
+                description: "<match>cat</match> &amp; more".to_owned(),
+            }],
+        });
+        session.poll();
+        let note = note_of(&session.notes());
+        let rows: serde_json::Value =
+            serde_json::from_str(note["rows"].as_str().expect("rows as text"))
+                .expect("rows are JSON");
+        assert_eq!(
+            rows[0]["title"], "Look up ca",
+            "Enter does the default suggestion"
+        );
+        assert_eq!(rows[0]["content"], "ca");
+        assert_eq!(rows[1]["title"], "cat & more");
+        assert_eq!(rows[1]["content"], "cat");
+
+        session.address_entered("cat");
+        assert!(
+            test.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::ExtensionOmnibox {
+                    input: tilo_webview::OmniboxInput::Entered { text },
+                    ..
+                } if text == "cat"
+            )),
+            "the extension hears what was chosen: {:?}",
+            test.commands()
+        );
+        assert_eq!(
+            note_of(&session.notes())["id"],
+            "",
+            "the address addresses no extension once Enter took it"
+        );
+
+        session.address_typed(
+            "kw c",
+            Some(&Addressed {
+                id,
+                name: "Kw finder".to_owned(),
+                text: "c".to_owned(),
+            }),
+        );
+        session.address_left();
+        assert!(
+            test.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::ExtensionOmnibox {
+                    input: tilo_webview::OmniboxInput::Cancelled,
+                    ..
+                }
+            )),
+            "the extension hears of the person leaving: {:?}",
+            test.commands()
+        );
+    }
+
+    /// A retried download is fetched signed in, as the one the page offered was: the page is
+    /// asked again what a request for the address carries, and the app's call names the job it
+    /// takes the place of and a fresh handle, never the cookies.
+    #[test]
+    fn a_retried_download_carries_the_pages_cookies_again_under_a_new_handle() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.download_again("https://example.org/report.pdf", "browser-1");
+        session.poll();
+        let notes = session.notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let note: serde_json::Value = serde_json::from_str(&notes[0]).unwrap();
+        assert_eq!(note["note"], "download");
+        assert_eq!(note["url"], "https://example.org/report.pdf");
+        assert_eq!(note["again"], "browser-1");
+        assert!(
+            !notes[0].contains("session=test"),
+            "the cookies stay in the window"
+        );
+        let context = tilo_engine_loader::kept::redeem(note["request"].as_str().unwrap())
+            .expect("the handle redeems the request's context");
+        assert!(context.contains("session=test"), "{context}");
+
+        // An answer nobody here asked for, as from a stale ask, starts nothing.
+        test.push_event(WebViewEvent::DownloadRequest {
+            id: 99,
+            url: "https://example.org/other".to_owned(),
+            name: String::new(),
+            referrer: String::new(),
+            cookies: "session=test".to_owned(),
+            user_agent: String::new(),
+            again: true,
+        });
+        session.poll();
+        assert!(session.notes().is_empty());
+    }
+
+    /// A download an extension started is told to the app as it moves, a tenth of the way at a
+    /// time, while one the page offered is not: the Browser's own job reports that one.
+    #[test]
+    fn an_extensions_download_is_told_to_the_app_as_it_moves() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let update = |received, state: &str, extension| WebViewEvent::DownloadUpdated {
+            id: 4,
+            state: state.to_owned(),
+            path: if state == "complete" {
+                "/home/ada/Downloads/kept.bin"
+            } else {
+                ""
+            }
+            .to_owned(),
+            name: "kept.bin".to_owned(),
+            url: "https://example.org/kept.bin".to_owned(),
+            retryable: true,
+            received,
+            total: 1000,
+            error: String::new(),
+            extension,
+        };
+        for received in [0, 50, 99, 100, 500, 1000] {
+            test.push_event(update(received, "progress", true));
+        }
+        test.push_event(update(1000, "complete", true));
+        test.push_event(update(10, "cancelled", false));
+        session.poll();
+        let notes: Vec<serde_json::Value> = session
+            .notes()
+            .iter()
+            .map(|note| serde_json::from_str(note).unwrap())
+            .collect();
+        let steps: Vec<(&str, u64)> = notes
+            .iter()
+            .map(|note| {
+                (
+                    note["state"].as_str().unwrap(),
+                    note["received"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("progress", 0),
+                ("progress", 100),
+                ("progress", 500),
+                ("progress", 1000),
+                ("complete", 1000)
+            ]
+        );
+        assert!(
+            notes
+                .iter()
+                .all(|note| note["note"] == "extension_download")
+        );
+        assert_eq!(notes[4]["path"], "/home/ada/Downloads/kept.bin");
+    }
+}

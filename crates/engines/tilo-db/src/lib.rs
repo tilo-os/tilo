@@ -517,3 +517,225 @@ fn finish(database: &Database, job: &str, state: JobState, answer: String, error
         held.tell();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The device's databases on the bundled sample catalog, as a capture opens it.
+    fn sampled() -> Database {
+        let database = Database::new();
+        let opened = database
+            .call(
+                "open",
+                r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+            )
+            .expect("the sample catalog opens");
+        assert!(opened.contains("\"connection\""), "{opened}");
+        database
+    }
+
+    tilo_test_env::scenario! {
+        fn the_database_engine_opens_a_catalog_and_runs_a_statement;
+
+        phase a_catalog_opens_with_its_tables_and_counts;
+        {
+            let database = sampled();
+            let opened = database
+                .call(
+                    "open",
+                    r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+                )
+                .unwrap();
+            let id = connection_id(&opened);
+            let tables = database
+                .call("tables", &format!(r#"{{"connection":{id}}}"#))
+                .unwrap();
+            let tables: serde_json::Value = serde_json::from_str(&tables).unwrap();
+            let tables = tables.as_array().unwrap();
+            assert!(tables.iter().any(|t| t["name"] == "albums"), "{tables:?}");
+            assert!(
+                tables.iter().any(|t| t["kind"] == "view"),
+                "the sample has a view: {tables:?}"
+            );
+        }
+
+        phase a_connection_opens_as_a_job_the_app_asks_about;
+        {
+            let database = Database::new();
+            let (_, moves) = begin(
+                &database,
+                "open",
+                r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+            );
+            let answer = wait_for(&moves);
+            let opened: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            let connection = opened["connection"].as_u64().unwrap_or(0);
+            assert!(connection > 0, "{opened}");
+            let names = database
+                .call("catalog", &format!(r#"{{"connection":{connection}}}"#))
+                .unwrap();
+            assert_eq!(names, r#"["main"]"#);
+            let tables = database
+                .call("tables", &format!(r#"{{"connection":{connection}}}"#))
+                .unwrap();
+            let tables: serde_json::Value = serde_json::from_str(&tables).unwrap();
+            assert!(tables.as_array().unwrap().iter().any(|t| t["name"] == "albums"), "{tables}");
+            let columns = database
+                .call(
+                    "columns",
+                    &format!(r#"{{"connection":{connection},"schema":"main","table":"albums"}}"#),
+                )
+                .unwrap();
+            let columns: serde_json::Value = serde_json::from_str(&columns).unwrap();
+            assert!(columns.as_array().unwrap().iter().any(|c| c["name"] == "title"), "{columns}");
+        }
+
+        phase a_statement_answers_its_rows_and_a_change_answers_its_count;
+        {
+            let database = sampled();
+            let opened = database
+                .call(
+                    "open",
+                    r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+                )
+                .unwrap();
+            let (_, moves) = begin(
+                &database,
+                "query",
+                &format!(r#"{{"connection":{},"sql":"SELECT name FROM artists ORDER BY name LIMIT 3"}}"#,
+                    connection_id(&opened)),
+            );
+            let answer = wait_for(&moves);
+            let result: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(result["is_select"], true);
+            assert_eq!(result["columns"][0], "name");
+            assert_eq!(result["rows"].as_array().unwrap().len(), 3);
+            assert_eq!(result["numeric"][0], false);
+            assert_eq!(result["rows"][0][0], "Aurora Lights");
+        }
+
+        phase a_browse_pages_and_a_change_reports_its_rows;
+        {
+            let database = sampled();
+            let opened = database
+                .call(
+                    "open",
+                    r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+                )
+                .unwrap();
+            let id = connection_id(&opened);
+            let page = database
+                .browse(
+                    &format!(r#"{{"connection":{id},"schema":"main","table":"tracks","limit":5,"offset":0}}"#),
+                )
+                .unwrap();
+            let result: serde_json::Value = serde_json::from_str(&page).unwrap();
+            assert_eq!(result["rows"].as_array().unwrap().len(), 5);
+            let changed = run_now(&database, id, "UPDATE tracks SET unit_price = unit_price WHERE 1=0");
+            assert_eq!(changed["is_select"], false);
+            assert_eq!(changed["rows_affected"], 0);
+        }
+
+        phase a_running_statement_can_be_stopped_and_an_unknown_job_is_said_so;
+        {
+            let database = sampled();
+            let opened = database
+                .call(
+                    "open",
+                    r#"{"engine":"sqlite","file_path":":memory:","sample":true}"#,
+                )
+                .unwrap();
+            let id = connection_id(&opened);
+            let (job, moves) = begin(
+                &database,
+                "query",
+                &format!(r#"{{"connection":{id},"sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000000) SELECT sum(x) FROM n"}}"#),
+            );
+            assert!(database.cancel(&job), "the statement in flight is stopped");
+            let status = wait_for_state(&moves);
+            assert_eq!(status, "cancelled", "{status}");
+            assert!(!database.cancel("no-such-job"), "a job nobody started is not stopped");
+        }
+
+        phase an_unreachable_server_fails_honestly_and_a_bad_engine_is_named;
+        {
+            let database = Database::new();
+            let refused = database.call(
+                "open",
+                r#"{"engine":"postgres","host":"127.0.0.1","port":1,"database":"nope","user":"nobody"}"#,
+            );
+            assert!(refused.is_err(), "a closed port is refused: {refused:?}");
+            let unknown = database.call("open", r#"{"engine":"oracle"}"#);
+            assert_eq!(
+                unknown.unwrap_err(),
+                "There is no engine called oracle.",
+                "an engine this device does not run is named"
+            );
+        }
+    }
+
+    fn connection_id(opened: &str) -> u64 {
+        let parsed: serde_json::Value = serde_json::from_str(opened).unwrap();
+        parsed["connection"].as_u64().unwrap()
+    }
+
+    type Moves = std::sync::mpsc::Receiver<(String, serde_json::Value)>;
+
+    /// One job started, with the moves it tells.
+    fn begin(database: &Database, op: &str, input: &str) -> (String, Moves) {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let job = format!("job-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let (tell, moves) = std::sync::mpsc::channel();
+        let tell = Mutex::new(tell);
+        database
+            .start(
+                &job,
+                op,
+                input,
+                Arc::new(move |state, detail| {
+                    let _ = tell
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .send((state.to_owned(), detail));
+                }),
+            )
+            .unwrap();
+        (job, moves)
+    }
+
+    /// The result a job told once it was done.
+    fn wait_for(moves: &Moves) -> String {
+        loop {
+            let (state, detail) = moves
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the statement finishes");
+            if state == "done" {
+                return detail["result"].as_str().unwrap().to_owned();
+            }
+            assert_ne!(state, "failed", "{detail}");
+        }
+    }
+
+    /// The first state a job told past `running`.
+    fn wait_for_state(moves: &Moves) -> String {
+        loop {
+            let (state, _) = moves
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the statement settles");
+            if state != "running" {
+                return state;
+            }
+        }
+    }
+
+    /// One statement run as a job and read once it is done.
+    fn run_now(database: &Database, connection: u64, sql: &str) -> serde_json::Value {
+        let (_, moves) = begin(
+            database,
+            "query",
+            &serde_json::json!({ "connection": connection, "sql": sql }).to_string(),
+        );
+        serde_json::from_str(&wait_for(&moves)).unwrap()
+    }
+}

@@ -1,0 +1,374 @@
+//! Tests for the RTF export engine.
+//!
+//! Snapshots are built directly (the `DocSnapshot`/`BlockView`/`MarkSpan`
+//! structs are public) so the tests exercise `render_rtf` without coupling to
+//! qdoc's mutation API. We assert on the real emitted string — the production
+//! path — for control words, color-table registration, escaping, and the
+//! balanced-group (well-formedness) guarantee.
+
+use super::*;
+use std::collections::BTreeMap;
+use tilo_doc::MarkSpan;
+use tilo_doc::document::MarkValue;
+use tilo_doc::snapshot::{AttrVal, BlockView, DocSnapshot};
+
+fn empty_snapshot() -> DocSnapshot {
+    DocSnapshot {
+        schema: "tilo.richtext".into(),
+        schema_version: 1,
+        ..Default::default()
+    }
+}
+
+fn block(kind: &str, text: &str) -> BlockView {
+    BlockView {
+        id: format!("b-{kind}-{}", text.len()),
+        kind: kind.into(),
+        text: text.into(),
+        marks: Vec::new(),
+        attrs: BTreeMap::new(),
+        children: Vec::new(),
+    }
+}
+
+fn block_attr(kind: &str, text: &str, attrs: &[(&str, AttrVal)]) -> BlockView {
+    let mut b = block(kind, text);
+    for (k, v) in attrs {
+        b.attrs.insert((*k).to_string(), v.clone());
+    }
+    b
+}
+
+fn mark(start: usize, end: usize, name: &str, value: MarkValue) -> MarkSpan {
+    MarkSpan {
+        start,
+        end,
+        name: name.into(),
+        value,
+    }
+}
+
+fn count(hay: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    hay.matches(needle).count()
+}
+
+/// Assert every `{` is matched by a `}` and groups never go negative — i.e. the
+/// document is a well-formed nest of balanced groups. Backslash-escaped braces
+/// (`\{` / `\}`) are literal text, not group delimiters, and must be excluded.
+fn assert_balanced(rtf: &str) {
+    let bytes = rtf.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                // Skip the escaped next byte (covers \{ \} \\ and control words'
+                // leading char — we only care that braces after a backslash are
+                // not counted).
+                i = i.saturating_add(2);
+                continue;
+            }
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => {
+                // `depth` is signed, so `saturating_sub` only clamps at
+                // `i32::MIN` — light-years past any real brace count — and
+                // the assert right below still sees the negative depth a
+                // stray closing brace produces.
+                depth = depth.saturating_sub(1);
+                assert!(
+                    depth >= 0,
+                    "unbalanced: closing brace with no open at byte {i}\n{rtf}"
+                );
+            }
+            _ => {}
+        }
+        i = i.saturating_add(1);
+    }
+    assert_eq!(depth, 0, "unbalanced braces (depth {depth} at end):\n{rtf}");
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "each phase keeps one former test's body verbatim"
+)]
+fn rtf_export_block_structure() {
+    {
+        let mut heading = block_attr("heading", "Bold title", &[("level", AttrVal::Int(1))]);
+        heading
+            .marks
+            .push(mark(0, 4, "strong", MarkValue::Bool(true)));
+
+        let snap = DocSnapshot {
+            blocks: vec![heading],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert!(rtf.starts_with("{\\rtf1"), "starts with RTF header:\n{rtf}");
+        assert!(rtf.contains("\\ansi"), "ansi declared:\n{rtf}");
+        assert!(rtf.contains("\\fonttbl"), "font table present:\n{rtf}");
+        assert!(rtf.contains("\\b"), "bold control word present:\n{rtf}");
+        assert!(rtf.contains("\\fs48"), "H1 renders at \\fs48:\n{rtf}");
+        assert!(rtf.contains("Bold"), "heading text present:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    {
+        let snap = DocSnapshot {
+            blocks: vec![
+                block_attr("list_item", "One", &[("level", AttrVal::Int(0))]),
+                block_attr("list_item", "Two", &[("level", AttrVal::Int(0))]),
+                block_attr("list_item", "Three", &[("level", AttrVal::Int(0))]),
+            ],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert_eq!(count(&rtf, "\\par}"), 3, "three paragraphs:\n{rtf}");
+        assert_eq!(count(&rtf, "\\bullet"), 3, "three bullets:\n{rtf}");
+        assert!(
+            rtf.contains("One") && rtf.contains("Two") && rtf.contains("Three"),
+            "items present:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+    {
+        // Markers are literal text taken from each item's `index` attr (RTF list
+        // tables are out of scope); the snapshot supplies the per-item number.
+        let snap = DocSnapshot {
+            blocks: vec![
+                block_attr(
+                    "list_item",
+                    "First",
+                    &[
+                        ("ordered", AttrVal::Bool(true)),
+                        ("level", AttrVal::Int(0)),
+                        ("index", AttrVal::Int(1)),
+                    ],
+                ),
+                block_attr(
+                    "list_item",
+                    "Second",
+                    &[
+                        ("ordered", AttrVal::Bool(true)),
+                        ("level", AttrVal::Int(0)),
+                        ("index", AttrVal::Int(2)),
+                    ],
+                ),
+            ],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert_eq!(
+            count(&rtf, "\\bullet"),
+            0,
+            "ordered list has no bullets:\n{rtf}"
+        );
+        assert!(rtf.contains("1.\\tab "), "first item numbered:\n{rtf}");
+        assert!(rtf.contains("2.\\tab "), "second item numbered:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    {
+        let rtf = render_rtf(&empty_snapshot());
+        assert!(rtf.starts_with("{\\rtf1"));
+        assert!(
+            rtf.contains("{\\colortbl;}"),
+            "empty color table still emitted:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+    {
+        let snap = DocSnapshot {
+            blocks: vec![block("quote", "wise words")],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+        assert!(rtf.contains("\\li"), "quote carries a left indent:\n{rtf}");
+        assert!(rtf.contains("\\i"), "quote is italic:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    {
+        let mut r1 = block("table_row", "");
+        r1.children = vec![block("cell", "A"), block("cell", "B")];
+        let mut r2 = block("table_row", "");
+        r2.children = vec![block("cell", "C"), block("cell", "D")];
+        let mut table = block("table", "");
+        table.children = vec![r1, r2];
+
+        let snap = DocSnapshot {
+            blocks: vec![table],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert_eq!(count(&rtf, "\\row"), 2, "two rows:\n{rtf}");
+        assert_eq!(count(&rtf, "\\cell "), 4, "four cells:\n{rtf}");
+        assert!(rtf.contains("\\cellx"), "cell boundaries declared:\n{rtf}");
+        assert!(
+            rtf.contains('A') && rtf.contains('D'),
+            "cell contents present:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+}
+
+fn rtf_export_escapes_specials_and_non_ascii() {
+    {
+        let snap = DocSnapshot {
+            blocks: vec![block("paragraph", "a{b}c\\d")],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert!(rtf.contains("a\\{b\\}c\\\\d"), "specials escaped:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    {
+        let snap = DocSnapshot {
+            blocks: vec![block("paragraph", "café")],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+        assert!(rtf.contains("caf\\u233?"), "é emitted as \\u233?:\n{rtf}");
+        assert!(rtf.contains("caf"));
+        assert_balanced(&rtf);
+    }
+    {
+        let mut para = block("paragraph", "héllo");
+        para.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
+        let rtf = render_rtf(&DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        });
+
+        assert!(
+            rtf.contains("{\\b h\\u233?ll}{o}"),
+            "bold covers four Unicode scalar values, not four bytes:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+}
+
+fn rtf_export_marks_map_to_control_words_and_tables() {
+    {
+        let mut para = block("paragraph", "red text");
+        para.marks
+            .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
+
+        let snap = DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert!(rtf.contains("{\\colortbl;"), "color table present:\n{rtf}");
+        assert!(
+            rtf.contains("\\red255\\green0\\blue0;"),
+            "red registered in color table:\n{rtf}"
+        );
+        // The run references it (index 1 — index 0 is the reserved auto color).
+        assert!(
+            rtf.contains("\\cf1"),
+            "run references color index 1:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+    {
+        let mut para = block("paragraph", "click here");
+        para.marks.push(mark(
+            0,
+            10,
+            "href",
+            MarkValue::Str("https://example.com".into()),
+        ));
+
+        let snap = DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert!(
+            rtf.contains("{\\field{\\*\\fldinst HYPERLINK \"https://example.com\"}"),
+            "hyperlink field:\n{rtf}"
+        );
+        assert!(rtf.contains("\\fldrslt"), "field result group:\n{rtf}");
+        assert!(rtf.contains("click here"), "link text present:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    {
+        let mut para = block("paragraph", "mono big");
+        para.marks
+            .push(mark(0, 4, "font", MarkValue::Str("mono".into())));
+        para.marks.push(mark(0, 4, "size", MarkValue::Int(18)));
+
+        let snap = DocSnapshot {
+            blocks: vec![para],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert!(rtf.contains("\\f2"), "mono font index:\n{rtf}");
+        assert!(rtf.contains("\\fs36"), "18pt → \\fs36:\n{rtf}");
+        assert_balanced(&rtf);
+    }
+    {
+        let mut p1 = block("paragraph", "red");
+        p1.marks
+            .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
+        let mut p2 = block("paragraph", "blue");
+        p2.marks
+            .push(mark(0, 4, "color", MarkValue::Str("#0000ff".into())));
+        // A second red reuses index 1.
+        let mut p3 = block("paragraph", "red again");
+        p3.marks
+            .push(mark(0, 3, "color", MarkValue::Str("#ff0000".into())));
+
+        let snap = DocSnapshot {
+            blocks: vec![p1, p2, p3],
+            ..empty_snapshot()
+        };
+        let rtf = render_rtf(&snap);
+
+        assert!(
+            rtf.contains("\\red255\\green0\\blue0;"),
+            "red registered:\n{rtf}"
+        );
+        assert!(
+            rtf.contains("\\red0\\green0\\blue255;"),
+            "blue registered:\n{rtf}"
+        );
+        assert_eq!(
+            count(&rtf, "\\green"),
+            2,
+            "exactly two color-table entries:\n{rtf}"
+        );
+        assert!(
+            rtf.contains("\\cf1") && rtf.contains("\\cf2"),
+            "both indices referenced:\n{rtf}"
+        );
+        assert_balanced(&rtf);
+    }
+}
+
+#[test]
+fn rtf_export_writes_blocks_escapes_and_marks() {
+    let cases: [(&str, fn()); 3] = [
+        ("rtf export block structure", rtf_export_block_structure),
+        (
+            "rtf export escapes specials and non ascii",
+            rtf_export_escapes_specials_and_non_ascii,
+        ),
+        (
+            "rtf export marks map to control words and tables",
+            rtf_export_marks_map_to_control_words_and_tables,
+        ),
+    ];
+    for (case, run) in cases {
+        eprintln!("case: {case}");
+        run();
+    }
+}

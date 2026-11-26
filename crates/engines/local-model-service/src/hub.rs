@@ -471,3 +471,6 @@ fn verify_git_blob(path: &Path, oid: &str, size: u64) -> Result<String, ServiceE
         Err(ServiceError::DigestMismatch)
     }
 }
+
+#[cfg(test)]
+mod tests;
