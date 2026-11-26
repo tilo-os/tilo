@@ -1229,13 +1229,14 @@ pub fn governs(provider: &str) -> bool {
 
 impl Verb {
     /// This verb as the grants deciding an agent's call of it name it.
-    const fn operation(&self, publisher: Publisher) -> agents::Operation<'static> {
+    fn operation(&self, publisher: Publisher) -> agents::Operation<'static> {
         agents::Operation {
             provider: publisher.provider,
             kind: publisher.kind,
             action: self.id,
             effect: self.kind,
             label: self.label,
+            confirms: confirms(self.id, self.kind),
         }
     }
 
@@ -1303,16 +1304,7 @@ pub fn action_row(
             description: None,
             locus: ExecutionLocus::ServerPreferred,
             kind: OperationKind::Effect,
-            contract: ActionContract {
-                kind,
-                risk: if kind == ActionKind::Read {
-                    RiskLevel::None
-                } else {
-                    RiskLevel::Privileged
-                },
-                tags: tags_of(id),
-                ..ActionContract::default()
-            },
+            contract: contract_of(id, kind),
             input: InputSpec::None,
             params,
             view: None,
@@ -1321,6 +1313,35 @@ pub fn action_row(
         visibility: None,
         surface: None,
     }
+}
+
+/// The contract of the action `id`, of kind `kind`, as the host declares it: a read risks
+/// nothing, a change crosses the person's authority, and one Undo cannot take back
+/// ([`tilo_actions::IRREVERSIBLE_TAG`]) is destructive, so it is confirmed before it runs.
+fn contract_of(id: &str, kind: ActionKind) -> ActionContract {
+    let tags = tags_of(id);
+    let risk = if kind == ActionKind::Read {
+        RiskLevel::None
+    } else if tags.iter().any(|tag| tag == tilo_actions::IRREVERSIBLE_TAG) {
+        RiskLevel::Destructive
+    } else {
+        RiskLevel::Privileged
+    };
+    let mut contract = ActionContract {
+        kind,
+        risk,
+        tags,
+        ..ActionContract::default()
+    };
+    contract.settle_confirmation();
+    contract
+}
+
+/// Whether a call of the action `id`, of kind `kind`, waits for a confirmation before it runs,
+/// as its contract declares ([`contract_of`]): an agent's waits for its person's yes, whatever
+/// its grants answer.
+pub(crate) fn confirms(id: &str, kind: ActionKind) -> bool {
+    contract_of(id, kind).confirmation != tilo_actions::ConfirmationPolicy::None
 }
 
 /// The contract tags one of the host's verbs carries as its declaration states them: a secret
@@ -1336,6 +1357,10 @@ pub fn tags_of(action: &str) -> Vec<String> {
     // that keeps their identity.
     if matches!(action, ADD_SERVER | REMOVE_SERVER | MOVE_SERVER) {
         tags.push(tilo_actions::ROOT_ONLY_TAG.to_owned());
+    }
+    // A deleted workspace is gone with everything kept of it: nothing brings it back.
+    if action == tilo_server_protocol::workspaces::DELETE_WORKSPACE {
+        tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
     }
     tags
 }

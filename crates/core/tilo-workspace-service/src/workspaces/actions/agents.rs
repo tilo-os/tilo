@@ -43,6 +43,9 @@ pub(crate) struct Operation<'a> {
     pub effect: ActionKind,
     /// What the person reads it as when they are asked.
     pub label: &'a str,
+    /// Whether its contract declares that a call of it is confirmed before it runs: an
+    /// agent's waits for its person's yes, whatever its grants answer.
+    pub confirms: bool,
 }
 
 /// Whether `caller`, on the device `certificate` certifies, is that device's
@@ -288,45 +291,47 @@ impl Workspaces {
             return Err(ActionCallError::UnknownAction);
         }
         let now = tilo_clock::unix_now_ns();
-        match self
+        let granted = match self
             .agent_grants(workspace_id, caller)
             .await
             .answer(operation, now)
         {
-            Answer::Allow => Ok(()),
-            Answer::Deny => Err(ActionCallError::Refused {
-                reason: format!(
-                    "this agent may not {} here; its person allows it in the workspace's \
-                     settings, under Agents",
-                    operation.label.to_lowercase()
-                ),
-            }),
-            Answer::Ask
-                if approved || certificate_grants(caller, certificate, workspace_id, operation) =>
-            {
-                Ok(())
+            Answer::Allow => true,
+            Answer::Deny => {
+                return Err(ActionCallError::Refused {
+                    reason: format!(
+                        "this agent may not {} here; its person allows it in the workspace's \
+                         settings, under Agents",
+                        operation.label.to_lowercase()
+                    ),
+                });
             }
-            Answer::Ask => {
-                let place = match workspace_id {
-                    Some(id) => self.workspace_name(id).await,
-                    None => None,
-                };
-                let shown = |value: &Value| {
-                    value
-                        .as_str()
-                        .map_or_else(|| value.to_string(), str::to_owned)
-                };
-                Err(ActionCallError::asks(AskedFacts {
-                    on: Some(place.unwrap_or_else(|| "your workspaces".into())),
-                    facts: arguments
-                        .iter()
-                        .map(|(name, value)| Fact::new(name.clone(), shown(value)))
-                        .collect(),
-                    verb: operation.label.to_lowercase(),
-                    ..AskedFacts::by(crate::workspaces::asking::asked_by(caller))
-                }))
-            }
+            Answer::Ask => certificate_grants(caller, certificate, workspace_id, operation),
+        };
+        // What its contract has confirmed first waits for the person's yes, whatever the agent's
+        // grants allow it.
+        if approved || (granted && !operation.confirms) {
+            return Ok(());
         }
+        let place = match workspace_id {
+            Some(id) => self.workspace_name(id).await,
+            None => None,
+        };
+        let shown = |value: &Value| {
+            value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned)
+        };
+        Err(ActionCallError::asks(AskedFacts {
+            on: Some(place.unwrap_or_else(|| "your workspaces".into())),
+            facts: arguments
+                .iter()
+                .map(|(name, value)| Fact::new(name.clone(), shown(value)))
+                .collect(),
+            verb: operation.label.to_lowercase(),
+            destructive: operation.confirms,
+            ..AskedFacts::by(crate::workspaces::asking::asked_by(caller))
+        }))
     }
 }
 
@@ -370,13 +375,14 @@ fn operation_of(own: bool, action: &'static str) -> Operation<'static> {
         let verb = super::VERBS.iter().find(|verb| verb.id == action);
         (super::GOVERNANCE, verb)
     };
-    verb.map_or(
-        Operation {
+    verb.map_or_else(
+        || Operation {
             provider: publisher.provider,
             kind: publisher.kind,
             action,
             effect: GOVERNANCE_KIND,
             label: action,
+            confirms: super::confirms(action, GOVERNANCE_KIND),
         },
         |verb| verb.operation(publisher),
     )

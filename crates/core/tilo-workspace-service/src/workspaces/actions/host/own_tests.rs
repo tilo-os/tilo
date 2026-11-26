@@ -937,6 +937,112 @@ async fn an_agents_key_asks_before_deleting_a_workspace_and_deletes_only_on_yes(
     server.shutdown().await;
 }
 
+/// Deleting a workspace is declared destructive: an agent whose grants allow it outright still
+/// waits for its person's confirmation. A no deletes nothing, and only the yes deletes.
+#[tokio::test]
+async fn an_agent_allowed_to_delete_still_waits_for_its_persons_confirmation() {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    use tilo_action_policy::{ActionKind, Answer, Grantee};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let own_signing = SigningKey::from_bytes(&rand::random());
+    let own_key = certified(&root, &own_signing, DeviceCapabilities::server_key_grant());
+    let created = create_own(&host, &own_key, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    join(workspaces, &created, (&own_signing, &own_key)).await;
+    let agent = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let as_agent = crate::service::local_caller(&agent);
+    let (agent_id, its_person) = as_agent
+        .acting()
+        .member_id()
+        .and_then(tilo_action_policy::MemberId::as_agent)
+        .map(|(id, person)| (id.to_owned(), person.as_str().to_owned()))
+        .expect("an agent's key acts as its agent");
+    // Its person allowed it to delete their workspaces without asking.
+    let allowed = agent_answers::grant(
+        "",
+        (&agent_id, &its_person),
+        (
+            &AnswerScope::action(
+                HOST_ACTIONS_PROVIDER,
+                HOST_WORKSPACES_RESOURCE,
+                DELETE_WORKSPACE,
+            ),
+            ActionKind::Outside,
+        ),
+        Answer::Allow,
+        Grantee::person(its_person.clone()),
+    );
+    let as_agent = as_agent.granting(vec![allowed]);
+
+    let deleting = delete_request(&workspace);
+    let waits = settled(host.as_host(&agent).invoke(&as_agent, deleting.clone()))
+        .await
+        .unwrap();
+    assert!(
+        !matches!(waits.status, ReceiptStatus::Completed { .. }),
+        "deleting waits for its person whatever the agent's grants allow: {waits:?}"
+    );
+    assert!(
+        workspaces.owns(&person, &workspace),
+        "nothing is deleted before a yes"
+    );
+
+    let declining = Answering::declining();
+    let refused = answered(
+        workspaces,
+        (None, Some(&agent)),
+        &as_agent,
+        &deleting,
+        Ok(waits),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(ActionCallError::ConfirmationRequired(_))),
+        "the person was asked: {refused:?}"
+    );
+    let asked = declining.asked();
+    assert_eq!(asked.len(), 1, "one question, one answer");
+    assert!(asked[0].destructive, "asked as a deletion: {asked:?}");
+    assert!(workspaces.owns(&person, &workspace), "a no deletes nothing");
+
+    let approving = Answering::approving();
+    let again = delete_request(&workspace);
+    let waits = settled(host.as_host(&agent).invoke(&as_agent, again.clone()))
+        .await
+        .unwrap();
+    let done = answered(
+        workspaces,
+        (None, Some(&agent)),
+        &as_agent,
+        &again,
+        Ok(waits),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(done.status, ReceiptStatus::Completed { .. }),
+        "the yes deletes the workspace: {done:?}"
+    );
+    assert_eq!(approving.asked().len(), 1, "one question, one answer");
+    assert!(
+        !workspaces.owns(&person, &workspace),
+        "the yes deletes the workspace"
+    );
+    server.shutdown().await;
+}
+
 /// The same call signed straight to the host's action service, as an agent's own device asks it:
 /// the host reads the certificate the signature carries, and the delete waits for the person's
 /// yes instead of going through.
