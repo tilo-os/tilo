@@ -302,13 +302,20 @@ mod sys {
 
     pub fn create(name: &str, len: u64) -> io::Result<File> {
         let cname = std::ffi::CString::new(name).map_err(io::Error::other)?;
+        // The system call itself, not libc's wrapper: Android's libc has the wrapper only from
+        // API 30, and the phone runs from API 29, whose kernels all have the call.
         // SAFETY: `cname` is a valid NUL-terminated string for the call.
         let raw = unsafe {
-            libc::memfd_create(cname.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+            libc::syscall(
+                libc::SYS_memfd_create,
+                cname.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
         };
         if raw < 0 {
             return Err(io::Error::last_os_error());
         }
+        let raw = libc::c_int::try_from(raw).map_err(io::Error::other)?;
         // SAFETY: memfd_create returned a fresh descriptor we now own.
         let file = File::from(unsafe { OwnedFd::from_raw_fd(raw) });
         file.set_len(len)?;

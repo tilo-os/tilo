@@ -159,13 +159,20 @@ mod imp {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn create_descriptor(name: &str) -> io::Result<OwnedFd> {
         let name = std::ffi::CString::new(name).map_err(io::Error::other)?;
+        // The system call itself, not libc's wrapper: Android's libc has the wrapper only from
+        // API 30, and the phone runs from API 29, whose kernels all have the call.
         // SAFETY: a NUL-terminated name and fixed flags.
         let fd = unsafe {
-            libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+            libc::syscall(
+                libc::SYS_memfd_create,
+                name.as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
         };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        let fd = libc::c_int::try_from(fd).map_err(io::Error::other)?;
         // SAFETY: memfd_create returned a new descriptor nobody else owns.
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
