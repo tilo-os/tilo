@@ -8,7 +8,7 @@ use tilo_app_test_host::TestApp;
 
 use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::framework::{EffectCx, EffectStatus, Effected};
-use tilo_app::portal::{PickRequest, PortalOutcome};
+use tilo_app::portal::{OpenFileOutcome, OpenedFile, PickRequest, PortalOutcome};
 use tilo_app::prelude::tilo_actions::Action as _;
 use tilo_app::prelude::*;
 use tilo_resource::Effect;
@@ -1712,7 +1712,10 @@ tilo_test_env::scenario! {
         let _host = tilo_app::process::enter(&services);
         let mut app = TestApp::<FilesApp>::new().unwrap();
 
-        recorder.respond_to_pick(PortalOutcome::Opened(incoming.clone()));
+        recorder.respond_to_open_file(OpenFileOutcome::Opened(OpenedFile::at(
+            std::fs::File::open(&incoming).unwrap(),
+            &incoming,
+        )));
         app.effect(&FileEffect::Import).unwrap();
         app.settle();
         assert_eq!(app.state().fetched, "from a file");
@@ -1729,7 +1732,7 @@ tilo_test_env::scenario! {
         assert_eq!(saved.value, Some(serde_json::json!(true)));
         assert_eq!(std::fs::read_to_string(&outgoing).unwrap(), "from a file");
 
-        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        recorder.respond_to_open_file(OpenFileOutcome::Cancelled);
         let cancelled = app.effect(&FileEffect::Import).unwrap_err();
         app.settle();
         assert!(
