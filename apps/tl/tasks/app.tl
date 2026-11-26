@@ -1388,16 +1388,6 @@ fn folded(items: List<Task>, t: Task) -> Bool {
     finished(items, t) and items.ancestors(t, .parent).all(a -> finished(items, a))
 }
 
-/// How many of a task's subtasks are done ("1/3"), wherever they stand.
-fn subtask_count(t: Task) -> Option<Text> {
-    let mine = tasks.items.filter(x -> x.parent == t)
-    if let total = mine.counted() {
-        if not mine.is_empty() {
-            "{mine.count(x -> closed(x.status))}/{total}"
-        }
-    }
-}
-
 /// When a task is due of its own: a subtask repeats no day its parent already says.
 fn own_due(t: Task, under: Option<Task>) -> Option<Date> {
     if let p = under { if p.due != t.due { t.due } } else { t.due }
@@ -1619,6 +1609,9 @@ fn status_of(key: Text) -> Status {
 view board(t: Tasks) {
     state opened: Option<Task> = .none
     on show(x: Task): set(opened, x)
+    // What stands under each task, and how much of it is finished, counted once for the page.
+    let totals = tasks.items.count_by(x -> x.parent)
+    let finished_totals = tasks.items.filter(x -> closed(x.status)).count_by(x -> x.parent)
     std.page(t, canvas: true, fill: true) {
         ui.Scroll(across: true) {
             ui.Board(name: "Tasks") {
@@ -1630,7 +1623,12 @@ view board(t: Tasks) {
                             std.add_entry("New task", new_task(tasks, status: .some(s)))
                         }
                         for x in cards {
-                            task_card(x, .none)
+                            let total = totals.find(c -> c.key == .some(x))
+                            let done = finished_totals.find(c -> c.key == .some(x))
+                            let progress = if let total = total {
+                                if total.count > 0 { "{done?.count ?? 0}/{total.count}" }
+                            }
+                            task_card(x, .none, progress)
                         }
                     }
                 }
@@ -1671,8 +1669,8 @@ view task_list(
     // What stands under each task, and how much of it is finished, counted once for the page:
     // a row reads its own tally from these, where counting the tasks per row read the whole
     // workspace again and again.
-    let counts = tasks.items.count_by(x -> x.parent)
-    let finished_counts = tasks.items.filter(x -> closed(x.status)).count_by(x -> x.parent)
+    let totals = tasks.items.count_by(x -> x.parent)
+    let finished_totals = tasks.items.filter(x -> closed(x.status)).count_by(x -> x.parent)
     std.list(
         items,
         opened,
@@ -1687,10 +1685,10 @@ view task_list(
                 p
             }
         }
-        let mine = counts.find(c -> c.key == .some(x))
-        let done = finished_counts.find(c -> c.key == .some(x))
-        let progress = if let mine = mine {
-            if mine.count > 0 { "{done?.count ?? 0}/{mine.count}" }
+        let total = totals.find(c -> c.key == .some(x))
+        let done = finished_totals.find(c -> c.key == .some(x))
+        let progress = if let total = total {
+            if total.count > 0 { "{done?.count ?? 0}/{total.count}" }
         }
         task_item(x, at, project, heading, done_place, tail, above, progress)
     }
@@ -1749,7 +1747,7 @@ view task_item(
         // The row leaves out the project the window is of, and the day its group is headed by.
         // It opens no page of its own: the task's page is the window's content column, beside
         // the list the row stands in, so the list never continues under it.
-        task_row(t, project, group != .none, t.parent, false)
+        task_row(t, project, group != .none, t.parent, false, progress)
         menu: {
             ui.MenuItem("Open as page", icon: .arrow_up_right) {
                 on choose: open(t, view: task_page)
@@ -1783,6 +1781,9 @@ view project_list(p: Project) {
 
 /// A project's board: a list per column of its statuses, each open task a card.
 view project_board(p: Project) {
+    // What stands under each task, and how much of it is finished, counted once for the page.
+    let totals = tasks.items.count_by(x -> x.parent)
+    let finished_totals = tasks.items.filter(x -> closed(x.status)).count_by(x -> x.parent)
     std.page(p, canvas: true, fill: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
@@ -1794,7 +1795,12 @@ view project_board(p: Project) {
                             std.add_entry("New task", new_task(tasks, p: p, status: .some(s)))
                         }
                         for x in cards {
-                            task_card(x, .some(p))
+                            let total = totals.find(c -> c.key == .some(x))
+                            let done = finished_totals.find(c -> c.key == .some(x))
+                            let progress = if let total = total {
+                                if total.count > 0 { "{done?.count ?? 0}/{total.count}" }
+                            }
+                            task_card(x, .some(p), progress)
                         }
                     }
                 }
@@ -1804,7 +1810,7 @@ view project_board(p: Project) {
 }
 
 /// A task on a board: its row, opening in a window of its own, with its column moves in its menu.
-view task_card(t: Task, p: Option<Project>) {
+view task_card(t: Task, p: Option<Project>, progress: Option<Text>) {
     ui.BoardCard(
         t,
         actions: [
@@ -1835,7 +1841,7 @@ view task_card(t: Task, p: Option<Project>) {
                 }
             }
         }
-        task_row(t, p, false, .none, true)
+        task_row(t, p, false, .none, true, progress)
     }
 }
 
@@ -1874,9 +1880,16 @@ fn placed(t: Task, project: Option<Project>) -> Option<Text> {
 /// it: a row is known, found and quoted by what it says first, and its number is one of its facts.
 /// A list row says where the task stands in its work, and a card, whose column says that, how far
 /// its steps are and its labels.
-view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>, card: Bool) {
+view task_row(
+    t: Task,
+    project: Option<Project>,
+    day: Bool,
+    under: Option<Task>,
+    card: Bool,
+    progress: Option<Text>,
+) {
     let due: Option<Date> = if day { .none } else { own_due(t, under) }
-    let standing = if card { subtask_count(t) ?? "" } else { status_word(t.status) }
+    let standing = if card { progress ?? "" } else { status_word(t.status) }
     row(
         t.title,
         checkbox: t.done,
@@ -1922,6 +1935,9 @@ view task_page(t: Task) {
 
 /// A task where it stands: opened in the list it is an item of, or as a page of its own.
 template view task_body(t: Task) {
+    // What stands under each task, and how much of it is finished, counted once for the page.
+    let totals = tasks.items.count_by(x -> x.parent)
+    let finished_totals = tasks.items.filter(x -> closed(x.status)).count_by(x -> x.parent)
     // The task's head — what it is and what was written of it — and the groups under it: the
     // page's own blocks, a group gutter apart.
     stack(gap: .group) {
@@ -2089,7 +2105,13 @@ template view task_body(t: Task) {
                         "No subtasks yet",
                         (moved, parent, before) -> move_to(moved, parent, before),
                         x -> check(x),
-                        progress: x -> subtask_count(x),
+                        progress: x -> if let total = totals.find(
+                                c -> c.key == .some(x),
+                            ) {
+                            if total.count > 0 {
+                                "{finished_totals.find(d -> d.key == .some(x))?.count ?? 0}/{total.count}"
+                            }
+                        },
                         fill: false,
                     ) { (x, under) ->
                         task_outline_row(x, t.project, under)
