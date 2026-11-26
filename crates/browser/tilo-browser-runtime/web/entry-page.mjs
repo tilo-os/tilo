@@ -42,6 +42,7 @@ import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer
 import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, freeName, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 import {hex} from './hex.mjs';
+import {memberText, objectText} from './json-text.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
 const JOIN_NOW = 'tilo-embed-join';
@@ -1570,8 +1571,8 @@ const TICKET_LIFE_MS = 10 * 60_000;
  */
 function ticketCodes({origin, identity}) {
   const post = httpsPost(origin);
-  const call = async (path, body) => {
-    const reply = await post(path, JSON.stringify(body)).catch(error => { throw hostNamed(error, origin); });
+  const send = async (path, body) => {
+    const reply = await post(path, body).catch(error => { throw hostNamed(error, origin); });
     const text = new TextDecoder().decode(reply.body);
     if (reply.status >= 400) {
       let said = null;
@@ -1579,6 +1580,10 @@ function ticketCodes({origin, identity}) {
       throw hostNamed(Object.assign(new Error(said ?? 'the host refused this ticket'),
         {name: 'TicketError', code: 'refused', status: reply.status}), origin);
     }
+    return text;
+  };
+  const call = async (path, body) => {
+    const text = await send(path, JSON.stringify(body));
     return text ? JSON.parse(text) : null;
   };
   const kept = (ticket, id, direction) => ({code: ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: id, id, direction});
@@ -1586,7 +1591,8 @@ function ticketCodes({origin, identity}) {
     let answering = false;
     return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
       follow: async () => {
-        const status = await call(TICKET_ASKED, {id: saved.follow}) ?? {};
+        const wire = await send(TICKET_ASKED, JSON.stringify({id: saved.follow}));
+        const status = wire ? JSON.parse(wire) : {};
         const agent = status.agent ?? null;
         const claimed = status.claimed ?? null;
         if (saved.direction === 'sign-in') {
@@ -1607,8 +1613,10 @@ function ticketCodes({origin, identity}) {
             const peer = await setupPeer();
             const person = currentIdentity();
             if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
-            const approved = JSON.parse(await peer.approveAsked(person, JSON.stringify(status.asked)));
-            await call(TICKET_ANSWER, {id: saved.follow, approved});
+            // Rounding a nanosecond timestamp here invalidates the host's certificate.
+            const approved = await peer.approveAsked(person, memberText(wire, 'asked'));
+            if (currentIdentity() !== person || person.locked) throw new Error('this tab no longer holds your unlocked identity');
+            await send(TICKET_ANSWER, objectText({id: JSON.stringify(saved.follow), approved}));
           } catch (error) {
             console.warn('first screen: approving your agent', error);
             await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})

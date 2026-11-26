@@ -1151,6 +1151,21 @@ async function connect({
     /** This person's new devices waiting at the host, paired with the root
      * the page holds over this session (`PairingHost`: `pending`, `answer`). */
     pairing: () => peer.pairing(),
+    /** Approve the host's setup ticket with the unlocked root the setup page
+     * presents and this admitted device. The signed certificates stay JSON text. */
+    async approveAsked(person, asked) {
+      const session = peer;
+      const requireSigner = () => {
+        if (!person || person !== identity || person.locked || !workspace || disposed ||
+            session !== peer || snapshot.phase !== 'ready') {
+          throw new Error('Only the admitted device and its unlocked person can approve this ticket');
+        }
+      };
+      requireSigner();
+      const approved = await session.approveAsked(person, asked);
+      requireSigner();
+      return approved;
+    },
     /** The person's own workspace on this host, with this very device in it
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
      * time under an id the host chooses, answered again after, another for

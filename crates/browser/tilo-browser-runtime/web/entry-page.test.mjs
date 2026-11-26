@@ -248,12 +248,22 @@ test('a browser on a host that offers no personal workspaces cannot start a work
   assert.equal(calls, 0);
 });
 
-test('the first screen mints its agent ticket for the personal workspace and resumes that ticket', async () => {
+test('the first screen mints, resumes and approves the agent ticket without changing either certificate', async () => {
   let make;
   let resume;
   const firstScreen = {reveal() {}, whenDone() {}, offerSetup(maker, resumer) { make = maker; resume = resumer; }};
-  const {failure} = await fixture({firstScreen,
-    member: {enterOwnWorkspace: async () => ({workspace: STUDIO, name: 'My studio', origin: ORIGIN})},
+  const identity = {userPublicKey: USER};
+  const asked = '{"cert":{"issued_at_ns":1792023733547123457},"digest":[123]}';
+  const approved = '{"cert":{"issued_at_ns":1792023733547123457},"approver":{"issued_at_ns":1792023733547123461},"signature":[19]}';
+  const {failure} = await fixture({firstScreen, identity,
+    member: {
+      enterOwnWorkspace: async () => ({workspace: STUDIO, name: 'My studio', origin: ORIGIN}),
+      approveAsked: async (root, question) => {
+        assert.equal(root, identity);
+        assert.equal(question, asked);
+        return approved;
+      },
+    },
     boot: async ({deps}, page) => {
       await deps.onAdmitted(page.peer);
       assert.equal(await deps.holdFirstScreen(page), true);
@@ -264,16 +274,26 @@ test('the first screen mints its agent ticket for the personal workspace and res
   const requests = [];
   try {
     globalThis.location.origin = 'https://web.example';
+    const replies = [
+      Response.json({id: 'follow-id', ticket: 'login-ticket'}),
+      new Response(`{"asked":${asked},"agent":"Reviewer","steps":[]}`),
+      new Response(null, {status: 204}),
+      Response.json({agent: 'Reviewer', steps: ['logged-in', 'tools-added', 'entered']}),
+    ];
     globalThis.fetch = async (url, {method, body}) => {
-      requests.push([url, method, JSON.parse(body)]);
-      return Response.json(requests.length === 1 ? {id: 'follow-id', ticket: 'login-ticket'} : {steps: ['approved']});
+      requests.push([url, method, body]);
+      return replies.shift();
     };
     const made = await make();
     assert.equal(made.code, 'login-ticket');
-    assert.deepEqual((await resume(made.saved).follow()).steps, ['approved']);
+    const resumed = resume(made.saved);
+    assert.deepEqual((await resumed.follow()).steps, [], 'signing alone reports no completed CLI steps');
+    assert.deepEqual((await resumed.follow()).steps, ['logged-in', 'tools-added', 'entered']);
     assert.deepEqual(requests, [
-      [ORIGIN + '/peer/v1/ticket', 'POST', {user: USER, workspace: STUDIO, name: 'My studio', site: 'https://web.example'}],
-      [ORIGIN + '/peer/v1/ticket/asked', 'POST', {id: 'follow-id'}],
+      [ORIGIN + '/peer/v1/ticket', 'POST', JSON.stringify({user: USER, workspace: STUDIO, name: 'My studio', site: 'https://web.example'})],
+      [ORIGIN + '/peer/v1/ticket/asked', 'POST', '{"id":"follow-id"}'],
+      [ORIGIN + '/peer/v1/ticket/answer', 'POST', `{"id":"follow-id","approved":${approved}}`],
+      [ORIGIN + '/peer/v1/ticket/asked', 'POST', '{"id":"follow-id"}'],
     ]);
   } finally {
     globalThis.fetch = before;

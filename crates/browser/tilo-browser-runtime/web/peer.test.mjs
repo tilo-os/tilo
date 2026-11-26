@@ -767,6 +767,38 @@ const hostCertOf = (user, device) => ({user_public_key: Array(32).fill(user), de
 const textOf = bytes => (bytes === undefined ? undefined : new TextDecoder().decode(bytes));
 const person = () => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)});
 
+test('setup approval uses the admitted peer and the unlocked root held by the requesting page', async () => {
+  const runtime = fakeRuntime();
+  const identity = person();
+  const peer = await connect(options(runtime, memoryStore(), {identity, userPublicKey: identity.userPublicKey}));
+  await peer.whenReady();
+  const asked = `{"cert":${LINUX_CERT}}`;
+  const approved = `{"cert":${LINUX_CERT},"signature":[4]}`;
+  const calls = [];
+  runtime.peer.approveAsked = async (root, question) => {
+    calls.push([root, question]);
+    return approved;
+  };
+  assert.equal(await peer.approveAsked(identity, asked), approved);
+  await assert.rejects(peer.approveAsked(person(), asked), /unlocked person/);
+  identity.locked = true;
+  await assert.rejects(peer.approveAsked(identity, asked), /unlocked person/);
+  identity.locked = false;
+  runtime.peer.emit('connecting');
+  await assert.rejects(peer.approveAsked(identity, asked), /admitted device/);
+  runtime.peer.emit('ready');
+  assert.deepEqual(calls, [[identity, asked]], 'only the admitted caller passed its request to the signer');
+
+  let finish;
+  runtime.peer.approveAsked = () => new Promise(resolve => { finish = resolve; });
+  const pending = peer.approveAsked(identity, asked);
+  await peer.dispose();
+  finish(approved);
+  await assert.rejects(pending, /admitted device/, 'a disposed peer never hands out a pending signature');
+  const paired = await connect(options(fakeRuntime(), memoryStore()));
+  await assert.rejects(paired.approveAsked(identity, asked), /unlocked person/);
+});
+
 test('a renewed device is a new key in a namespace of its own; what the old key kept is never opened for it', async () => {
   const rows = new Map();
   const namespaces = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
