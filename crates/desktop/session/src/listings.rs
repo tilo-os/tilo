@@ -160,7 +160,7 @@ impl Service for Listings {
 
     /// The listing published as `resource` (its app's id), once it was read.
     fn read(&self, resource: &str) -> Option<Value> {
-        let (_, app, record) = tilolang_tilo::platform_apps::platform_listings()
+        let (_, app, record) = tilolang_tilo::platform::platform_listings()
             .into_iter()
             .find(|(_, app, _)| *app == resource)?;
         self.follow(app, record)

@@ -32,7 +32,7 @@ mod cases {
             playback.load(&rt);
             // The session is the platform's own: the app names what it opened lately on it.
             let session =
-                tilolang_tilo::platform_apps::session_package().expect("the session's package");
+                tilolang_tilo::platform::session_package().expect("the session's package");
             rt.load_foreign(session.clone()).expect("the session loads");
             let app = App::compile(SOURCE, &[playback.meta().clone(), session]);
             app.load(&rt);
@@ -529,7 +529,7 @@ mod cases {
             let playback = App::compile(PLAYBACK, &[]);
             playback.load(&rt);
             let session =
-                tilolang_tilo::platform_apps::session_package().expect("the session's package");
+                tilolang_tilo::platform::session_package().expect("the session's package");
             rt.load_foreign(session.clone()).expect("the session loads");
             let app = App::compile(SOURCE, &[playback.meta().clone(), session]);
             app.load(&rt);

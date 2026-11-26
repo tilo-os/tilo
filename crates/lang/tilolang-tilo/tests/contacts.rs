@@ -80,7 +80,7 @@ impl BlobHost for Device {
 /// verbs.
 fn book(device: &Device) -> (Replica, ResourceRef, Vec<Package>) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[]);
-    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
+    let metas = tilolang_tilo::platform::platform_packages().expect("the platform packages");
     let directory = metas
         .iter()
         .find(|meta| meta.app == "so.tilo.contacts.directory")

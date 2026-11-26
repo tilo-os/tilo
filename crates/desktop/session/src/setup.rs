@@ -170,7 +170,7 @@ impl Drawn {
             surface: PartSurface {
                 id: ceremony::RESOURCE.to_owned(),
                 kind: ceremony::KIND.to_owned(),
-                app: tilolang_tilo::platform_apps::SESSION_APP.to_owned(),
+                app: tilolang_tilo::platform::SESSION_APP.to_owned(),
                 title: "Setup".to_owned(),
                 text: String::new(),
             },

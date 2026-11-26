@@ -1703,8 +1703,7 @@ mod tests {
         let lock = tilolang::IdsLock::parse(ids).expect("the ids lock reads");
         // Against the platform's packages, as the host compiles an app: the workspace's
         // package an app's person pickers read its members through among them.
-        let platform =
-            tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+        let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
         let compiled =
             tilolang::compile_package(source, &lock, &platform).expect("the package compiles");
         Bundle::new(&compiled, [])

@@ -107,7 +107,7 @@ mod cases {
             rt.set_web(services.clone());
             rt.set_clock(|| "2026-11-24T09:30:00Z".to_owned());
             // The device's own facts are the platform's: the host name a measurement keeps.
-            let device = tilolang_tilo::platform_apps::platform_packages()
+            let device = tilolang_tilo::platform::platform_packages()
                 .expect("the platform packages read")
                 .into_iter()
                 .find(|package| package.app == "so.tilo.device")

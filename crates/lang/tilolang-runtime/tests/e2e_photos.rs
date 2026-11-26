@@ -185,7 +185,7 @@ mod cases {
             )
             .unwrap();
             // The device's image model is the platform's own package, read as an app reads it.
-            let package = tilolang_tilo::platform_apps::platform_packages()
+            let package = tilolang_tilo::platform::platform_packages()
                 .expect("the platform packages read")
                 .into_iter()
                 .find(|package| package.app == "so.tilo.vision")

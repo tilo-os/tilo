@@ -192,7 +192,7 @@ pub fn compile() -> Result<Vec<Compiled>, String> {
 
 /// [`compile`] once: the shell package over the session's and the platform's descriptions.
 fn compile_source() -> Result<Vec<Compiled>, String> {
-    let session = crate::platform_apps::session_package()?;
+    let session = crate::platform::session_package()?;
     let mut out: Vec<Compiled> = Vec::new();
     let lock = crate::tilolang::IdsLock::parse(SHELL_IDS).map_err(|e| e.to_string())?;
     let source = crate::tilolang::PackageSource::new(
@@ -206,9 +206,9 @@ fn compile_source() -> Result<Vec<Compiled>, String> {
             .into_iter()
             .map(|(locale, text)| (locale.to_owned(), text.to_owned())),
     );
-    let mut imports: Vec<crate::tilolang::PackageMeta> = crate::platform_apps::platform_packages()?
+    let mut imports: Vec<crate::tilolang::PackageMeta> = crate::platform::platform_packages()?
         .into_iter()
-        .filter(|meta| meta.app != crate::platform_apps::SESSION_APP)
+        .filter(|meta| meta.app != crate::platform::SESSION_APP)
         .collect();
     imports.insert(0, session);
     let shell = crate::tilolang::compile_package_source(&source, &lock, &imports).map_err(

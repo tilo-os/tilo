@@ -75,7 +75,7 @@ impl Packages {
     /// # Errors
     /// A source does not compile: its diagnostics.
     pub fn compile(sources: &[(&str, &str)]) -> Result<Self, String> {
-        let platform = tilolang_tilo::platform_apps::platform_packages()?;
+        let platform = tilolang_tilo::platform::platform_packages()?;
         let mut compiled: Vec<tilolang_tilo::tilolang::Compiled> = Vec::new();
         for (source, ids) in sources {
             let lock =

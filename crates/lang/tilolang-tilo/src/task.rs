@@ -187,7 +187,7 @@ impl TaskSession {
     /// (every tilolang app the session runs, each after the packages it uses), the native apps
     /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
     /// and the platform's own (the device's and the session's resources, Settings':
-    /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
+    /// [`crate::platform`]), whose actions a program invokes where the session publishes
     /// them. A program names and type-checks every app of them; a native one it names the document
     /// of, invokes and assigns fields of, and reads what it holds through the app
     /// ([`crate::native::NativeReads`]), which `api` carries too. A package that does not load
@@ -255,7 +255,7 @@ impl TaskSession {
         // resource the session publishes.
         // The session's own description is one of the platform's (`platform_packages`): its
         // resources are read without a document, and its actions run at the session's api.
-        let platform = crate::platform_apps::platform_packages()?;
+        let platform = crate::platform::platform_packages()?;
         let published: std::collections::HashSet<String> =
             load_apps(&runtime, &mut apps, platform, &mut failed)
                 .into_iter()
@@ -271,7 +271,7 @@ impl TaskSession {
                 apps,
                 native,
                 published,
-                addresses: crate::platform_apps::session_addresses()?,
+                addresses: crate::platform::session_addresses()?,
                 workspace: None,
             },
             steps: Rc::clone(&steps),
@@ -357,7 +357,7 @@ impl TaskSession {
             .map(|s| (s.app.clone(), s.name.clone()))
             .collect();
         // A session without its description lists its actions by their ids.
-        let addresses = crate::platform_apps::session_addresses().unwrap_or_default();
+        let addresses = crate::platform::session_addresses().unwrap_or_default();
         let mut apps = serde_json::Map::new();
         for signature in signatures {
             if signature.app == tilolang::HOST_APP {
@@ -380,7 +380,7 @@ impl TaskSession {
                 .then(|| first_param_type(&signature.text))
                 .flatten()
                 .filter(|ty| own_types.contains(&(signature.app.clone(), (*ty).to_owned())));
-            let at = (action && on.is_none() && signature.app == crate::platform_apps::SESSION_APP)
+            let at = (action && on.is_none() && signature.app == crate::platform::SESSION_APP)
                 .then(|| addresses.get(&signature.id))
                 .flatten();
             let app = apps
@@ -1156,7 +1156,7 @@ mod tests {
             // Chat and the session both publish a `share-window` verb: in one catalogue they are
             // two actions, each named by its type, and each app's own api takes its verb back.
             let chat = chat();
-            let session = crate::platform_apps::session_package().expect("the session's reads");
+            let session = crate::platform::session_package().expect("the session's reads");
             assert!(
                 chat.actions
                     .iter()
@@ -1323,10 +1323,10 @@ mod tests {
 
     #[test]
     fn a_platform_apps_verb_reaches_the_session_as_the_verb_it_publishes() {
-        let vision = crate::platform_apps::platform_packages()
+        let vision = crate::platform::platform_packages()
             .expect("the platform's packages read")
             .into_iter()
-            .find(|meta| meta.app == crate::platform_apps::VISION_APP)
+            .find(|meta| meta.app == crate::platform::VISION_APP)
             .expect("the image model is a platform package");
         let api = Rc::new(Asked::default());
         let invoker = ApiInvoker {
@@ -1341,7 +1341,7 @@ mod tests {
         let model = ResourceRef::parse_id("vision:vision.image-model", "so.tilo.vision#ImageModel")
             .expect("the model's resource id");
         let invocation = Invocation::Action {
-            app: tilolang_runtime::ids::AppId::from(crate::platform_apps::VISION_APP),
+            app: tilolang_runtime::ids::AppId::from(crate::platform::VISION_APP),
             action: "so.tilo.vision#ImageModel/describe".to_owned(),
             name: "describe".to_owned(),
             args: vec![

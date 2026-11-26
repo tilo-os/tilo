@@ -1282,7 +1282,7 @@ impl Host {
         let triggers = crate::triggers::Schedule::new(store.watch());
         let members_watch = store.watch();
         runtime.set_device(device);
-        runtime.set_members_root(&crate::platform_apps::workspace_members());
+        runtime.set_members_root(&crate::platform::workspace_members());
         let inner = Rc::new(HostInner {
             handle,
             runtime,
@@ -1628,7 +1628,7 @@ impl Host {
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
         let mut imports =
-            crate::platform_apps::named_platform_packages(source).map_err(HostError::Compile)?;
+            crate::platform::named_platform_packages(source).map_err(HostError::Compile)?;
         imports.extend(
             self.inner
                 .packages
@@ -1767,7 +1767,7 @@ impl Host {
     /// or in a bundle — declares the same descriptions, through this one path. An app this host
     /// runs already keeps its package.
     fn describe_platform_apps(&self, meta: &Meta) {
-        crate::platform_apps::load(self, &meta.uses);
+        crate::platform::load(self, &meta.uses);
     }
 
     /// Load the package of an app this host does not run, trusted: its views draw resources of

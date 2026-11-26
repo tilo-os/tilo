@@ -299,7 +299,7 @@ pub fn surface(part: &str) -> Option<PartSurface> {
             id: crate::keyboard::KEYBOARD.to_owned(),
             kind: crate::keyboard::KIND.to_owned(),
             // The session's own resource, which its package declares: no surface of its own.
-            app: tilolang_tilo::platform_apps::SESSION_APP.to_owned(),
+            app: tilolang_tilo::platform::SESSION_APP.to_owned(),
             title: "Session".to_owned(),
             text: String::new(),
         }),

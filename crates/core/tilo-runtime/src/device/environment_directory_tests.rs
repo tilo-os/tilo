@@ -35,7 +35,7 @@ use tilo_app_host::services::{Caller as AppCaller, PublishedResources, ResourceW
 use tilo_environment::{DEFAULT_RECORD, Environment, PackageId, host_arch};
 use tilo_test_env::hang_bound;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilolang_tilo::platform_apps::{self, PublishedSource, Reading as Followed, Roots};
+use tilolang_tilo::platform::{self, PublishedSource, Reading as Followed, Roots};
 use tilolang_tilo::runtime::{Actor, ResourceRef, UiNode, Value as Lang};
 
 use super::environment_directory;
@@ -255,7 +255,7 @@ fn an_app_makes_changes_and_lists_environments() {
 
     // A tilolang view compiles against `tilo.environment` and follows the same reading: what the
     // app made is what it shows, and a further change reaches it live.
-    let platforms = platform_apps::platform_packages().expect("the platform's packages read");
+    let platforms = platform::platform_packages().expect("the platform's packages read");
     let compiled = tilolang::compile_package(VIEWING, &tilolang::IdsLock::new(), &platforms)
         .unwrap_or_else(|diagnostics| {
             panic!(
@@ -271,7 +271,7 @@ fn an_app_makes_changes_and_lists_environments() {
     let host = tilolang_tilo::host::Host::new(person.clone(), || None).expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
     let serving = Serving::new(Arc::new(Readings::of(daemon.workspaces().clone())), app);
-    platform_apps::install(Box::new(serving));
+    platform::install(Box::new(serving));
     let wake = tilo_rt::wake::WakeHandle::default();
     let mut roots = Roots::default();
     roots.load(&host, &compiled.meta.uses, &wake);

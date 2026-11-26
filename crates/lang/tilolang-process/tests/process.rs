@@ -2073,7 +2073,7 @@ const MAIL: &str = "so.tilo.mail";
 /// The shipped Mail package, built with the packages it uses.
 fn mail() -> Bundle {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/mail");
-    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
     let provided = tilolang::source::apps_of(&platform);
     let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
         .expect("the packages resolve");
@@ -2438,7 +2438,7 @@ scenario "empty" {
 
 /// The content package, compiled against the workspace package it reads.
 fn contented() -> Bundle {
-    let used = tilolang_tilo::platform_apps::platform_packages_of(["tilo.workspace"])
+    let used = tilolang_tilo::platform::platform_packages_of(["tilo.workspace"])
         .expect("the workspace package reads");
     let compiled = compile(CONTENT_SOURCE, &tilolang::IdsLock::new(), &used)
         .unwrap_or_else(|diagnostics| panic!("the content package compiles: {diagnostics:#?}"));
@@ -2610,13 +2610,13 @@ fn notes_bundle() -> Bundle {
     let discussion = compile(
         discussion_source,
         &tilolang::IdsLock::new(),
-        &tilolang_tilo::platform_apps::named_platform_packages(discussion_source)
+        &tilolang_tilo::platform::named_platform_packages(discussion_source)
             .expect("the platform's packages read"),
     )
     .unwrap_or_else(|diagnostics| panic!("the discussion app compiles: {diagnostics:?}"));
     let lock = tilolang::IdsLock::parse(include_str!("../../../../apps/tl/notes/app.ids")).unwrap();
     let notes_source = include_str!("../../../../apps/tl/notes/app.tl");
-    let mut imports = tilolang_tilo::platform_apps::named_platform_packages(notes_source)
+    let mut imports = tilolang_tilo::platform::named_platform_packages(notes_source)
         .expect("the platform's packages read");
     imports.push(discussion.meta);
     let compiled = compile(notes_source, &lock, &imports)
@@ -3403,9 +3403,7 @@ impl Published {
         INSTALLED
             .get_or_init(|| {
                 let published = Arc::new(Published::default());
-                tilolang_tilo::platform_apps::install(Box::new(TestSession(Arc::clone(
-                    &published,
-                ))));
+                tilolang_tilo::platform::install(Box::new(TestSession(Arc::clone(&published))));
                 published
             })
             .clone()
@@ -3433,12 +3431,12 @@ impl Published {
 /// [`Published`] as the source the process reads the platform's roots through.
 struct TestSession(Arc<Published>);
 
-impl tilolang_tilo::platform_apps::PublishedSource for TestSession {
+impl tilolang_tilo::platform::PublishedSource for TestSession {
     fn follow(
         &self,
         resource: &str,
         wake: tilo_wake::WakeHandle,
-    ) -> Result<Box<dyn tilolang_tilo::platform_apps::Reading>, String> {
+    ) -> Result<Box<dyn tilolang_tilo::platform::Reading>, String> {
         self.0
             .wakes
             .lock()
@@ -3471,7 +3469,7 @@ struct Followed {
     resource: String,
 }
 
-impl tilolang_tilo::platform_apps::Reading for Followed {
+impl tilolang_tilo::platform::Reading for Followed {
     fn latest(&self) -> Option<Result<String, String>> {
         self.published
             .queued
@@ -3523,7 +3521,7 @@ fn buttons(window: &Window) -> Vec<&patch::Node> {
 #[test]
 fn a_platform_packages_reading_reaches_the_app_and_its_verb_goes_to_the_session() {
     let published = Published::install();
-    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
     let compiled = compile(SOUNDCHECK_SOURCE, &tilolang::IdsLock::new(), &platform)
         .unwrap_or_else(|diagnostics| panic!("the sound check compiles: {diagnostics:#?}"));
     let (mut host, mut window, _sent, _inbox, _route) =
@@ -3599,7 +3597,7 @@ view panel(p: Panel) {
 #[test]
 fn the_workspaces_activity_reaches_the_app_that_reads_it() {
     let published = Published::install();
-    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
     let compiled = compile(HISTORY_SOURCE, &tilolang::IdsLock::new(), &platform)
         .unwrap_or_else(|diagnostics| panic!("the history package compiles: {diagnostics:#?}"));
     let (mut host, mut window, _sent, _inbox, _route) =
@@ -3639,7 +3637,7 @@ const ACTIVITY: &str = "so.tilo.activity";
 #[test]
 fn the_activity_app_marks_what_it_showed_as_seen() {
     let published = Published::install();
-    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
     let lock =
         tilolang::IdsLock::parse(include_str!("../../../../apps/tl/activity/app.ids")).unwrap();
     let compiled = compile(

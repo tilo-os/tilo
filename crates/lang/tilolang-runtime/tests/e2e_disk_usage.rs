@@ -136,7 +136,7 @@ mod cases {
             rt.set_device_files(Disk);
             // The session's own package, which Open Disks calls; nothing of it is read here.
             let session =
-                tilolang_tilo::platform_apps::session_package().expect("the session's package");
+                tilolang_tilo::platform::session_package().expect("the session's package");
             rt.load_foreign(session.clone())
                 .expect("the session's package loads");
             let app = App::compile(SOURCE, &[session]);

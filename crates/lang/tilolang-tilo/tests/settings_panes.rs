@@ -45,7 +45,7 @@ fn settings_with(access: Option<MemberAccess>) -> (Host, tilolang::Compiled) {
     host.load_compiled(&compiled).expect("the package loads");
     // The platform's packages it uses, as a window's process loads them: what a pane reads of the
     // workspace or the device is a resource their readings and actions come from.
-    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
     crate::fixtures::settings_sections(&host);
     (host, compiled)
 }
@@ -665,7 +665,7 @@ fn the_wallpapers_the_image_ships_are_offered_and_chosen_through_the_setting() {
     };
     assert_eq!(
         (app.as_str(), name.as_str()),
-        (tilolang_tilo::platform_apps::SECTIONS_APP, "set-wallpaper"),
+        (tilolang_tilo::platform::SECTIONS_APP, "set-wallpaper"),
         "the appearance's own setter, as its surface publishes it"
     );
     assert_eq!(

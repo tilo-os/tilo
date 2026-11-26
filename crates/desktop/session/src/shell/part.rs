@@ -32,7 +32,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode};
 use tilolang_tilo::origin::{Origin, OriginCx, Polled};
-use tilolang_tilo::platform_apps::platform_packages;
+use tilolang_tilo::platform::platform_packages;
 use tilolang_tilo::resources::{ResourceStore, Watch};
 use tilolang_tilo::runtime::Delivery;
 use tilolang_tilo::tilolang::Compiled;
@@ -62,7 +62,7 @@ pub use tilolang_tilo::shell::{
 };
 
 /// The package id of the session's description.
-pub const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
+pub const SESSION_APP: &str = tilolang_tilo::platform::SESSION_APP;
 
 /// The session's package: its resources' types and actions, which the shell's views call as
 /// any package's (`session.show_surface(surface: "launcher")`).
@@ -70,12 +70,12 @@ pub const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
 /// # Errors
 /// The description does not read.
 pub fn session_package() -> Result<tilolang_tilo::tilolang::PackageMeta, String> {
-    tilolang_tilo::platform_apps::session_package()
+    tilolang_tilo::platform::session_package()
 }
 
 /// The resource each of the session's loose actions is published on, by the action's id.
 fn session_addresses() -> BTreeMap<String, String> {
-    tilolang_tilo::platform_apps::session_addresses().unwrap_or_else(|error| {
+    tilolang_tilo::platform::session_addresses().unwrap_or_else(|error| {
         tracing::error!(%error, "the session's description gives no addresses");
         BTreeMap::new()
     })
@@ -83,7 +83,7 @@ fn session_addresses() -> BTreeMap<String, String> {
 
 /// The session's loose actions as its description declares them, by id.
 fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
-    tilolang_tilo::platform_apps::session_verbs().unwrap_or_else(|error| {
+    tilolang_tilo::platform::session_verbs().unwrap_or_else(|error| {
         tracing::error!(%error, "the session's description does not read");
         BTreeMap::new()
     })
@@ -280,7 +280,7 @@ impl SessionLink {
     /// ([`Self::serve`]), as the person's press the part is answering now, when it answers one.
     /// One of the device's settings a view names is this device's.
     pub fn ask(&self, mut ask: Ask) {
-        ask.resource = tilolang_tilo::platform_apps::on_device(
+        ask.resource = tilolang_tilo::platform::on_device(
             &ask.resource,
             &tilo_ui_base::settings_device::settings_device(),
         );

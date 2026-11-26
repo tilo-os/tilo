@@ -473,7 +473,7 @@ scenario "one waiting" {
     .unwrap();
     // Only the packages the source `use`s: the whole platform carries the actions package the
     // runtime already runs, and a host loads one package once.
-    let metas = tilolang_tilo::platform_apps::named_platform_packages(STAGED).unwrap();
+    let metas = tilolang_tilo::platform::named_platform_packages(STAGED).unwrap();
     for meta in &metas {
         host.runtime().load_foreign(meta.clone()).unwrap();
     }
@@ -530,7 +530,7 @@ view switcher() {
   ui.Text("{m.in_use.model_label}")
 }
 "#;
-        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        let metas = tilolang_tilo::platform::platform_packages().unwrap();
         tilolang::compile_package(VIEW, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     }
@@ -551,7 +551,7 @@ view switcher(m: settings.AgentModels) {
   }
 }
 "#;
-        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        let metas = tilolang_tilo::platform::platform_packages().unwrap();
         tilolang::compile_package(VIEW, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     }
@@ -574,7 +574,7 @@ view switcher(m: settings.AgentModels) {
         .unwrap();
         // Only the packages the source `use`s: the whole platform carries the actions package
         // the runtime already runs, and a host loads one package once.
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(VIEW).unwrap();
+        let metas = tilolang_tilo::platform::named_platform_packages(VIEW).unwrap();
         for meta in &metas {
             host.runtime().load_foreign(meta.clone()).unwrap();
         }
@@ -698,7 +698,7 @@ action invite_editor() {
     ws.invite(role: "editor")
 }
 "#;
-    let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let metas = tilolang_tilo::platform::platform_packages().unwrap();
     tilolang::compile_package(INVITER, &IdsLock::new(), &metas)
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
 }
@@ -713,14 +713,14 @@ tilo_test_env::scenario! {
 
     phase the_view_compiles_against_the_contacts_package;
     {
-        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        let metas = tilolang_tilo::platform::platform_packages().unwrap();
         tilolang::compile_package(DIRECTORY_VIEW, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
     }
 
     phase the_directory_is_a_platform_root_the_session_publishes;
     {
-        let roots = tilolang_tilo::platform_apps::platform_roots();
+        let roots = tilolang_tilo::platform::platform_roots();
         assert!(
             roots.iter().any(|(published, ty)| {
                 *published == "contacts:tilo.contacts.identities"
@@ -838,7 +838,7 @@ fn directory_host(view: &str, name: &str) -> (Host, String, Option<String>) {
         || None,
     )
     .unwrap();
-    let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let metas = tilolang_tilo::platform::platform_packages().unwrap();
     let contacts = metas
         .iter()
         .find(|meta| meta.app == "so.tilo.contacts.directory")

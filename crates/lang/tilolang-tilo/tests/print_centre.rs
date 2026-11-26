@@ -212,7 +212,7 @@ impl Installed {
         let host = Host::new(me(), || None).expect("a host");
         // Only the packages the app `use`s: the whole platform carries the actions package the
         // host already runs, and a host loads one package once.
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+        let metas = tilolang_tilo::platform::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
             host.runtime()

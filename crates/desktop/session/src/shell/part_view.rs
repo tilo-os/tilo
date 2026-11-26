@@ -194,7 +194,7 @@ impl Loads for PartPlatform {
         // shell's package reads `so.tilo.session` and `so.tilo.device` beside the part's state.
         // The part's own app is loaded below, from the surface the session publishes for it, and
         // the session's is loaded from the description the view was compiled against.
-        if let Ok(packages) = tilolang_tilo::platform_apps::platform_packages() {
+        if let Ok(packages) = tilolang_tilo::platform::platform_packages() {
             for meta in packages {
                 if meta.app == self.meta.app
                     || meta.app == self.bundle.meta.app
@@ -218,7 +218,7 @@ impl Loads for PartPlatform {
             *self.why.borrow_mut() = Some(error.to_string());
             return 0;
         }
-        match tilolang_tilo::platform_apps::session_package() {
+        match tilolang_tilo::platform::session_package() {
             Ok(session) => {
                 if let Err(error) = host.runtime().load_foreign(session) {
                     tracing::warn!(%error, "the session's package did not load");
@@ -438,7 +438,7 @@ impl PartView {
         // A part whose state is one of the session's own resources (the on-screen keyboard) reads
         // it as the session's package declares it, the package every view already reads.
         let meta = if spec.surface.app == super::part::SESSION_APP {
-            tilolang_tilo::platform_apps::session_package()?
+            tilolang_tilo::platform::session_package()?
         } else {
             let surfaces = catalogue::parse_surfaces(&spec.surface.text)?;
             catalogue::package_of(&spec.surface.app, &spec.surface.title, &surfaces)

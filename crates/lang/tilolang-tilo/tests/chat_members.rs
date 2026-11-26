@@ -146,7 +146,7 @@ fn member(name: &str, doc: Workspace, policy: &Shared) -> Replica {
         ),
         (
             "tilo.workspace".to_owned(),
-            tilolang_tilo::platform_apps::platform_package("tilo.workspace")
+            tilolang_tilo::platform::platform_package("tilo.workspace")
                 .expect("the workspace's package"),
         ),
     ];

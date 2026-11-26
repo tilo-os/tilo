@@ -89,7 +89,7 @@ impl Platform for Packages {
             }
             host.runtime().set_app_absent(&meta.app);
         }
-        for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        for (published, ty) in tilolang_tilo::platform::platform_roots() {
             if !self
                 .platform
                 .iter()
@@ -99,7 +99,7 @@ impl Platform for Packages {
             }
             // What a new install starts from is a reading the page does have (a language and a
             // region), and it stands over the app's absence.
-            let reading = tilolang_tilo::platform_apps::platform_root_defaults(&published);
+            let reading = tilolang_tilo::platform::platform_root_defaults(&published);
             if reading == "{}" {
                 continue;
             }

@@ -176,7 +176,7 @@ fn every_example_package_builds_from_its_directory_with_the_files_it_writes() {
     ))
     .expect("the native apps read");
     natives.extend(
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read"),
+        tilolang_tilo::platform::platform_packages().expect("the platform's packages read"),
     );
     let provided: Vec<String> = natives.iter().map(|meta| meta.app.clone()).collect();
     for dir in dirs {

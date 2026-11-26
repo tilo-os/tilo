@@ -48,13 +48,13 @@ const LAYOUT_PROVIDER: &str = "so.tilo.layout";
 const LAYOUT_RESOURCE: &str = "workspace:layout";
 
 /// The session's app, whose arranging actions the page carries out on the shared layout.
-const SESSION_APP: &str = tilolang_tilo::platform_apps::SESSION_APP;
+const SESSION_APP: &str = tilolang_tilo::platform::SESSION_APP;
 
 /// The app the device publishes the styles at, and the platform root the shell reads them by.
-const STYLES_APP: &str = tilolang_tilo::platform_apps::STYLES_APP;
+const STYLES_APP: &str = tilolang_tilo::platform::STYLES_APP;
 
 /// The device's app, whose `show-surface` the page carries out on its own overlays.
-const DEVICE_APP: &str = tilolang_tilo::platform_apps::DEVICE_APP;
+const DEVICE_APP: &str = tilolang_tilo::platform::DEVICE_APP;
 
 /// The surface over the windows, as the session publishes it.
 const OVERLAYS: &str = "desktop:overlays";
@@ -533,7 +533,7 @@ impl ShellPage {
 /// Hand `instance`'s views the reading of `published`, a resource a session publishes for its
 /// shell.
 fn fill(instance: &Instance, published: &str, reading: &Value) -> Result<(), String> {
-    let ty = tilolang_tilo::platform_apps::platform_roots()
+    let ty = tilolang_tilo::platform::platform_roots()
         .into_iter()
         .find(|(id, _)| *id == published)
         .map(|(_, ty)| ty)

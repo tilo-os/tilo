@@ -39,7 +39,7 @@ const ON_HER_MAIL: [&str; 2] = [
 /// The shipped Mail package, built with the packages it uses.
 fn mail() -> Bundle {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/mail");
-    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
     let provided = tilolang::source::apps_of(&platform);
     let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
         .expect("the packages resolve");

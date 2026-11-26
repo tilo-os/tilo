@@ -235,10 +235,10 @@ fn every_resource_type_offers_the_systems_copy_link() {
 /// each named by its type.
 #[test]
 fn the_devices_banners_and_notifications_keep_their_own_actions() {
-    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages");
+    let metas = tilolang_tilo::platform::platform_packages().expect("the platform's packages");
     let device = metas
         .iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::DEVICE_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::DEVICE_APP)
         .expect("the device's package");
     for verb in ["dismiss", "act", "reply"] {
         for ty in ["Banners", "Notifications"] {

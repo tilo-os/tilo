@@ -81,7 +81,7 @@ fn reading(id: &str) -> String {
 /// Hand the pane every reading it asks for, as the session publishes them: each resource of the
 /// platform at the address a view names it by, so nothing it reads is missing.
 fn serve_readings(host: &Host) {
-    for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+    for (published, ty) in tilolang_tilo::platform::platform_roots() {
         let reference = ResourceRef::parse_id(&published, &ty).expect("a resource id");
         host.runtime()
             .set_reading(&reference, &reading(&published))

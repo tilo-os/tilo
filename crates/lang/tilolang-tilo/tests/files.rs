@@ -490,8 +490,8 @@ impl Files {
         let store = Store::default();
         let disk = Disk::new(home.path()).making_previews(store.clone());
         let host = Host::new(me(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::platform_packages()
-            .expect("the platform's packages read");
+        let metas =
+            tilolang_tilo::platform::platform_packages().expect("the platform's packages read");
         // The host registers the actions catalogue itself, as the package whose calls it answers:
         // loading it as a device's package again would declare its types twice.
         for meta in metas

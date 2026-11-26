@@ -664,7 +664,7 @@ struct Session;
 
 impl tilolang_tilo::instance::Platform for Session {
     fn load(&self, host: &Host) -> u64 {
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+        let metas = tilolang_tilo::platform::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
             host.runtime()

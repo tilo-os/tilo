@@ -299,7 +299,7 @@ fn wanted_links(
 /// Whether the shell's runtime already holds what `app` is as a package, so a place's apps must
 /// not bring it in again as another app's code:
 ///
-/// * the platform's packages (`tilolang_tilo::platform_apps::platform_packages`: the device,
+/// * the platform's packages (`tilolang_tilo::platform::platform_packages`: the device,
 ///   Settings and the session), which the runtime loads for itself as descriptions the session's
 ///   API answers (`ShellPlatform::load`), so a used one stands here already and loading it
 ///   again would redeclare its ids;
@@ -311,7 +311,7 @@ fn held_here(app: &str) -> bool {
     if app == tilolang_tilo::tilolang::stdlib::APP {
         return true;
     }
-    match tilolang_tilo::platform_apps::is_platform_app(app) {
+    match tilolang_tilo::platform::is_platform_app(app) {
         Ok(held) => held,
         Err(why) => {
             tracing::error!(%why, "the platform's packages do not read");
@@ -347,7 +347,7 @@ impl SessionOrigin {
             // A root the platform publishes is named by its whole address, as the runtime names
             // the root (`devices/{device}/settings/display`): read as a document and an item, one
             // of the device's settings would be `devices/display`, which no root reads.
-            let root = tilolang_tilo::platform_apps::platform_roots()
+            let root = tilolang_tilo::platform::platform_roots()
                 .iter()
                 .any(|(published, _)| *published == id);
             let target = if root {
@@ -762,10 +762,10 @@ mod with_uses_tests {
     /// code would declare its ids twice. The session is asked for no module of it.
     #[test]
     fn a_platform_package_an_app_uses_is_not_loaded_again() {
-        let device = tilolang_tilo::platform_apps::platform_packages()
+        let device = tilolang_tilo::platform::platform_packages()
             .expect("the platform's packages read")
             .into_iter()
-            .find(|meta| meta.app == tilolang_tilo::platform_apps::DEVICE_APP)
+            .find(|meta| meta.app == tilolang_tilo::platform::DEVICE_APP)
             .expect("the device is one of the platform's packages");
         let top = package("me.top", &["so.tilo.device"], std::slice::from_ref(&device));
         let asked = std::cell::RefCell::new(Vec::new());

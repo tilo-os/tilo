@@ -44,7 +44,7 @@ fn replica(name: &str, doc: Workspace) -> (Replica, Meta) {
 /// The platform's packages the client's source names, as the window's host holds them: its
 /// presses reach the session's own actions, served by the device.
 fn load_platform(host: &Host) {
-    for meta in tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+    for meta in tilolang_tilo::platform::named_platform_packages(SOURCE)
         .expect("the platform's packages read")
     {
         host.runtime()

@@ -20,7 +20,7 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{InvokeOutcome, UiNode};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform_apps::platform_roots;
+use tilolang_tilo::platform::platform_roots;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";

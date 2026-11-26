@@ -56,7 +56,7 @@ fn app(name: &str) -> tilolang::Compiled {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
     )
     .expect("its ids parse");
-    let imports = tilolang_tilo::platform_apps::named_platform_packages_of(&source)
+    let imports = tilolang_tilo::platform::named_platform_packages_of(&source)
         .expect("the platform's packages read");
     tilolang::compile_package_source(&source, &ids, &imports).expect("the package compiles")
 }
@@ -71,7 +71,7 @@ fn notes(locale: &str) -> (Host, Package) {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the notes package's ids"),
     )
     .expect("its ids parse");
-    let mut imports = tilolang_tilo::platform_apps::named_platform_packages_of(&source)
+    let mut imports = tilolang_tilo::platform::named_platform_packages_of(&source)
         .expect("the platform's packages read");
     imports.push(discussion.meta.clone());
     let compiled = tilolang::compile_package_source(&source, &ids, &imports)
@@ -95,10 +95,10 @@ fn notes(locale: &str) -> (Host, Package) {
 /// The contacts app as it ships, compiled with the platform packages it reads its workspace's
 /// directory through ([`CONTACTS`]), loaded into a host that reads in `locale`.
 fn contacts(locale: &str) -> (Host, Package) {
-    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
+    let metas = tilolang_tilo::platform::platform_packages().expect("the platform packages");
     let directory = metas
         .iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::CONTACTS_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::CONTACTS_APP)
         .expect("the contact directory's package")
         .clone();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/contacts");

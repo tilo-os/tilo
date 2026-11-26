@@ -40,8 +40,7 @@ fn workspace() -> (Host, ViewInstance, String, ModuleHash) {
         || None,
     )
     .unwrap();
-    let metas =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let metas = tilolang_tilo::platform::platform_packages().expect("the platform's packages read");
     for meta in &metas {
         host.runtime()
             .load_foreign(meta.clone())
@@ -141,10 +140,10 @@ fn describe_is_called_on_the_root_the_session_publishes() {
 
 #[test]
 fn every_root_the_session_publishes_resolves_to_its_resource() {
-    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages");
+    let metas = tilolang_tilo::platform::platform_packages().expect("the platform's packages");
     let vision = metas
         .iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::VISION_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::VISION_APP)
         .expect("the image model is a platform package");
     let roots: Vec<(&str, &str)> = vision
         .named_roots

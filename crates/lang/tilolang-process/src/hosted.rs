@@ -65,7 +65,7 @@ mod presses;
 mod used;
 use presses::{PressLine, Presses};
 use tilolang_tilo::instance::PressCalls as _;
-use tilolang_tilo::platform_apps::Roots;
+use tilolang_tilo::platform::Roots;
 use used::{Used, used_apps};
 
 use crate::call::Calls;
@@ -2398,7 +2398,7 @@ impl Hosted {
                     .apps
                     .get(&self.spec.app)
                     .filter(|meta| !meta.prefs.is_empty())
-                    .map(|meta| tilolang_tilo::platform_apps::prefs_address(&meta.app)),
+                    .map(|meta| tilolang_tilo::platform::prefs_address(&meta.app)),
             };
             match &self.shell {
                 Some(shell) => host.runtime().set_foreign_invoker(shell.invoker(apis)),
@@ -4866,15 +4866,14 @@ impl Apis {
             };
             if let Some(target) = target {
                 if let Some(refusal) =
-                    tilolang_tilo::platform_apps::refuse_foreign_prefs(&target.id_string(), &app)
+                    tilolang_tilo::platform::refuse_foreign_prefs(&target.id_string(), &app)
                 {
                     return Some(Invoked::Refused(refusal));
                 }
                 if target.id_string() == own
                     && let Invocation::Edit { field, value, .. } = invocation
                 {
-                    let (verb, arguments) =
-                        tilolang_tilo::platform_apps::prefs_setter(field, value);
+                    let (verb, arguments) = tilolang_tilo::platform::prefs_setter(field, value);
                     return Some(
                         match self.platform.borrow().invoke(own, &verb, &arguments) {
                             Ok(()) => Invoked::Done(tilolang_tilo::runtime::Value::Unit),
@@ -4937,7 +4936,7 @@ fn callees_of(
     // The platform's packages the app uses, which this process has no module for: what the
     // registry's own verbs (`tilo.actions`) are declared by, and what their answers read as.
     for app in &bundle.meta.uses {
-        if let Ok(meta) = tilolang_tilo::platform_apps::platform_package(app) {
+        if let Ok(meta) = tilolang_tilo::platform::platform_package(app) {
             callees.apps.insert(app.clone(), meta);
         }
     }

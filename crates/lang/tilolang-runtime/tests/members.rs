@@ -291,7 +291,7 @@ view two(r: Workspace) {
             // A host reads the workspace's members' resource again whenever anything may have
             // moved it: a view run again for the same members would leave the window a frame to
             // draw on every one, and the host would never rest.
-            let root = tilolang_tilo::platform_apps::workspace_members();
+            let root = tilolang_tilo::platform::workspace_members();
             let people: Vec<serde_json::Value> = membership()
                 .iter()
                 .map(|member| tilolang_runtime::value::to_json(&Value::Actor(member.who())).unwrap())

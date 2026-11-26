@@ -138,10 +138,10 @@ fn every_shipped_package_names_only_types_the_platform_reads() {
 #[test]
 fn the_mcp_server_is_a_platform_package_an_app_reads() {
     let platform =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+        tilolang_tilo::platform::platform_packages().expect("the platform's packages read");
     let mcp = platform
         .into_iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::MCP_SERVER_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::MCP_SERVER_APP)
         .expect("the MCP server is one of the platform's packages");
     let root = mcp
         .named_roots
@@ -177,10 +177,10 @@ fn the_mcp_server_is_a_platform_package_an_app_reads() {
 #[test]
 fn the_workspaces_model_providers_are_a_platform_package_an_app_reads() {
     let platform =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+        tilolang_tilo::platform::platform_packages().expect("the platform's packages read");
     let models = platform
         .into_iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::MODELS_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::MODELS_APP)
         .expect("the model providers are one of the platform's packages");
     let root = models
         .named_roots
@@ -223,10 +223,10 @@ fn the_workspaces_model_providers_are_a_platform_package_an_app_reads() {
 #[test]
 fn the_workspaces_accounts_are_a_platform_package_an_app_reads() {
     let platform =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+        tilolang_tilo::platform::platform_packages().expect("the platform's packages read");
     let accounts = platform
         .into_iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::ACCOUNTS_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::ACCOUNTS_APP)
         .expect("a workspace's accounts are one of the platform's packages");
     let root = accounts
         .named_roots

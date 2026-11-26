@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
         // The device owns them, so the session's package describes none of them, as the phase
         // below holds.
         let device =
-            tilolang_tilo::platform_apps::device_surfaces().expect("the device's surfaces");
+            tilolang_tilo::platform::device_surfaces().expect("the device's surfaces");
         let invite = device
             .iter()
             .find(|surface| surface.kind == "invite")
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
             std::fs::read_to_string(repo().join(session_package::PATH)).expect("the description");
         let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
         let own = format!("{}#", session_package::APP);
-        for (published, ty) in tilolang_tilo::platform_apps::platform_roots()
+        for (published, ty) in tilolang_tilo::platform::platform_roots()
             .iter()
             .filter(|(_, ty)| !ty.starts_with(&own))
         {

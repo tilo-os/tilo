@@ -758,7 +758,7 @@ pub fn settings_packages() -> Result<Vec<tilolang::PackageMeta>, String> {
 /// them, so a pane that reads a record of one would wait for it forever. A test that exercises
 /// a section sets its own reading over this one.
 pub fn settings_sections(host: &Host) {
-    for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+    for (published, ty) in tilolang_tilo::platform::platform_roots() {
         if !(published.starts_with("settings/") || published.contains("/settings/")) {
             continue;
         }
@@ -774,7 +774,7 @@ pub fn settings_sections(host: &Host) {
 /// The reading of the platform resource published at `published` (`settings/notifications`,
 /// `session:people`), as the session hands it to a view.
 pub fn set_reading(host: &Host, published: &str, reading: &serde_json::Value) {
-    let (published, ty) = tilolang_tilo::platform_apps::platform_roots()
+    let (published, ty) = tilolang_tilo::platform::platform_roots()
         .into_iter()
         .find(|(path, _)| path == published)
         .unwrap_or_else(|| panic!("{published} is a root of the platform"));
@@ -961,7 +961,7 @@ impl Pane {
     /// once.
     pub fn install(me: &Actor, source: &str) -> Self {
         let host = Host::new(me.clone(), || None).expect("a host");
-        let metas = tilolang_tilo::platform_apps::named_platform_packages(source)
+        let metas = tilolang_tilo::platform::named_platform_packages(source)
             .expect("the platform's packages read");
         for meta in &metas {
             host.runtime()
@@ -1141,6 +1141,6 @@ pub fn settings_host() -> (Host, tilolang::Compiled) {
     )
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
     (host, compiled)
 }

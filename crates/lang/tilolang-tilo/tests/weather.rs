@@ -13,20 +13,17 @@ fn week() -> Replica {
     let (ada, _) = Replica::on_device("ada", "ada-1", Workspace::new(), &[WEATHER]);
     // The window reads the person's units from Settings, which this host publishes as a session
     // does: the section's defaults, so the view runs rather than waiting on a reading.
-    for meta in tilolang_tilo::platform_apps::named_platform_packages(WEATHER.0).unwrap() {
+    for meta in tilolang_tilo::platform::named_platform_packages(WEATHER.0).unwrap() {
         ada.host.runtime().load_foreign(meta).unwrap();
     }
     let locale = tilolang_runtime::ResourceRef::parse_id(
-        tilolang_tilo::platform_apps::SETTINGS_LOCALE,
+        tilolang_tilo::platform::SETTINGS_LOCALE,
         "so.tilo.settings.sections#Locale",
     )
     .unwrap();
     ada.host
         .runtime()
-        .set_reading(
-            &locale,
-            tilolang_tilo::platform_apps::SETTINGS_LOCALE_DEFAULTS,
-        )
+        .set_reading(&locale, tilolang_tilo::platform::SETTINGS_LOCALE_DEFAULTS)
         .unwrap();
     // Opening the app on this device makes the roots it keeps of its own, as a window does.
     let root = ada.host.root_of(APP).unwrap();

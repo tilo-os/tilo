@@ -4,7 +4,7 @@ use tilo_session_core::surface::KeyModifiers;
 /// The readings the session publishes every turn, empty for each resource no service of this
 /// device serves: a view reads an absent sound, battery or connection as none.
 pub(super) fn publish_platform_roots(link: &SessionLink) {
-    for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+    for (resource, ty) in tilolang_tilo::platform::platform_roots() {
         link.publish_reading(&resource, &ty, serde_json::json!({}));
     }
     publish_time(link, "4:28 PM");
@@ -86,7 +86,7 @@ pub(super) fn shipped_styles() -> serde_json::Value {
 /// The shell styles the device offers, as the session shows them.
 pub(super) fn publish_styles(link: &SessionLink, styles: &serde_json::Value) {
     link.publish_reading(
-        tilolang_tilo::platform_apps::STYLES_APP,
+        tilolang_tilo::platform::STYLES_APP,
         "tilo.styles#Styles",
         serde_json::json!({ "offered": styles }),
     );

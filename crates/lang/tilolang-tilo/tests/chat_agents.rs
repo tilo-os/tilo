@@ -109,7 +109,7 @@ fn open_view(
     let (ada, _) = Replica::access("ada", Workspace::new(), &[CHAT], access);
     // The workspace's package, as a runtime that runs Chat loads it to read the record it
     // publishes: the record is the workspace's, not any app's the window runs.
-    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let metas = tilolang_tilo::platform::platform_packages().expect("the platform reads");
     let workspace = metas
         .iter()
         .find(|meta| meta.app == "tilo.workspace")

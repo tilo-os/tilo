@@ -390,7 +390,7 @@ fn a_package_that_uses_the_platforms_apps_builds() {
     assert!(shell.tapp.is_file());
     assert!(
         apps.iter()
-            .all(|app| app.app != tilolang_tilo::platform_apps::DEVICE_APP),
+            .all(|app| app.app != tilolang_tilo::platform::DEVICE_APP),
         "the device is the platform's, not built here: {apps:?}"
     );
 }

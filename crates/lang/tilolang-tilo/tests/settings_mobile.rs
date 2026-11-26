@@ -81,7 +81,7 @@ impl Pane {
         let host = Host::new(me(), || None).expect("a host");
         // The device's own resources are the platform's packages this package names, loaded
         // here as a window's process loads them: what a read of `device.network` answers from.
-        for meta in tilolang_tilo::platform_apps::named_platform_packages_of(&source)
+        for meta in tilolang_tilo::platform::named_platform_packages_of(&source)
             .expect("the platform's packages read")
         {
             host.runtime()

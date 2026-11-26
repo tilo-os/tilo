@@ -50,7 +50,7 @@ pub(crate) fn shipped(
     ids: &str,
     catalogues: &[(&str, &str)],
 ) -> Result<Compiled, String> {
-    let session = crate::platform_apps::session_package()?;
+    let session = crate::platform::session_package()?;
     let lock = crate::tilolang::IdsLock::parse(ids).map_err(|e| e.to_string())?;
     let source = crate::tilolang::PackageSource::new(
         files
@@ -62,9 +62,9 @@ pub(crate) fn shipped(
             .iter()
             .map(|(locale, text)| ((*locale).to_owned(), (*text).to_owned())),
     );
-    let mut imports: Vec<crate::tilolang::PackageMeta> = crate::platform_apps::platform_packages()?
+    let mut imports: Vec<crate::tilolang::PackageMeta> = crate::platform::platform_packages()?
         .into_iter()
-        .filter(|meta| meta.app != crate::platform_apps::SESSION_APP)
+        .filter(|meta| meta.app != crate::platform::SESSION_APP)
         .collect();
     imports.insert(0, session);
     let main = format!("{dir}/app.tl");

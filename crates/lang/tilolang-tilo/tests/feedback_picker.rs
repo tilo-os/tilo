@@ -36,10 +36,10 @@ fn shell() -> (Host, Asked, ResourceRef) {
     // Only what the picker reads and calls: the windows the device publishes, and the session's
     // package, whose actions the shell's calls name (its `focus` and its `report_problem`
     // shortcut). Both must load, or the test says so.
-    let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
     for app in [
-        tilolang_tilo::platform_apps::DEVICE_APP,
-        tilolang_tilo::platform_apps::SESSION_APP,
+        tilolang_tilo::platform::DEVICE_APP,
+        tilolang_tilo::platform::SESSION_APP,
     ] {
         let meta = platform
             .iter()

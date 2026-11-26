@@ -16,7 +16,7 @@ use serde_json::Value as Json;
 use tilo_service::Services;
 use tilolang_tilo::call::Callees;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform_apps::{SECTIONS_APP, on_device, platform_package, platform_roots};
+use tilolang_tilo::platform::{SECTIONS_APP, on_device, platform_package, platform_roots};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Actor, EditOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::tilolang::{IdsLock, compile_package};
@@ -191,7 +191,7 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
                 .map(|meta| (meta.app.clone(), meta.clone()))
                 .collect(),
             published: metas.iter().map(|meta| meta.app.clone()).collect(),
-            addresses: tilolang_tilo::platform_apps::session_addresses().unwrap(),
+            addresses: tilolang_tilo::platform::session_addresses().unwrap(),
             ..Callees::default()
         },
     });
@@ -496,7 +496,7 @@ fn device(services: &Rc<RefCell<Services>>) -> (Host, tilolang_tilo::tilolang::C
                 .map(|meta| (meta.app.clone(), meta.clone()))
                 .collect(),
             published: metas.iter().map(|meta| meta.app.clone()).collect(),
-            addresses: tilolang_tilo::platform_apps::session_addresses().expect("its addresses"),
+            addresses: tilolang_tilo::platform::session_addresses().expect("its addresses"),
             ..Callees::default()
         },
     });

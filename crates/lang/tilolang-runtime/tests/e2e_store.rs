@@ -346,8 +346,8 @@ action open_app(app_name: Text) {
             rt.set_blobs(device);
             // The platform's own packages: the session the app opens, the device whose language
             // and processor it reads, and the settings its catalogue is read in.
-            let platform = tilolang_tilo::platform_apps::platform_packages()
-                .expect("the platform packages read");
+            let platform =
+                tilolang_tilo::platform::platform_packages().expect("the platform packages read");
             let package = |app: &str| {
                 platform
                     .iter()

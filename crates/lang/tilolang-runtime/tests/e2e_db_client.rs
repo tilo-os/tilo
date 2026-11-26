@@ -487,7 +487,7 @@ mod cases {
             carried,
             "the package's surface is its module's"
         );
-        let platform = tilolang_tilo::platform_apps::platform_packages_of(
+        let platform = tilolang_tilo::platform::platform_packages_of(
             bundle.meta.uses.iter().map(String::as_str),
         )
         .expect("the platform's packages read");

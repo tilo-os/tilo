@@ -57,7 +57,7 @@ pub(super) fn later(dir: &'static str, edit: impl Fn(&str) -> String) -> Bundle 
 /// imports name where no directory holds them: an app is built against those as an install
 /// builds it.
 fn ordered(path: &Path) -> (Vec<std::path::PathBuf>, Vec<tilolang::PackageMeta>) {
-    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
     let dirs =
         tilolang::source::dependency_order_with(path, &[], &tilolang::source::apps_of(&platform))
             .expect("the packages resolve");

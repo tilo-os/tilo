@@ -16,7 +16,7 @@ use ui::application::ApplicationDefinition;
 #[allow(dead_code, reason = "each test binary uses part of the support")]
 pub fn ordered(apps: &[&str]) -> (Vec<PathBuf>, Vec<tilolang::PackageMeta>) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
-    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
     let provided = tilolang::source::apps_of(&platform);
     let mut dirs: Vec<PathBuf> = Vec::new();
     for app in apps {
@@ -52,8 +52,7 @@ pub fn installed(name: &str) -> &'static ApplicationDefinition {
             fixture.display()
         );
         let dir = if shipped.is_dir() { shipped } else { fixture };
-        let platform =
-            tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+        let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
         let provided = tilolang::source::apps_of(&platform);
         let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
             .expect("the packages resolve");

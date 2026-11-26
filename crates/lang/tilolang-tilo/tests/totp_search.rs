@@ -147,7 +147,7 @@ fn seat() -> (Replica, Vault) {
     replica.host.runtime().set_foreign_invoker(vault.clone());
     // The Authenticator's keys are the vault package's to keep, its surface published beside the
     // app: the app compiles against it and calls it as every window does.
-    let mut metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
+    let mut metas = tilolang_tilo::platform::named_platform_packages(SOURCE)
         .expect("the device's surface reads");
     metas.push(
         tilolang_tilo::catalogue::described("so.tilo.vault", "Vault", VAULT)

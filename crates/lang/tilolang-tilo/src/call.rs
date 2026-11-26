@@ -281,7 +281,7 @@ fn published_call(
             .get(action)
             .cloned()
             .filter(|_| {
-                app == crate::platform_apps::SESSION_APP
+                app == crate::platform::SESSION_APP
                     || crate::catalogue::published_verb(app, action) != action.as_str()
             })
             .ok_or_else(|| format!("`{action}` of {app} names no resource it is published on"))?,
@@ -731,7 +731,7 @@ mod tests {
     fn callees() -> Callees {
         let actions = tilolang::actions_meta();
         let invocations =
-            crate::platform_apps::platform_package("tilo.invocations").expect("its surface reads");
+            crate::platform::platform_package("tilo.invocations").expect("its surface reads");
         Callees {
             apps: HashMap::from([
                 (actions.app.clone(), actions),

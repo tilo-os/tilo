@@ -20,7 +20,7 @@ use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{EditOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform_apps::{self, PublishedSource, Reading, Roots};
+use tilolang_tilo::platform::{self, PublishedSource, Reading, Roots};
 
 const SOURCE: &str = r#"app APP "Preferences"
 
@@ -164,7 +164,7 @@ fn service() -> Service {
     SERVICE
         .get_or_init(|| {
             let service = Service::default();
-            platform_apps::install(Box::new(service.clone()));
+            platform::install(Box::new(service.clone()));
             service
         })
         .clone()
@@ -173,7 +173,7 @@ fn service() -> Service {
 /// The app's own preferences as a view of it names them.
 fn preferences(app: &str) -> ResourceRef {
     let ty = format!("{app}#Preferences");
-    ResourceRef::parse_id(&platform_apps::prefs_address(app), ty.as_str()).expect("a resource id")
+    ResourceRef::parse_id(&platform::prefs_address(app), ty.as_str()).expect("a resource id")
 }
 
 /// A bound control's edit, sent to the settings service as the app process sends it: the
@@ -194,10 +194,10 @@ impl Invoker for Setters {
         else {
             return Invoked::Failed("the app writes no field here".to_owned());
         };
-        if let Some(refusal) = platform_apps::refuse_foreign_prefs(&target.id_string(), &self.app) {
+        if let Some(refusal) = platform::refuse_foreign_prefs(&target.id_string(), &self.app) {
             return Invoked::Refused(refusal);
         }
-        let (verb, arguments) = platform_apps::prefs_setter(field, value);
+        let (verb, arguments) = platform::prefs_setter(field, value);
         match self
             .roots
             .borrow()
@@ -308,7 +308,7 @@ tilo_test_env::scenario! {
     {
         let service = service();
         let app_id = "test.prefs.read";
-        let address = platform_apps::prefs_address(app_id);
+        let address = platform::prefs_address(app_id);
         service.publish(&address, json!({ "font_size": 20 }));
         let app = App::new(app_id);
         let moved = app.settle();
@@ -323,7 +323,7 @@ tilo_test_env::scenario! {
     {
         let service = service();
         let app_id = "test.prefs.set";
-        let address = platform_apps::prefs_address(app_id);
+        let address = platform::prefs_address(app_id);
         let app = App::new(app_id);
         app.settle();
         assert_eq!(

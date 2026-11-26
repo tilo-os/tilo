@@ -559,9 +559,9 @@ impl Shell {
         // shows the device without it.
         // One of the device's settings is read on this device.
         let device = tilo_app::framework::settings_device();
-        for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        for (resource, ty) in tilolang_tilo::platform::platform_roots() {
             let reading = services
-                .read(&tilolang_tilo::platform_apps::on_device(&resource, &device))
+                .read(&tilolang_tilo::platform::on_device(&resource, &device))
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             self.link.publish_reading(&resource, &ty, reading);
         }
@@ -581,7 +581,7 @@ impl Shell {
         let listed = self.listings.len();
         wanted.retain(|id, ty| {
             let listing = (id == tilolang_tilo::runtime::foreign::LISTING)
-                .then(|| tilolang_tilo::platform_apps::listing_of(ty))
+                .then(|| tilolang_tilo::platform::listing_of(ty))
                 .flatten();
             let Some((app, _)) = listing else {
                 return true;
@@ -656,8 +656,7 @@ impl Shell {
         for (id, ty) in fresh {
             let reads = self.reads.entry(id.clone()).or_default();
             *reads = reads.saturating_add(1);
-            if let Some(reading) =
-                services.read(&tilolang_tilo::platform_apps::on_device(&id, &device))
+            if let Some(reading) = services.read(&tilolang_tilo::platform::on_device(&id, &device))
             {
                 self.link.publish_reading(&id, &ty, reading);
             }

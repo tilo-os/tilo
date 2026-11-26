@@ -34,7 +34,7 @@ fn reading(host: &Host, doc: &str, ty: &str, json: serde_json::Value) {
 
 /// The type the device package declares for the root `root`: what a reading of it is typed as.
 fn device_type(root: &str) -> String {
-    tilolang_tilo::platform_apps::platform_package("so.tilo.device")
+    tilolang_tilo::platform::platform_package("so.tilo.device")
         .expect("the device package reads")
         .named_roots
         .iter()

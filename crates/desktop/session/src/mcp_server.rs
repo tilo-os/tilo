@@ -2343,7 +2343,7 @@ fn published_reading(
 ) -> Option<serde_json::Value> {
     published_root(app, resource).then(|| {
         services
-            .read(&tilolang_tilo::platform_apps::on_device(
+            .read(&tilolang_tilo::platform::on_device(
                 resource,
                 &tilo_app::framework::settings_device(),
             ))
@@ -2353,10 +2353,10 @@ fn published_reading(
 
 /// Whether the session publishes the resource `resource` as the app `app`'s: the device's,
 /// Settings' and the session's own roots, each a resource the session's services read
-/// ([`tilolang_tilo::platform_apps::platform_roots`]). A resource of any other app is its
+/// ([`tilolang_tilo::platform::platform_roots`]). A resource of any other app is its
 /// record's, read through the record API.
 fn published_root(app: &str, resource: &str) -> bool {
-    tilolang_tilo::platform_apps::platform_roots()
+    tilolang_tilo::platform::platform_roots()
         .iter()
         .any(|(published, ty)| *published == resource && ty.starts_with(&format!("{app}#")))
 }

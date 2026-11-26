@@ -47,9 +47,8 @@ action poke(address: Text, arguments: json.Value) -> Text {
 const APP: &str = "test.registry";
 
 fn bundle() -> Bundle {
-    let used =
-        tilolang_tilo::platform_apps::platform_packages_of(["tilo.actions", "tilo.invocations"])
-            .expect("the platform's registry packages read");
+    let used = tilolang_tilo::platform::platform_packages_of(["tilo.actions", "tilo.invocations"])
+        .expect("the platform's registry packages read");
     let compiled = compile(REGISTRY, &tilolang::IdsLock::new(), &used)
         .unwrap_or_else(|diagnostics| panic!("the registry app compiles: {diagnostics:#?}"));
     Bundle::new(&compiled, [])

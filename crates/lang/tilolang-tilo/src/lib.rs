@@ -51,7 +51,7 @@ pub mod native;
 pub mod origin;
 pub mod page;
 pub mod personal;
-pub mod platform_apps;
+pub mod platform;
 pub mod publish;
 pub mod published;
 pub mod reading;

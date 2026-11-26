@@ -780,7 +780,7 @@ pub fn built(name: &str) -> Vec<App> {
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, App>>,
     > = std::sync::OnceLock::new();
     let platform =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+        tilolang_tilo::platform::platform_packages().expect("the platform's packages read");
     let dirs = tilolang::source::dependency_order_with(
         &app_dir(name),
         &[],
@@ -812,7 +812,7 @@ pub fn built(name: &str) -> Vec<App> {
             let (_, uses) = source.header();
             App {
                 compiled,
-                platform: tilolang_tilo::platform_apps::platform_packages_of(
+                platform: tilolang_tilo::platform::platform_packages_of(
                     uses.iter().map(String::as_str),
                 )
                 .expect("the platform's packages read"),
@@ -879,7 +879,7 @@ impl Uses {
 /// The platform's packages `src` names with `use` that `imports` leaves out: what a real build
 /// compiles a package against besides the packages it is given.
 pub fn platform_named(src: &str, imports: &[tilolang::PackageMeta]) -> Vec<tilolang::PackageMeta> {
-    tilolang_tilo::platform_apps::named_platform_packages(src)
+    tilolang_tilo::platform::named_platform_packages(src)
         .expect("the platform's packages read")
         .into_iter()
         .filter(|package| !imports.iter().any(|given| given.app == package.app))
@@ -1201,7 +1201,7 @@ pub fn stage_members(
     members: Vec<tilolang_runtime::members::Member>,
     reads: Option<Rc<tilolang_runtime::members::Reads>>,
 ) -> bool {
-    let root = tilolang_tilo::platform_apps::workspace_members();
+    let root = tilolang_tilo::platform::workspace_members();
     rt.set_members_root(&root);
     let people: Vec<Json> = members
         .iter()

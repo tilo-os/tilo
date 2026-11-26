@@ -14,7 +14,7 @@ mod cases {
 
     /// The platform's packages, as a host registers them for an app this runtime does not run.
     fn platform() -> Vec<tilolang::PackageMeta> {
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform packages read")
+        tilolang_tilo::platform::platform_packages().expect("the platform packages read")
     }
 
     /// The id of the field `name` of the type `ty` of the platform package `app`: what a record

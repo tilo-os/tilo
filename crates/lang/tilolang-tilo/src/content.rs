@@ -81,10 +81,8 @@ impl Host {
     pub fn reads_in_workspace(&self, target: &crate::runtime::ResourceRef) -> bool {
         target.item.is_none()
             && match target.doc.as_str() {
-                crate::platform_apps::WORKSPACE_MEMBERS => true,
-                crate::platform_apps::WORKSPACE_CONTENT => {
-                    self.inner.content_source.borrow().is_some()
-                }
+                crate::platform::WORKSPACE_MEMBERS => true,
+                crate::platform::WORKSPACE_CONTENT => self.inner.content_source.borrow().is_some(),
                 _ => false,
             }
     }
@@ -110,7 +108,7 @@ impl Host {
 
     /// Give the runtime the workspace's content as this host serves it: the owners' limits,
     /// and the refusals the person at this host reads — their own, their workspace's owners'
-    /// and, on the device that hosts it, the host's person's ([`crate::platform_apps::workspace_content`]).
+    /// and, on the device that hosts it, the host's person's ([`crate::platform::workspace_content`]).
     pub fn give_content(&self, content: &WorkspaceContent) {
         let _ = self.serve_content(content);
     }
@@ -144,10 +142,10 @@ impl Host {
             "hourly_bytes": content.hourly_bytes,
             "refusals": refusals,
         });
-        match self.runtime().set_reading(
-            &crate::platform_apps::workspace_content(),
-            &reading.to_string(),
-        ) {
+        match self
+            .runtime()
+            .set_reading(&crate::platform::workspace_content(), &reading.to_string())
+        {
             Ok(changed) => changed,
             Err(error) => {
                 tracing::error!(%error, "the workspace's content was refused as a reading");

@@ -33,7 +33,7 @@ fn settings() -> Host {
     )
     .expect("a host");
     host.load_compiled(&compiled).expect("the package loads");
-    tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
+    tilolang_tilo::platform::load(&host, &compiled.meta.uses);
     crate::fixtures::settings_sections(&host);
     host
 }

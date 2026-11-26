@@ -210,7 +210,7 @@ fn passwords(doc: Workspace) -> (Replica, Rc<Vault>) {
     // The registry, and the invocation record a call answers with, as the dispatch declares them.
     let mut callees = Callees::default();
     let actions = tilolang::actions_meta();
-    let invocations = tilolang_tilo::platform_apps::platform_package("tilo.invocations")
+    let invocations = tilolang_tilo::platform::platform_package("tilo.invocations")
         .expect("the invocations' surface reads");
     callees.apps.insert(actions.app.clone(), actions);
     callees.apps.insert(invocations.app.clone(), invocations);

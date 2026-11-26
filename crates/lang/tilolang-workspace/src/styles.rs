@@ -338,7 +338,7 @@ mod tests {
     fn a_view_reads_the_styles_where_the_device_publishes_them() {
         assert_eq!(
             tilo_workspace_service::styles::STYLES_APP,
-            tilolang_tilo::platform_apps::STYLES_APP
+            tilolang_tilo::platform::STYLES_APP
         );
     }
 }

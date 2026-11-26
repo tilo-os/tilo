@@ -4,7 +4,7 @@
 
 use tilolang_runtime::Actor;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::platform_apps;
+use tilolang_tilo::platform;
 
 /// A host with no workspace: the code's authorship decides, as a window's does.
 fn host() -> Host {
@@ -23,19 +23,19 @@ fn host() -> Host {
 fn every_platform_package_loads_and_the_session_is_one_package() {
     let host = host();
     // The session's description as the shell and the keyboard compile against it.
-    let session = platform_apps::session_package().expect("the session's package reads");
-    assert_eq!(session.app, platform_apps::SESSION_APP);
+    let session = platform::session_package().expect("the session's package reads");
+    assert_eq!(session.app, platform::SESSION_APP);
     host.runtime()
         .load_foreign(session)
         .expect("the session's own package loads");
     // Every platform package a window names, loaded where a host already holds the session.
-    let apps: Vec<String> = platform_apps::platform_packages()
+    let apps: Vec<String> = platform::platform_packages()
         .expect("the platform's packages read")
         .into_iter()
         .map(|meta| meta.app)
         .collect();
     assert!(!apps.is_empty(), "the platform publishes packages");
-    let loaded = platform_apps::load(&host, &apps);
+    let loaded = platform::load(&host, &apps);
     assert_eq!(
         loaded, apps,
         "every platform package loads: a package left out is one a view reading it cannot open"
@@ -47,7 +47,7 @@ fn every_platform_package_loads_and_the_session_is_one_package() {
 /// whichever it met first.
 #[test]
 fn every_platform_package_declares_each_type_once() {
-    for meta in platform_apps::platform_packages().expect("the platform's packages read") {
+    for meta in platform::platform_packages().expect("the platform's packages read") {
         let mut seen = std::collections::BTreeSet::new();
         for ty in &meta.types {
             assert!(

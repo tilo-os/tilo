@@ -59,7 +59,7 @@ impl Apps {
                 let lock = tilolang::IdsLock::parse(ids).unwrap();
                 // A package compiles against the platform packages its `use`s name, as the
                 // host's own built-ins do.
-                let mut imports = tilolang_tilo::platform_apps::named_platform_packages(source)
+                let mut imports = tilolang_tilo::platform::named_platform_packages(source)
                     .expect("the platform's packages read");
                 imports.extend(metas.iter().cloned());
                 let compiled = tilolang::compile_package(source, &lock, &imports).unwrap();
@@ -126,13 +126,12 @@ impl TaskApi for Apps {
         // The session publishes a platform root no service of this device serves (no battery, no
         // Bluetooth) empty, as the shell's own parts are handed it: a program reads its fields as
         // absent and goes on.
-        let platform =
-            tilolang_tilo::platform_apps::platform_roots()
-                .iter()
-                .any(|(published, ty)| {
-                    tilolang_runtime::value::flat_id(published) == target.id_string()
-                        && *ty == target.ty
-                });
+        let platform = tilolang_tilo::platform::platform_roots()
+            .iter()
+            .any(|(published, ty)| {
+                tilolang_runtime::value::flat_id(published) == target.id_string()
+                    && *ty == target.ty
+            });
         Ok(platform.then(|| json!({})))
     }
 

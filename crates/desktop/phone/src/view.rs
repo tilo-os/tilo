@@ -64,7 +64,7 @@ impl PhoneView {
         waker: Waker,
     ) -> Result<Self, String> {
         let compiled = tilolang_tilo::shell::compile()?;
-        let platform = tilolang_tilo::platform_apps::platform_packages()?;
+        let platform = tilolang_tilo::platform::platform_packages()?;
         let to_open = Rc::new(RefCell::new(None));
         let (app_end, window_end) = pair();
         let mut instance = Instance::new(
@@ -361,7 +361,7 @@ impl Origin for PhoneOrigin {
         });
         let apps = serde_json::json!({ "installed": seen.apps });
         for (id, ty, reading) in [(DEVICES, "Devices", devices), (APPS, "Apps", apps)] {
-            let ty = format!("{}#{ty}", tilolang_tilo::platform_apps::DEVICE_APP);
+            let ty = format!("{}#{ty}", tilolang_tilo::platform::DEVICE_APP);
             let Some(target) = ResourceRef::parse_id(id, &ty) else {
                 tracing::error!(id, "the phone's reading names no resource");
                 continue;

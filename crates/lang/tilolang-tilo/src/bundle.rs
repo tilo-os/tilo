@@ -293,7 +293,7 @@ impl Bundle {
             // (`settings/apps/<app>`): an app's preferences there would claim the section's
             // record, so the package is refused rather than installed over it.
             if !meta.prefs.is_empty()
-                && let Some(section) = crate::platform_apps::section_keeping(&meta.app)
+                && let Some(section) = crate::platform::section_keeping(&meta.app)
             {
                 return Err(BundleError::PrefsOwned {
                     app: meta.app.clone(),

@@ -57,7 +57,7 @@ impl FilesHost for Disk {
 /// The shell's package over a host that runs it, on a device with a drive mounted.
 fn shell() -> Host {
     let host = Host::new(ada(), || None).unwrap();
-    for meta in tilolang_tilo::platform_apps::platform_packages().unwrap() {
+    for meta in tilolang_tilo::platform::platform_packages().unwrap() {
         let app = meta.app.clone();
         host.runtime()
             .load_foreign(meta)

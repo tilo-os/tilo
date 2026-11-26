@@ -49,20 +49,20 @@ fn shell(name: &str) -> Host {
     let source = tilolang::PackageSource::new(files);
     let ids = tilolang::IdsLock::parse(include_str!("../../../../apps/tl/shell/app.ids"))
         .expect("the shell's ids parse");
-    let mut imports: Vec<tilolang::PackageMeta> = tilolang_tilo::platform_apps::platform_packages()
+    let mut imports: Vec<tilolang::PackageMeta> = tilolang_tilo::platform::platform_packages()
         .expect("the platform's packages read")
         .into_iter()
-        .filter(|meta| meta.app != tilolang_tilo::platform_apps::SESSION_APP)
+        .filter(|meta| meta.app != tilolang_tilo::platform::SESSION_APP)
         .collect();
     imports.insert(
         0,
-        tilolang_tilo::platform_apps::session_package().expect("the session's package reads"),
+        tilolang_tilo::platform::session_package().expect("the session's package reads"),
     );
     let compiled = tilolang::compile_package_source(&source, &ids, &imports)
         .unwrap_or_else(|diagnostics| panic!("the shell: {diagnostics:#?}"));
     let host = Host::new(ada(), || None).unwrap();
     host.set_words(Toolkit);
-    for meta in tilolang_tilo::platform_apps::platform_packages().unwrap() {
+    for meta in tilolang_tilo::platform::platform_packages().unwrap() {
         let app = meta.app.clone();
         host.runtime()
             .load_foreign(meta)

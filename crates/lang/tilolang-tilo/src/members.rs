@@ -356,10 +356,7 @@ impl Host {
             .collect();
         let reading = serde_json::json!({ "people": people });
         self.runtime()
-            .set_reading(
-                &crate::platform_apps::workspace_members(),
-                &reading.to_string(),
-            )
+            .set_reading(&crate::platform::workspace_members(), &reading.to_string())
             .unwrap_or_else(|error| {
                 tracing::error!(%error, "the workspace's members were refused as a reading");
                 false
@@ -385,7 +382,11 @@ impl Host {
                         let named = row.get("actor").unwrap_or(row);
                         match tilolang_runtime::value::from_json(named) {
                             Ok(tilolang_runtime::Value::Actor(who)) => Some(who),
-                            _ => serde_json::from_value::<Actor>(named.clone()).ok(),
+                            _ => tilo_failure::ignored!(
+                                "a row that names no actor is no member: the list holds the rows that do",
+                                serde_json::from_value::<Actor>(named.clone())
+                            )
+                            .ok(),
                         }
                     })
                     .collect()

@@ -77,11 +77,10 @@ fn mailbox() -> (Replica, ResourceRef) {
         || None,
     )
     .expect("a host");
-    let platform =
-        tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
+    let platform = tilolang_tilo::platform::platform_packages().expect("the platform packages");
     let directory = platform
         .iter()
-        .find(|meta| meta.app == tilolang_tilo::platform_apps::CONTACTS_APP)
+        .find(|meta| meta.app == tilolang_tilo::platform::CONTACTS_APP)
         .expect("the contact directory's package")
         .clone();
     host.runtime()
