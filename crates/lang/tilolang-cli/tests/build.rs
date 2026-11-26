@@ -1,5 +1,6 @@
 //! `tilolang build`: every package of a build is a signed Tilo app of its own.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use tilo_app_package::manifest::{Manifest, Platform};
@@ -525,9 +526,10 @@ fn bloat_locale_past_app_limit(package_dir: &Path) {
     let mut catalogue = String::new();
     let mut entry = 0_u64;
     while (catalogue.len() as u64) <= tilo_app_package::MAX_APP_TAPP_BYTES {
-        catalogue.push_str(&format!(
-            "zz-word-{entry} = a word of the app that nobody typed in it yet\n"
-        ));
+        let _ = writeln!(
+            catalogue,
+            "zz-word-{entry} = a word of the app that nobody typed in it yet"
+        );
         entry = entry.saturating_add(1);
     }
     std::fs::write(locale_dir.join("zz-ZZ.ftl"), catalogue).unwrap();
