@@ -1092,6 +1092,13 @@ struct WorkspacesInner {
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
+    /// Whether the part that served on this service has ended: every copy of it a task still
+    /// holds builds, numbers and keeps no change any more, and the part that starts next opens
+    /// these stores as the device's one writer ([`Workspaces::stop`]).
+    stopped: std::sync::atomic::AtomicBool,
+    /// Moves when [`Self::stopped`] becomes true, so a write waiting on the workspaces ends
+    /// rather than wait for a part that is gone ([`Workspaces::stops_changed`]).
+    stops: tokio::sync::watch::Sender<bool>,
     /// The mode the host runs under, when its operator offers a kill switch: what its entry
     /// admits follows it ([`Workspaces::hold_mode`]).
     mode: std::sync::RwLock<Option<Arc<mode::HostMode>>>,
@@ -1600,6 +1607,8 @@ impl Workspaces {
                 #[cfg(any(test, feature = "test-support"))]
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 draining: std::sync::atomic::AtomicBool::new(false),
+                stopped: std::sync::atomic::AtomicBool::new(false),
+                stops: tokio::sync::watch::channel(false).0,
                 mode: std::sync::RwLock::new(None),
                 store,
                 direct,
@@ -1775,6 +1784,38 @@ impl Workspaces {
         self.inner
             .draining
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Stop building, numbering and keeping changes: the part that served on this service has
+    /// ended and the part that starts next opens these same stores as the device's one writer.
+    ///
+    /// Every copy of these workspaces a task still holds — the person's services run on a
+    /// runtime that outlives the part, so one that waited there is still holding one — answers
+    /// no workspace after this: a change is never built and numbered here while the next part
+    /// numbers its own under the same device key. Nothing undoes it; the next part opens a
+    /// service of its own.
+    pub fn stop(&self) {
+        if self
+            .inner
+            .stopped
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        self.inner.stops.send_replace(true);
+    }
+
+    /// Whether the part that served on this service has ended ([`Workspaces::stop`]).
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.inner.stopped.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Moves when this service stops ([`Workspaces::stop`]), so a write that waits for a
+    /// workspace ends rather than wait for a part that is gone.
+    #[must_use]
+    pub fn stops_changed(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.inner.stops.subscribe()
     }
 
     /// Hold the operator's kill switch: from now on the entry admits nobody new while the mode
@@ -2602,6 +2643,14 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<Arc<AsyncMutex<HostedWorkspace>>, CollaborationError> {
+        // A copy of the service the part that served on it left behind builds nothing more: a
+        // change numbered here would take a number the part that starts next gives one of its
+        // own, and the workspace would keep two changes at one (device, number) for good.
+        if self.stopped() {
+            return Err(CollaborationError::new(
+                "this device's workspace service has stopped; its next part holds it",
+            ));
+        }
         let held = self.inner.workspaces.lock().await.get(workspace).cloned();
         if let Some(held) = held {
             return Ok(held);
@@ -3217,6 +3266,13 @@ impl Workspaces {
     /// be carried is carried by the next settle; a device that links later is
     /// sent the workspace as it stands.
     async fn settle(&self, workspace: &mut HostedWorkspace) -> Result<(), String> {
+        // A governance change made here is a change of this device's, numbered beside the next
+        // part's: a service the part that served on it ended builds none.
+        if self.stopped() {
+            return Err(
+                "this device's workspace service has stopped; its next part holds it".to_owned(),
+            );
+        }
         let host = &self.inner.host;
         // This host opened the workspace: the receipts of the calls it admits there are signed
         // as its device from now on, and no other workspace's are unless it opened that one too.

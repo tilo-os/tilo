@@ -72,13 +72,20 @@ pub async fn when_held(workspaces: &Workspaces) -> bool {
     // Subscribed before the first look, so a change between the look and the wait wakes it.
     let mut governance = workspaces.governance_changes();
     let mut holds = workspaces.holds_changed();
+    let mut stops = workspaces.stops_changed();
     loop {
+        // The part this copy was made by has ended: the part that starts next holds the
+        // workspace, and a change written here would be numbered apart from its own.
+        if workspaces.stopped() || *stops.borrow() {
+            return false;
+        }
         if holds_person_workspace(workspaces).await {
             return true;
         }
         let stopped = tokio::select! {
             changed = governance.recv() => matches!(changed, Err(RecvError::Closed)),
             changed = holds.changed() => changed.is_err(),
+            changed = stops.changed() => changed.is_err() || *stops.borrow(),
             () = tokio::time::sleep(LOOK_AGAIN) => false,
         };
         if stopped {

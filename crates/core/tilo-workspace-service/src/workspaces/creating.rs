@@ -171,6 +171,11 @@ impl super::Workspaces {
     ) -> Result<WorkspaceSummary, String> {
         // A device confined to one workspace makes none: it would hold the new one's keys.
         super::member::holds_copies(&self.signing_device().cert)?;
+        if self.stopped() {
+            return Err(
+                "this device's workspace service has stopped; its next part holds it".to_owned(),
+            );
+        }
         // A workspace placed under an identity waits for another placing the
         // same one, so two devices placing it at once create it once. Others
         // are made side by side, a few at a time: making one writes and syncs

@@ -892,8 +892,14 @@ impl WorkspaceService {
     /// in memory. A start replays what the server retains, but it takes a
     /// write only into a record its host already keeps
     /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
+    ///
+    /// The workspaces stop building changes with it
+    /// ([`crate::workspaces::Workspaces::stop`]): the next part opens these stores as the
+    /// device's one writer, and a copy of this one that a task still holds on a runtime outliving
+    /// the part would otherwise number a change of its own beside the next part's.
     pub async fn shutdown(&self) {
         self.workspaces.keep_what_was_followed().await;
+        self.workspaces.stop();
         self.sessions.shutdown();
     }
 }

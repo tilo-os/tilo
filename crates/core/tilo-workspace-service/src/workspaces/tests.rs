@@ -26,6 +26,7 @@ mod link_windows;
 mod lookup;
 mod naming;
 mod one_copy_two_writers;
+mod stopped_writer;
 mod replacing;
 mod unreadable_workspace;
 

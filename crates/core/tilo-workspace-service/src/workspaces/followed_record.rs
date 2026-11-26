@@ -62,6 +62,7 @@ impl Workspaces {
         // Subscribed before the first read, so a write between the two is read again.
         let (mut writes, mut governance) = (self.document_writes(), self.governance_changes());
         let mut holds = self.holds_changed();
+        let mut stops = self.stops_changed();
         let workspaces = self.downgrade();
         let (id, app, record) = (workspace.to_owned(), app.to_owned(), record.to_owned());
         tokio::spawn(async move {
@@ -69,6 +70,11 @@ impl Workspaces {
                 let Some(held) = workspaces.upgrade() else {
                     return;
                 };
+                // The part this copy was made by has ended: what it read is not kept current
+                // by it any more, and the part that starts next reads its own.
+                if held.stopped() || *stops.borrow() {
+                    return;
+                }
                 // A record not held yet, or whose keys are on their way, stays as last read.
                 if let Ok(read) = held.resource_document(&id, &app, &record).await {
                     let read: Saved = read.map(Arc::from);
@@ -94,6 +100,7 @@ impl Workspaces {
                             Err(RecvError::Closed) => break false,
                         },
                         held = holds.changed() => break held.is_ok(),
+                        changed = stops.changed() => break changed.is_err() || *stops.borrow(),
                         () = tell.closed() => break false,
                     }
                 };

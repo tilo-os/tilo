@@ -938,6 +938,11 @@ impl Workspaces {
         asked: bool,
     ) -> Result<WorkspaceId, String> {
         holds_copies(&device.cert)?;
+        if self.stopped() {
+            return Err(
+                "this device's workspace service has stopped; its next part holds it".to_owned(),
+            );
+        }
         let (address, _) =
             WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
         if hosted_by(hint, &device.cert.device_public_key) {
