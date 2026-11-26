@@ -525,6 +525,31 @@ pub struct PresenceCtx {
     surface: Option<String>,
 }
 
+/// Where the carets and name tags noted so far in this frame end
+/// ([`PresenceCtx::notes_boundary`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NotesBoundary {
+    marks: usize,
+    tags: usize,
+}
+
+/// The peers' carets, selections and name tags one drawing noted, in scene coordinates: what a
+/// replay of that drawing notes again moved with it, so a reader is told each peer where the frame
+/// shows them.
+#[derive(Clone, Debug, Default)]
+pub struct DrawnNotes {
+    marks: Vec<PresenceMark>,
+    tags: Vec<CaretTag>,
+}
+
+impl DrawnNotes {
+    /// Whether this drawing noted nothing a replay has to move.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.marks.is_empty() && self.tags.is_empty()
+    }
+}
+
 impl PresenceCtx {
     /// True when the supplied rect falls entirely outside the active
     /// viewport, so a widget can skip its draw. Off-viewport widgets MUST
@@ -642,6 +667,56 @@ impl PresenceCtx {
 
     pub fn note_presence_mark(&self, mark: PresenceMark) {
         self.presence_marks.borrow_mut().push(mark);
+    }
+
+    /// Where the notes of the frame being drawn end now: a widget that keeps a drawing of its own
+    /// reads the notes it adds from here ([`Self::notes_since`]), so a replay of that drawing
+    /// moves them with it ([`Self::note_notes_moved`]).
+    #[must_use]
+    pub fn notes_boundary(&self) -> NotesBoundary {
+        NotesBoundary {
+            marks: self.presence_marks.borrow().len(),
+            tags: self.caret_tags.borrow().len(),
+        }
+    }
+
+    /// The carets and tags one drawing noted since `boundary`.
+    #[must_use]
+    pub fn notes_since(&self, boundary: NotesBoundary) -> DrawnNotes {
+        DrawnNotes {
+            marks: self
+                .presence_marks
+                .borrow()
+                .get(boundary.marks..)
+                .unwrap_or_default()
+                .to_vec(),
+            tags: self
+                .caret_tags
+                .borrow()
+                .get(boundary.tags..)
+                .unwrap_or_default()
+                .to_vec(),
+        }
+    }
+
+    /// Note the carets and tags a replayed drawing holds again, moved by `moved` as the drawing
+    /// itself was: a reader is told a peer where the frame shows them.
+    pub fn note_notes_moved(&self, notes: &DrawnNotes, moved: vello::kurbo::Affine) {
+        if notes.is_empty() {
+            return;
+        }
+        for mark in &notes.marks {
+            self.note_presence_mark(PresenceMark {
+                rect: moved.transform_rect_bbox(mark.rect),
+                ..mark.clone()
+            });
+        }
+        for tag in &notes.tags {
+            self.note_caret_tag(CaretTag {
+                rect: moved.transform_rect_bbox(tag.rect),
+                ..tag.clone()
+            });
+        }
     }
 
     /// The caret just noted says, in the words drawn beside it, what its peer
@@ -1743,18 +1818,29 @@ impl PresenceCtx {
                 }
             }
             Left => {
-                // `Left` fires on mouse leaving the window viewport, not the
-                // peer leaving — caret/selection must keep rendering. Do not
-                // call `unregister_peer` here: that tears down the whole
-                // presence record on every mouse-leave. True disconnect
-                // arrives via the socket close path instead.
+                // `Left` withdraws what the peer said under this key: a pointer leaving the
+                // window says it under its pointer key, and a closed connection says it under
+                // every key it said (the broker's presence channel names both). What the peer
+                // said under another key — its caret in a field, its selection — keeps
+                // rendering. A member gone without a word is torn down by `unregister_peer`.
                 let uid = member.clone();
                 for list in self.pointers.values_mut() {
                     list.retain(|(u, _)| u != &uid);
                 }
                 self.pointer_glides.retain(|(_, u), _| u != &uid);
                 self.remove_remote_cursor(&member);
-                let _ = key;
+                if let Some(list) = self.here.get_mut(&key) {
+                    list.retain(|u| u != &uid);
+                }
+                self.here.retain(|_, list| !list.is_empty());
+                if let Some(list) = self.carets.get_mut(&key) {
+                    list.retain(|(u, _)| u != &uid);
+                }
+                if let Some(list) = self.selections.get_mut(&key) {
+                    list.retain(|(u, _)| u != &uid);
+                }
+                self.typing.retain(|(u, at), _| !(u == &uid && at == &key));
+                self.composing.remove(&(key, member));
             }
         }
         RemotePresenceEffect::None
