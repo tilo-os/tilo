@@ -1952,17 +1952,11 @@ pub async fn mark_root_holder(
     let signature = root
         .sign_digest(&root_holder_digest(&device))
         .map_err(|error| error.to_string())?;
-    // The entry that lists this device and the mark that it keeps the root are one write: two
-    // founded the record again from what each read before the other was carried, at one author's
-    // first number.
-    super::apply_actions_on(
+    keep(workspaces, cert).await?;
+    super::apply(
         workspaces,
-        &super::workspace_id(workspaces),
         DEVICES,
-        vec![
-            Devices::keeping(cert)?,
-            Devices::MARK_ROOT_HOLDER.with((hex::encode(device), hex::encode(signature))),
-        ],
+        Devices::MARK_ROOT_HOLDER.with((hex::encode(device), hex::encode(signature))),
     )
     .await
 }
