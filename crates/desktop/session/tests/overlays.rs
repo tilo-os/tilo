@@ -26,7 +26,6 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop_model::{Layout, WindowGroup, WindowWidth};
 use tilo_session::shell::state::{FOCUS, WINDOW_MENU};
 use tilo_session::{Options, Session};
-use tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX;
 use tilo_session_core::shell::OVERLAYS;
 
 /// One display's refresh: how often the session asks its clients for their next frame.
@@ -427,35 +426,57 @@ fn the_sessions_verb_raises_and_takes_down_the_surfaces_the_chrome_opens() {
     assert!(parts(&session).is_empty());
 }
 
+/// Where the bar the shell laid out ends, its lowest edge: popovers stand under it.
+fn bar_bottom(session: &mut Session) -> f64 {
+    crate::common::wait_for(session, "the top bar", |session| {
+        session.step(REFRESH).expect("a turn of the session");
+        session
+            .controls()
+            .into_iter()
+            .filter(|control| control.name == "Top bar")
+            .map(|control| control.rect.1 + control.rect.3)
+            .reduce(f64::max)
+    })
+}
+
+/// The bar's workspace chip, named for the workspace in front (the layout's "Work"), once the
+/// shell shows it in the bar.
+fn workspace_chip(session: &mut Session) -> (f64, f64) {
+    let bar = bar_bottom(session);
+    crate::common::wait_for(session, "the workspace chip", |session| {
+        session.step(REFRESH).expect("a turn of the session");
+        let (x, y, w, h) = crate::common::on_screen(session, "Work")?;
+        (y + h <= bar).then_some((x + w / 2.0, y + h / 2.0))
+    })
+}
+
+/// Run frames until the workspace menu the chip opens is shown, or gone.
+#[track_caller]
+fn until_workspace_menu(session: &mut Session, shown: bool) {
+    crate::common::until(session, "the workspace menu", |session| {
+        session.step(REFRESH).expect("a turn of the session");
+        crate::common::on_screen(session, "New workspace").is_some() == shown
+    });
+}
+
 #[test]
-fn a_press_on_the_shell_closes_the_workspace_menu_the_chrome_hangs_off_its_chip() {
-    // The chrome draws the menu and says where it stands; a press on the shell never reaches the
-    // chrome drawn over it, so the session's reader of presses outside is what closes the menu.
+fn a_press_on_the_shell_closes_the_workspace_menu_its_chip_opened() {
+    // The chip opens its menu in the shell; a press on the shell outside it closes it, and the chip
+    // then opens it again rather than closing one still there under the person's finger.
     let mut session = session();
-    let chip = (86.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
+    let chip = workspace_chip(&mut session);
     press(&mut session, chip.0, chip.1);
-    assert_eq!(parts(&session), ["workspace-menu"], "the chip opened it");
-    // Its release comes up before the chrome takes its next pass, as a quick click's does.
+    until_workspace_menu(&mut session, true);
     quick_click(&mut session, 100.0, 400.0);
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(
-        parts(&session).is_empty(),
-        "the press on the shell closed it"
-    );
-    // And the menu it draws followed the stack: the chip opens it again rather than closing the one
-    // still there under the person's finger.
+    until_workspace_menu(&mut session, false);
     press(&mut session, chip.0, chip.1);
-    assert_eq!(
-        parts(&session),
-        ["workspace-menu"],
-        "the chip opens it again"
-    );
+    until_workspace_menu(&mut session, true);
 }
 
 #[test]
 fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     let mut session = session();
-    let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
+    let bar = bar_bottom(&mut session);
 
     open(&mut session, "quick-settings", None);
     let (x, y, w, h) = place(&session, "quick-settings");
