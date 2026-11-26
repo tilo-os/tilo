@@ -1012,7 +1012,12 @@ impl HostedWorkspace {
             .into_iter()
             .map(|(_, stamp)| stamp)
             .collect();
-        let origin = self.origin_leave(doc, author, &stamps, false);
+        let origin = if stamps.is_empty() {
+            None
+        } else {
+            let ground = self.origin_ground(changes.iter().map(|change| (doc, change)));
+            self.origin_leave(author, &stamps, false, &ground)
+        };
         // Every other change is its author's to make: the grant the governance it was written
         // under gives them at its verb and each kind it touches, read once for the batch.
         let grants = self.verb_grants(app, doc, envelope, author, now);
@@ -1064,17 +1069,17 @@ impl HostedWorkspace {
         Ok(applied)
     }
 
-    /// What an origin's write in `doc` is judged by, read once for `changes`: the devices that
-    /// may author it, each with the access it wrote under, and where every record of the document
-    /// stands. `None` when the write carries no change of the origin's.
+    /// What an origin's write is judged by, read once for `stamps`: the devices that may author
+    /// it, each with the access it wrote under, where the records it touches and the records above
+    /// them stand (`places`, read once for the batch), and the outside kind each kind declares.
+    /// `None` when the write carries no change of the origin's.
     fn origin_leave(
         &self,
-        doc: &str,
         author: [u8; 32],
         stamps: &[collab_types::Stamp],
         carried: bool,
+        ground: &OriginGround,
     ) -> Option<OriginLeave> {
-        use tilo_lock::MutexRecover as _;
         if stamps.is_empty() {
             return None;
         }
@@ -1091,30 +1096,25 @@ impl HostedWorkspace {
                 writers.insert(device, access);
             }
         }
-        let mut leave = OriginLeave {
+        Some(OriginLeave {
             writers,
-            records: std::collections::HashMap::new(),
-            origins: std::collections::HashMap::new(),
+            places: std::sync::Arc::clone(&ground.places),
+            origins: std::sync::Arc::clone(&ground.origins),
             carried,
-        };
+        })
+    }
+
+    /// What every origin's leave of `changes` reads, read once for the batch.
+    fn origin_ground<'a>(
+        &self,
+        changes: impl IntoIterator<Item = (&'a str, &'a AmChange)>,
+    ) -> OriginGround {
+        use tilo_lock::MutexRecover as _;
         let store = self.resources.store.lock_recover();
-        for ty in &store.schema().types {
-            leave.origins.insert(ty.name.clone(), ty.origin.clone());
+        OriginGround {
+            places: std::sync::Arc::new(origin_places(&store, changes)),
+            origins: std::sync::Arc::new(declared_origins(&store)),
         }
-        for (kind, id) in store.index().held(doc) {
-            leave.records.insert(
-                id.to_owned(),
-                RecordPlace {
-                    kind: kind.to_owned(),
-                    parent: store
-                        .index()
-                        .get(kind, id)
-                        .and_then(|row| row.parent.clone()),
-                },
-            );
-        }
-        drop(store);
-        Some(leave)
     }
 
     /// The origin's leave for each document the `writes` touch by the origin's write, read once
@@ -1133,10 +1133,18 @@ impl HostedWorkspace {
                 stamps.entry(write.doc.clone()).or_default().push(stamp);
             }
         }
+        if stamps.is_empty() {
+            return std::collections::HashMap::new();
+        }
+        let ground = self.origin_ground(
+            writes
+                .iter()
+                .map(|write| (write.doc.as_str(), &write.change)),
+        );
         stamps
             .into_iter()
             .filter_map(|(doc, stamps)| {
-                self.origin_leave(&doc, author, &stamps, carried)
+                self.origin_leave(author, &stamps, carried, &ground)
                     .map(|leave| (doc, leave))
             })
             .collect()
@@ -2187,16 +2195,22 @@ impl Workspaces {
         if !in_place {
             return Ok(false);
         }
-        let doc = hosted
-            .resources
-            .store_mut()
-            .index()
-            .get(kind, id)
-            .map(|held| held.doc.clone())
-            .unwrap_or_default();
-        let leave = (stamp.verb == collab_types::Stamp::ORIGIN_VERB)
-            .then(|| hosted.origin_leave(&doc, device.device(), std::slice::from_ref(stamp), true))
-            .flatten();
+        let leave = if stamp.verb == collab_types::Stamp::ORIGIN_VERB {
+            use tilo_lock::MutexRecover as _;
+            // The record stands where the store holds it: its place, and each record above it,
+            // are what the origin's write is held to.
+            let store = hosted.resources.store.lock_recover();
+            let mut places = std::collections::HashMap::new();
+            chain_places(&store, &mut places, kind, id);
+            let ground = OriginGround {
+                places: std::sync::Arc::new(places),
+                origins: std::sync::Arc::new(declared_origins(&store)),
+            };
+            drop(store);
+            hosted.origin_leave(device.device(), std::slice::from_ref(stamp), true, &ground)
+        } else {
+            None
+        };
         let admit = |proposal: &tilo_resource_store::Proposal<'_>| {
             proposal
                 .stamp
@@ -3244,13 +3258,22 @@ struct RecordPlace {
     parent: Option<String>,
 }
 
+/// What every origin's leave of one batch reads: where each record it touches stands, and each
+/// record above it, and the outside kind each kind declares. Shared by each document's leave.
+struct OriginGround {
+    places: std::sync::Arc<std::collections::HashMap<String, RecordPlace>>,
+    origins: std::sync::Arc<std::collections::HashMap<String, Option<String>>>,
+}
+
 /// What an origin's write in one document is judged by, read once for the write: the access of
-/// every device it may be authored by, where each record of the document stands, and the outside
-/// kind each kind declares.
+/// every device it may be authored by, where each record it touches stands, and the outside kind
+/// each kind declares.
 struct OriginLeave {
     writers: std::collections::HashMap<[u8; 32], tilo_action_policy::MemberAccess>,
-    records: std::collections::HashMap<String, RecordPlace>,
-    origins: std::collections::HashMap<String, Option<String>>,
+    /// Where each record the write touches stands, and each record above it, by id: read once for
+    /// the batch and shared by each document's leave.
+    places: std::sync::Arc<std::collections::HashMap<String, RecordPlace>>,
+    origins: std::sync::Arc<std::collections::HashMap<String, Option<String>>>,
     /// This device carried the write for the caller it certified, as a command over its own
     /// route: its stamp names the caller, and the device signed nothing of their own.
     carried: bool,
@@ -3310,8 +3333,8 @@ impl OriginLeave {
     }
 
     /// Whether the record `id` the change `touch` makes stands in an origin account's place: it
-    /// is nested, through the records the document holds and the records the change makes, in a
-    /// record of a kind an origin keeps (`imap.account`, `caldav.account`).
+    /// is nested, through the records it touches and every record above them, in a record of a
+    /// kind an origin keeps (`imap.account`, `caldav.account`).
     fn in_place(
         &self,
         id: &str,
@@ -3319,12 +3342,12 @@ impl OriginLeave {
         touched: &collab_types::touch::Touched,
     ) -> bool {
         let mut kind = self
-            .records
+            .places
             .get(id)
             .map(|place| place.kind.clone())
             .or_else(|| touch.kind.clone());
         let mut parent = self
-            .records
+            .places
             .get(id)
             .map_or_else(|| touch.parent.clone(), |place| place.parent.clone());
         for _ in 0..64 {
@@ -3342,17 +3365,181 @@ impl OriginLeave {
             };
             let made = touched.resources.get(&next);
             kind = self
-                .records
+                .places
                 .get(&next)
                 .map(|place| place.kind.clone())
                 .or_else(|| made.and_then(|touch| touch.kind.clone()));
-            parent = self.records.get(&next).map_or_else(
+            parent = self.places.get(&next).map_or_else(
                 || made.and_then(|touch| touch.parent.clone()),
                 |place| place.parent.clone(),
             );
         }
         false
     }
+}
+
+/// The kind each type declares as the outside service it is kept in step with, by kind.
+fn declared_origins(store: &Store) -> std::collections::HashMap<String, Option<String>> {
+    store
+        .schema()
+        .types
+        .iter()
+        .map(|ty| (ty.name.clone(), ty.origin.clone()))
+        .collect()
+}
+
+/// The place of the record `id`, whichever document holds it: its kind and the record it is
+/// nested in.
+fn indexed_place(store: &Store, id: &str) -> Option<RecordPlace> {
+    let kind = store.index().kind_anywhere(id)?;
+    let parent = store
+        .index()
+        .get(&kind, id)
+        .and_then(|row| row.parent.clone());
+    Some(RecordPlace { kind, parent })
+}
+
+/// Every record's place, from the index alone: what an origin's leave reads where a change cannot
+/// be read against the document that holds it.
+fn all_places(store: &Store) -> std::collections::HashMap<String, RecordPlace> {
+    let docs: Vec<String> = store.index().documents().map(str::to_owned).collect();
+    let mut places = std::collections::HashMap::new();
+    for doc in docs {
+        for (kind, id) in store.index().held(&doc) {
+            let parent = store
+                .index()
+                .get(kind, id)
+                .and_then(|row| row.parent.clone());
+            places.insert(
+                id.to_owned(),
+                RecordPlace {
+                    kind: kind.to_owned(),
+                    parent,
+                },
+            );
+        }
+    }
+    places
+}
+
+/// [`indexed_place`] and each record above it, by id: the chain an origin's write of `id` of
+/// `kind` stands in.
+fn chain_places(
+    store: &Store,
+    places: &mut std::collections::HashMap<String, RecordPlace>,
+    kind: &str,
+    id: &str,
+) {
+    let mut next = Some((kind.to_owned(), id.to_owned()));
+    for _ in 0..64 {
+        let Some((kind, id)) = next else {
+            break;
+        };
+        if places.contains_key(&id) {
+            break;
+        }
+        let parent = store
+            .index()
+            .get(&kind, &id)
+            .and_then(|row| row.parent.clone());
+        places.insert(
+            id.clone(),
+            RecordPlace {
+                kind,
+                parent: parent.clone(),
+            },
+        );
+        next = parent.and_then(|parent| {
+            store
+                .index()
+                .kind_anywhere(&parent)
+                .map(|kind| (kind, parent))
+        });
+    }
+}
+
+/// Where each record the `changes` of a document touch stands, and every record above it, by id:
+/// read once for an origin's leave. A record's parent is not kept in the document that holds the
+/// record (a document is named by the parent its records share), so the chain an origin's record
+/// stands in crosses documents, and only the index knows all of it.
+fn origin_places<'a>(
+    store: &Store,
+    changes: impl IntoIterator<Item = (&'a str, &'a AmChange)>,
+) -> std::collections::HashMap<String, RecordPlace> {
+    // What each record a change touches becomes, by id: its kind and its parent as the change
+    // leaves them. A change that only edits or removes one touches its place as the index holds
+    // it.
+    let mut seeds: std::collections::HashMap<String, (Option<String>, Option<String>)> =
+        std::collections::HashMap::new();
+    // A document the store does not hold yet, as the changes make it.
+    let mut made: std::collections::HashMap<&str, Automerge> = std::collections::HashMap::new();
+    for (doc_id, change) in changes {
+        let touched = if let Some(doc) = store.document(doc_id) {
+            collab_types::touch::touched(doc, doc_id, change)
+        } else {
+            let doc = made.entry(doc_id).or_default();
+            let touched = collab_types::touch::touched(doc, doc_id, change);
+            if doc.apply_changes([change.clone()]).is_err() {
+                return all_places(store);
+            }
+            touched
+        };
+        let Some((touched, _)) = touched else {
+            // A change the store cannot read against what it holds: read every place from the
+            // index rather than judge a record as standing nowhere.
+            return all_places(store);
+        };
+        for (id, touch) in touched.resources {
+            let kind = touch
+                .kind
+                .clone()
+                .or_else(|| store.index().kind_anywhere(&id));
+            let parent = if touch.placed {
+                touch.parent.clone()
+            } else {
+                touch.parent.clone().or_else(|| {
+                    kind.as_deref()
+                        .and_then(|kind| store.index().get(kind, &id))
+                        .and_then(|row| row.parent.clone())
+                })
+            };
+            seeds.entry(id).or_insert((kind, parent));
+        }
+    }
+    let mut places = std::collections::HashMap::new();
+    let ids: Vec<String> = seeds.keys().cloned().collect();
+    for id in ids {
+        let mut next = Some(id);
+        for _ in 0..64 {
+            let Some(id) = next else {
+                break;
+            };
+            if places.contains_key(&id) {
+                break;
+            }
+            // A record the batch makes is placed by the change that makes it; one it only
+            // touches, or a record above either, by the index.
+            let (kind, parent) = match seeds.get(&id) {
+                Some((kind, parent)) => (kind.clone(), parent.clone()),
+                None => match indexed_place(store, &id) {
+                    Some(place) => (Some(place.kind), place.parent),
+                    None => break,
+                },
+            };
+            let Some(kind) = kind else {
+                break;
+            };
+            places.insert(
+                id.clone(),
+                RecordPlace {
+                    kind,
+                    parent: parent.clone(),
+                },
+            );
+            next = parent;
+        }
+    }
+    places
 }
 
 /// Whether the reader set `readers` names `reader` ([`tilo_resource_store::wire::reads_as`]).
@@ -3416,12 +3603,12 @@ mod origin_tests {
         );
         OriginLeave {
             writers: std::collections::HashMap::from([(DEVICE, access)]),
-            records,
-            origins: std::collections::HashMap::from([
+            places: std::sync::Arc::new(records),
+            origins: std::sync::Arc::new(std::collections::HashMap::from([
                 ("tl.mail.Account".to_owned(), Some(ACCOUNT.to_owned())),
                 ("tl.mail.Message".to_owned(), Some(MESSAGE.to_owned())),
                 ("tl.mail.Mail".to_owned(), None),
-            ]),
+            ])),
             carried: false,
         }
     }

@@ -53,7 +53,21 @@ fields = [
   { path = "original_start", type = "text" },
 ]
 verbs = [
-  { id = "$origin", label = "Keep in step with its service", kind = "undoable" },
+  { id = "$origin", label = "Keep in step with its service", kind = "undoable", origin = "caldav.event" },
+]
+
+[[resources]]
+kind = "tl.so.tilo.calendar.Account"
+label = "Account"
+version = 1
+fields = [
+  { path = "key", type = "text" },
+  { path = "address", type = "text" },
+  { path = "name", type = "text" },
+  { path = "events", type = { collection = { resource = "tl.so.tilo.calendar.Event" } }, stored = "collection" },
+]
+verbs = [
+  { id = "$origin", label = "Keep in step with its service", kind = "undoable", origin = "caldav.account" },
 ]
 "#;
 
@@ -79,7 +93,34 @@ fields = [
   { path = "unread", type = "bool" },
 ]
 verbs = [
-  { id = "$origin", label = "Keep in step with its service", kind = "undoable" },
+  { id = "$origin", label = "Keep in step with its service", kind = "undoable", origin = "imap.message" },
+]
+
+[[resources]]
+kind = "tl.so.tilo.mail.Thread"
+label = "Thread"
+version = 1
+fields = [
+  { path = "key", type = "text" },
+  { path = "subject", type = "text" },
+  { path = "messages", type = { collection = { resource = "tl.so.tilo.mail.Message" } }, stored = "collection" },
+]
+verbs = [
+  { id = "$origin", label = "Keep in step with its service", kind = "undoable", origin = "imap.thread" },
+]
+
+[[resources]]
+kind = "tl.so.tilo.mail.Account"
+label = "Account"
+version = 1
+fields = [
+  { path = "key", type = "text" },
+  { path = "address", type = "text" },
+  { path = "name", type = "text" },
+  { path = "threads", type = { collection = { resource = "tl.so.tilo.mail.Thread" } }, stored = "collection" },
+]
+verbs = [
+  { id = "$origin", label = "Keep in step with its service", kind = "undoable", origin = "imap.account" },
 ]
 "#;
 
@@ -140,13 +181,15 @@ fn set(members: &[&str]) -> Cell {
     )
 }
 
-/// Keep `fields` as the record `id` of `kind`, written by `app` as its origin writes its records.
+/// Keep `fields` as the record `id` of `kind`, nested in `parent`, written by `app` as its origin
+/// writes its records.
 async fn keep(
     workspaces: &Workspaces,
     workspace: &str,
     app: &str,
     kind: &str,
     id: &str,
+    parent: Option<&str>,
     fields: Vec<(&str, Cell)>,
 ) {
     workspaces
@@ -158,7 +201,7 @@ async fn keep(
                 id: id.into(),
                 resource: Resource {
                     readers: "*".into(),
-                    parent: None,
+                    parent: parent.map(str::to_owned),
                     order: None,
                     fields: fields
                         .into_iter()
@@ -277,6 +320,22 @@ async fn a_moment_before_each_board_entry_fires_once_and_follows_the_records() {
     );
     let workspace = workspaces.create("Calendars").await.unwrap().workspace;
     let clock = Pinned::at(pinned_at("2026-10-19T06:00:00Z"));
+    // The account whose server keeps the entries: what the calendar service's own writes stand
+    // in, so each entry is nested under the account that holds it.
+    keep(
+        &workspaces,
+        &workspace,
+        "so.tilo.calendar",
+        "tl.so.tilo.calendar.Account",
+        "calendar-account",
+        None,
+        vec![
+            ("key", text("account-1")),
+            ("address", text("ada@example.test")),
+            ("name", text("Ada")),
+        ],
+    )
+    .await;
     let keep_event = async |id: &str,
                             key: &str,
                             times: (&str, &str),
@@ -313,6 +372,7 @@ async fn a_moment_before_each_board_entry_fires_once_and_follows_the_records() {
             "so.tilo.calendar",
             "tl.so.tilo.calendar.Event",
             id,
+            Some("calendar-account"),
             fields,
         )
         .await;
@@ -523,11 +583,52 @@ fn heard_mail(started: &Started) -> Vec<(String, String, String, String)> {
     heard
 }
 
-/// One message `id` in `mailbox`, from `from` (`from_name`) about `subject`, received at
-/// `received`, kept in `workspace`'s Mail as the app keeps it.
+/// The Mail app's account `id` of `address`, kept as the mail connector keeps it: the place its
+/// conversations, and their messages, stand in.
+async fn keep_account(workspaces: &Workspaces, workspace: &str, id: &str, address: &str) {
+    keep(
+        workspaces,
+        workspace,
+        "so.tilo.mail",
+        "tl.so.tilo.mail.Account",
+        id,
+        None,
+        vec![
+            ("key", text(id)),
+            ("address", text(address)),
+            ("name", text("Ada")),
+        ],
+    )
+    .await;
+}
+
+/// The conversation `id` of `account`, kept as the mail connector keeps it: the place its
+/// messages stand in.
+async fn keep_thread(
+    workspaces: &Workspaces,
+    workspace: &str,
+    id: &str,
+    account: &str,
+    subject: &str,
+) {
+    keep(
+        workspaces,
+        workspace,
+        "so.tilo.mail",
+        "tl.so.tilo.mail.Thread",
+        id,
+        Some(account),
+        vec![("key", text(id)), ("subject", text(subject))],
+    )
+    .await;
+}
+
+/// One message `id` in `thread`, in `mailbox`, from `from` (`from_name`) about `subject`, received
+/// at `received`, kept in `workspace`'s Mail as the app keeps it.
 async fn keep_message(
     workspaces: &Workspaces,
     workspace: &str,
+    thread: &str,
     id: &str,
     mailbox: &str,
     from: (&str, &str),
@@ -540,6 +641,7 @@ async fn keep_message(
         "so.tilo.mail",
         "tl.so.tilo.mail.Message",
         id,
+        Some(thread),
         vec![
             ("key", text(id)),
             ("account", text("ada@example.test")),
@@ -558,7 +660,8 @@ async fn keep_message(
     .await;
 }
 
-/// The messages that arrive after the trigger was set up: two from Bo, and one from someone else.
+/// The messages that arrive after the trigger was set up: two from Bo, and one from someone else,
+/// in the workspace's inbox conversation.
 async fn messages_after_setup(workspaces: &Workspaces, workspace: &str) {
     for (id, from, from_name, subject, received) in [
         (
@@ -586,6 +689,7 @@ async fn messages_after_setup(workspaces: &Workspaces, workspace: &str) {
         keep_message(
             workspaces,
             workspace,
+            "thread-1",
             id,
             "inbox",
             (from, from_name),
@@ -634,11 +738,14 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
     );
     let workspace = workspaces.create("Mail").await.unwrap().workspace;
     let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
+    keep_account(&workspaces, &workspace, "account-ada", "ada@example.test").await;
+    keep_thread(&workspaces, &workspace, "thread-1", "account-ada", "Friday").await;
 
     // What its inbox held before the trigger was set up is never new.
     keep_message(
         &workspaces,
         &workspace,
+        "thread-1",
         "old",
         "inbox",
         ("bo@example.test", "Bo"),
@@ -686,6 +793,7 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
     keep_message(
         &workspaces,
         &workspace,
+        "thread-1",
         "sent-1",
         "sent",
         ("ada@example.test", "Ada"),
@@ -707,6 +815,7 @@ async fn a_new_message_fires_the_shortcut_watching_mail_once() {
     keep_message(
         &workspaces,
         &workspace,
+        "thread-1",
         "new-3",
         "inbox",
         ("bo@example.test", "Bo"),
@@ -742,13 +851,27 @@ async fn a_shortcut_kept_to_her_account_hears_her_mail_and_no_other_account() {
     );
     let workspace = workspaces.create("Mail").await.unwrap().workspace;
     let clock = Pinned::at(pinned_at("2026-11-23T08:00:00Z"));
+    // The workspace's two accounts, each with its own conversation.
+    for (id, address, thread) in [
+        ("account-ada", "ada@example.test", "thread-ada"),
+        ("account-team", "team@example.test", "thread-team"),
+    ] {
+        keep_account(&workspaces, &workspace, id, address).await;
+        keep_thread(&workspaces, &workspace, thread, id, address).await;
+    }
     let keep_message = async |id: &str, account: &str, received: &str| {
+        let thread = if account == "ada@example.test" {
+            "thread-ada"
+        } else {
+            "thread-team"
+        };
         keep(
             &workspaces,
             &workspace,
             "so.tilo.mail",
             "tl.so.tilo.mail.Message",
             id,
+            Some(thread),
             vec![
                 ("key", text(id)),
                 ("account", text(account)),
