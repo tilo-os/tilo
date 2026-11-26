@@ -373,7 +373,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None => self
                 .caller
                 .key()
-                .map(|key| key.id())
+                .map(tilo_actions::remote::KeyCall::id)
                 .or_else(|| acting.agent_id())
                 .or_else(|| acting.member_id().map(collab_types::MemberId::id))
                 .map(str::to_owned),

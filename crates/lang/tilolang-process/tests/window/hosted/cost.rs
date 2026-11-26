@@ -1465,6 +1465,16 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     }
 }
 
+/// The boundaries choosing `place` runs.
+fn choose(session: &mut Session, place: &str) -> u64 {
+    let (x, y) = place_at(session, place);
+    let before = renders(session);
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(chosen(session, place), "the sidebar shows {place} chosen");
+    renders(session) - before
+}
+
 /// Choosing a sidebar place renders what the place shows, once. The sidebar's places only
 /// change which of them reads chosen, which the list they stand in draws: a place's row renders
 /// again when its own count changes, not each time the person chooses another, so choosing a
@@ -1475,15 +1485,6 @@ fn switching_places_renders_the_rows_the_place_shows() {
     let _motion = ui::motion::testing::settled();
     let bus = seeded_tasks(100);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    /// The boundaries choosing `place` runs.
-    fn choose(session: &mut Session, place: &str) -> u64 {
-        let (x, y) = place_at(session, place);
-        let before = renders(session);
-        session.window.click_at(x, y);
-        session.settle();
-        assert!(chosen(session, place), "the sidebar shows {place} chosen");
-        renders(session) - before
-    }
     let mut session = opened_at_rest_in(&bus, &route);
     // The seed dates its tasks today: none is upcoming.
     let empty = choose(&mut session, "Upcoming");

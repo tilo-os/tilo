@@ -152,8 +152,10 @@ mod cases {
                 .compiled
                 .ids
                 .get(&format!("Street.{name}"))
-                .map(str::to_owned)
-                .unwrap_or_else(|| panic!("the package declares Street.{name}"));
+                .map_or_else(
+                    || panic!("the package declares Street.{name}"),
+                    str::to_owned,
+                );
             case.variant == wanted
         }
 
@@ -180,12 +182,9 @@ mod cases {
         fn actor(&self) -> Option<tilolang_runtime::Actor> {
             let at = self.to_act()?;
             let player = self.in_hand().get(at).cloned()?;
-            for who in [me(), person("grace"), person("bo")] {
-                if self.is_person(&player, "player", &who) {
-                    return Some(who);
-                }
-            }
-            None
+            [me(), person("grace"), person("bo")]
+                .into_iter()
+                .find(|who| self.is_person(&player, "player", who))
         }
 
         /// Calls on the player to act until the hand is over, so a hand runs to its showdown.
@@ -251,7 +250,9 @@ mod cases {
     }
 
     fn at(second: u64) -> tilo_clock::time::SystemTime {
-        tilo_clock::time::UNIX_EPOCH + tilo_clock::time::Duration::from_secs(second)
+        tilo_clock::time::UNIX_EPOCH
+            .checked_add(tilo_clock::time::Duration::from_secs(second))
+            .expect("a moment the clock holds")
     }
 
     /// Seats the person looking and Grace, one minute apart, so the person looking is the
@@ -455,8 +456,7 @@ mod cases {
             let view = p.window();
             let title = of_kind(view.tree(), "ui.NavShell")
                 .into_iter()
-                .filter_map(|n| n.props.get("title").and_then(Value::as_text).map(str::to_owned))
-                .next()
+                .find_map(|n| n.props.get("title").and_then(Value::as_text).map(str::to_owned))
                 .unwrap_or_default();
             assert_eq!(title, "Hand 1", "{}", dump(view.tree()));
             let labels = p.button_labels();
