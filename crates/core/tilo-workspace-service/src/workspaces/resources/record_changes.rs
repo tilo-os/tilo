@@ -1520,7 +1520,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_moved_record_arrives_whole_and_leaves() {
         let dir = tempfile::tempdir().unwrap();
-        let (host, kitchen_id, garage) = two_rooms(dir.path()).await;
+        let (host, kitchen_id, garage) = Box::pin(two_rooms(dir.path())).await;
         let workspaces = host.workspaces();
         let me = caller_of(workspaces, &kitchen_id);
 
@@ -1540,7 +1540,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_move_its_destination_refuses_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let (host, kitchen_id, garage) = two_rooms(dir.path()).await;
+        let (host, kitchen_id, garage) = Box::pin(two_rooms(dir.path())).await;
         let workspaces = host.workspaces();
         let scout = scout(workspaces, &kitchen_id);
         grant_scout(workspaces, &kitchen_id, Answer::Allow).await;
@@ -1567,7 +1567,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_move_its_source_refuses_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let (host, kitchen_id, garage) = two_rooms(dir.path()).await;
+        let (host, kitchen_id, garage) = Box::pin(two_rooms(dir.path())).await;
         let workspaces = host.workspaces();
         let scout = scout(workspaces, &kitchen_id);
         grant_scout(workspaces, &kitchen_id, Answer::Deny).await;
@@ -1666,10 +1666,8 @@ mod tests {
         let founded_on = |writer: &str| {
             let mut tag = automerge::AutoCommit::new()
                 .with_actor(automerge::ActorId::from(writer.as_bytes()));
-            tag.apply_incoming([
-                tilo_resource::founding::structure(TAG, "errands", &[]).unwrap(),
-            ])
-            .unwrap();
+            tag.apply_incoming([tilo_resource::founding::structure(TAG, "errands", &[]).unwrap()])
+                .unwrap();
             tag
         };
         let (mut laptop, mut phone) = (founded_on("laptop"), founded_on("phone"));

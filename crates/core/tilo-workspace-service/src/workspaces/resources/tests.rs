@@ -95,7 +95,6 @@ fn a_batch_keeps_each_write_and_the_snapshot_once() {
     let put = |resources: &mut super::Resources, index: usize| {
         let before = resources.heads(&doc);
         {
-            let mut store = resources.store();
             let resource = Resource {
                 readers: "*".into(),
                 parent: None,
@@ -105,7 +104,8 @@ fn a_batch_keeps_each_write_and_the_snapshot_once() {
                     Cell::One(Value::Text(format!("Task {index}"))),
                 )]),
             };
-            store
+            resources
+                .store()
                 .put(kind, &format!("t{index}"), resource, &Stamp::default())
                 .unwrap();
         }
@@ -133,13 +133,12 @@ fn a_batch_keeps_each_write_and_the_snapshot_once() {
     reopened.batch_kept();
     std::mem::forget(reopened);
     let reopened = super::Resources::open(&file, id);
-    let store = reopened.store();
-    assert_eq!(
-        store.in_memory(),
-        0,
-        "the start read the snapshot the batch kept"
-    );
-    assert_eq!(store.count(kind, &[], &|_| true), WRITES + 1);
+    let (in_memory, kept) = {
+        let store = reopened.store();
+        (store.in_memory(), store.count(kind, &[], &|_| true))
+    };
+    assert_eq!(in_memory, 0, "the start read the snapshot the batch kept");
+    assert_eq!(kept, WRITES + 1);
 }
 
 /// A document whose id is longer than a file system names one file is kept, and read again by
