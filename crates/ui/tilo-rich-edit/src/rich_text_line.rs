@@ -1651,7 +1651,7 @@ impl tilo_ui_base::widget::TextFits for RichTextLine {
 }
 
 impl Widget for RichTextLine {
-    ui::provides!(dyn tilo_ui_base::widget::TextFits);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::TextFits);
 
     /// The inner field's timers (a settling squiggle, a suggestion for the
     /// word under the caret) must wake the host; the field is not a child.

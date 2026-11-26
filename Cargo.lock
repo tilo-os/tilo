@@ -12518,6 +12518,7 @@ dependencies = [
  "tilo-rt",
  "tilo-settings-store",
  "tilo-ui",
+ "tilo-ui-base",
  "tilo-user-identity",
  "tilo-webview",
  "vte",

@@ -9517,7 +9517,7 @@ impl ui::widget::find_bar::Findable for BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    ui::provides!(
+    tilo_ui_base::provides!(
         dyn tilo_ui_base::presence::capability::PublishesPresence,
         dyn ui::widget::find_bar::Findable,
         dyn tilo_ui_base::widget::TextFits
