@@ -224,11 +224,11 @@ impl AgentHostLink for ServerAgentLink {
         &self,
         key: &SigningKey,
         proposal: &DelegateProposal,
-        created_at: i64,
+        entry: &tilo_workspace_agent::Agent,
         requester: &DeviceCert,
         done: ApprovalDone,
     ) -> Result<String, String> {
-        self.approve_roster(key, proposal, created_at, requester, done)
+        self.approve_roster(key, proposal, entry, requester, done)
     }
 
     fn admit_roster_session(

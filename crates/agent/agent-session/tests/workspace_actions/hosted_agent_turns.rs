@@ -1669,9 +1669,19 @@ async fn approve_member_grant(
     workspace_id: WorkspaceId,
     apps: &[&str],
 ) {
+    approve_member_grant_for(server, member, workspace_id, SCOUT, apps).await;
+}
+
+/// The two labels the reviewing device saw for this agent, after the host admits its key.
+async fn approve_member_grant_for(
+    server: &crate::harness::hosted::Hosted,
+    member: &SigningKey,
+    workspace_id: WorkspaceId,
+    agent: &str,
+    apps: &[&str],
+) -> (String, String, [u8; 32]) {
     use tilo_server_client::MemberApprover;
     use tilo_server_client::pairing::{answer_agent_grant, pending_agent_grants};
-    let keeper = member.verifying_key().to_bytes();
     let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
     let proposals = pending_agent_grants(&approver, member, workspace_id)
         .await
@@ -1679,15 +1689,15 @@ async fn approve_member_grant(
     let [shown] = proposals.as_slice() else {
         panic!("one pending agent")
     };
+    assert_eq!(shown.proposal.delegate.agent_id(), Some(agent));
     assert_eq!(shown.proposal.scope.apps, apps);
-    let device = tilo_server_client::pending_pairings(&approver, member)
+    let pending = tilo_server_client::pending_pairings(&approver, member)
         .await
         .unwrap()
         .into_iter()
         .find(|entry| entry.request_digest == shown.request_digest)
-        .unwrap()
-        .request
-        .device_public_key;
+        .unwrap();
+    let device = pending.request.device_public_key;
     let elsewhere = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     assert!(
         pending_agent_grants(&approver, member, elsewhere)
@@ -1710,11 +1720,33 @@ async fn approve_member_grant(
     answer_agent_grant(&approver, member, workspace_id, shown, true)
         .await
         .unwrap();
+    wait_for_member_key(
+        server,
+        workspace_id,
+        agent,
+        &member.verifying_key().to_bytes(),
+        device,
+    )
+    .await;
+    (
+        shown.proposal.label.clone(),
+        pending.request.device_label,
+        device,
+    )
+}
+
+async fn wait_for_member_key(
+    server: &Hosted,
+    workspace_id: WorkspaceId,
+    agent: &str,
+    keeper: &[u8; 32],
+    device: [u8; 32],
+) {
     let link = server.server.agent_link();
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if link
-            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
+            .roster_session_device(&server.roster.sessions, workspace_id, agent, keeper)
             .await
             == Some(device)
         {
@@ -1726,7 +1758,7 @@ async fn approve_member_grant(
             .snapshot()
             .grants
             .into_iter()
-            .find(|grant| grant.proposal.delegate.agent_id() == Some(SCOUT))
+            .find(|grant| grant.proposal.delegate.agent_id() == Some(agent))
             .map(|grant| (grant.state, grant.reason));
         assert!(
             Instant::now() < deadline,
@@ -1957,4 +1989,245 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
             task.agent.id.0
         );
     }
+}
+
+/// A newly admitted member with an empty roster who has opened Assistant and set it up
+/// through the same workspace actions as a client.
+struct PersonalAssistant {
+    page: Browser,
+    member: SigningKey,
+    device: Device,
+    workspace_id: WorkspaceId,
+    agent: String,
+    provider: String,
+}
+
+impl PersonalAssistant {
+    async fn open(server: &Hosted, host: &Device) -> Self {
+        use tilo_peer_state::join::Role;
+        use ui::tilo_workspace_agent::{KIND, OWNER};
+
+        let (member, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
+        let device = enrol(&member, "members-browser", DeviceCapabilities::member());
+        let workspace = server.workspaces().unwrap().create("Team").await.unwrap();
+        super::resource_support::admit_person(
+            server,
+            host,
+            &workspace.workspace,
+            &device,
+            Role::Editor,
+        )
+        .await;
+        let mut page = super::resource_support::open_admitted_peer(
+            server,
+            &device,
+            host,
+            &workspace.workspace,
+        )
+        .await;
+        let open = tilo_actions::remote::application_open_target(&workspace.workspace, OWNER);
+        let opened = page
+            .invoke_on(&open.provider, open.address, InvokeArgument::None)
+            .await
+            .unwrap()
+            .value
+            .unwrap();
+        let provider = opened["provider"].as_str().unwrap().to_owned();
+        page.invoke_on(
+            &provider,
+            ActionAddress::new(KIND, "ensure-personal-assistant"),
+            InvokeArgument::None,
+        )
+        .await
+        .unwrap();
+        let agent = format!(
+            "assistant-{}",
+            hex::encode(member.verifying_key().to_bytes())
+        );
+        Self {
+            page,
+            member,
+            device,
+            workspace_id: workspace.workspace_id,
+            agent,
+            provider,
+        }
+    }
+
+    async fn approve_chat(&mut self, server: &Hosted) -> (String, String, [u8; 32]) {
+        let request =
+            tilo_server_protocol::agents::AgentGrantAction::RequestChat.target(&self.agent);
+        let receipt = self
+            .page
+            .invoke_on(&request.provider, request.address, InvokeArgument::None)
+            .await
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(receipt["grant"], self.agent);
+        approve_member_grant_for(
+            server,
+            &self.member,
+            self.workspace_id,
+            &self.agent,
+            &[CHAT],
+        )
+        .await
+    }
+}
+
+/// The stable id from first use works for the root-approved Chat grant and a restarted host.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_approves_the_chat_grant_for_their_new_personal_assistant() {
+    use tilo_server_protocol::agents::{AgentGrantAction, AgentGrantStatus, GrantState};
+
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&owner, "host", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = start(&owner, &host, state.path()).await;
+    let mut assistant = PersonalAssistant::open(&server, &host).await;
+    let (_, _, device) = assistant.approve_chat(&server).await;
+
+    assistant.page.peer.close();
+    drop(assistant.page);
+    server.agents.shutdown();
+    drop((server.web, server.roster));
+    server.server.shutdown().await;
+    let reopened = start(&owner, &host, state.path()).await;
+    let mut page = super::resource_support::open_admitted_peer(
+        &reopened,
+        &assistant.device,
+        &host,
+        &assistant.workspace_id.to_string(),
+    )
+    .await;
+    wait_for_member_key(
+        &reopened,
+        assistant.workspace_id,
+        &assistant.agent,
+        &assistant.member.verifying_key().to_bytes(),
+        device,
+    )
+    .await;
+    let target = AgentGrantAction::Status.target(&assistant.agent);
+    let status: AgentGrantStatus = serde_json::from_value(
+        page.invoke_on(&target.provider, target.address, InvokeArgument::None)
+            .await
+            .unwrap()
+            .value
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status.state, GrantState::Approved);
+    assert!(status.ready);
+    assert_eq!(status.apps, [CHAT]);
+}
+
+/// A long display name remains intact in the roster when a keeper approves its signed label.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_personal_assistants_grant_keeps_its_full_name() {
+    use super::member_roles::json;
+    use ui::tilo_workspace_agent::KIND;
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&owner, "host", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = start(&owner, &host, state.path()).await;
+    let mut assistant = PersonalAssistant::open(&server, &host).await;
+    let name = "界".repeat(64);
+    assistant
+        .page
+        .invoke_on(
+            &assistant.provider,
+            ActionAddress::new(KIND, "rename-agent"),
+            json(serde_json::json!({"agent": assistant.agent, "name": name})),
+        )
+        .await
+        .unwrap();
+    let (label, device_label, _) = assistant.approve_chat(&server).await;
+    assert_eq!(label, "界".repeat(21));
+    assert_eq!(device_label, format!("Agent: {label}"));
+    let keeper = assistant.member.verifying_key().to_bytes();
+    let workspaces = server.workspaces().unwrap();
+    let roster = workspaces
+        .hosted_roster_agent(
+            assistant.workspace_id,
+            &assistant.agent,
+            &keeper,
+            Some(&assistant.device.cert),
+        )
+        .await
+        .unwrap();
+    assert_eq!(roster.name, name);
+
+    // A new grant cannot be admitted under a changed name, even when the signed prefix
+    // and stable agent id are still identical to the ones the keeper reviewed.
+    use tilo_server_client::MemberApprover;
+    use tilo_server_client::pairing::{answer_agent_grant, pending_agent_grants};
+    use tilo_server_protocol::agents::{AgentGrantAction, GrantState};
+    for action in [AgentGrantAction::Revoke, AgentGrantAction::RequestChat] {
+        let target = action.target(&assistant.agent);
+        assistant
+            .page
+            .invoke_on(&target.provider, target.address, InvokeArgument::None)
+            .await
+            .unwrap();
+    }
+    let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
+    let proposed = pending_agent_grants(&approver, &assistant.member, assistant.workspace_id)
+        .await
+        .unwrap();
+    let [shown] = proposed.as_slice() else {
+        panic!("the keeper has one proposal to review")
+    };
+    assert_eq!(shown.proposal.label, label);
+    let renamed = format!("{}語", "界".repeat(63));
+    assistant
+        .page
+        .invoke_on(
+            &assistant.provider,
+            ActionAddress::new(KIND, "rename-agent"),
+            json(serde_json::json!({"agent": assistant.agent, "name": renamed})),
+        )
+        .await
+        .unwrap();
+    answer_agent_grant(
+        &approver,
+        &assistant.member,
+        assistant.workspace_id,
+        shown,
+        true,
+    )
+    .await
+    .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while server
+        .agents
+        .agent_grant_status(
+            assistant.workspace_id,
+            &assistant.agent,
+            &keeper,
+            roster.created_at,
+        )
+        .state
+        != GrantState::Denied
+    {
+        assert!(
+            Instant::now() < deadline,
+            "a rename must invalidate the pending grant"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        server
+            .server
+            .agent_link()
+            .roster_session_device(
+                &server.roster.sessions,
+                assistant.workspace_id,
+                &assistant.agent,
+                &keeper,
+            )
+            .await
+            .is_none()
+    );
 }

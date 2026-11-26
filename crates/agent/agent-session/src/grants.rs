@@ -32,6 +32,7 @@ use tilo_server_protocol::delegation::{
     MAX_DELEGATED_APPS, MAX_DELEGATED_WORKSPACES,
 };
 use tilo_user_identity::DeviceCert;
+use ui::tilo_workspace_agent::Agent;
 
 /// Grants kept, settled (denied, expired, revoked) ones first to go.
 const MAX_GRANTS: usize = 32;
@@ -301,7 +302,7 @@ pub trait AgentHostLink: Send + Sync {
         &self,
         key: &SigningKey,
         proposal: &DelegateProposal,
-        created_at: RosterCreatedAt,
+        entry: &Agent,
         requester: &DeviceCert,
         done: ApprovalDone,
     ) -> Result<String, String>;
@@ -469,8 +470,7 @@ impl AgentSupervisor {
         caller: &Caller,
         invocation: &InvokeRequest,
         request: &GrantRequest,
-        agent: &str,
-        created_at: RosterCreatedAt,
+        entry: &Agent,
         requester: &DeviceCert,
     ) -> Result<InvocationReceipt, ActionCallError> {
         tilo_actions::appearance::refuse_here(invocation)?;
@@ -489,14 +489,13 @@ impl AgentSupervisor {
                             | REQUEST_ASSISTANT_WORK_GRANT_ACTION
                             | REQUEST_APP_GRANT_ACTION
                     ),
-                    agent,
-                    created_at,
+                    entry,
                     requester,
                 )
                 .map_err(refused)?;
             Ok(ActionOutput {
                 value: Some(serde_json::json!(AgentGrantReceipt {
-                    grant: agent.to_owned(),
+                    grant: entry.id.0.clone(),
                     pairing_code
                 })),
                 resources: Vec::new(),
@@ -522,16 +521,17 @@ impl AgentSupervisor {
             .map(|(state, _)| state.receipt())
     }
 
-    /// Ask the keeper's approver for the grant of roster agent `agent`. Returns the pairing
+    /// Ask the keeper's approver for the grant of `entry`. Returns the pairing
     /// code the approver shows, or none for a grant already approved.
     fn request_grant(
         &self,
         request: &GrantRequest,
         renew: bool,
-        agent: &str,
-        created_at: RosterCreatedAt,
+        entry: &Agent,
         requester: &DeviceCert,
     ) -> Result<String, String> {
+        let agent = entry.id.0.as_str();
+        let created_at = entry.created_at;
         let link = self.link().ok_or("this host cannot ask for agent grants")?;
         let mut secret = [0_u8; 32];
         getrandom::fill(&mut secret).map_err(|error| error.to_string())?;
@@ -576,8 +576,7 @@ impl AgentSupervisor {
         });
         // Hold the grants across enqueue so a fast answer sees its pending grant,
         // and simultaneous requests for this roster id share only one proposal.
-        let pairing_code =
-            link.request_roster_approval(&key, &proposal, created_at, requester, done)?;
+        let pairing_code = link.request_roster_approval(&key, &proposal, entry, requester, done)?;
         if let Some(index) = prior {
             grants.remove(index);
         }

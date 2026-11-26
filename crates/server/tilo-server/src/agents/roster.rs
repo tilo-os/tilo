@@ -21,7 +21,7 @@ use tilo_server_protocol::agents::{
     REQUEST_CHAT_GRANT_ACTION, REQUEST_GRANT_ACTION, REVOKE_ACTION, RosterGrantRequest,
     SUPERVISOR_RESOURCE,
 };
-use tilo_server_protocol::delegation::DelegateProposal;
+use tilo_server_protocol::delegation::{DelegateProposal, MAX_DELEGATE_TEXT_BYTES};
 use tilo_user_identity::DeviceCert;
 
 use super::ServerAgentLink;
@@ -197,22 +197,9 @@ async fn personal_grant(
         .filter(|entry| entry.id.0 == agent)
         .ok_or_else(keeper_required)?;
     if let Some(apps) = requested_apps(request, choices)? {
-        let grant = GrantRequest {
-            label: entry.name.trim().to_owned(),
-            color: None,
-            workspaces: vec![workspace.to_string()],
-            // The native agent certificate lasts a week, including clock allowance.
-            apps,
-            expires_in_secs: 6 * 24 * 60 * 60,
-        };
-        return supervisor.invoke_roster_grant(
-            caller,
-            request,
-            &grant,
-            agent,
-            entry.created_at,
-            cert,
-        );
+        // The native agent certificate lasts a week, including clock allowance.
+        let grant = grant_for(&entry, workspace, apps, 6 * 24 * 60 * 60);
+        return supervisor.invoke_roster_grant(caller, request, &grant, &entry, cert);
     }
     let keeper = &cert.user_public_key;
     let mut status = supervisor.agent_grant_status(workspace, agent, keeper, entry.created_at);
@@ -371,21 +358,26 @@ async fn provision(
         .hosted_roster_agent(workspace, &asked.agent_id, &keeper, Some(cert))
         .await
         .ok_or_else(keeper_required)?;
-    let grant = GrantRequest {
-        label: entry.name.trim().to_owned(),
+    let grant = grant_for(&entry, workspace, asked.apps, asked.expires_in_secs);
+    supervisor.invoke_roster_grant(caller, request, &grant, &entry, cert)
+}
+
+/// A roster name is limited in characters. Its signed display label is limited in bytes.
+fn grant_for(
+    entry: &tilo_workspace_agent::Agent,
+    workspace: WorkspaceId,
+    apps: Vec<String>,
+    expires_in_secs: u64,
+) -> GrantRequest {
+    let name = entry.name.trim();
+    let (label, _) = name.split_at(name.floor_char_boundary(MAX_DELEGATE_TEXT_BYTES));
+    GrantRequest {
+        label: label.trim_end().to_owned(),
         color: None,
-        workspaces: asked.workspaces,
-        apps: asked.apps,
-        expires_in_secs: asked.expires_in_secs,
-    };
-    supervisor.invoke_roster_grant(
-        caller,
-        request,
-        &grant,
-        &asked.agent_id,
-        entry.created_at,
-        cert,
-    )
+        workspaces: vec![workspace.to_string()],
+        apps,
+        expires_in_secs,
+    }
 }
 
 impl ServerAgentLink {
@@ -393,7 +385,7 @@ impl ServerAgentLink {
         &self,
         key: &SigningKey,
         proposal: &DelegateProposal,
-        created_at: i64,
+        entry: &tilo_workspace_agent::Agent,
         requester: &DeviceCert,
         done: ApprovalDone,
     ) -> Result<String, String> {
@@ -410,7 +402,8 @@ impl ServerAgentLink {
             .agent_id()
             .ok_or("the proposal names no agent")?
             .to_owned();
-        let label = proposal.label.clone();
+        let name = entry.name.clone();
+        let created_at = entry.created_at;
         let keeper = requester.user_public_key;
         let (digest, code) = self.enqueue_approval(keeper, key, proposal)?;
         let certification = self.certification.clone();
@@ -421,9 +414,7 @@ impl ServerAgentLink {
                 && !workspaces
                     .hosted_roster_agent(workspace, &agent, &keeper, Some(&requester))
                     .await
-                    .is_some_and(|entry| {
-                        entry.created_at == created_at && entry.name.trim() == label
-                    })
+                    .is_some_and(|entry| entry.created_at == created_at && entry.name == name)
             {
                 outcome = Err("the roster entry or keeper changed before approval".into());
             }
