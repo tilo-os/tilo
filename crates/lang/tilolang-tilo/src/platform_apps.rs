@@ -89,6 +89,12 @@ const STYLES_ROOTS: &[(&str, &str, &str)] = &[("installed", "Styles", STYLES_APP
 
 /// The app the session's own resources are described as: `use so.tilo.session`.
 pub const SESSION_APP: &str = "so.tilo.session";
+/// The app a workspace's environments are published as: `use tilo.environment`. The workspace's
+/// machine — the environments a shell, a Browser or a Linux app runs in — is the system's, not
+/// an app's: the device that keeps their records answers `create`, `list` and the record's
+/// verbs (`tilo_actions::remote::environment_commands::APP_ACTIONS`) at `environment#...`, and a
+/// device that takes the workspace's Linux work answers `run` on the same resource.
+pub const ENVIRONMENT_APP: &str = tilo_actions::remote::environment_commands::PROVIDER;
 /// The app a part of the shell is drawn as: `use desktop as desktop` reads the window menu's
 /// reading (`desktop:window-menu`) and invokes its verbs.
 pub const DESKTOP_APP: &str = "desktop";
@@ -494,6 +500,15 @@ const PUBLISHED: &[Published] = &[
         // types into the field through its actions.
         roots: &[("keyboard", "Keyboard", "keyboard")],
         files: &[include_str!("../../../../apps/tl/session/surface.json")],
+        described: true,
+        listed: &[],
+    },
+    Published {
+        app: ENVIRONMENT_APP,
+        title: "Environments",
+        kinds: &[],
+        roots: &[],
+        files: &[include_str!("../../../vm/environment/surface.json")],
         described: true,
         listed: &[],
     },
@@ -1271,6 +1286,40 @@ mod tests {
                 "`{published}` declares no defaults: a device without it reads nothing"
             );
         }
+    }
+
+    /// The environment package's surface names exactly the verbs the device answers for a record
+    /// (`environment_commands::APP_ACTIONS`, which `ush`'s supervisor applies), beside the two the
+    /// workspace's directory answers: `create` and `list`. A verb added to one side alone fails
+    /// here, so the package a view compiles against and the device that answers it never
+    /// disagree about what a caller may ask.
+    #[test]
+    fn the_environment_surface_names_the_verbs_the_device_answers() {
+        #[derive(Deserialize)]
+        struct File {
+            resources: Vec<Resource>,
+        }
+        #[derive(Deserialize)]
+        struct Resource {
+            verbs: Vec<Verb>,
+        }
+        #[derive(Deserialize)]
+        struct Verb {
+            id: String,
+        }
+        let file: File = serde_json::from_str(include_str!("../../../vm/environment/surface.json"))
+            .expect("the environment surface reads");
+        assert_eq!(file.resources.len(), 1, "one resource is the environments");
+        let mut published: Vec<&str> = file.resources[0]
+            .verbs
+            .iter()
+            .map(|verb| verb.id.as_str())
+            .collect();
+        published.sort_unstable();
+        let mut asked: Vec<&str> = tilo_actions::remote::environment_commands::APP_ACTIONS.to_vec();
+        asked.extend(["create", "list"]);
+        asked.sort_unstable();
+        assert_eq!(published, asked);
     }
 
     /// Every app the platform publishes reads as the package a program compiles against, its

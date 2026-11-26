@@ -473,3 +473,164 @@ fn refused(
     )
     .receipt()))
 }
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use client::install;
+#[cfg(target_os = "linux")]
+pub(crate) use client::{ShellRuntime, shell_runtime};
+
+/// What the daemon asks the shell runtime it runs, through one handle every provider shares.
+///
+/// The supervisor owns the workspace's environment records and answers their verbs; a provider
+/// that publishes them to apps (the workspace's environments) asks here, and so does anything
+/// else on the device that reaches the same runtime, so no provider makes a connection of its
+/// own. A request is one line and its answer the line after, on a connection opened and welcomed
+/// for it: the supervisor serves each connection as one app's, and a session's lease on one is
+/// not shared through this.
+#[cfg(target_os = "linux")]
+mod client {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
+    use std::sync::{Arc, OnceLock};
+    use std::time::Duration;
+
+    use serde_json::Value;
+    use tilo_actions::remote::ActionCallError;
+
+    /// How long the supervisor has to answer one request.
+    const ANSWER_WITHIN: Duration = Duration::from_secs(10);
+
+    /// The most one line of the supervisor's answer may carry.
+    const MAX_ANSWER: u64 = 4 * 1024 * 1024;
+
+    /// The control protocol a connection opens with, as `ush`'s supervisor negotiates it.
+    const PROTOCOL: u16 = 2;
+
+    /// This device's shell runtime, at the socket it listens on.
+    pub(crate) struct ShellRuntime {
+        socket: PathBuf,
+    }
+
+    impl ShellRuntime {
+        /// The runtime of this login: where its services live.
+        fn here() -> Self {
+            Self {
+                socket: launcher::services::socket_for(launcher::services::USH_SERVICE),
+            }
+        }
+
+        /// The runtime listening at `socket`.
+        #[cfg(test)]
+        pub(crate) fn at(socket: impl Into<PathBuf>) -> Self {
+            Self {
+                socket: socket.into(),
+            }
+        }
+
+        /// Ask the supervisor `request` about the environments of `workspace`, and answer what
+        /// it said: the environments as `{"environments": [...], "created": "..."}`, or its
+        /// refusal.
+        pub(crate) fn ask(
+            &self,
+            workspace: &str,
+            request: &Value,
+        ) -> Result<Value, ActionCallError> {
+            let unavailable = |error: std::io::Error| ActionCallError::Unavailable {
+                reason: format!(
+                    "the environments are managed through Tilo's shell runtime: {error}"
+                ),
+            };
+            let mut stream = UnixStream::connect(&self.socket).map_err(unavailable)?;
+            stream
+                .set_read_timeout(Some(ANSWER_WITHIN))
+                .map_err(unavailable)?;
+            stream
+                .set_write_timeout(Some(ANSWER_WITHIN))
+                .map_err(unavailable)?;
+            stream
+                .write_all(format!("{{\"op\":\"hello\",\"protocol\":{PROTOCOL}}}\n").as_bytes())
+                .map_err(unavailable)?;
+            let mut reader = std::io::BufReader::new(stream.try_clone().map_err(unavailable)?);
+            let answered: Value = serde_json::from_str(
+                &answer_line(&mut reader).map_err(unavailable)?,
+            )
+            .map_err(|error| ActionCallError::Refused {
+                reason: format!("the shell runtime answered no hello: {error}"),
+            })?;
+            if answered.get("result").and_then(Value::as_str) != Some("ready") {
+                return Err(ActionCallError::Refused {
+                    reason: answered
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the shell runtime did not take the connection")
+                        .to_owned(),
+                });
+            }
+            let mut fields = request.clone();
+            if let Some(fields) = fields.as_object_mut() {
+                fields.insert("workspace".into(), Value::String(workspace.to_owned()));
+            }
+            let mut bytes =
+                serde_json::to_vec(&fields).map_err(|error| ActionCallError::InvalidRequest {
+                    reason: error.to_string(),
+                })?;
+            bytes.push(b'\n');
+            stream.write_all(&bytes).map_err(unavailable)?;
+            let answered: Value = serde_json::from_str(
+                &answer_line(&mut reader).map_err(unavailable)?,
+            )
+            .map_err(|error| ActionCallError::Refused {
+                reason: format!("the shell runtime answered no environments: {error}"),
+            })?;
+            match answered.get("result").and_then(Value::as_str) {
+                Some("environments") => Ok(serde_json::json!({
+                    "environments": answered.get("environments").cloned().unwrap_or(Value::Null),
+                    "created": answered.get("created").cloned().unwrap_or(Value::Null),
+                })),
+                _ => Err(ActionCallError::Refused {
+                    reason: answered
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the shell runtime refused the call")
+                        .to_owned(),
+                }),
+            }
+        }
+    }
+
+    /// The one shell runtime this daemon asks: made when first asked for, and shared after.
+    static SERVED: OnceLock<Arc<ShellRuntime>> = OnceLock::new();
+
+    /// This daemon's shell runtime, shared by every provider that asks the supervisor.
+    pub(crate) fn shell_runtime() -> Arc<ShellRuntime> {
+        Arc::clone(SERVED.get_or_init(|| Arc::new(ShellRuntime::here())))
+    }
+
+    /// Ask `runtime` from now on, where this process would ask the login's: a test's supervisor
+    /// of its own. Nothing asks the runtime before this, so the daemon's providers take it; one
+    /// installed already stands.
+    #[cfg(test)]
+    pub(crate) fn install(runtime: Arc<ShellRuntime>) {
+        let installed = tilo_failure::ignored!(
+            "a test installs one runtime, before the daemon takes its providers",
+            SERVED.set(runtime)
+        );
+        if installed.is_err() {
+            tracing::debug!("a shell runtime was installed already; the first one stands");
+        }
+    }
+
+    /// One line of the supervisor's answer.
+    fn answer_line(reader: &mut std::io::BufReader<UnixStream>) -> std::io::Result<String> {
+        let mut line = String::new();
+        reader.by_ref().take(MAX_ANSWER).read_line(&mut line)?;
+        if line.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the shell runtime answered nothing",
+            ));
+        }
+        Ok(line)
+    }
+}

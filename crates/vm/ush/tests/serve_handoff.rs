@@ -752,7 +752,7 @@ fn ask_line(stream: &UnixStream, request: &serde_json::Value) -> ServeResponse {
 
 fn listed(response: &ServeResponse) -> Vec<String> {
     match response {
-        ServeResponse::Environments { environments } => {
+        ServeResponse::Environments { environments, .. } => {
             environments.iter().map(|e| e.name.clone()).collect()
         }
         other => panic!("not a listing: {other:?}"),

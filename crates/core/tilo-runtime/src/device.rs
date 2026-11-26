@@ -42,8 +42,17 @@ mod commits;
 mod compiled;
 mod content;
 mod dispatch;
+/// The workspace's environments, reached by any app as an ordinary action call and answered by
+/// the shell runtime this device runs.
+#[cfg(target_os = "linux")]
+mod environment_directory;
+#[cfg(all(test, target_os = "linux"))]
+mod environment_directory_tests;
 #[cfg(target_os = "linux")]
 pub mod environments;
+/// This device's shell runtime (`ush`): what it asks the daemon, and the one client every
+/// provider of the daemon asks it through.
+pub(crate) mod shell_runtime;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
 pub(crate) mod confined;
 pub mod control;
@@ -100,8 +109,6 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 mod shell;
-mod shell_runtime;
-
 /// How the person's workspaces stand, as the daemon publishes them to its person's shells.
 pub use shell::Standing;
 pub mod shortcuts;

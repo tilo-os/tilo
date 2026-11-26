@@ -2341,6 +2341,13 @@ impl Daemon {
                     tilo_workspace_service::workspaces::terminal::PROVIDER,
                     Arc::new(terminal),
                 );
+                // The workspace's environments are the system's: any app, agent or script
+                // reaches them by an ordinary action call, and this answers it by the shell
+                // runtime that keeps their records.
+                workspaces.copies().provide(
+                    super::environment_directory::PROVIDER,
+                    Arc::new(super::environment_directory::Environments::here()),
+                );
             }
             terminals
         };

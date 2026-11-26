@@ -396,7 +396,7 @@ fn directory(socket: &Path, request: &serde_json::Value) -> Vec<(String, String)
     let mut reply = String::new();
     BufReader::new(&stream).read_line(&mut reply).unwrap();
     match serde_json::from_str(reply.trim()).unwrap() {
-        ServeResponse::Environments { environments } => environments
+        ServeResponse::Environments { environments, .. } => environments
             .into_iter()
             .map(|entry| (entry.key, entry.name))
             .collect(),

@@ -577,6 +577,10 @@ pub enum ServeResponse {
     },
     Environments {
         environments: Vec<EnvironmentEntry>,
+        /// The record a create just made, by its key, so the caller names it without reading
+        /// the list again for the one it did not see before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created: Option<String>,
     },
     Allowed,
     Branched {
@@ -811,7 +815,10 @@ fn serve_request(
         | ServeRequest::CreateEnvironment { .. }
         | ServeRequest::EnvironmentAction { .. } => {
             let response = match directory(&req, store) {
-                Ok(environments) => ServeResponse::Environments { environments },
+                Ok((environments, created)) => ServeResponse::Environments {
+                    environments,
+                    created,
+                },
                 Err(reason) => ServeResponse::Denied { reason },
             };
             reply(writer, &response, None)?;
@@ -1153,8 +1160,12 @@ fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> 
     }
 }
 
-fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
+fn directory(
+    req: &ServeRequest,
+    store: &Store,
+) -> Result<(Vec<EnvironmentEntry>, Option<String>), String> {
     let records = Records::of(store);
+    let mut created = None;
     match req {
         ServeRequest::CreateEnvironment { name } => {
             let name = name.trim();
@@ -1179,35 +1190,37 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
                 .collect();
             let key = format!("env-{id}");
             records.create(&key, &env).map_err(|e| e.to_string())?;
+            created = Some(key);
         }
         ServeRequest::EnvironmentAction {
             record,
             action,
             args,
         } => {
-            let invoke = match action.as_str() {
-                "rename" => Environment::RENAME.with(
-                    args.get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                ),
-                "grant-dir" => Environment::GRANT_DIR.with((
-                    args.get("path")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    args.get("write")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                )),
+            // Only the record's own verbs an app may ask are applied here, read by the record's
+            // model itself: what a verb takes, what it refuses and what it writes are the
+            // record's declarations, never a second reading of the same verb here.
+            if !tilo_actions::remote::environment_commands::APP_ACTIONS.contains(&action.as_str()) {
+                return Err(format!(
+                    "`{action}` is not an environment action an app may ask for here"
+                ));
+            }
+            let args = match args {
+                serde_json::Value::Object(args) => args.clone(),
+                serde_json::Value::Null => serde_json::Map::new(),
                 other => {
                     return Err(format!(
-                        "`{other}` is not an environment action an app may ask for here"
+                        "`{action}` takes its arguments as an object, not {other}"
                     ));
                 }
             };
-            records.apply(record, invoke).map_err(|e| e.to_string())?;
+            let invoked = tilo_resource::__private::build_stamped::<
+                tilo_environment::EnvironmentAction,
+            >(action, &args, tilo_clock::unix_now_ms_i64())
+            .and_then(|invoked| {
+                tilo_resource::Invoke::apply(&invoked).map_err(|error| error.to_string())
+            })?;
+            records.apply(record, invoked).map_err(|e| e.to_string())?;
         }
         ServeRequest::ListEnvironments
         | ServeRequest::OpenSession { .. }
@@ -1220,7 +1233,7 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
             out.push(EnvironmentEntry::of(&key, &env));
         }
     }
-    Ok(out)
+    Ok((out, created))
 }
 
 fn serve_host(
@@ -2203,20 +2216,22 @@ mod tests {
             default.tools.clear();
             records.create(DEFAULT_RECORD, &default).unwrap();
 
-            let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
+            let (listed, created) = directory(&ServeRequest::ListEnvironments, &store).unwrap();
             assert_eq!(listed.len(), 1);
             assert_eq!(listed[0].key, DEFAULT_RECORD);
+            assert!(created.is_none());
 
-            let created = directory(
+            let (created, made) = directory(
                 &ServeRequest::CreateEnvironment {
                     name: " Writing ".into(),
                 },
                 &store,
             )
             .unwrap();
+            let key = made.expect("the created record is named");
             let writing = created
                 .iter()
-                .find(|entry| entry.key != DEFAULT_RECORD)
+                .find(|entry| entry.key == key)
                 .expect("the new environment is listed");
             assert_eq!(writing.name, "Writing");
             assert!(writing.tools.is_empty() && writing.grants.is_empty());
@@ -2226,7 +2241,7 @@ mod tests {
                 "a new environment starts on the default environment's runtime"
             );
 
-            let renamed = directory(
+            let (renamed, _) = directory(
                 &ServeRequest::EnvironmentAction {
                     record: writing.key.clone(),
                     action: "rename".into(),
@@ -2239,7 +2254,7 @@ mod tests {
 
             let granted_dir = dir.path().join("src");
             std::fs::create_dir_all(&granted_dir).unwrap();
-            let granted = directory(
+            let (granted, _) = directory(
                 &ServeRequest::EnvironmentAction {
                     record: writing.key.clone(),
                     action: "grant-dir".into(),
@@ -2269,13 +2284,41 @@ mod tests {
                 directory(
                     &ServeRequest::EnvironmentAction {
                         record: writing.key.clone(),
+                        action: "append".into(),
+                        args: serde_json::json!({
+                            "device": "this-device",
+                            "paths": ["/elsewhere/notes"],
+                            "text": "one line",
+                        }),
+                    },
+                    &store,
+                )
+                .is_err(),
+                "a path no grant covers is refused, by the record's own verb"
+            );
+            assert!(
+                directory(
+                    &ServeRequest::EnvironmentAction {
+                        record: writing.key.clone(),
                         action: "set-runtime".into(),
                         args: serde_json::Value::Null,
                     },
                     &store,
                 )
                 .is_err(),
-                "only the actions an app may ask for here are applied"
+                "a verb asked without what it takes is refused"
+            );
+            assert!(
+                directory(
+                    &ServeRequest::EnvironmentAction {
+                        record: writing.key.clone(),
+                        action: "make".into(),
+                        args: serde_json::json!({"name": "Mine"}),
+                    },
+                    &store,
+                )
+                .is_err(),
+                "a record is made by the runtime, never asked of an existing one"
             );
             assert!(
                 directory(

@@ -45,6 +45,35 @@ pub const RESOURCE: &str = "environment";
 /// Run one command line in a session's shell.
 pub const RUN: &str = "run";
 
+/// The record's verbs an app, agent or script may ask of a workspace's environment, as the
+/// published surface names them: everything the record offers except `make` (the runtime makes a
+/// record with the runtime of the one it copies, so nothing asks it of an existing one) and
+/// `type` (the outbox's own read of what it queued, not a verb of the environment). The shell
+/// runtime's supervisor applies exactly these to a record, each by its own rules (`run` above is
+/// the one verb answered by the member that takes the workspace's Linux work).
+pub const APP_ACTIONS: &[&str] = &[
+    "add-tool",
+    "remove-tool",
+    "grant-dir",
+    "set-home",
+    "allow-host",
+    "revoke-grant",
+    "set-runtime",
+    "rename",
+    "copy",
+    "move",
+    "remove",
+    "make-dir",
+    "remove-dir",
+    "link",
+    "truncate",
+    "touch",
+    "append",
+    "write",
+    "restore",
+    "revert",
+];
+
 /// The most of a running command's output one live update carries.
 pub const LIVE_TAIL: usize = 32 * 1024;
 
