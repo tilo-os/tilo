@@ -967,21 +967,24 @@ impl UiGraphHandle {
     /// [`UiGraphError::Poisoned`] if another thread panicked while holding the graph
     /// lock.
     pub fn undo(&self) -> Result<bool, UiGraphError> {
-        self.step_history(crate::undo::UndoRequest::Undo)
+        self.step_history(crate::widget::undo_access::UndoRequest::Undo)
     }
 
     /// Reapply the most recently undone graph edit. Returns [`UiGraphError::Poisoned`] if
     /// another thread panicked while holding the graph lock.
     pub fn redo(&self) -> Result<bool, UiGraphError> {
-        self.step_history(crate::undo::UndoRequest::Redo)
+        self.step_history(crate::widget::undo_access::UndoRequest::Redo)
     }
 
-    fn step_history(&self, request: crate::undo::UndoRequest) -> Result<bool, UiGraphError> {
+    fn step_history(
+        &self,
+        request: crate::widget::undo_access::UndoRequest,
+    ) -> Result<bool, UiGraphError> {
         let mut guard = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         let state = &mut *guard;
         let (from, to) = match request {
-            crate::undo::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
-            crate::undo::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
+            crate::widget::undo_access::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
+            crate::widget::undo_access::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
         };
         if from.is_empty() {
             return Ok(false);
@@ -2949,7 +2952,7 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    crate::provides!(dyn crate::undo::LocalUndo);
+    crate::provides!(dyn crate::widget::undo_access::LocalUndo);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -2994,21 +2997,24 @@ impl Widget for UiGraphEditor {
     }
 }
 
-impl crate::undo::LocalUndo for UiGraphEditor {
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+impl crate::widget::undo_access::LocalUndo for UiGraphEditor {
+    fn handle_local_undo_request(
+        &mut self,
+        request: crate::widget::undo_access::UndoRequest,
+    ) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
             return false;
         }
         let status = self.shared.borrow().status.clone();
         let result = match request {
-            crate::undo::UndoRequest::Undo => self.handle.undo(),
-            crate::undo::UndoRequest::Redo => self.handle.redo(),
+            crate::widget::undo_access::UndoRequest::Undo => self.handle.undo(),
+            crate::widget::undo_access::UndoRequest::Redo => self.handle.redo(),
         };
         match (request, result) {
-            (crate::undo::UndoRequest::Undo, Ok(true)) => {
+            (crate::widget::undo_access::UndoRequest::Undo, Ok(true)) => {
                 status.set("Undid graph edit".to_owned());
             }
-            (crate::undo::UndoRequest::Redo, Ok(true)) => {
+            (crate::widget::undo_access::UndoRequest::Redo, Ok(true)) => {
                 status.set("Redid graph edit".to_owned());
             }
             (request, Ok(false)) => status.set(format!("Nothing to {}", request.verb())),

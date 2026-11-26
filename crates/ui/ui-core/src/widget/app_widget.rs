@@ -1042,9 +1042,9 @@ mod component_adapter {
             dyn crate::widget::AudiencePresentationProvider,
             #[cfg(feature = "model")]
             dyn crate::widget::presence_topology::Presences,
-            dyn crate::undo::CommittedActions,
-            dyn crate::undo::UndoControl,
-            dyn crate::undo::LocalUndo,
+            dyn crate::widget::undo_access::CommittedActions,
+            dyn crate::widget::undo_access::UndoControl,
+            dyn crate::widget::undo_access::LocalUndo,
             #[cfg(feature = "model")]
             dyn crate::history_mode::capability::DocumentHistory,
             dyn crate::widget::controls::ActionControls,
@@ -2222,27 +2222,32 @@ mod component_adapter {
         }
     }
 
-    impl crate::undo::LocalUndo for BoundAppWidget {
-        fn local_undo_status(&self) -> Option<crate::undo::LocalUndoStatus> {
+    impl crate::widget::undo_access::LocalUndo for BoundAppWidget {
+        fn local_undo_status(&self) -> Option<crate::widget::undo_access::LocalUndoStatus> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
-            crate::undo::local_undo_status(self.component.root.as_deref()?)
+            crate::widget::undo_access::local_undo_status(self.component.root.as_deref()?)
         }
 
         fn local_undo_is_deferred(&self) -> bool {
-            self.in_root(|root| crate::undo::local_undo_is_deferred(root))
+            self.in_root(|root| crate::widget::undo_access::local_undo_is_deferred(root))
                 .unwrap_or_default()
         }
 
-        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-            self.in_root_mut(|root| crate::undo::handle_local_undo_request(root, request))
-                .unwrap_or_default()
+        fn handle_local_undo_request(
+            &mut self,
+            request: crate::widget::undo_access::UndoRequest,
+        ) -> bool {
+            self.in_root_mut(|root| {
+                crate::widget::undo_access::handle_local_undo_request(root, request)
+            })
+            .unwrap_or_default()
         }
     }
 
-    impl crate::undo::UndoControl for BoundAppWidget {}
+    impl crate::widget::undo_access::UndoControl for BoundAppWidget {}
 
-    impl crate::undo::CommittedActions for BoundAppWidget {
+    impl crate::widget::undo_access::CommittedActions for BoundAppWidget {
         fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
             None
         }

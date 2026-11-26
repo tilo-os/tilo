@@ -538,7 +538,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
         MenuItem::action("Complete", || {}),
     ]);
     menu.set_about(Some(
-        crate::shared_selection::SharedSelection::of_items([(
+        crate::shared_subject::SharedSelection::of_items([(
             "tasks.tracker/issues/one",
             "Ship the launch notes",
         )])

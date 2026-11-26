@@ -79,7 +79,7 @@ impl OwnedText {
 impl crate::widget::Decorator for OwnedText {
     type Inner = TextInput;
 
-    crate::provides!(dyn crate::undo::CommittedActions; inner = input);
+    crate::provides!(dyn crate::widget::undo_access::CommittedActions; inner = input);
 
     fn inner(&self) -> &TextInput {
         &self.input
@@ -116,7 +116,7 @@ impl crate::widget::Decorator for OwnedText {
     }
 }
 
-impl crate::undo::CommittedActions for OwnedText {
+impl crate::widget::undo_access::CommittedActions for OwnedText {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.committed.take()
     }

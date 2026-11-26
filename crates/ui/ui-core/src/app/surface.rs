@@ -623,12 +623,12 @@ impl App {
             }
             match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
                 Some(crate::platform::HostShortcut::Undo) => {
-                    app.perform_undo_request(crate::undo::UndoRequest::Undo);
+                    app.perform_undo_request(crate::widget::undo_access::UndoRequest::Undo);
                     is_undo_redo = true;
                     handled = true;
                 }
                 Some(crate::platform::HostShortcut::Redo) => {
-                    app.perform_undo_request(crate::undo::UndoRequest::Redo);
+                    app.perform_undo_request(crate::widget::undo_access::UndoRequest::Redo);
                     is_undo_redo = true;
                     handled = true;
                 }

@@ -270,7 +270,7 @@ where
 {
     crate::provides!(
         dyn crate::widget::FullscreenProvider,
-        dyn crate::undo::CommittedActions,
+        dyn crate::widget::undo_access::CommittedActions,
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
@@ -470,12 +470,12 @@ where
     }
 }
 
-impl<K> crate::undo::CommittedActions for ModelView<K>
+impl<K> crate::widget::undo_access::CommittedActions for ModelView<K>
 where
     K: PartialEq + 'static,
 {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        crate::undo::take_committed_action(self.child.as_mut())
+        crate::widget::undo_access::take_committed_action(self.child.as_mut())
     }
 }
 

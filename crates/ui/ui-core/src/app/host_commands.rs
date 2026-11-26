@@ -46,7 +46,7 @@ impl App {
 
     fn focused_edit_resource(&mut self) -> tilo_actions::ResourceSpec {
         let mut resource = edit_resource(&self.focused_undo_status());
-        if crate::undo::local_undo_is_deferred(self.root_widget.as_ref()) {
+        if crate::widget::undo_access::local_undo_is_deferred(self.root_widget.as_ref()) {
             for action in &mut resource.actions {
                 let ty = action.type_mut();
                 ty.contract.execution =
@@ -60,8 +60,8 @@ impl App {
             }
         }
         if matches!(
-            crate::undo::local_undo_status(self.root_widget.as_ref()),
-            Some(crate::undo::LocalUndoStatus::Pending)
+            crate::widget::undo_access::local_undo_status(self.root_widget.as_ref()),
+            Some(crate::widget::undo_access::LocalUndoStatus::Pending)
         ) {
             for action in &mut resource.actions {
                 action.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
@@ -76,7 +76,8 @@ impl App {
     }
 
     pub(super) fn refresh_local_undo_discovery(&mut self) -> bool {
-        let status = crate::undo::local_undo_status(self.root_widget.as_ref()).map(|s| s.key());
+        let status = crate::widget::undo_access::local_undo_status(self.root_widget.as_ref())
+            .map(|s| s.key());
         if status == self.actions.local_history_status {
             return false;
         }
@@ -89,8 +90,12 @@ impl App {
     /// component with its own history (a text field), then to the focused
     /// document. Keyboard, menu and automation all land here.
     /// Whether it moved anything.
-    pub(crate) fn perform_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        if crate::undo::handle_local_undo_request(self.root_widget.as_mut(), request) {
+    pub(crate) fn perform_undo_request(
+        &mut self,
+        request: crate::widget::undo_access::UndoRequest,
+    ) -> bool {
+        if crate::widget::undo_access::handle_local_undo_request(self.root_widget.as_mut(), request)
+        {
             self.needs_sync = true;
             return true;
         }
@@ -104,7 +109,7 @@ impl App {
 
     /// Undo or redo in the focused document, for the local author.
     #[cfg(feature = "model")]
-    fn perform_document_undo(&mut self, request: crate::undo::UndoRequest) -> bool {
+    fn perform_document_undo(&mut self, request: crate::widget::undo_access::UndoRequest) -> bool {
         // Otherwise round-tripping document undo/redo loses caret position.
         let current_meta = crate::widget::undo_points::get_state(self.root_widget.as_ref());
         let current_focus_idx = self
@@ -131,10 +136,10 @@ impl App {
             .is_some_and(|node| self.bindings.owns_document(node));
         let author = Some(&self.local_author);
         let entry = match request {
-            crate::undo::UndoRequest::Undo => {
+            crate::widget::undo_access::UndoRequest::Undo => {
                 self.state.undo_as(author, current_focus_idx, current_meta)
             }
-            crate::undo::UndoRequest::Redo => {
+            crate::widget::undo_access::UndoRequest::Redo => {
                 self.state.redo_as(author, current_focus_idx, current_meta)
             }
         };
@@ -158,7 +163,7 @@ impl App {
     pub(super) fn move_bound_history(
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
-        request: crate::undo::UndoRequest,
+        request: crate::widget::undo_access::UndoRequest,
     ) -> bool {
         if self.collaboration.manager.is_connected() {
             match binding.history_uses_compensation(&mut self.state.doc) {
@@ -187,22 +192,24 @@ impl App {
 
     /// What Undo would do for the target the keyboard would undo in. Reads a
     /// snapshot, so a pending edit keeps its undo step open.
-    pub(super) fn focused_undo_status(&mut self) -> crate::undo::UndoStatus {
-        if let Some(local) = crate::undo::local_undo_status(self.root_widget.as_ref()) {
+    pub(super) fn focused_undo_status(&mut self) -> crate::widget::undo_access::UndoStatus {
+        if let Some(local) =
+            crate::widget::undo_access::local_undo_status(self.root_widget.as_ref())
+        {
             return match local {
-                crate::undo::LocalUndoStatus::Ready(status) => status,
-                crate::undo::LocalUndoStatus::Pending => Default::default(),
+                crate::widget::undo_access::LocalUndoStatus::Ready(status) => status,
+                crate::widget::undo_access::LocalUndoStatus::Pending => Default::default(),
             };
         }
         #[cfg(feature = "model")]
         let status = self.focused_document_undo_status();
         #[cfg(not(feature = "model"))]
-        let status = crate::undo::UndoStatus::default();
+        let status = crate::widget::undo_access::UndoStatus::default();
         status
     }
 
     #[cfg(feature = "model")]
-    fn focused_document_undo_status(&mut self) -> crate::undo::UndoStatus {
+    fn focused_document_undo_status(&mut self) -> crate::widget::undo_access::UndoStatus {
         let focused = self.focused_node;
         if let Some(binding) = focused
             .and_then(|node| {
@@ -269,7 +276,7 @@ impl App {
             framework_history_open: self.history_open(),
             palette: self.palette_presented(),
             focus: self.focused_node,
-            local_history: crate::undo::local_undo_status(self.root_widget.as_ref())
+            local_history: crate::widget::undo_access::local_undo_status(self.root_widget.as_ref())
                 .map(|s| s.key()),
             resources: (
                 self.actions.resource_generation.get(),

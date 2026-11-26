@@ -606,10 +606,11 @@ impl App {
         #[cfg(test)]
         let _probe = crate::profiling::frame_probe::span("history.nodes");
         let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
-        let mut local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
+        let mut local_status =
+            crate::widget::undo_access::local_undo_status(self.root_widget.as_ref());
         let mut bound_statuses: Vec<(
             crate::bound_dispatch::CallbackBinding,
-            crate::undo::UndoStatus,
+            crate::widget::undo_access::UndoStatus,
         )> = Vec::new();
         let mut history_exists: Option<bool> = None;
         // The nodes the sweep skips are outside any bound component: what
@@ -642,10 +643,10 @@ impl App {
                     &self.layout.node_map,
                     node,
                     |widget| {
-                        crate::widget::capability::capability_mut::<dyn crate::undo::UndoControl>(
-                            widget,
-                        )
-                        .map(crate::undo::UndoControl::take_undo_request)
+                        crate::widget::capability::capability_mut::<
+                            dyn crate::widget::undo_access::UndoControl,
+                        >(widget)
+                        .map(crate::widget::undo_access::UndoControl::take_undo_request)
                     },
                 )
             }
@@ -665,13 +666,18 @@ impl App {
                 } else {
                     let author = Some(&self.local_author);
                     match request {
-                        crate::undo::UndoRequest::Undo => self.state.undo_as(author, None, None),
-                        crate::undo::UndoRequest::Redo => self.state.redo_as(author, None, None),
+                        crate::widget::undo_access::UndoRequest::Undo => {
+                            self.state.undo_as(author, None, None)
+                        }
+                        crate::widget::undo_access::UndoRequest::Redo => {
+                            self.state.redo_as(author, None, None)
+                        }
                     }
                     .is_some()
                 };
                 embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
-                local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
+                local_status =
+                    crate::widget::undo_access::local_undo_status(self.root_widget.as_ref());
                 bound_statuses.clear();
                 history_exists = None;
             }
@@ -698,8 +704,12 @@ impl App {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
                         return match local {
-                            crate::undo::LocalUndoStatus::Ready(status) => status.clone(),
-                            crate::undo::LocalUndoStatus::Pending => Default::default(),
+                            crate::widget::undo_access::LocalUndoStatus::Ready(status) => {
+                                status.clone()
+                            }
+                            crate::widget::undo_access::LocalUndoStatus::Pending => {
+                                Default::default()
+                            }
                         };
                     }
                     if embedded {
@@ -715,7 +725,7 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| crate::undo::set_undo_status(widget, &mut status),
+                    |widget| crate::widget::undo_access::set_undo_status(widget, &mut status),
                 )
             };
         }
@@ -758,12 +768,12 @@ impl App {
                         &self.layout.node_map,
                         node,
                         |widget| {
-                            crate::widget::capability::capability::<dyn crate::undo::UndoControl>(
-                                widget,
-                            )
+                            crate::widget::capability::capability::<
+                                dyn crate::widget::undo_access::UndoControl,
+                            >(widget)
                             .is_some()
                                 || crate::widget::capability::capability::<
-                                    dyn crate::undo::CommittedActions,
+                                    dyn crate::widget::undo_access::CommittedActions,
                                 >(widget)
                                 .is_some()
                         },

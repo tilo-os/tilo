@@ -5,7 +5,7 @@ use crate::app::framework_history_tests::{app_with_root, layout};
 
 use crate::state::State;
 use crate::theme::Theme;
-use crate::undo::{UndoRequest, UndoStatus};
+use crate::widget::undo_access::{UndoRequest, UndoStatus};
 use crate::widget::{Column, Text, Widget};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::Cell;
@@ -22,7 +22,7 @@ struct Asker {
 }
 
 impl Widget for Asker {
-    crate::provides!(dyn crate::undo::UndoControl);
+    crate::provides!(dyn crate::widget::undo_access::UndoControl);
 
     fn name(&self) -> &str {
         "Asker"
@@ -60,7 +60,7 @@ impl Widget for Asker {
     }
 }
 
-impl crate::undo::UndoControl for Asker {
+impl crate::widget::undo_access::UndoControl for Asker {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
         self.can_undo.set(Some(status().can_undo));
     }

@@ -1447,7 +1447,7 @@ impl App {
                             crate::shared_selection::subtree_selection(self.root_widget.as_ref());
                         let bounds = about
                             .as_ref()
-                            .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
+                            .and_then(crate::shared_subject::SharedSelection::protocol_bounds);
                         self.open_send_box(about, bounds, None, to, carried);
                     }
                 }
@@ -1635,7 +1635,7 @@ fn tab_request_message(
 /// this app's own.
 #[cfg(feature = "native")]
 fn publishing_app<'a>(
-    subject: &crate::shared_selection::SharedSelection,
+    subject: &crate::shared_subject::SharedSelection,
     published: &'a [tilo_actions::ResourceSpec],
 ) -> Option<&'a str> {
     fn find<'a>(

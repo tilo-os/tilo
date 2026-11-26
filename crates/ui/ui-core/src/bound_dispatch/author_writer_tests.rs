@@ -206,7 +206,7 @@ tilo_test_env::scenario! {
             });
             assert_eq!(answered, std::slice::from_ref(&agent_writer));
             let undone = writers_of(&records, id, || {
-                you.history_request(&mut outer, crate::undo::UndoRequest::Undo)
+                you.history_request(&mut outer, crate::widget::undo_access::UndoRequest::Undo)
                     .unwrap()
                     .unwrap();
             });

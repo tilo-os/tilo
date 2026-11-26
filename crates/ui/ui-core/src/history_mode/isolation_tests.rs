@@ -167,7 +167,7 @@ struct LiveOwner {
     collab_events: Rc<Cell<usize>>,
     collab_wake_handles: Rc<RefCell<Vec<crate::WakeHandle>>>,
     bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
-    undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
+    undo_request: Rc<Cell<Option<crate::widget::undo_access::UndoRequest>>>,
     active: Option<tilo_actions::InvocationId>,
     manual: Rc<RefCell<Option<tilo_actions::ControlInvocation>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -186,9 +186,9 @@ impl crate::widget::Collaborative for LiveOwner {
 impl Widget for LiveOwner {
     crate::provides!(
         dyn crate::widget::Collaborative,
-        dyn crate::undo::CommittedActions,
-        dyn crate::undo::UndoControl,
-        dyn crate::undo::LocalUndo,
+        dyn crate::widget::undo_access::CommittedActions,
+        dyn crate::widget::undo_access::UndoControl,
+        dyn crate::widget::undo_access::LocalUndo,
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
@@ -310,20 +310,20 @@ impl crate::widget::controls::ActionControls for LiveOwner {
     }
 }
 
-impl crate::undo::LocalUndo for LiveOwner {
-    fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
+impl crate::widget::undo_access::LocalUndo for LiveOwner {
+    fn handle_local_undo_request(&mut self, _: crate::widget::undo_access::UndoRequest) -> bool {
         self.local_events.set(self.local_events.get() + 1);
         true
     }
 }
 
-impl crate::undo::UndoControl for LiveOwner {
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+impl crate::widget::undo_access::UndoControl for LiveOwner {
+    fn take_undo_request(&mut self) -> Option<crate::widget::undo_access::UndoRequest> {
         self.undo_request.take()
     }
 }
 
-impl crate::undo::CommittedActions for LiveOwner {
+impl crate::widget::undo_access::CommittedActions for LiveOwner {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.bracket.borrow_mut().take()
     }

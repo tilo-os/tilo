@@ -2832,7 +2832,7 @@ impl Driver {
     pub fn perform_undo(&mut self) -> bool {
         let moved = self
             .app
-            .perform_undo_request(crate::undo::UndoRequest::Undo);
+            .perform_undo_request(crate::widget::undo_access::UndoRequest::Undo);
         self.run_frame();
         moved
     }
@@ -2841,13 +2841,13 @@ impl Driver {
     pub fn perform_redo(&mut self) -> bool {
         let moved = self
             .app
-            .perform_undo_request(crate::undo::UndoRequest::Redo);
+            .perform_undo_request(crate::widget::undo_access::UndoRequest::Redo);
         self.run_frame();
         moved
     }
 
     /// Whether undo and redo are possible for the focused document.
-    pub fn undo_status(&mut self) -> crate::undo::UndoStatus {
+    pub fn undo_status(&mut self) -> crate::widget::undo_access::UndoStatus {
         self.app.focused_undo_status()
     }
 

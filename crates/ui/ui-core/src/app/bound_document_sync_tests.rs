@@ -57,7 +57,10 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
         );
         assert!(
             binding
-                .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .history_request(
+                    &mut fixture.app.state.doc,
+                    crate::widget::undo_access::UndoRequest::Undo
+                )
                 .unwrap()
                 .is_some()
         );
@@ -143,7 +146,10 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .unwrap();
         assert!(
             binding
-                .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .history_request(
+                    &mut fixture.app.state.doc,
+                    crate::widget::undo_access::UndoRequest::Undo
+                )
                 .unwrap()
                 .is_some()
         );

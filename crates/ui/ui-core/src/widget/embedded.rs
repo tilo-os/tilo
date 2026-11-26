@@ -459,7 +459,7 @@ impl<W: Widget + 'static> Embedded<W> {
     /// What the person has selected in the child, for asking an agent about it
     /// ([`crate::presence::capability::PublishesPresence::shared_selection`]).
     #[cfg(feature = "model")]
-    pub fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+    pub fn shared_selection(&self) -> Option<crate::shared_subject::SharedSelection> {
         crate::shared_selection::selection_of(&*self.widget)
     }
 

@@ -600,7 +600,7 @@ impl App {
                 }
             }
         }
-        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+        if crate::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some() {
             let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
             if let Some(edit) = self.edit_resource_for(&address) {
                 resources.push(edit);
@@ -1051,7 +1051,7 @@ impl App {
     pub(super) fn invoke_bound_history(
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
-        request: crate::undo::UndoRequest,
+        request: crate::widget::undo_access::UndoRequest,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.require_bound_broker_route(binding)?;
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
@@ -1752,7 +1752,7 @@ impl App {
                 resources.push(resource);
             }
         }
-        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+        if crate::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some() {
             resources.extend(self.edit_resource_for(address));
         }
         #[cfg(feature = "native")]

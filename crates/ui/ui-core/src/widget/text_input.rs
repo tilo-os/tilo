@@ -6002,11 +6002,11 @@ impl crate::presence::capability::PublishesPresence for TextInput {
     }
 
     #[cfg(feature = "model")]
-    fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+    fn shared_selection(&self) -> Option<crate::shared_subject::SharedSelection> {
         self.is_focused
             .then(|| self.shareable_selection())
             .flatten()
-            .map(|text| crate::shared_selection::SharedSelection::of_text(text).within(self.rect))
+            .map(|text| crate::shared_subject::SharedSelection::of_text(text).within(self.rect))
     }
 
     fn presence_range_rects(

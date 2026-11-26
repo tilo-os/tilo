@@ -34,7 +34,7 @@ pub(crate) trait StateHistory {
     fn undo_status_snapshot(
         &self,
         author: Option<&crate::permissions::MemberId>,
-    ) -> crate::undo::UndoStatus;
+    ) -> crate::widget::undo_access::UndoStatus;
 }
 
 #[cfg(feature = "model")]
@@ -66,7 +66,7 @@ impl StateHistory for State {
     fn undo_status_snapshot(
         &self,
         author: Option<&crate::permissions::MemberId>,
-    ) -> crate::undo::UndoStatus {
+    ) -> crate::widget::undo_access::UndoStatus {
         crate::undo::status_snapshot(&self.doc, self.undo_log(), author)
     }
 }
@@ -936,7 +936,7 @@ mod tests {
             let a = alice();
 
             let empty = crate::undo::state_status(&state, Some(&a));
-            assert_eq!(empty, crate::undo::UndoStatus::empty());
+            assert_eq!(empty, crate::widget::undo_access::UndoStatus::empty());
 
             type_action(&mut state, "body", "hello", &a);
             let s = crate::undo::state_status(&state, Some(&a));

@@ -498,7 +498,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 binding
-                    .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .history_request(&mut fixture.app.state.doc, crate::widget::undo_access::UndoRequest::Undo)
                     .unwrap()
                     .is_some_and(|step| step.author == Some(fixture.bindings[0].author.clone())),
                 "taking the words back takes back this person's step, not the peer's change"

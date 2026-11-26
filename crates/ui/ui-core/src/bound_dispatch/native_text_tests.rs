@@ -147,7 +147,7 @@ fn value(records: &ResourceStore, checkout: &DocumentCheckout, field: &str) -> S
 fn restore(
     binding: &CallbackBinding,
     outer: &mut AutoCommit,
-    request: crate::undo::UndoRequest,
+    request: crate::widget::undo_access::UndoRequest,
 ) -> crate::state::UndoEntry {
     binding
         .history_request(outer, request)
@@ -183,19 +183,19 @@ tilo_test_env::scenario! {
             5,
             "coalescing history does not combine canonical envelopes"
         );
-        restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
+        restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
         assert_eq!(value(&records, &checkout, "second"), "");
         assert_eq!(value(&records, &checkout, "first"), "abc");
-        let entry = restore(&binding, &mut outer, crate::undo::UndoRequest::Undo);
+        let entry = restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
         let step = entry.step.unwrap();
         let inverse: TextEdit = serde_json::from_slice(&step.compensation.unwrap().payload).unwrap();
         let redo: TextEdit = serde_json::from_slice(&step.action.unwrap().payload).unwrap();
         assert_eq!(inverse.value, "ab");
         assert_eq!(redo.value, "abc");
         assert_eq!(value(&records, &checkout, "first"), "");
-        restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
+        restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Redo);
         assert_eq!(value(&records, &checkout, "first"), "abc");
-        restore(&binding, &mut outer, crate::undo::UndoRequest::Redo);
+        restore(&binding, &mut outer, crate::widget::undo_access::UndoRequest::Redo);
         assert_eq!(value(&records, &checkout, "second"), "xy");
     }
 
@@ -221,22 +221,22 @@ tilo_test_env::scenario! {
             }
             edit(&two, &mut outer, "other", "foreign", true, &mut wire);
             edit(&one, &mut outer, "first", "abc", true, &mut wire);
-            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
             assert_eq!(value(&records, &checkout, "first"), "ab");
             assert_eq!(value(&records, &checkout, "other"), "foreign");
-            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
             assert_eq!(value(&records, &checkout, "first"), "");
             assert_eq!(value(&records, &checkout, "other"), "foreign");
             for text in ["1", "12", "123"] {
                 edit(&one, &mut outer, "first", text, false, &mut wire);
             }
-            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
             assert_eq!(
                 value(&records, &checkout, "first"),
                 "12",
                 "an agent/programmatic call is one step"
             );
-            restore(&one, &mut outer, crate::undo::UndoRequest::Undo);
+            restore(&one, &mut outer, crate::widget::undo_access::UndoRequest::Undo);
             assert_eq!(value(&records, &checkout, "first"), "1");
         }
     }

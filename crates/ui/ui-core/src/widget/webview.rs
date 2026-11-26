@@ -950,20 +950,23 @@ impl crate::widget::NativeViewLifecycle for WebView {
     fn native_view_frame_start(&mut self) {}
 }
 
-impl crate::undo::LocalUndo for WebView {
+impl crate::widget::undo_access::LocalUndo for WebView {
     fn local_undo_is_deferred(&self) -> bool {
         true
     }
-    fn local_undo_status(&self) -> Option<crate::undo::LocalUndoStatus> {
+    fn local_undo_status(&self) -> Option<crate::widget::undo_access::LocalUndoStatus> {
         (self.focused && self.engine.supports_guarded_edit_history()).then(|| {
             self.text_input.history_status().map_or(
-                crate::undo::LocalUndoStatus::Pending,
-                crate::undo::LocalUndoStatus::Ready,
+                crate::widget::undo_access::LocalUndoStatus::Pending,
+                crate::widget::undo_access::LocalUndoStatus::Ready,
             )
         })
     }
 
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+    fn handle_local_undo_request(
+        &mut self,
+        request: crate::widget::undo_access::UndoRequest,
+    ) -> bool {
         if self.focused
             && self.engine.supports_guarded_edit_history()
             && self.text_input.history(request).is_some()
@@ -1075,7 +1078,7 @@ impl Widget for WebView {
 
     crate::provides!(
         dyn crate::widget::NativeViewLifecycle,
-        dyn crate::undo::LocalUndo,
+        dyn crate::widget::undo_access::LocalUndo,
         dyn crate::widget::ResourceOperations,
         dyn crate::widget::PictureInPictureProvider
     );
@@ -1514,7 +1517,7 @@ impl Widget for WebView {
 
 impl crate::widget::ResourceOperations for WebView {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::undo::EDIT_OPERATION]
+        &[crate::widget::undo_access::EDIT_OPERATION]
     }
 
     fn start_operation(
@@ -1524,7 +1527,7 @@ impl crate::widget::ResourceOperations for WebView {
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let request = operation.request();
-        if request.type_id != crate::undo::EDIT_OPERATION {
+        if request.type_id != crate::widget::undo_access::EDIT_OPERATION {
             return Ok(None);
         }
         if !self.focused || !self.engine.supports_guarded_edit_history() {
@@ -1537,7 +1540,7 @@ impl crate::widget::ResourceOperations for WebView {
                 Err("An original-field history request is already pending".into())
             };
         }
-        let direction: crate::undo::UndoRequest =
+        let direction: crate::widget::undo_access::UndoRequest =
             serde_json::from_slice(request.payload).map_err(|_| "Invalid native Edit request")?;
         if !self
             .text_input
@@ -1667,7 +1670,7 @@ mod tests {
                 });
                 let (mut page, tree, node) = laid_out(engine.clone());
                 page.focused = true;
-                let edit = crate::host_chrome::edit::edit_resource(&crate::undo::UndoStatus {
+                let edit = crate::host_chrome::edit::edit_resource(&crate::widget::undo_access::UndoStatus {
                     can_undo: true,
                     ..Default::default()
                 });
@@ -1684,7 +1687,7 @@ mod tests {
                 page.sync(&doc, &automerge::ROOT);
                 page.sync(&doc, &automerge::ROOT);
                 let invocation = tilo_actions::InvocationId::new();
-                let payload = serde_json::to_vec(&crate::undo::UndoRequest::Undo).unwrap();
+                let payload = serde_json::to_vec(&crate::widget::undo_access::UndoRequest::Undo).unwrap();
                 let operation = crate::widget::ResourceOperation::local(
                     invocation,
                     tilo_actions::OperationKind::Effect,
@@ -1782,7 +1785,7 @@ mod tests {
 
         phase system_undo_delegates_only_to_focused_native_page;
         {
-            use crate::undo::{UndoRequest, handle_local_undo_request};
+            use crate::widget::undo_access::{UndoRequest, handle_local_undo_request};
             let engine = Arc::new(NativeHistory {
                 inner: TestEngine::new(),
                 requests: Default::default(),
@@ -1812,7 +1815,7 @@ mod tests {
 
     struct NativeHistory {
         inner: tilo_webview::SharedEngine,
-        requests: std::sync::Mutex<Vec<crate::undo::UndoRequest>>,
+        requests: std::sync::Mutex<Vec<crate::widget::undo_access::UndoRequest>>,
         modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
         pointer_modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
     }
@@ -1842,7 +1845,7 @@ mod tests {
         fn wrapped(&self) -> Option<&tilo_webview::SharedEngine> {
             Some(&self.inner)
         }
-        fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        fn handle_undo_request(&self, request: crate::widget::undo_access::UndoRequest) -> bool {
             self.requests
                 .lock()
                 .expect("native history fixture")

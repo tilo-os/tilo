@@ -668,7 +668,7 @@ pub struct ContextMenu {
     /// while it moves.
     drawn: crate::motion::Pose,
     /// What the menu acts on, which a typed question is about.
-    about: Option<crate::shared_selection::SharedSelection>,
+    about: Option<crate::shared_subject::SharedSelection>,
     /// Where the row this menu adds itself (asking the typed sentence)
     /// sits; its owner's rows end there, and choosing it is never reported
     /// through [`ContextMenu::take_selection`].
@@ -820,7 +820,7 @@ impl ContextMenu {
     /// drawn where it is), so a question typed into it is about that.
     /// Without it the app attaches what is under the pointer, else its
     /// window.
-    pub fn set_about(&mut self, about: Option<crate::shared_selection::SharedSelection>) {
+    pub fn set_about(&mut self, about: Option<crate::shared_subject::SharedSelection>) {
         self.send_to.set_about(about.clone());
         self.about = about;
     }

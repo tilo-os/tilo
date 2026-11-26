@@ -138,7 +138,7 @@ fn a_right_click_on_a_row_sends_about_that_row_and_the_typing_is_the_message() {
     );
     press(&mut app, send_row);
     release(&mut app);
-    let about = crate::shared_selection::SharedSelection::of_text("Budget")
+    let about = crate::shared_subject::SharedSelection::of_text("Budget")
         .at(tilo_actions::SelectionPlace::item("file-b"));
     let subjects: Vec<_> = menu(&app)
         .send_to()

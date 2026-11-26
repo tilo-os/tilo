@@ -586,7 +586,7 @@ impl RoutedOwners {
         Vec<(
             tilo_actions::MemberId,
             crate::application::InstanceId,
-            crate::undo::UndoStatus,
+            crate::widget::undo_access::UndoStatus,
         )>,
     ) {
         let checkout = &self.bindings[index].checkout;
@@ -843,7 +843,7 @@ impl RoutedPrimary {
         Vec<(
             tilo_actions::MemberId,
             crate::application::InstanceId,
-            crate::undo::UndoStatus,
+            crate::widget::undo_access::UndoStatus,
         )>,
     ) {
         self.records

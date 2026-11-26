@@ -149,30 +149,29 @@ impl tilo_actions::Action for EmptyFollowUp {
 fn probe_read_schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        crate::semantic_document_read::result_schema(serde_json::json!({"type":"string"}), false)
+        crate::semantic_readers::result_schema(serde_json::json!({"type":"string"}), false)
     })
 }
 
 fn probe_read_validate(
     _: &tilo_actions::ResourceSpec,
     payload: &[u8],
-) -> Result<(), crate::semantic_document_read::SemanticReadError> {
-    crate::semantic_document_read::decode_request::<()>(payload)
+) -> Result<(), crate::semantic_readers::SemanticReadError> {
+    crate::semantic_readers::decode_request::<()>(payload)
 }
 
 fn probe_read_project(
     doc: &automerge::AutoCommit,
     heads: &[automerge::ChangeHash],
     _: &[u8],
-) -> Result<crate::semantic_document_read::ReadPage, crate::semantic_document_read::SemanticReadError>
-{
+) -> Result<crate::semantic_readers::ReadPage, crate::semantic_readers::SemanticReadError> {
     Probe::capture("bound-read");
     let marker = doc
         .get_at(ROOT, "marker", heads)
-        .map_err(|_| crate::semantic_document_read::SemanticReadError::Malformed)?
+        .map_err(|_| crate::semantic_readers::SemanticReadError::Malformed)?
         .and_then(|(value, _)| value.into_string().ok())
-        .ok_or(crate::semantic_document_read::SemanticReadError::Malformed)?;
-    Ok(crate::semantic_document_read::ReadPage {
+        .ok_or(crate::semantic_readers::SemanticReadError::Malformed)?;
+    Ok(crate::semantic_readers::ReadPage {
         content: serde_json::json!(marker),
         next_cursor: None,
     })
@@ -255,18 +254,15 @@ impl crate::search::SearchProvider for LazyProbe {
         })
     }
 }
-impl crate::semantic_document_read::SemanticReaders for Probe {
-    fn semantic_readers(
-        &self,
-    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
-        static READERS: [crate::semantic_document_read::RegisteredSemanticReader; 1] = [
-            crate::semantic_document_read::RegisteredSemanticReader::new(
+impl crate::semantic_readers::SemanticReaders for Probe {
+    fn semantic_readers(&self) -> &'static [crate::semantic_readers::RegisteredSemanticReader] {
+        static READERS: [crate::semantic_readers::RegisteredSemanticReader; 1] =
+            [crate::semantic_readers::RegisteredSemanticReader::new(
                 "bound.read",
                 probe_read_schema,
                 probe_read_validate,
                 probe_read_project,
-            ),
-        ];
+            )];
         if READ_CAPTURE_MODE.get() {
             &READERS
         } else {
@@ -277,11 +273,11 @@ impl crate::semantic_document_read::SemanticReaders for Probe {
 
 impl Widget for Probe {
     crate::provides!(
-        dyn crate::undo::CommittedActions,
+        dyn crate::widget::undo_access::CommittedActions,
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::semantic_document_read::SemanticReaders,
+        dyn crate::semantic_readers::SemanticReaders,
         dyn crate::widget::ResourceOperations
     );
 
@@ -615,7 +611,7 @@ impl crate::widget::controls::ActionControls for Probe {
     }
 }
 
-impl crate::undo::CommittedActions for Probe {
+impl crate::widget::undo_access::CommittedActions for Probe {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
@@ -1168,9 +1164,12 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                 doc.put(ROOT, "typing", "continued").unwrap();
             })
             .unwrap();
-            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                .unwrap()
-                .unwrap();
+            a.history_request(
+                &mut fixture.app.state.doc,
+                crate::widget::undo_access::UndoRequest::Undo,
+            )
+            .unwrap()
+            .unwrap();
             fixture
                 .records
                 .read(&a.checkout.id, |doc| {
@@ -1222,18 +1221,27 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                 doc.put(ROOT, "later", true).unwrap();
             })
             .unwrap();
-            b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+            b.history_request(
+                &mut fixture.app.state.doc,
+                crate::widget::undo_access::UndoRequest::Undo,
+            )
+            .unwrap()
+            .unwrap();
+            if mode != 3 {
+                b.history_request(
+                    &mut fixture.app.state.doc,
+                    crate::widget::undo_access::UndoRequest::Undo,
+                )
                 .unwrap()
                 .unwrap();
-            if mode != 3 {
-                b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                    .unwrap()
-                    .unwrap();
             }
             assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
-            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                .unwrap()
-                .unwrap();
+            a.history_request(
+                &mut fixture.app.state.doc,
+                crate::widget::undo_access::UndoRequest::Undo,
+            )
+            .unwrap()
+            .unwrap();
             fixture
                 .records
                 .read(&a.checkout.id, |doc| {
@@ -1287,9 +1295,12 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                 mode < 9
             );
             if mode < 9 {
-                b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                    .unwrap()
-                    .unwrap();
+                b.history_request(
+                    &mut fixture.app.state.doc,
+                    crate::widget::undo_access::UndoRequest::Undo,
+                )
+                .unwrap()
+                .unwrap();
                 assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
             } else {
                 assert!(
@@ -1301,9 +1312,12 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
                         .unwrap()
                 );
             }
-            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-                .unwrap()
-                .unwrap();
+            a.history_request(
+                &mut fixture.app.state.doc,
+                crate::widget::undo_access::UndoRequest::Undo,
+            )
+            .unwrap()
+            .unwrap();
             fixture
                 .records
                 .read(&a.checkout.id, |doc| {
@@ -1325,9 +1339,12 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             doc.put(ROOT, "typing", "prior").unwrap();
         })
         .unwrap();
-        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-            .unwrap()
-            .unwrap();
+        a.history_request(
+            &mut fixture.app.state.doc,
+            crate::widget::undo_access::UndoRequest::Undo,
+        )
+        .unwrap()
+        .unwrap();
         let target = fixture.target(1, "follow-up");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = fixture.app.invoke_bound_target(
@@ -1347,12 +1364,18 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             doc.put(ROOT, "later", true).unwrap();
         })
         .unwrap();
-        b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
-            .unwrap()
-            .unwrap();
-        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Redo)
-            .unwrap()
-            .unwrap();
+        b.history_request(
+            &mut fixture.app.state.doc,
+            crate::widget::undo_access::UndoRequest::Undo,
+        )
+        .unwrap()
+        .unwrap();
+        a.history_request(
+            &mut fixture.app.state.doc,
+            crate::widget::undo_access::UndoRequest::Redo,
+        )
+        .unwrap()
+        .unwrap();
         fixture
             .records
             .read(&a.checkout.id, |doc| {
@@ -1402,7 +1425,10 @@ fn compound_bound_effects_preserve_typing_ownership_and_redo() {
             pending
         );
         let entry = binding
-            .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+            .history_request(
+                &mut fixture.app.state.doc,
+                crate::widget::undo_access::UndoRequest::Undo,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(entry.instance_id, Some(11));
@@ -1900,7 +1926,10 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
             if shared {
                 result.unwrap();
                 first
-                    .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .history_request(
+                        &mut fixture.app.state.doc,
+                        crate::widget::undo_access::UndoRequest::Undo,
+                    )
                     .unwrap()
                     .unwrap();
                 fixture

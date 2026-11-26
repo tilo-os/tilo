@@ -9,7 +9,7 @@ impl App {
     /// beside `bounds`, else beside what holds the keyboard, and takes the keys at once.
     pub fn open_send_box(
         &mut self,
-        about: Option<crate::shared_selection::SharedSelection>,
+        about: Option<crate::shared_subject::SharedSelection>,
         bounds: Option<[f64; 4]>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],

@@ -7,7 +7,6 @@ pub use crate::widget::undo_access::{
     handle_local_undo_request, keeps_undo_step_open, local_undo_status, set_undo_status, shortcut,
     take_committed_action, take_undo_request,
 };
-pub(crate) use crate::widget::undo_access::{EDIT_OPERATION, local_undo_is_deferred};
 
 /// Turn the actions a widget dispatched during the last event into exactly one undo
 /// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
@@ -30,7 +29,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
         // SAFETY: see the function's safety note. The reference is created and
         // dropped inside this iteration, so no two overlap.
         let w = unsafe { &mut *w_ptr };
-        if let Some(before) = crate::undo::take_committed_action(w) {
+        if let Some(before) = crate::widget::undo_access::take_committed_action(w) {
             brackets.push(before);
         }
     }
@@ -59,7 +58,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         // ends before any descendant pointer is admitted below.
         let root = unsafe { &mut *root };
         if let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root)
-            && let Some(before) = crate::undo::take_committed_action(root)
+            && let Some(before) = crate::widget::undo_access::take_committed_action(root)
         {
             brackets.push(before);
         }
@@ -108,7 +107,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             // SAFETY: each unique live node is visited only once this sweep.
             if let Ok(Some(before)) = unsafe {
                 crate::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
-                    crate::undo::take_committed_action(widget)
+                    crate::widget::undo_access::take_committed_action(widget)
                 })
             } {
                 brackets.push(before);
@@ -147,6 +146,7 @@ fn earliest_bracket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::undo_access::EDIT_OPERATION;
 
     #[derive(Default)]
     struct NativeHistoryProbe {
@@ -328,7 +328,7 @@ mod tests {
         {
             {
                 let mut spacer = crate::widget::Spacer::new();
-                crate::undo::set_undo_status(&mut spacer, &mut || {
+                crate::widget::undo_access::set_undo_status(&mut spacer, &mut || {
                     panic!("default widget must not request a summary")
                 });
             }
@@ -337,7 +337,7 @@ mod tests {
                 use crate::widget::Widget;
                 let mut button = crate::widget::UndoButton::undo();
                 let mut calls = 0;
-                crate::undo::set_undo_status(&mut button, &mut || {
+                crate::widget::undo_access::set_undo_status(&mut button, &mut || {
                     calls += 1;
                     status(true, false)
                 });

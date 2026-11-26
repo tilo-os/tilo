@@ -872,7 +872,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
-    use crate::undo::{LocalUndo, LocalUndoStatus, UndoRequest, UndoStatus};
+    use crate::widget::undo_access::{LocalUndo, LocalUndoStatus, UndoRequest, UndoStatus};
     struct Native {
         history: std::rc::Rc<std::cell::RefCell<Option<LocalUndoStatus>>>,
         calls: std::rc::Rc<std::cell::RefCell<Vec<UndoRequest>>>,

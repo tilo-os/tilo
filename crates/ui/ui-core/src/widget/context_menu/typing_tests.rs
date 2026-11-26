@@ -192,7 +192,7 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     let _ = crate::shared_selection::take_send_to();
     let ran = Rc::new(RefCell::new(Vec::new()));
     let mut menu = context_menu(&ran);
-    let item = crate::shared_selection::SharedSelection::of_text("Report.pdf")
+    let item = crate::shared_subject::SharedSelection::of_text("Report.pdf")
         .at(tilo_actions::SelectionPlace::item("file-9"));
     menu.set_about(Some(item.clone()));
     menu.open_anchored(
@@ -256,7 +256,7 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     let _ = crate::shared_selection::take_send_to();
     let ran = Rc::new(RefCell::new(Vec::new()));
     let mut menu = context_menu(&ran);
-    menu.set_about(Some(crate::shared_selection::SharedSelection::of_text(
+    menu.set_about(Some(crate::shared_subject::SharedSelection::of_text(
         "Report.pdf",
     )));
     menu.open_at([120.0, 80.0]);

@@ -2051,11 +2051,11 @@ pub(crate) use ::collaboration::permissions::denied;
 pub(crate) fn history_action_resource<'a>(
     snapshots: &'a [BoundResourceSnapshot],
     binding: &CallbackBinding,
-    request: crate::undo::UndoRequest,
+    request: crate::widget::undo_access::UndoRequest,
 ) -> Result<(&'a ResourceSpec, &'static str), tilo_actions::ApiError> {
     let action = match request {
-        crate::undo::UndoRequest::Undo => "undo",
-        crate::undo::UndoRequest::Redo => "redo",
+        crate::widget::undo_access::UndoRequest::Undo => "undo",
+        crate::widget::undo_access::UndoRequest::Redo => "redo",
     };
     let mut candidates = snapshots
         .iter()
@@ -2904,9 +2904,9 @@ fn perform_resource_operation(
                 crate::widget::ResourceOperationStart::Completed(output)
             }
         } else if let Some(readers) =
-            crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
+            crate::semantic_readers::registered_in_tree(&*widget, &encoded.type_id)
         {
-            let refused = |error: crate::semantic_document_read::SemanticReadError| {
+            let refused = |error: crate::semantic_readers::SemanticReadError| {
                 let (code, reason) = error.describe();
                 tilo_actions::ApiError::Unavailable {
                     code: code.into(),
@@ -3964,10 +3964,10 @@ pub(crate) struct TakenActionBracket {
 impl TakenActionBracket {
     /// `widget`'s bracket, if it reported one.
     pub(crate) fn take(widget: &mut dyn Widget) -> Option<Self> {
-        let before = crate::undo::take_committed_action(widget)?;
+        let before = crate::widget::undo_access::take_committed_action(widget)?;
         Some(Self {
             before,
-            keep_open: crate::undo::keeps_undo_step_open(widget),
+            keep_open: crate::widget::undo_access::keeps_undo_step_open(widget),
             metadata: crate::widget::undo_points::get_state(widget),
         })
     }
@@ -4032,7 +4032,7 @@ impl ActionFrame {
         doc: &AutoCommit,
         author: &MemberId,
         instance: crate::application::InstanceId,
-    ) -> crate::undo::UndoStatus {
+    ) -> crate::widget::undo_access::UndoStatus {
         let key = (author.clone(), instance);
         let moment = self.history.moment(doc);
         let pending_undo = self.pending_undo(doc, author, instance);
@@ -4077,7 +4077,7 @@ impl ActionFrame {
         doc: &AutoCommit,
         author: &MemberId,
         instance: crate::application::InstanceId,
-    ) -> crate::undo::UndoStatus {
+    ) -> crate::widget::undo_access::UndoStatus {
         let undo = self.history.next_undo_in(doc, author, instance);
         let redo = self.history.next_redo_in(doc, author, instance);
         let key = (author.clone(), instance);
@@ -4551,7 +4551,7 @@ impl CallbackBinding {
     pub(crate) fn undo_status(
         &self,
         outer: &mut AutoCommit,
-    ) -> Result<crate::undo::UndoStatus, BoundDispatchError> {
+    ) -> Result<crate::widget::undo_access::UndoStatus, BoundDispatchError> {
         self.with_resource_frame(outer, false, |doc, _| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
@@ -4714,7 +4714,7 @@ impl CallbackBinding {
     pub(crate) fn history_request(
         &self,
         outer: &mut AutoCommit,
-        request: crate::undo::UndoRequest,
+        request: crate::widget::undo_access::UndoRequest,
     ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
         self.with_document(outer, |doc, _| {
             self.finish_action_boundary(doc)?;
@@ -4726,12 +4726,12 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(ResourceOpenError::Busy))?;
             let entry = match request {
-                crate::undo::UndoRequest::Undo => {
+                crate::widget::undo_access::UndoRequest::Undo => {
                     frame
                         .history
                         .undo_in(doc, &self.author, self.instance_id, None, None)
                 }
-                crate::undo::UndoRequest::Redo => {
+                crate::widget::undo_access::UndoRequest::Redo => {
                     frame
                         .history
                         .redo_in(doc, &self.author, self.instance_id, None, None)

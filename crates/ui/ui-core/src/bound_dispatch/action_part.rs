@@ -15,7 +15,7 @@ use crate::permissions::MemberId;
 pub(crate) struct ResourceActionState {
     pub(super) pending: Option<PendingResourceAction>,
     pub(super) statuses:
-        HashMap<(MemberId, crate::application::InstanceId), crate::undo::UndoStatus>,
+        HashMap<(MemberId, crate::application::InstanceId), crate::widget::undo_access::UndoStatus>,
     /// The status last answered per author's window, with where the document, the history and the
     /// pending action stood: a frame asks every time, and it changes only when one of them moves.
     pub(super) answered: HashMap<
@@ -24,7 +24,7 @@ pub(crate) struct ResourceActionState {
             crate::state::HistoryMoment,
             bool,
             u64,
-            crate::undo::UndoStatus,
+            crate::widget::undo_access::UndoStatus,
         ),
     >,
 }
@@ -35,7 +35,7 @@ impl ResourceActionState {
     ) -> Vec<(
         tilo_actions::MemberId,
         crate::application::InstanceId,
-        crate::undo::UndoStatus,
+        crate::widget::undo_access::UndoStatus,
     )> {
         let mut statuses = self
             .statuses

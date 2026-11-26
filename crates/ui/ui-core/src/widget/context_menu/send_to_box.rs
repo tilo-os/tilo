@@ -24,7 +24,7 @@ impl ContextMenu {
     /// Only the native window stands it ([`crate::app`]).
     pub(crate) fn open_window_box(
         &mut self,
-        about: Option<crate::shared_selection::SharedSelection>,
+        about: Option<crate::shared_subject::SharedSelection>,
         anchor: Option<Rect>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],

@@ -24,9 +24,9 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::theme::Theme;
-use crate::undo::{UndoAccess, UndoRequest, UndoStatus};
 use crate::widget::Widget;
 use crate::widget::button::FaceSizer;
+use crate::widget::undo_access::{UndoAccess, UndoRequest, UndoStatus};
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 
 #[allow(
@@ -155,7 +155,7 @@ impl UndoButton {
 }
 
 impl Widget for UndoButton {
-    crate::provides!(dyn crate::undo::UndoControl);
+    crate::provides!(dyn crate::widget::undo_access::UndoControl);
 
     fn build_layout(
         &mut self,
@@ -378,7 +378,7 @@ impl Widget for UndoButton {
     }
 }
 
-impl crate::undo::UndoControl for UndoButton {
+impl crate::widget::undo_access::UndoControl for UndoButton {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
         self.access.publish(&status());
         if !self.is_available() && self.is_focused {
@@ -464,7 +464,7 @@ mod tests {
                 assert_eq!(node.description.as_deref(), Some("Nothing to undo"));
                 assert!(!b.is_enabled(), "is_enabled must agree with the a11y state");
 
-                crate::undo::set_undo_status(&mut b, &mut || status(true, false));
+                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 let node = Widget::accessibility(&b).unwrap();
                 assert!(!node.state.disabled, "an action on the stack enables it");
                 assert!(node.state.focusable);
@@ -478,8 +478,8 @@ mod tests {
             {
                 let mut undo = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
                 let mut redo = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
-                crate::undo::set_undo_status(&mut undo, &mut || status(true, false));
-                crate::undo::set_undo_status(&mut redo, &mut || status(true, false));
+                crate::widget::undo_access::set_undo_status(&mut undo, &mut || status(true, false));
+                crate::widget::undo_access::set_undo_status(&mut redo, &mut || status(true, false));
                 assert!(undo.is_enabled(), "undo is available");
                 assert!(!redo.is_enabled(), "redo is not, despite undo being");
                 assert_eq!(
@@ -494,7 +494,7 @@ mod tests {
                 b.dirty = false;
                 assert!(!b.needs_redraw(), "nothing has changed yet");
 
-                crate::undo::set_undo_status(&mut b, &mut || status(true, false));
+                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 assert!(
                     b.needs_redraw() || b.needs_animation_frame(),
                     "gaining an undoable action must repaint the control"
@@ -508,7 +508,7 @@ mod tests {
             // just left the focus order.
             {
                 let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-                crate::undo::set_undo_status(&mut b, &mut || status(true, false));
+                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 b.set_focus(true);
                 assert!(b.is_focused());
                 assert!(
@@ -516,7 +516,7 @@ mod tests {
                     "a live, focused control reports focus"
                 );
 
-                crate::undo::set_undo_status(&mut b, &mut || status(false, true));
+                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(false, true));
                 assert!(!b.is_focused(), "focus is surrendered with the verb");
                 let node = Widget::accessibility(&b).unwrap();
                 assert!(!node.state.focused, "and is not reported to an AT");
@@ -530,19 +530,19 @@ mod tests {
                 let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
                 click(&mut b);
                 assert_eq!(
-                    crate::undo::take_undo_request(&mut b),
+                    crate::widget::undo_access::take_undo_request(&mut b),
                     None,
                     "a disabled control must not ask the host to undo"
                 );
 
-                crate::undo::set_undo_status(&mut b, &mut || status(true, false));
+                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 click(&mut b);
                 assert_eq!(
-                    crate::undo::take_undo_request(&mut b),
+                    crate::widget::undo_access::take_undo_request(&mut b),
                     Some(UndoRequest::Undo)
                 );
                 assert_eq!(
-                    crate::undo::take_undo_request(&mut b),
+                    crate::widget::undo_access::take_undo_request(&mut b),
                     None,
                     "one click, one undo"
                 );
@@ -561,9 +561,9 @@ mod tests {
                     ),
                     "an unavailable verb declines the action"
                 );
-                assert_eq!(crate::undo::take_undo_request(&mut b), None);
+                assert_eq!(crate::widget::undo_access::take_undo_request(&mut b), None);
 
-                crate::undo::set_undo_status(&mut b, &mut || status(false, true));
+                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(false, true));
                 assert!(b.perform_action(
                     &Action::Activate,
                     &[],
@@ -571,7 +571,7 @@ mod tests {
                     &ROOT
                 ));
                 assert_eq!(
-                    crate::undo::take_undo_request(&mut b),
+                    crate::widget::undo_access::take_undo_request(&mut b),
                     Some(UndoRequest::Redo)
                 );
             }

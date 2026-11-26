@@ -122,7 +122,7 @@ impl super::TextInput {
         actions.push(Some(CtxAction::SelectAll));
         menu.set_about(
             self.shareable_selection().map(|text| {
-                crate::shared_selection::SharedSelection::of_text(text).within(self.rect)
+                crate::shared_subject::SharedSelection::of_text(text).within(self.rect)
             }),
         );
         menu.open_at(pos);

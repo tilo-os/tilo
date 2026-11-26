@@ -53,7 +53,7 @@ impl tilo_actions::Action for BackgroundWrite {
 impl Widget for OwnerProbe {
     crate::provides!(
         dyn crate::widget::undo_points::UndoPoints,
-        dyn crate::undo::CommittedActions
+        dyn crate::widget::undo_access::CommittedActions
     );
 
     fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
@@ -104,7 +104,7 @@ impl Widget for OwnerProbe {
     }
 }
 
-impl crate::undo::CommittedActions for OwnerProbe {
+impl crate::widget::undo_access::CommittedActions for OwnerProbe {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
