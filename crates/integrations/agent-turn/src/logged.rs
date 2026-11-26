@@ -64,8 +64,9 @@ fn plain(name: &str) -> bool {
 /// The sentence ends at the first line break, at the first full stop that another sentence
 /// follows, or at the first semicolon, where a refusal goes on to what there is instead; at
 /// most [`LOGGED_CHARS`] of it are kept. What the call wrote is cut twice over: each value
-/// whole wherever the sentence quotes it, then every stretch of letters and digits, and every
-/// stretch of other signs, that stands somewhere in a value, whatever the case of its letters.
+/// whole wherever the sentence quotes it, then every stretch of letters and digits that stands
+/// somewhere in a value, whatever the case of its letters, and every stretch of other signs
+/// that stands in a value and touches what is cut.
 /// So a part of a value, as a refusal names one step of a path, goes as the whole value does.
 #[must_use]
 pub fn refusal(said: &str, input: &Value) -> String {
@@ -80,11 +81,31 @@ pub fn refusal(said: &str, input: &Value) -> String {
         sentence = sentence.replace(value.as_str(), CUT);
     }
     let wrote: Vec<String> = wrote.iter().map(|value| value.to_lowercase()).collect();
+    let found = stretches(&sentence);
+    let stands_in_a_value = |stretch: &str| {
+        let stretch = stretch.to_lowercase();
+        wrote.iter().any(|value| value.contains(stretch.as_str()))
+    };
+    let words_theirs: Vec<bool> = found
+        .iter()
+        .map(|(made, stretch)| match made {
+            Made::Words => stands_in_a_value(stretch),
+            Made::Cut => true,
+            Made::Gap | Made::Signs => false,
+        })
+        .collect();
     let mut kept = String::new();
-    for (made, stretch) in stretches(&sentence) {
-        let theirs = matches!(made, Made::Words | Made::Signs) && {
-            let stretch = stretch.to_lowercase();
-            wrote.iter().any(|value| value.contains(stretch.as_str()))
+    for (at, (made, stretch)) in found.iter().enumerate() {
+        // Signs are the call's only beside what the call wrote: the `_` of the server's own
+        // `invalid_arguments` stays, the `/` between two steps of the call's path goes.
+        let theirs = match made {
+            Made::Words => words_theirs[at],
+            Made::Signs => {
+                stands_in_a_value(stretch)
+                    && (at.checked_sub(1).is_some_and(|before| words_theirs[before])
+                        || words_theirs.get(at + 1).copied().unwrap_or(false))
+            }
+            Made::Gap | Made::Cut => false,
         };
         kept.push_str(if theirs { CUT } else { stretch.as_str() });
     }
@@ -167,4 +188,108 @@ fn stretches(text: &str) -> Vec<(Made, String)> {
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LOGGED_CHARS, arguments, offered_name, refusal};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn a_line_names_each_argument_with_the_bytes_of_its_value_and_no_value() {
+        let line = arguments(&json!({
+            "path": "notes/Plums#rename",
+            "args": {"title": "For Ada"},
+        }));
+        let mut named: Vec<&str> = line.split(',').collect();
+        named.sort_unstable();
+        assert_eq!(named, ["args:19", "path:20"]);
+        assert!(!line.contains("Plums") && !line.contains("Ada"), "{line}");
+        // A call without arguments, and one whose input names nothing.
+        assert_eq!(arguments(&json!({})), "-");
+        assert_eq!(arguments(&Value::Null), "-");
+        assert_eq!(arguments(&json!("only words")), "?:12");
+        // A key that has not the form of a name is its caller's words, and is not written.
+        assert_eq!(arguments(&json!({"the tide is out": 1})), "?:1");
+    }
+
+    #[test]
+    fn a_refusals_sentence_is_kept_without_anything_the_call_wrote() {
+        // As an agent tool refuses: what the call named, a step of its path at a time, then
+        // what there is instead, then the call that works on a line of its own.
+        let named = "notes/Plums has no action rename/title; close matches: rename\n\
+            The call that works: tilo_do {\"path\":\"notes/Plums#rename\",\"args\":{\"title\":\"For Ada\"}}";
+        let asked = json!({"path": "notes/Plums#rename/title", "args": {"title": "For Ada"}});
+        assert_eq!(refusal(named, &asked), "… has … action …");
+        // A sentence that quotes nothing of its call is kept as the server wrote it.
+        assert_eq!(
+            refusal(
+                "invalid_arguments: required argument `title` was not supplied",
+                &json!({"path": "so.tilo.tasks#new_task", "args": {}})
+            ),
+            "invalid_arguments: required argument `title` was not supplied"
+        );
+        // A refusal in three parts: its sentence, then what was wrong with what the caller
+        // wrote, then the arguments to ask again with. The sentence loses the words the call
+        // wrote too.
+        let secret = "failed: action_failed: a question for a secret says where the secret \
+            belongs. In your detail: a place is written with what it is reached by, and yours \
+            is `mail.plum.example`. Ask again with exactly these arguments: \
+            {\"text\":\"The password of ada@plum.example\",\"kind\":\"secret\"}";
+        let asked = json!({
+            "path": "chat/Messages#ask",
+            "args": {
+                "text": "The password of ada@plum.example",
+                "kind": "secret",
+                "detail": {"place": "mail.plum.example"},
+            },
+        });
+        assert_eq!(
+            refusal(secret, &asked),
+            "failed: action_failed: … question for … … says where … … belongs"
+        );
+        // A value inside a longer word, a piece of a value in another case, and a text as
+        // JSON writes it.
+        assert_eq!(
+            refusal(
+                "nothing here is called superheronlike",
+                &json!({"query": "heron"})
+            ),
+            "nothing here is called super…like"
+        );
+        assert_eq!(
+            refusal("no plumz in Notes", &json!({"path": "notes/Plumz"})),
+            "… … in …"
+        );
+        assert_eq!(
+            refusal(
+                "could not write \"line one\\nline two\"",
+                &json!({"args": {"text": "line one\nline two"}})
+            ),
+            "could not write \"…\""
+        );
+        // An empty value cuts nothing, and a long sentence is kept to the log's bound.
+        assert_eq!(refusal("refused", &json!({"text": ""})), "refused");
+        assert_eq!(
+            refusal(&"a".repeat(1000), &json!({})).chars().count(),
+            LOGGED_CHARS
+        );
+    }
+
+    #[test]
+    fn a_name_no_tool_can_have_is_not_written() {
+        for name in ["tilo_ls", "answer_with_view", "learned"] {
+            assert_eq!(offered_name(name), name);
+        }
+        for name in [
+            "",
+            "tilo_ls notes/Budget",
+            "Tilo_Read",
+            "a/b",
+            "the-quarter's-figures",
+            &"x".repeat(49),
+        ] {
+            assert_eq!(offered_name(name), "other", "{name:?}");
+        }
+    }
 }
