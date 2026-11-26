@@ -1084,12 +1084,15 @@ impl HostInner {
         action: &tilolang::meta::ActionMeta,
         invoker: &Actor,
     ) -> Result<PlannedRecord, String> {
+        // What the action writes is told apart from what was written before it: a call that
+        // makes nothing — the one line typed names no item — answers nothing made, and what
+        // another write made is neither its answer nor a later one's.
+        self.store.take_made();
         let Some((args, recorded)) = self.planned_args(package, action, request)? else {
             // The one line typed names nothing — only space and what the action's other
             // parameters take — so the action does not run and makes no change.
             return Ok((request.args.clone(), None));
         };
-        self.store.take_made();
         // The API admitted the call before it asked for its plan, asking the person first
         // where it had to: the run does not ask them again.
         let outcome = self
