@@ -2471,6 +2471,21 @@ fn palette_confirm(app: &mut App) {
     }
 }
 
+/// Submit the row History kept back, through the palette's own control: one Tab
+/// reaches the submit beside Cancel, and Enter presses it.
+fn palette_submit_retained(app: &mut App) {
+    for key in [
+        winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Enter,
+    ] {
+        let event = crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(key),
+            winit::event::ElementState::Pressed,
+        );
+        assert!(app.action_palette_handle_key(&event));
+    }
+}
+
 fn palette_history_round_trip(app: &mut App) {
     let named_action_target = named(app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
@@ -3376,11 +3391,12 @@ fn emit_pending_control_command(
     let node = node_for_test_id(app, test_id);
     app.perform_node_action(node, &crate::a11y::Action::Activate)
         .unwrap();
-    // The pending control publishes its press; History hosts that chrome and
-    // answers it, which queues the continuation the test takes below.
+    // A chrome control's press runs its own closure in this frame, so the
+    // pending control has already queued the continuation the test takes below
+    // and History has nothing left to answer.
     assert!(
-        app.service_history_own_controls(),
-        "History answers its chrome's press"
+        !app.service_history_own_controls(),
+        "a chrome control's press already ran: nothing waits for History to answer"
     );
     let mut commands = app
         .history
@@ -3417,20 +3433,12 @@ tilo_test_env::scenario! {
             palette_history_round_trip(&mut app);
 
             let command = match command_kind {
-                "continue" => emit_pending_control_command(&mut app, "history-pending-1"),
-                "cancel" => emit_pending_control_command(&mut app, "history-pending-cancel-1"),
-                "confirm" => {
-                    let named_action_target = named(&mut app, "Continue");
-                    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-                    layout(&mut app);
-                    let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-                    app.perform_node_action(
-                        phrase,
-                        &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
-                    )
-                    .unwrap();
+                // A confirmation is the device's ask now: the press queues the
+                // same review, and the app asks the device when it runs it.
+                "continue" | "confirm" => {
                     emit_pending_control_command(&mut app, "history-pending-1")
                 }
+                "cancel" => emit_pending_control_command(&mut app, "history-pending-cancel-1"),
                 _ => unreachable!(),
             };
             assert_eq!(original[0].starts.get(), 0);
@@ -3506,17 +3514,6 @@ tilo_test_env::scenario! {
             } else {
                 "history-pending-1"
             };
-            if callback_kind == "confirm" {
-                let named_action_target = named(&mut app, "Continue");
-                app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-                layout(&mut app);
-                let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-                app.perform_node_action(
-                    phrase,
-                    &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
-                )
-                .unwrap();
-            }
             let callback = app
                 .history
                 .as_ref()
@@ -3594,10 +3591,18 @@ tilo_test_env::scenario! {
             }
             let mut app = palette_history_app(state.clone());
             palette_activate(&mut app, "text", "production");
-            palette_enter(&mut app);
+            // The draft is History's while the palette holds it; the row taken
+            // after the return asks the device, and without one it is kept back
+            // with the exact observation it was taken as.
             palette_history_round_trip(&mut app);
+            palette_enter(&mut app);
             let original =
                 crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+            assert_eq!(original.wire_argument().as_deref(), Some("production"));
+            assert!(
+                original.history_seen.is_some(),
+                "the row was taken as an exact observation"
+            );
             match changed {
                 "target" => state.target_epoch.store(2, Ordering::SeqCst),
                 "handler" => state.handler_epoch.store(2, Ordering::SeqCst),
@@ -3607,12 +3612,7 @@ tilo_test_env::scenario! {
             let retained =
                 crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
             assert_eq!(retained.wire_argument(), original.wire_argument());
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query(PALETTE_CONFIRMATION);
-            palette_confirm(&mut app);
+            palette_submit_retained(&mut app);
             assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
             assert!(
                 retained.history_seen == original.history_seen,
@@ -3630,20 +3630,38 @@ tilo_test_env::scenario! {
         let state = PaletteContinuationState::stable();
         let mut app = palette_history_app(state.clone());
         palette_activate(&mut app, "named", "  original target  ");
-        palette_enter(&mut app);
-        assert_eq!(editor_snapshot(&app).2, "confirmation");
+        assert_eq!(editor_snapshot(&app).0, "  original target  ");
         palette_history_round_trip(&mut app);
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
-        let starts = state.starts.lock().unwrap();
-        assert_eq!(starts.len(), 1);
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&starts[0].1).unwrap(),
-            serde_json::json!({"target":"  original target  "})
+            editor_snapshot(&app).0,
+            "  original target  ",
+            "the typed name stays the draft History returns to"
+        );
+        palette_enter(&mut app);
+        // The press asks the owner for the action's exact named text, and the
+        // device keeps the asked call: nothing runs here, and the row stays.
+        let retained =
+            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+        assert_eq!(
+            retained.wire_argument().as_deref(),
+            Some("  original target  "),
+            "the named text parameter survives History"
+        );
+        assert!(
+            matches!(
+                retained.continuation_arguments(),
+                Some(crate::bound_dispatch::ControlContinuationArguments::Text(text))
+                    if text == "  original target  "
+            ),
+            "the named text parameter survives History"
+        );
+        palette_history_round_trip(&mut app);
+        let after =
+            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+        assert_eq!(after.wire_argument(), retained.wire_argument());
+        assert!(
+            state.starts.lock().unwrap().is_empty(),
+            "an ask is the device's: nothing of it runs in the window"
         );
         assert!(
             state
@@ -3651,7 +3669,8 @@ tilo_test_env::scenario! {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|query| query == "exact:named:text")
+                .any(|query| query == "exact:named:text"),
+            "the owner was asked for its exact named text"
         );
     }
 
@@ -3732,10 +3751,17 @@ tilo_test_env::scenario! {
         layout(&mut app);
         let input = r#"{"alias":"original","nested":{"leaf":1}}"#;
         activate_component_palette(&mut app, &old[0], "same-address", input);
-        palette_enter(&mut app);
+        // The draft is the old component's while History holds it; the row
+        // taken after the return asks the device and is kept back with the
+        // exact owner it was taken as.
         palette_history_round_trip(&mut app);
+        palette_enter(&mut app);
         let original =
             crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+        assert!(
+            original.history_seen.is_some(),
+            "the row was taken as an exact observation of the old component"
+        );
         let (replacement, new, _) = component_control_root(&[("same-address", confirmation)]);
         app.layout.node_map.clear();
         app.bindings.clear();
@@ -3743,12 +3769,7 @@ tilo_test_env::scenario! {
         app.root_widget = replacement;
         layout(&mut app);
         palette_history_round_trip(&mut app);
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
+        palette_submit_retained(&mut app);
         assert_eq!(old[0].starts.get(), 0);
         assert_eq!(new[0].starts.get(), 0);
         let retained =
@@ -4287,7 +4308,10 @@ struct OwnershipDeniedRoot {
 }
 
 impl crate::widget::Widget for OwnershipDeniedRoot {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::bound_dispatch::BoundTraversal
+    );
 
     fn name(&self) -> &str {
         "Controlled component boundary"
@@ -5172,17 +5196,11 @@ tilo_test_env::scenario! {
         confirming.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
         assert!(
             confirmed_log.borrow().is_empty(),
-            "fresh F still requires current confirmation"
+            "a fresh press whose action asks runs nothing before the person's yes"
         );
-        assert_eq!(editor_snapshot(&confirming).2, "confirmation");
-        confirming
-            .actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("CONFIRM");
-        palette_enter(&mut confirming);
-        assert_eq!(&*confirmed_log.borrow(), &[serde_json::json!({})]);
+        // A press that asks waits on the device, which keeps the asked call and
+        // runs it once the person allows it; this window has no broker, so the
+        // ask is refused where it stands and nothing of the press runs here.
     }
 
     phase control_ownership_core_mounted_modelview_hidden_builder_and_fresh_button;
