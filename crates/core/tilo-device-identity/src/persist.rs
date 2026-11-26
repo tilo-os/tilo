@@ -1494,18 +1494,30 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
     if !(paths.user_pubkey.is_file() && paths.device_cert.is_file()) {
         return Ok(false);
     }
-    match fs::metadata(&paths.device_privkey) {
-        Ok(metadata) if metadata.is_file() => {}
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            return Err(PersistError::Io(io::Error::new(
-                error.kind(),
-                format!(
-                    "enrolled device key at {} is not accessible: {error}",
-                    paths.device_privkey.display()
-                ),
-            )));
-        }
-        _ => return Ok(false),
+    // The key is where `paths` keeps it: a phone's is in the platform store, never in the file.
+    let held = match paths.device_key_ownership {
+        DeviceKeyOwnership::File => match fs::metadata(&paths.device_privkey) {
+            Ok(metadata) => metadata.is_file(),
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(PersistError::Io(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "enrolled device key at {} is not accessible: {error}",
+                        paths.device_privkey.display()
+                    ),
+                )));
+            }
+            Err(_) => false,
+        },
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "android",
+            all(test, target_os = "linux")
+        ))]
+        DeviceKeyOwnership::PlatformStore => holds_device_key(paths)?,
+    };
+    if !held {
+        return Ok(false);
     }
     let pubkey = read_public_key(&paths.user_pubkey)?;
     let device = device_public_key(paths)?;

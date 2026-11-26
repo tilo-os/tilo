@@ -163,6 +163,40 @@ mod tests {
         );
     }
 
+    /// A phone logged in with a ticket: its key is in the platform store, never in the file, and
+    /// the certificate its person signed for that key enrolls it all the same.
+    #[test]
+    fn a_device_whose_key_the_platform_store_keeps_is_enrolled_by_its_certificate() {
+        use ed25519_dalek::SigningKey;
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+        let _store = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
+        let (_dir, paths) = layout();
+        let (device, _) = load_or_create_device_key(&paths).unwrap();
+        let _taken = crate::persist::take_device_key(&paths).unwrap();
+        let root = SigningKey::from_bytes(&[5; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "phone".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: Some(10_000),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        assert!(!crate::persist::joined_device_is_ready(&paths, 2_000).unwrap());
+
+        crate::persist::install_device_cert(&paths, &cert, 2_000).unwrap();
+
+        assert!(!paths.device_privkey.exists());
+        assert!(
+            crate::persist::joined_device_is_ready(&paths, 2_000).unwrap(),
+            "a certified device whose key the platform store keeps was not enrolled"
+        );
+    }
+
     #[test]
     fn a_failing_platform_store_fails_closed_and_mints_nothing() {
         let _store = tilo_secrets::scope_thread(Arc::new(Broken));

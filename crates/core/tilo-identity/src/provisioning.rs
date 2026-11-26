@@ -113,12 +113,18 @@ pub fn account_display_name(uid: u32) -> String {
     };
     if status == 0 && !result.is_null() {
         let pwd = unsafe { pwd.assume_init() };
-        let username = unsafe { CStr::from_ptr(pwd.pw_name) }
-            .to_string_lossy()
-            .trim()
-            .to_string();
-        let gecos = unsafe { CStr::from_ptr(pwd.pw_gecos) }
-            .to_string_lossy()
+        // A field the C library leaves out is a null pointer: Android's bionic fills no GECOS.
+        let field = |field: *const libc::c_char| {
+            if field.is_null() {
+                String::new()
+            } else {
+                unsafe { CStr::from_ptr(field) }
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+        let username = field(pwd.pw_name).trim().to_string();
+        let gecos = field(pwd.pw_gecos)
             .split(',')
             .next()
             .unwrap_or_default()
@@ -869,7 +875,12 @@ pub fn adopt_login_certificate(
         }
         installed => installed.map_err(|error| io::Error::other(error.to_string()))?,
     }
-    complete_enrolled_device(identity_dir, paths, now_ns)?;
+    if !complete_enrolled_device(identity_dir, paths, now_ns)? {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the certificate is kept, but this computer holds no device key it names",
+        ));
+    }
     let holds_their_root = crate::store::resolve_active_identity(identity_dir)
         .and_then(|active| crate::store::load_metadata_from_path(&active).ok())
         .is_some_and(|active| {
