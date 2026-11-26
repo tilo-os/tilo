@@ -297,12 +297,19 @@ fn entry_admission_turn(
                 return Err("this workspace's entry does not take people who ask".into());
             }
             let digest = crate::state::entry_digest(&entry)?;
+            // As through an invitation: a key's grant is listed by the name it
+            // asked under, and a blank name is none given, so a visitor who has
+            // not named themselves yet still comes in.
+            let joined_as = name;
+            let name = name
+                .filter(|name| !name.trim().is_empty())
+                .filter(|_| crate::join_log::names_its_person(own));
             let admitted = peer
                 .governance_mut()
                 .admit_entered_member(own, digest, request_id, name, key, now)?;
             let granted = peer
                 .governance_mut()
-                .author_own_grant(own, name, key, now)?;
+                .author_own_grant(own, joined_as, key, now)?;
             Ok(admitted || granted)
         },
         now,

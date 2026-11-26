@@ -699,3 +699,25 @@ fn a_receipt_naming_a_role_above_the_entry_admits_nobody() {
         "{refused}"
     );
 }
+
+/// A visitor who has not named themselves yet comes in through an open entry:
+/// a blank name is none given, as through an invitation, and the device
+/// still signs its own admission.
+#[test]
+fn a_visitor_with_no_name_yet_comes_in_through_the_open_entry() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    opened(&mut peer, &authority_key, now);
+    let (guest_key, guest) = device_of(95, 96, "Guest");
+    for blank in [Some(""), Some("  "), None] {
+        crate::own_admission::entry_admission(
+            peer.workspace_id(),
+            &governance_of(&peer),
+            &guest,
+            [7; 32],
+            blank,
+            &guest_key,
+            now,
+        )
+        .unwrap_or_else(|error| panic!("a visitor named {blank:?} was refused: {error}"));
+    }
+}
