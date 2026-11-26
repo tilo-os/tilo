@@ -835,7 +835,7 @@ fn triggers() -> Vec<TriggerSpec> {
             actions: Vec::new(),
             fields: Vec::new(),
             by: ActorFilter::Anyone,
-            filter: Default::default(),
+            filter: tilo_automation::ChangeFilter::default(),
         })
         .collect();
     // The workspace's own governance: who joined, whose role changed,

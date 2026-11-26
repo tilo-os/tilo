@@ -60,7 +60,7 @@ const PROFILE: &str = "TILO_AUTH_DISK_UNLOCK_PROFILE";
 /// Run `body` on a device of its own: in a process of its own, with a home, identity store and
 /// runtime directory of its own, and its person founded there. `body` is handed the daemon's
 /// profile. A device is one per process, as a computer has one daemon.
-fn on_own_device(body: impl FnOnce(&Path, SigningIdentity)) {
+fn on_own_device(body: impl FnOnce(&Path, &SigningIdentity)) {
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
@@ -94,7 +94,7 @@ fn on_own_device(body: impl FnOnce(&Path, SigningIdentity)) {
     )
     .expect("the person's root reads here");
     drop(taken);
-    body(&profile, root);
+    body(&profile, &root);
 }
 
 /// Keep `certs` in the person's devices record, as the daemon of the device on `profile` keeps a
@@ -370,7 +370,7 @@ fn a_volume_sets_up_unlock_through_the_daemon_and_opens_at_boot_with_the_half_th
     on_own_device(sets_up_and_opens);
 }
 
-fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
+fn sets_up_and_opens(profile: &Path, root: &SigningIdentity) {
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
@@ -392,9 +392,9 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
 
     // The person this device was founded for, their root kept here, and their other devices,
     // which their record keeps beside an earlier machine's boot key: one that carries no half.
-    let (_, laptop) = certify(&root, "The laptop", DeviceCapabilities::member());
-    let (_, phone) = certify(&root, "The phone", DeviceCapabilities::member());
-    let (_, earlier_boot) = certify(&root, "An earlier boot key", DeviceCapabilities::nothing());
+    let (_, laptop) = certify(root, "The laptop", DeviceCapabilities::member());
+    let (_, phone) = certify(root, "The phone", DeviceCapabilities::member());
+    let (_, earlier_boot) = certify(root, "An earlier boot key", DeviceCapabilities::nothing());
     keep_devices(profile, &[&laptop, &phone, &earlier_boot]);
     // The device's daemon, as the `tilo-runtime` program runs it: its native endpoint is where
     // the enrolment asks it.
@@ -685,7 +685,7 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
     assert_eq!(slots(&device), ["0"], "the slot is removed again");
     assert!(!waiting.exists());
     enrol::prepare(&prepared, machine).unwrap();
-    enrol::register(&handed, &DaemonRegistrar::new(here.clone()))
+    enrol::register(&handed, &DaemonRegistrar::new(here))
         .expect("the daemon has the root certify the boot key");
     assert!(
         !handed.join(enrol::ASKED).exists(),
