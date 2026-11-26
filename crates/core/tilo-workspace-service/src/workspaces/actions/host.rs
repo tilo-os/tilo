@@ -1465,6 +1465,8 @@ impl Workspaces {
     /// else's answers `workspace.create-own`: every workspace it hosts is
     /// theirs, so another device of theirs, or a key of theirs whose scope
     /// reaches it, enters it as them. It makes none: that is `workspace.create`.
+    /// An ask that names no workspace, as a page their computer signed in asks
+    /// for "my workspace", is answered with the person's own workspace.
     async fn enter_host_persons(
         &self,
         device: &DeviceCert,
@@ -1473,8 +1475,10 @@ impl Workspaces {
         request_id: [u8; 32],
         expires_at_ns: u64,
     ) -> Result<Value, ActionCallError> {
+        let their_own = tilo_server_protocol::servers::person_workspace_id(&device.user_public_key);
         let workspace = match (name, workspace) {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
+            (None, None) if self.lists_to(device, &their_own) => their_own.as_str(),
             _ => {
                 return Err(ActionCallError::refused(
                     AdminRefusal::NotYourOwn.to_reason(),

@@ -600,3 +600,48 @@ async fn a_stranger_cannot_block_a_key_on_the_host() {
         "and invoking one is no operation"
     );
 }
+
+/// A page the server's own person signed in from one of their computers asks
+/// the server for their workspace by no id, as every page asks "my workspace":
+/// the server, which keeps no one else's, answers their own workspace it holds
+/// for them, never that the ask is not theirs. A stranger asking the same is
+/// still refused.
+#[tokio::test]
+async fn the_servers_person_asks_for_their_workspace_by_no_id_and_is_answered_their_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = crate::workspaces::fixtures::test_host_holding(
+        dir.path(),
+        &key,
+        &owner,
+        crate::workspaces::fixtures::group_keys(),
+    )
+    .await;
+    let workspaces = server.workspaces();
+    let own = crate::workspaces::person_workspace::found(workspaces)
+        .await
+        .expect("the server founds its person's own workspace");
+    let host = super::super::tests::host_dispatch(workspaces);
+    let laptop = owners_laptop();
+    let ask = || {
+        host_request(
+            tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE,
+            json!({"language": "en"}),
+        )
+    };
+
+    let answered: CreatedWorkspace = serde_json::from_value(
+        invoke(&host, &laptop, ask())
+            .await
+            .expect("the person's own workspace is answered"),
+    )
+    .unwrap();
+    assert_eq!(answered.workspace.workspace, own);
+
+    let (_, stranger) = guest_device();
+    assert!(
+        invoke(&host, &stranger, ask()).await.is_err(),
+        "a stranger is answered no workspace of the server's person"
+    );
+    server.shutdown().await;
+}
