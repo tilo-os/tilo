@@ -95,20 +95,18 @@ pub struct Starter {
     pub themselves: bool,
 }
 
-/// The one person `acting` leads to: the actor when it is a person, else the
-/// single person down the chain of who it acts for. `None` when it acts for
-/// nobody, or for several people at once.
+/// The one person every branch of `acting` leads to. A child and its signing lead may
+/// both name the same keeper. Every branch must identify that same person.
 pub(crate) fn led_to(acting: &tilo_actions::Acting) -> Option<&str> {
-    let mut node = acting;
-    loop {
-        if let Some(person) = node.person_id() {
-            return Some(person).filter(|person| !person.is_empty());
+    let mut person = acting.person_id();
+    for branch in &acting.acted_for {
+        let who = led_to(branch)?;
+        if person.is_some_and(|known| known != who) {
+            return None;
         }
-        match node.acted_for.as_slice() {
-            [one] => node = one,
-            _ => return None,
-        }
+        person = Some(who);
     }
+    person.filter(|who| !who.is_empty())
 }
 
 /// Who starts a turn with the action `cx` applies, and for whom: the person

@@ -683,10 +683,10 @@ impl ServerAgents {
         .await
     }
 
-    /// Say on its item how the sub-agent `agent` stands, as the sub-agent itself. The server
-    /// that works it writes the item, as it writes what an agent spent: the list lets only a
-    /// sub-agent's own runner say it, and no tool of a turn is asked for it.
-    async fn stands(&self, scope: &super::TurnScope, agent: &Agent, stands: Stands, line: &str) {
+    /// Report progress on the child's own Assistant item through the same signed action
+    /// service that writes its Chat reply. The original lead's grant and both agents' current
+    /// rules decide the write.
+    async fn stands(&self, scope: &super::TurnScope, turn: &Turn, stands: Stands, line: &str) {
         let workspace = scope.workspace.as_str();
         if !self
             .workspaces
@@ -695,42 +695,36 @@ impl ServerAgents {
         {
             return;
         }
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (id, keeper) = (agent.id.0.clone(), agent.keeper.clone());
-        let item = tilo_resource::Id::from_raw(id.clone());
-        let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2)).to_owned();
-        let written = self
-            .workspaces
-            .author_application(
-                workspace,
-                self.workspaces.governor(),
-                &tilo_agent_session::AppCatalogue::native(),
-                tilo_workspace_agent::OWNER,
-                &document,
-                |doc| {
-                    let mut saying =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&id, &keeper)
-                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
-                    // A replica stamps what it writes with a fixed day of its own unless told the time.
-                    saying.set_now_ms(tilo_clock::unix_now_ms_i64());
-                    let applied = saying
-                        .apply(WorkspaceAgents::SUB_AGENT_STANDS.with(
-                            tilo_workspace_agent::workspace_agents::SubAgentStands {
-                                agent: item,
-                                stands,
-                                line: (!line.is_empty()).then_some(line),
-                            },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, saying.doc_mut());
-                    applied
-                },
+        let reply = scope.reply(turn);
+        let item = Id::from_raw(&turn.agent.id.0);
+        let resource = tilo_resource::items::item_resource_id::<WorkspaceAgents>("agents", &item);
+        let route = DocumentRoute {
+            app_id: tilo_workspace_agent::OWNER.to_owned(),
+            cluster_id: scope.workspace.clone(),
+            document: collab_types::workspace_document_id(tilo_workspace_agent::KIND),
+        };
+        let action = WorkspaceAgents::SUB_AGENT_STANDS;
+        let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2));
+        let written = async {
+            let arguments =
+                action.arguments(&tilo_workspace_agent::workspace_agents::SubAgentStands {
+                    agent: item,
+                    stands,
+                    line: (!line.is_empty()).then(|| line.to_owned()),
+                })?;
+            invoke_named(
+                &reply.provider,
+                &reply.caller,
+                &route,
+                &resource,
+                action.id(),
+                arguments,
             )
-            .await;
+            .await
+        }
+        .await;
         if let Err(error) = written {
-            tracing::warn!(%workspace, agent = %agent.id.0, %error, "how a sub-agent stands was not written");
+            tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "how a sub-agent stands was not written");
         }
     }
 
@@ -740,7 +734,7 @@ impl ServerAgents {
             return;
         };
         if sub.stands != Stands::Working || !sub.line.is_empty() {
-            self.stands(scope, &turn.agent, Stands::Working, "").await;
+            self.stands(scope, turn, Stands::Working, "").await;
         }
     }
 
@@ -808,7 +802,7 @@ impl ServerAgents {
             Outcome::Failed(words) => (Stands::Failed, words.as_str()),
             Outcome::Cancelled => (Stands::Stopped, ""),
         };
-        self.stands(acting, &turn.agent, stands, said).await;
+        self.stands(acting, turn, stands, said).await;
         let from_starter = from_starter || turn.line.as_ref().is_some_and(|line| line.from_starter);
         if !from_starter || stands == Stands::Stopped {
             return;

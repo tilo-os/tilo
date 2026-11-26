@@ -208,6 +208,61 @@ fn what_asks_an_agent_is_no_message_someone_received() {
 }
 
 #[test]
+fn a_child_reports_to_its_lead_only_for_the_one_person_in_its_acting_chain() {
+    use tilo_actions::Acting;
+
+    let main = thread(&[AGENT]);
+    let mut part = Part::new();
+    let child = || {
+        Acting::agent(AGENT)
+            .acting_for(Acting::person(ME))
+            .handed_on(OTHER)
+    };
+    let report = |part: &mut Part, by: Acting, key: &str| {
+        apply_part_doc_as(
+            &mut part.doc,
+            &part.chat,
+            |replica| replica.as_acting(by),
+            Some(part.now_ms),
+            ask(&main, NEWS, key),
+        )
+    };
+    for (branch, key) in [
+        (Acting::person(ARIA), "another-person"),
+        (Acting::visitor(&[9; 32]), "unknown-person"),
+        (
+            Acting::person(ARIA).acting_for(Acting::person(ME)),
+            "conflicting-persons-in-one-branch",
+        ),
+    ] {
+        assert!(
+            report(&mut part, child().acting_for(branch), key).is_err(),
+            "{key}"
+        );
+    }
+    assert!(part.read().messages.is_empty());
+
+    report(&mut part, child(), "child-finished")
+        .expect("both branches of the handoff name the keeper");
+    let held = part.read();
+    let id = message_id(&MemberId::person(ME), "child-finished");
+    let message = held
+        .messages
+        .get(&id)
+        .expect("the child's report was recorded");
+    assert_eq!(message.author, MemberId::agent(OTHER));
+    assert_eq!(message.cause.as_ref().unwrap().person, MemberId::person(ME));
+    let turns = summonses(&part.chat, &held);
+    let [turn] = turns.as_slice() else {
+        panic!("the lead is asked once: {turns:?}");
+    };
+    assert_eq!(
+        (turn.agent.as_str(), turn.person.as_str(), &turn.message),
+        (AGENT, ME, &id)
+    );
+}
+
+#[test]
 fn what_acts_for_nobody_starts_no_turn() {
     let mut part = Part::new();
     let main = thread(&[AGENT]);
