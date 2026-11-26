@@ -151,6 +151,13 @@ limit=${E2E_FLOW_SECONDS:-$((40 * TILO_STEP_SECONDS))}
 
 rm -rf "$work"
 mkdir -p "$work"
+# Every flow's directory is there even in a run narrowed to some flows
+# (E2E_FLOWS): what a flow the run left out found is one line saying so, so the
+# check's declared outputs are all found whatever it ran.
+for flow in "${all[@]}"; do
+  mkdir -p "$work/$flow"
+  wants "$flow" || echo "not run: E2E_FLOWS=${asked[*]}" > "$work/$flow/not-run.log"
+done
 began=$SECONDS
 phase_at=$SECONDS
 timing() { printf 'TIMING %s seconds=%s total=%s\n' "$1" "$((SECONDS - phase_at))" "$((SECONDS - began))"; phase_at=$SECONDS; }
