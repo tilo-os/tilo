@@ -536,7 +536,7 @@ async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
 async fn flow_five_model_providers_each_answer_a_turn() {
     let f = four_devices().await;
     let workspaces = f.host.server.workspaces().unwrap();
-    let person = tilo_person_services::PersonServices::of(&workspaces);
+    let person = tilo_person_services::PersonServices::of(workspaces);
     person.call_private_model_addresses(true);
     let fake = fake_model_providers::FakeProviders::start().await.unwrap();
     person.sign_in_to_openai_at(tilo_person_services::OpenAiSignIn {
@@ -715,7 +715,7 @@ async fn link_provider(
 async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_page() {
     let f = four_devices().await;
     let workspaces = f.host.server.workspaces().unwrap();
-    tilo_person_services::PersonServices::of(&workspaces).call_private_model_addresses(true);
+    tilo_person_services::PersonServices::of(workspaces).call_private_model_addresses(true);
 
     // A site the person has a login at, kept in the workspace's vault by their device.
     let site = "http://127.0.0.1:9/vault-signin";
