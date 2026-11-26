@@ -110,7 +110,7 @@ JS
     printf '[store]\ndir = "%s"\n' "$CARGO_TARGET_DIR/nextest" > "$store_config"
     bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
       --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-session-client --test it \
-      -E 'test(carriers::) or test(node_workspace::) or test(voice_browsers::)'
+      -E 'test(carriers::) or test(passkey_root::) or test(node_workspace::) or test(voice_browsers::)'
     ;;
   *) die 'usage: ci-builder-canary.sh cold|warm DIR, browser or browser-tests' ;;
 esac

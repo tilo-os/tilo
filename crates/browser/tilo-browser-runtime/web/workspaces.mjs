@@ -623,7 +623,7 @@ export function keptMembership(workspace, memberships = globalThis.localStorage)
 }
 
 /** The origins of the hosts this browser joined through, as `userPublicKey`
- * when given. */
+ * when given: the hosts that keep that person's envelope. */
 export function membershipOrigins(userPublicKey, memberships = globalThis.localStorage) {
   return [...new Set(Object.values(readMemberships(memberships))
     .filter(kept => kept?.origin && (!userPublicKey || kept.userPublicKey === userPublicKey))
@@ -640,7 +640,7 @@ function keepMembership(memberships, workspace, value) {
 /**
  * Remember the host at `origin` as one `userPublicKey` owns: a machine this
  * browser set up for that person (`machine-setup.mjs`). Like a joined host,
- * it keeps the person's profile.
+ * it keeps the person's envelope and profile.
  */
 export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.localStorage) {
   const host = {host: {origin}};

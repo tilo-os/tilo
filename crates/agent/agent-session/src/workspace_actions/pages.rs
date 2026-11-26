@@ -157,8 +157,61 @@ pub(super) struct SearchRow {
     /// clipboard write happens inside the press, and the host's answer comes
     /// after it.
     copy: Option<String>,
+    /// The action the page runs in the person's own browser, when it runs
+    /// one: its key material never reaches this host.
+    browser: Option<BrowserAction>,
     /// Whether the row stands under the apps.
     app: bool,
+}
+
+/// An action only the browser can take: the person's root lives there alone
+/// (`identity.mjs`), so keeping it with a passkey, or signing in with one,
+/// happens in the page, inside the person's press, and the host keeps no part
+/// of it.
+#[derive(Clone, Copy)]
+enum BrowserAction {
+    /// Add a passkey that wraps this browser's person, and have this host
+    /// keep the envelope their next browser fetches.
+    KeepWithPasskey,
+    /// Become, in this browser, the person a passkey kept elsewhere.
+    SignInWithPasskey,
+}
+
+impl BrowserAction {
+    /// What the page names it by (`data-browser`).
+    const fn name(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "keep-with-passkey",
+            Self::SignInWithPasskey => "sign-in-with-passkey",
+        }
+    }
+
+    /// What the row says, in the words the person's own actions use.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "Keep your name and work with a passkey",
+            Self::SignInWithPasskey => "Sign in with a passkey",
+        }
+    }
+
+    /// What the row is for, after its name.
+    const fn hint(self) -> &'static str {
+        match self {
+            Self::KeepWithPasskey => "So you come back as yourself on any browser",
+            Self::SignInWithPasskey => "Be the person you kept on another browser",
+        }
+    }
+
+    /// Whether what the person typed is about this action: its own words
+    /// hold what was typed, so the row appears as the word is typed on
+    /// (`pass`, `passkey`, `sign in`).
+    fn found_by(self, typed: &str) -> bool {
+        let typed = typed.trim().to_lowercase();
+        !typed.is_empty()
+            && format!("{} {}", self.label(), self.hint())
+                .to_lowercase()
+                .contains(&typed)
+    }
 }
 
 /// The action a search row runs: the target a caller invokes, as the
@@ -725,11 +778,34 @@ impl Worker {
                 href: Some(format!("/w/{workspace_id}/{name}")),
                 run: None,
                 copy: None,
+                browser: None,
                 app: true,
             });
         }
         if typed.is_empty() {
             return (rows, None);
+        }
+        // The person's own identity actions, which only their browser holds:
+        // keeping it with a passkey, and signing in with one, run in the page
+        // (`page.mjs`), inside the person's press, and never here.
+        for action in [
+            BrowserAction::KeepWithPasskey,
+            BrowserAction::SignInWithPasskey,
+        ] {
+            if !action.found_by(typed) {
+                continue;
+            }
+            let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+            rows.push(SearchRow {
+                id,
+                label: action.label().to_owned(),
+                secondary: action.hint().to_owned(),
+                href: None,
+                run: None,
+                copy: None,
+                browser: Some(action),
+                app: false,
+            });
         }
         let mut notes: Vec<&str> = Vec::new();
         // What the workspace holds, by the words in it: the records the
@@ -766,6 +842,7 @@ impl Worker {
                         href: Some(href),
                         run: None,
                         copy: None,
+                        browser: None,
                         app: false,
                     });
                 }
@@ -819,6 +896,7 @@ impl Worker {
                             host: false,
                         }),
                         copy: None,
+                        browser: None,
                         app: false,
                     });
                 }
@@ -857,6 +935,7 @@ impl Worker {
                     host: true,
                 }),
                 copy,
+                browser: None,
                 app: false,
             });
         }
@@ -1662,6 +1741,17 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
                     escape(href),
                     escape(&row.label)
                 );
+            } else if let Some(browser) = row.browser {
+                // A browser's own action: the page runs it, so it is drawn now
+                // and offered once the page can (`page.mjs`, the rows it arms).
+                let _ = write!(
+                    out,
+                    "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"browser\" \
+                     data-browser=\"{}\" disabled><span class=\"tilo-search-row-label\">{}\
+                     </span>{secondary}</button></li>",
+                    browser.name(),
+                    escape(&row.label)
+                );
             } else {
                 // A row that hands a link over carries it on the element: the
                 // press copies it inside the gesture, and the handover beside
@@ -1908,9 +1998,12 @@ color:var(--tilo-text);text-decoration:none;font-size:14px;}\
 .tilo-search-row:hover{background:var(--tilo-hover);}\
 .tilo-search-row:active{background:var(--tilo-press);}\
 .tilo-search-row:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-search-row:disabled{opacity:.55;cursor:default;}\
+.tilo-search-row:disabled:hover{background:none;}\
 .tilo-search-row-label{font-weight:500;}\
 .tilo-search-row-kind{margin-left:auto;font-size:12px;color:var(--tilo-text-tertiary);}\
 .tilo-search-note{margin:0;font-size:14px;color:var(--tilo-text-dim);}\
+.tilo-search-notice{margin:0;font-size:14px;color:var(--tilo-text);}\
 .tilo-search-form{display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:12px;\
 background:var(--tilo-raised);}\
 .tilo-search-form h2{margin:0;font-size:15px;font-weight:600;}\

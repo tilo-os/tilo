@@ -270,8 +270,8 @@ async fn a_stand_in_revoked_in_a_workspace_is_refused_by_what_it_signs_after() {
     )
     .unwrap();
 
-    // His tablet announces the revocation his root signed in the workspace it
-    // shares with the server.
+    // He keeps the root with a passkey: his tablet announces the revocation his
+    // root signed in the workspace it shares with the server.
     let revoked_at = stand_in.issued_at_ns + 2;
     let mut revocation = RevocationEntry {
         user_public_key: bob.user_pk,

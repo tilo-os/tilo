@@ -75,6 +75,9 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
         await tab.send('Input.dispatchMouseEvent', {type, x: at.x, y: at.y, button: 'left', clickCount: 1});
       }
     };
+    const passkey = await tab.evaluate(`(() => { const b = getComputedStyle(document.getElementById('first-screen-passkey')); return {disabled: document.getElementById('first-screen-passkey').disabled, color: b.color}; })()`);
+    check(!passkey.disabled, `${name}: the passkey button reads as one to press before the runtime is in`);
+
     // Set up manually: the MCP server and the commands, with a code the press
     // makes.
     await click('first-screen-manual-toggle');

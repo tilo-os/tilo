@@ -151,7 +151,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
     .replace("import {loadRuntime} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime;')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
-    .replace("import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst recoveryWords = identity => identity.recoveryWords;\nconst recoveryWordsShown = async () => globalThis.__entryPageFixture.recoveryShown;\nconst keepRecoveryWordsShown = async () => {};')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst recoveryWords = identity => identity.recoveryWords;\nconst recoveryWordsShown = async () => globalThis.__entryPageFixture.recoveryShown;\nconst keepRecoveryWordsShown = async () => {};\nconst signInWithPasskey = (...args) => globalThis.__entryPageFixture.signIn(...args);\nconst fetchEnvelope = async () => null;')
     .replace('hostToReconnect, joinViaHost,', 'hostToReconnect,')
     .replace('identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, invitedServer, openInvitation,')
     .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,')
@@ -234,6 +234,46 @@ test('the sign-in screen at a closed workspace offers someone with no Tilo ident
     assert.equal(document.documentElement.dataset.refusal, 'invite');
   } finally {
     globalThis.fetch = before;
+  }
+});
+
+test('the entry offers one Sign in, for a passkey, an agent or the tilo command alike, and says who a sign-in let in that is not in yet', async () => {
+  const {module} = await fixture({boot: async () => { throw new AdmissionError('no-access', 'You don’t have access to this workspace.'); }});
+  // The entry's ways past the wait list (index.html, `.refusal-alt`), by id.
+  const parts = {};
+  for (const id of ['arrival-sign-in-open', 'arrival-sign-in-note']) {
+    parts[id] = Object.assign(new Element(id), {hidden: false, textContent: ''});
+  }
+  document.getElementById = id => parts[id] ?? null;
+  const open = parts['arrival-sign-in-open'];
+  const note = parts['arrival-sign-in-note'];
+  const before = {credential: Object.getOwnPropertyDescriptor(globalThis, 'PublicKeyCredential'),
+    navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+    session: Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')};
+  try {
+    // A browser with neither a passkey nor a way to pair through a host has nothing to sign in with.
+    Object.defineProperty(globalThis, 'navigator', {value: {}, configurable: true});
+    delete globalThis.PublicKeyCredential;
+    module.offerSignIn({workspace: null, named: 'Lounge', messages: null, runtime: null, link: null});
+    assert.equal(open.hidden, true);
+    // With passkeys, the one Sign in link opens the screen that offers every way side by side.
+    Object.defineProperty(globalThis, 'PublicKeyCredential', {value: function PublicKeyCredential() {}, configurable: true});
+    Object.defineProperty(globalThis, 'navigator', {value: {credentials: {get() {}}}, configurable: true});
+    // The load after a passkey signed in someone this workspace has not let in yet.
+    const kept = new Map([['tilo-entry-signed-in', globalThis.__entryPageFixture.identity.userPublicKey]]);
+    Object.defineProperty(globalThis, 'sessionStorage', {value: {getItem: key => kept.get(key) ?? null,
+      setItem: (key, value) => kept.set(key, value), removeItem: key => kept.delete(key)}, configurable: true});
+    open.hidden = false;
+    module.offerSignIn({workspace: null, named: 'Lounge', messages: null, runtime: null, link: null});
+    assert.equal(open.textContent, 'Sign in');
+    assert.equal(open.hidden, false);
+    assert.equal(note.textContent, 'You’re signed in, but this identity isn’t in Lounge yet. Join the wait list, or ask someone in it for an invite.');
+    assert.equal(kept.has('tilo-entry-signed-in'), false, 'said once');
+    assert.equal(typeof open.listeners.get('click'), 'function');
+  } finally {
+    for (const [name, descriptor] of [['PublicKeyCredential', before.credential], ['navigator', before.navigator], ['sessionStorage', before.session]]) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
+    }
   }
 });
 
@@ -806,7 +846,7 @@ test('the entry’s link field takes a pairing link and an invitation’s short 
     assert.equal(paste(screen, text), 'That isn’t an invite or pairing link. Paste the whole link.', text);
   }
   assert.equal(at(), null, 'nothing else is opened');
-  assert.equal(screen['arrival-invite-toggle'].textContent, 'Have an invite or pairing link?');
+  assert.equal(screen['arrival-invite-toggle'].textContent, 'Have an invite link?');
   assert.equal(screen['arrival-invite-link'].placeholder, 'Paste an invite or pairing link');
   assert.match(screen['arrival-refusal-body'].textContent, /“Pair a new device”/, 'the entry says a pairing link is a way in');
 });

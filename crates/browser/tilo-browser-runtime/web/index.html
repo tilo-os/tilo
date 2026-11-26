@@ -436,18 +436,19 @@ document.addEventListener('click',function(e){
     .refusal-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
     .refusal-note a:hover { color: var(--e-soft); }
     .refusal-note.refusal-problem, .refusal-problem { color: var(--e-problem); }
-    .refusal-alt { width: 100%; margin: 20px 0 0; padding-top: 20px; border-top: 1px solid var(--e-divider); }
-    .refusal-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--e-body); }
-    .refusal-alt p + p { margin-top: 8px; }
+    .refusal-alt { width: 100%; margin: 16px 0 0; }
+    .refusal-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--e-body); text-align: center; }
+    .refusal-alt p + p, .refusal-alt p + form { margin-top: 12px; }
     .refusal-link { font: inherit; padding: 0; border: 0; background: none; color: var(--e-link); cursor: pointer; text-decoration: underline; text-decoration-color: var(--e-link-line); text-underline-offset: 3px; }
     .refusal-link:hover { color: var(--e-link-hover); text-decoration-color: currentColor; }
     .refusal-link:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 3px; border-radius: 2px; }
     .refusal-link:disabled { cursor: default; opacity: .6; }
-    #arrival-invite-error:empty { display: none; }
+    #arrival-sign-in-note:empty, #arrival-invite-error:empty { display: none; }
     /* The ways to sign in wrap as one, after the question; the dot between them only while both show. */
-    .refusal-ways { display: inline-block; white-space: nowrap; }
-    #arrival-invite-toggle { font-size: 13px; color: var(--e-faint); text-decoration-color: var(--e-faint-line); }
-    #arrival-invite-toggle:hover { color: var(--e-soft); }
+    /* The ways past the wait list, as one row of links alike: signing in, and a link someone sent. */
+    .refusal-ways { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; column-gap: 10px; row-gap: 4px; }
+    .refusal-or { color: var(--e-faint); }
+    .refusal-ways [hidden] + .refusal-or, .refusal-or:has(+ [hidden]) { display: none; }
     #arrival-invite { margin-top: 12px; }
     #arrival-invite[hidden] { display: none; }
     #arrival-invite-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; color: var(--e-problem); text-align: center; }
@@ -455,6 +456,7 @@ document.addEventListener('click',function(e){
     [data-refusal=invite] #arrival-wait, [data-refusal=invite] #arrival-wait-note, [data-refusal=invite] #arrival-wait-off, [data-refusal=invite] #arrival-wait-again-line, [data-refusal=invite] #arrival-wait-contact, [data-refusal=invite] #arrival-invite-toggle { display: none; }
     [data-refusal=invite] #arrival-invite { margin-top: 0; }
     [data-refusal=invite] .refusal-alt { margin-top: 24px; }
+    [data-refusal=invite] .refusal-or { display: none; }
     .refusal-foot { margin-top: auto; padding: 32px 0 24px; }
     @media (max-width: 480px) {
       :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { padding-top: max(32px, calc(42vh - 230px)); }
@@ -689,6 +691,11 @@ document.addEventListener('click',function(e){
     #first-screen .fr-swap > .fr-hand { visibility: hidden; }
     #first-screen[data-handed=true][data-mode=setup] .fr-swap > .fr-for-setup.fr-hand,
     #first-screen[data-handed=true][data-mode=sign-in] .fr-swap > .fr-for-sign-in.fr-hand { visibility: visible; }
+    /* The ways to sign in stand evenly, one under the other, each named the same way. */
+    .fr-ways { display: flex; flex-direction: column; align-items: stretch; width: 100%; max-width: 520px; margin: 8px 0 0; }
+    .fr-ways > .fr-field { margin-bottom: 24px; }
+    .fr-ways #first-screen-passkey-sign-in { width: 100%; }
+    #first-screen[data-handed=true] .fr-ways, #first-screen[data-handed=true] .fr-way-label,
     #first-screen[data-handed=true] .fr-offer,
     #first-screen[data-handed=true] .fr-lead,
     #first-screen[data-handed=true] .fr-copied { display: none; }
@@ -759,17 +766,26 @@ document.addEventListener('click',function(e){
       <svg class="fr-mark" aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path class="side" d="M10.98 31.85Q10.98 27.97 14.4 26.12L20.26 22.97Q24.84 20.51 24.84 25.71L24.84 74.29Q24.84 79.49 20.26 77.03L14.4 73.88Q10.98 72.03 10.98 68.15Z"/><path class="side" d="M89.02 31.85Q89.02 27.97 85.6 26.12L79.74 22.97Q75.16 20.51 75.16 25.71L75.16 74.29Q75.16 79.49 79.74 77.03L85.6 73.88Q89.02 72.03 89.02 68.15Z"/><rect class="core" x="29" y="16" width="42" height="68" rx="6"/></svg>
       <div class="fr-start">
         <div class="fr-swap"><h1 id="first-screen-heading" class="fr-for-start" tabindex="-1">Let your agent set up Tilo</h1>
-        <h1 id="first-screen-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1>
+        <h1 id="first-screen-heading-wait" class="fr-for-wait" tabindex="-1"><span class="fr-for-setup">Paste it into your agent</span><span class="fr-for-sign-in">Sign in to Tilo</span></h1>
         <h1 id="first-screen-heading-hand" class="fr-for-wait fr-for-setup fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is setting up Tilo</h1>
         <h1 id="first-screen-heading-hand-sign-in" class="fr-for-wait fr-for-sign-in fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is signing this tab in</h1></div>
         <div class="fr-leads"><p class="fr-lead fr-for-start fr-for-first">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
         <p class="fr-lead fr-for-start fr-for-reopened">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, in the workspace this tab shows, where you see it work.</p>
         <p class="fr-lead fr-for-wait fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
-        <p class="fr-lead fr-for-wait fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p></div>
+        <p class="fr-lead fr-for-wait fr-for-sign-in">With your agent, the tilo command or a passkey: whichever you have at hand.</p></div>
+        <p class="fr-label fr-way-label fr-for-wait fr-for-sign-in">Ask your agent, on a computer where you use Tilo</p>
         <div class="fr-well fr-offer"><pre id="first-screen-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-screen-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-screen-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-screen-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-screen-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>
         <button id="first-screen-agent" class="fr-primary fr-for-start" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span class="fr-not-asked">Set up with your agent</span><span class="fr-asked">Copy prompt</span></button>
         <p class="fr-caption fr-for-start">The code in it works once, for 10 minutes, in this tab only.</p>
         <p class="fr-copied fr-for-wait">Copied to your clipboard.</p>
+        <div id="first-screen-ways" class="fr-ways fr-for-wait fr-for-sign-in">
+          <p class="fr-label fr-way-label">Or run it yourself, in a terminal on that computer</p>
+          <div class="fr-field"><code id="first-screen-sign-in-command"></code><button id="first-screen-copy-sign-in-command" class="fr-copy" type="button">Copy</button></div>
+          <div id="first-screen-way-passkey">
+            <p class="fr-label fr-way-label">Or with a passkey you made on Tilo</p>
+            <button id="first-screen-passkey-sign-in" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
+          </div>
+        </div>
         <p id="first-screen-problem" class="fr-for-wait"></p>
         <ol id="first-screen-steps" class="fr-for-wait" aria-label="What your agent did"></ol>
         <p id="first-screen-left" class="fr-for-wait"></p>
@@ -792,6 +808,7 @@ document.addEventListener('click',function(e){
       <h2 id="first-screen-sign-in">Sign in</h2>
       <button id="first-screen-agent-sign-in" class="fr-secondary" type="button">Sign in with your agent</button>
       <p id="first-screen-sign-in-note" data-problem="false"></p>
+      <button id="first-screen-passkey" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
       <p class="fr-note">Or open a pairing link from a device where you’re signed in.</p>
     </aside>
     <p id="first-screen-status" class="fr-said" role="status"></p>
@@ -803,7 +820,7 @@ document.addEventListener('click',function(e){
   <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
-  <section id="arrival-refusal" aria-labelledby="arrival-refusal-heading"><div class="refusal-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-refusal-heading"></h1><p id="arrival-refusal-body"></p><form id="arrival-wait" class="refusal-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="refusal-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="refusal-link" type="button"></button></p><p id="arrival-wait-off" class="refusal-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="refusal-link" type="button"></button></p><p id="arrival-wait-note" class="refusal-note"></p><p id="arrival-wait-contact" class="refusal-note"></p><div class="refusal-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <span class="refusal-ways"><button id="arrival-sign-in-agent" class="refusal-link" type="button">Sign in with your agent</button></span></p><p><button id="arrival-invite-toggle" class="refusal-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite or pairing link?</button></p><form id="arrival-invite" class="refusal-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite or pairing link" aria-label="Invite or pairing link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="refusal-foot"></div></section>
+  <section id="arrival-refusal" aria-labelledby="arrival-refusal-heading"><div class="refusal-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-refusal-heading"></h1><p id="arrival-refusal-body"></p><form id="arrival-wait" class="refusal-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="refusal-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="refusal-link" type="button"></button></p><p id="arrival-wait-off" class="refusal-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="refusal-link" type="button"></button></p><p id="arrival-wait-note" class="refusal-note"></p><p id="arrival-wait-contact" class="refusal-note"></p><div class="refusal-alt"><p class="refusal-ways"><button id="arrival-sign-in-open" class="refusal-link" type="button">Sign in</button><span class="refusal-or" aria-hidden="true">·</span><button id="arrival-invite-toggle" class="refusal-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><p id="arrival-sign-in-note" role="alert"></p><form id="arrival-invite" class="refusal-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite or pairing link" aria-label="Invite or pairing link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="refusal-foot"></div></section>
   <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>

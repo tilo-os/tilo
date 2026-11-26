@@ -251,7 +251,7 @@ export function refusalCopy({workspace = null, waitList = false, signIn = false,
   if (waitList) {
     return {
       heading: say('arrival-refusal-wait-heading', 'One workspace for you, your team and your AI agents'),
-      body: say('arrival-refusal-wait-body', 'Notes, tasks, files and chat in one place, on all your devices. Claude Code and other agents work in it beside you, and you see everything they do. Tilo is invite-only during its early alpha: leave your email and we’ll send you an invite.'),
+      body: say('arrival-refusal-wait-body', 'Tilo is invite-only for now. Leave your email and we’ll send you an invite.'),
     };
   }
   return {

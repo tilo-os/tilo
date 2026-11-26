@@ -31,14 +31,14 @@ import {showRecoveryWords} from './recovery-words.mjs';
 import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';
 import {fetchPersonProfile} from './profile-photos.mjs';
 import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose} from './pairing.mjs';
-import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown, signInWithPasskey} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {hostUnreachable, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer} from './site-host.mjs';
-import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, hostDeviceOf, hostToReconnect, joinViaHost, keepJoinedHost, keptMembership, listedWorkspaces, publicListings, membershipOrigins, ownDesktopOpen, pairViaHost, rememberEntered, settleFailedWorkspace, unmarkOwnPairing, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 import {hex} from './hex.mjs';
 
@@ -1067,13 +1067,17 @@ function loadPage(url) {
 /** The bundle version this page runs, for the reconnect screen's details. */
 const PAGE_BUILD = servedVersion(import.meta.url)?.version ?? 'development';
 
+/** Set for the one reload after signing in at the entry, to the person
+ * signed in as: refused again, the entry says that identity is not in yet. */
+const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
+
 /**
  * On a page turned away for coming without an invitation, the entry
  * (index.html, `#arrival-refusal`). Where the host keeps a wait list
  * (`error.entry`), it apologises that Tilo is invite-only for now and asks
  * for an email to invite (`offerWaitList`); else it names the workspace
  * `named` and asks for the invite link someone sends. Under either: signing
- * in with an identity the person already has (their agent, then the page
+ * in with an identity the person already has (a passkey, their agent or the `tilo` command, then the page
  * loads again and joins as them, and a member gets in), and the field to
  * paste an invite or pairing link into, opened in this tab.
  */
@@ -1107,11 +1111,11 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   }
   if (kept && !shown) offerWaitList({workspace: kept.workspace, contact: kept.contact, mail: kept.mail === true, messages, language});
   // Signing in from a link comes back to the link; at the site's entry, to a workspace of their own.
-  offerSignIn({workspace, messages, runtime, link, home, pair, stay: signIn});
+  offerSignIn({workspace, named, messages, runtime, link, home, pair, stay: signIn});
   // The link that lets someone in, an invitation or a pairing from a device
   // of theirs: behind a small toggle beside the wait list; shown where it is
   // the only way in.
-  toggle.textContent = say('arrival-invite-toggle', 'Have an invite or pairing link?');
+  toggle.textContent = say('arrival-invite-toggle', 'Have an invite link?');
   field.placeholder = say('arrival-invite-placeholder', 'Paste an invite or pairing link');
   field.setAttribute('aria-label', say('arrival-invite-link', 'Invite or pairing link'));
   form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
@@ -1197,33 +1201,73 @@ function offerWaitList({workspace, contact, mail, messages, language}) {
 }
 
 /**
- * Signing in at the entry with an identity the person already has: a computer
- * of theirs vouches for this tab, which pairs here as their new device and
- * then opens a workspace of their own rather than the home workspace's shared
- * desktop. A member gets in; the wait list still stands for anyone else.
+ * Signing in at the entry with an identity the person already has. "Sign in"
+ * opens the sign-in screen (`openSignIn`), which offers every way side by
+ * side: their agent, or the `tilo` command typed on a computer of theirs,
+ * vouches for this tab, which pairs here as their new device and then opens
+ * their own workspace, past the wait list; or their passkey opens it (its
+ * envelope from the hosts that keep it), and the page loads again to join as
+ * them, opening a workspace of their own rather than the home workspace's
+ * shared desktop. A member gets in; anyone else is told this identity is not
+ * in `named` yet, with the wait list still there.
  */
-export function offerSignIn({workspace, messages, runtime, link, home = null, pair = null, stay = false}) {
+export function offerSignIn({workspace, named, messages, runtime, link, home = null, pair = null, stay = false}) {
   const say = (key, english, args) => localized(messages, key, english, args);
-  const row = document.getElementById('arrival-sign-in');
-  const agent = document.getElementById('arrival-sign-in-agent');
-  if (!row || !agent) return;
-  document.getElementById('arrival-sign-in-ask').textContent = say('arrival-sign-in-ask', 'Already have a Tilo identity?');
-  agent.textContent = say('arrival-sign-in-agent', 'Sign in with your agent');
-  // With their agent: a computer of theirs vouches for this tab, which
-  // pairs here as their new device and then opens their own workspace, past
-  // the wait list.
+  const open = document.getElementById('arrival-sign-in-open');
+  const note = document.getElementById('arrival-sign-in-note');
+  if (!open || !note) return;
+  open.textContent = say('arrival-sign-in-open', 'Sign in');
   const origin = workspace?.host?.origin;
   const target = entryWorkspace(workspace);
-  const signInWithAgent = origin && target && link && pair;
-  agent.hidden = !signInWithAgent;
-  row.hidden = !signInWithAgent;
-  if (!signInWithAgent) return;
-  const tickets = ticketCodes({origin: new URL(origin).origin});
+  const withAgent = Boolean(origin && target && link && pair);
+  // A browser without passkeys cannot open an identity kept with one.
+  const withPasskey = passkeysHere();
+  open.hidden = !withAgent && !withPasskey;
+  if (open.hidden) return;
+  let signedIn = null;
+  try {
+    signedIn = sessionStorage.getItem(ENTRY_SIGNED_IN);
+    sessionStorage.removeItem(ENTRY_SIGNED_IN);
+  } catch { /* No storage: nothing to say about a sign-in. */ }
+  if (signedIn && signedIn === currentIdentity()?.userPublicKey) {
+    note.textContent = named
+      ? say('arrival-sign-in-not-member', 'You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.', {workspace: named})
+      : say('arrival-sign-in-not-member-unnamed', 'You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.');
+  }
+  const tickets = withAgent ? ticketCodes({origin: new URL(origin).origin}) : null;
   const signIn = claimed => signInAs(claimed, {origin, home, stay}, link, pair);
-  agent.addEventListener('click', () => {
-    const screen = openSignIn(document, {onBack: () => agent.focus()});
-    screen?.offerAgentSignIn(async () => ({...await tickets.createSignIn(), signIn}));
+  const passkey = async () => {
+    const identity = await passkeySignIn([workspace?.host?.origin, ...membershipOrigins(),
+      ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)]);
+    try { sessionStorage.setItem(ENTRY_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+    // The page loads again as them: from a link, that link.
+    location.reload();
+  };
+  open.addEventListener('click', () => {
+    note.textContent = '';
+    const screen = openSignIn(document, {onBack: () => open.focus(), passkey: withPasskey});
+    if (!screen) return;
+    if (withPasskey) screen.offerSignIn(passkey);
+    if (withAgent) screen.offerAgentSignIn(async () => ({...await tickets.createSignIn(), signIn}));
+    else screen.unavailable({code: 'no-codes'});
   });
+}
+
+/** Whether this browser can open an identity kept with a passkey. */
+function passkeysHere() {
+  return typeof globalThis.PublicKeyCredential === 'function' && Boolean(globalThis.navigator?.credentials?.get);
+}
+
+/** Be, in this tab, the person a passkey of theirs opens, their envelope from
+ * the first of the hosts at `origins` that keeps it: the person signed in.
+ * Someone who signs in has been here, so the first screen of a first visit is
+ * not theirs, and would name a new workspace for them that their host does
+ * not keep. */
+async function passkeySignIn(origins) {
+  const hosts = [...new Set(origins.filter(Boolean))];
+  const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, hosts)});
+  setupDone();
+  return identity;
 }
 
 /** The person's other workspaces, as the failure screen lists them after
@@ -1357,6 +1401,13 @@ function offerFirstScreenCodes({origin, identity, runtime, link, home = null, pa
   const host = new URL(origin).origin;
   const setup = agentSetupCodes({origin: host, identity, runtime, link});
   firstScreen.offerSetup(setup.make, setup.resume, {ahead: false});
+  // Signing in with a passkey made on Tilo: the page loads again as the person it opens.
+  if (passkeysHere()) {
+    firstScreen.offerSignIn(async () => {
+      await passkeySignIn([host, ...membershipOrigins()]);
+      location.reload();
+    });
+  }
   // Signing this tab in is the person's computer's to approve, and this tab's to pair once it
   // learns whom: the ticket names no workspace, so the host makes none for it.
   if (!pair) return;
@@ -1446,6 +1497,7 @@ async function setupPeer() {
 
 /** The person's own workspace on the home host, or null, once asked for. */
 let ownWorkspaceAsked = null;
+
 /** The workspace switcher's choice of the person's own hosted workspace. */
 /**
  * The person's own workspace on the host of `peer`, with this page's device

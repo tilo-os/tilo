@@ -81,6 +81,7 @@ pub mod fleet;
 pub mod image;
 pub mod projection;
 pub mod revocation;
+pub mod root_envelope;
 pub mod root_statement;
 pub mod sign;
 pub mod sign_in;

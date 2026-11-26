@@ -144,18 +144,18 @@ With `--images`, the first three are the images themselves.
 - **No TLS.** In production Cloudflare terminates TLS; here the site, the server,
   its live session and the API server are plain HTTP on this machine's own names.
   Browsers treat `localhost`, names under it and loopback addresses as secure
-  contexts, so the page runs as it does on tilo.sh (WebCrypto, service workers)
-  with no certificate to trust. Tilo's programs and the `tilo` command
+  contexts, so the page runs as it does on tilo.sh (passkeys, WebCrypto, service
+  workers) with no certificate to trust. Tilo's programs and the `tilo` command
   take `https://` origins, or `http://` ones on this machine.
 - **WebTransport** needs TLS, so the relay serves it on its own UDP port with a
   short-lived ECDSA certificate it makes and whose SHA-256 the page is handed
   with the host's address (`serverCertificateHashes`).
 - **The site is on its own name under localhost.** `tilo.localhost` resolves to
   loopback without a hosts entry, and it is a name rather than an address
-  because a browser gives its secure context, and WebCrypto, only to a host
-  name. Over plain HTTP a browser speaks HTTP/1.1, so the page's modules arrive
-  over six connections and an entry-speed measurement here reads slower than
-  tilo.sh.
+  because a browser gives its secure context, WebCrypto and a passkey's
+  relying party only to a host name. Over plain HTTP a browser speaks
+  HTTP/1.1, so the page's modules arrive over six connections and an
+  entry-speed measurement here reads slower than tilo.sh.
 - **Natively, the build profile** is `lounge-local`: the release's code and
   opt-level without the whole-program link, compiled incrementally. The
   bundle is not wasm-opt'd, so its modules are larger than the shipped ones.
@@ -231,14 +231,14 @@ visa run (`sdk/python/examples/visa_proof.py`) creates applicant workspaces,
 mints a one-workspace key and its MCP URL, and an agent fills a form and writes
 a letter; a reviewer joins by invitation, reads the filled form and undoes the
 agent's run; revoking the keys refuses them; three fresh visitors enter the
-Lounge. With `TILO_SH_VM_HOST=1` it also holds a
+Lounge, one of them with a passkey. With `TILO_SH_VM_HOST=1` it also holds a
 hosted workspace's Browser to opening in that workspace's VM and to the
 sandbox, browser user and device key the guest image promises, fills the test
 page through page actions with a person's answers, and runs Linux commands in
 the workspace's own VM as its tenant rather than as its Browser user.
 
 `t test e2e` runs the same steps against a stack it already has up, as flows
-beside the page's own (`check.sh --flow signin|visa|entry`).
+beside the page's own (`check.sh --flow signin|visa|entry|passkey`).
 `t test tilo-sh-local-vm` runs the check with the VM host, from the images that
 host runs. The report in the work directory holds the bring-up time, the visa
 run's duration and each visitor's entry time, so it says where the time went.

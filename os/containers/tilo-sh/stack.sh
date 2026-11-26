@@ -296,8 +296,8 @@ last_port=$control_port  # the highest port a stack on this base takes
 server_origin=http://127.0.0.1:$server_port
 live_origin=http://127.0.0.1:$live_port
 api_origin=http://localhost:$api_port
-# A name of its own under localhost, not an address: a browser's secure
-# context is the page's host name, which an address does not give it.
+# A name of its own under localhost, not an address: a passkey's relying
+# party is the page's host name, and a browser refuses one on an address.
 site_host=tilo.localhost
 site_origin=http://$site_host:$site_port
 # The site's health check, at the address the web entry listens on: the names

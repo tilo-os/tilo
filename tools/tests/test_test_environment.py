@@ -265,7 +265,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "page-bundle"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session-client) and binary(it) and test(node_workspace::)",
+                [("package(tilo-session-client) and binary(it) and (test(passkey_root::) or "
+                  "test(node_workspace::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
@@ -345,7 +346,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "test(lounge_fresh_page::)":
                                      "lounge-siblings",
                                  "package(tilo-session-client) and binary(it) and "
-                                 "test(node_workspace::)": "page-bundle",
+                                 "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  # The values only some packages' tests need, for those packages:
                                  # given to the run's environment, each would key every build
                                  # script's and proc macro's cache entry by it.

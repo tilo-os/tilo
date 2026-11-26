@@ -11,8 +11,10 @@
 # The stranger's walk: the wait list and its confirmation mail; the invitation
 # the person who runs the host sends from the workspace's own wait list, and
 # the mail that carries it; the workspace the link lands them in, with the
-# agent setup that connects their agent there; a second workspace they make;
-# and a visitor with no invitation, who still cannot get in.
+# agent setup that connects their agent there; the passkey that brings them
+# back on a browser that forgot the site, into a workspace of their own; a
+# second workspace they make; and a visitor with no invitation, who still
+# cannot get in.
 #
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle the stack's site serves
@@ -65,4 +67,4 @@ node "$driver" "$site_origin" "$server_origin" "$out" "$tilo_bin" "$tilo_sh/stac
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
        echo '--- the mails the entry sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }
-echo 'ok: a stranger came from the wait list to a workspace of their own, with their agent, and a second workspace beside it'
+echo 'ok: a stranger came from the wait list to a workspace of their own, with their agent and a passkey, and a second workspace beside it'

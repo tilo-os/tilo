@@ -81,11 +81,13 @@ zeroize.workspace = true
 # Dalek scrubs `SigningKey` on drop; this also scrubs the transient file,
 # stack, and serialization buffers used before/after that owned key exists.
 
-# Base32 for the enrollment-token wire form. Crockford variant
-# (no ambiguity between 0/O or 1/l/I) so a user can read the token
-# out loud without garble; the alphabet is declared at compile time.
+# Base64url for a root envelope's wire form, and Crockford base32 for the
+# enrollment token and a root envelope's recovery key (no ambiguity between
+# 0/O or 1/l/I; the alphabet declared at compile time).
 data-encoding.workspace = true
 data-encoding-macro.workspace = true
+# The browser-computed wrap of a root envelope.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

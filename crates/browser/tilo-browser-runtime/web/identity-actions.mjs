@@ -2,13 +2,27 @@
  * Keeping the person this browser is, as the desktop's own actions.
  *
  * The first visit already made a real identity (`browserIdentity`); these
- * actions are the person's name, picture and accounts, the devices they pair,
- * and the agent they set up. They live in the desktop like its other
- * commands: desktop search lists them.
+ * actions only add ways to open it elsewhere. They live in the desktop like
+ * its other commands: desktop search lists them. Nothing is asked on
+ * arrival: an identity that made nothing loses nothing if the browser
+ * clears it. Once the person has done enough to be worth keeping
+ * (`ASK_AFTER_ACTIONS` actions, or they chose their name), and at the
+ * next pause in what they are doing, one banner asks whether to keep it,
+ * once per browser session; "Not now" leaves it in the notification centre
+ * and the action in search. Choosing one runs here, inside the person's
+ * gesture, so the passkey prompt may follow.
  *
- * - `set-name`: the name others see, in history and presence. Asked in a
- *   form, or taken as typed where the desktop already asked (the profile
- *   card's field).
+ * - `keep-identity`: one tap adds a passkey whose PRF output wraps the root,
+ *   then offers a recovery key beside it.
+ * - `save-recovery-key`: a new recovery key, handed to the password manager
+ *   where the browser has one to offer (`PasswordCredential`), else saved as
+ *   a file. Never shown on the page for longer than that.
+ * - `sign-in-passkey`: be, in this browser, a person kept with a passkey
+ *   elsewhere; its envelope comes from a server that keeps it, and the page
+ *   reloads to join as them.
+ * - `set-name`: the name others see, in history and presence; once set,
+ *   a banner offers to keep the person it names. Asked in a form, or taken
+ *   as typed where the desktop already asked (the profile card's field).
  * - `set-photo` / `reset-photo`: the picture others see beside the name,
  *   chosen from an image file (`profile-photos.mjs`), or back to initials.
  *   Kept in the profile with the name, so it follows the person too.
@@ -25,13 +39,22 @@
  *   shows. Approving signs its certificate with the root held here; the
  *   server the two share only relays the request and the certificate.
  *
- * The name the person chooses (their profile, signed by the root) goes to
- * every server they joined through: each of their devices, paired or signed
- * in, comes up with it (`syncProfile`).
+ * Each change to the envelope goes to every server this person joined
+ * through, so a new browser finds it wherever it asks. So does the name the
+ * person chooses (their profile, signed by the root): each of their devices,
+ * paired or signed in, comes up with it (`syncProfile`).
  */
 import {forInvites, openInvites} from './pairing.mjs';
-import {fetchProfile, fitDisplayName, IdentityError, publishProfile} from './identity.mjs';
+import {
+  fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
+} from './identity.mjs';
 
+export const KEEP = Object.freeze({id: 'keep-identity', title: 'Keep your name and work',
+  subtitle: 'Add a passkey, so you come back as yourself on any browser', source: 'identity'});
+export const RECOVERY = Object.freeze({id: 'save-recovery-key', title: 'Save a recovery key',
+  subtitle: 'To your password manager, or as a file', source: 'identity'});
+export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in with a passkey',
+  subtitle: 'Be the person you kept on another browser', source: 'identity'});
 /** Not offered: the desktop's own card asks it, to keep the person's status. */
 export const STATUS_ID = 'set-status';
 export const LINKED_ID = 'set-linked';
@@ -100,10 +123,63 @@ export const REVOKE_DEVICE = 'revoke-device';
 const PAIR_POLL_MS = 3000;
 
 /**
+ * Whether this browser can make the passkey keeping asks for: a
+ * discoverable credential, on this device or on a phone nearby. A browser
+ * that says it can do neither (no platform authenticator, no hybrid
+ * transport, or no WebAuthn at all) refuses with `NotSupportedError`, so
+ * keeping with a passkey is not offered there.
+ */
+export async function passkeysUsable(window = globalThis) {
+  const api = window.PublicKeyCredential;
+  if (typeof api !== 'function' || typeof window.navigator?.credentials?.create !== 'function') return false;
+  try {
+    if (typeof api.getClientCapabilities === 'function') {
+      const can = await api.getClientCapabilities();
+      if (can && ('passkeyPlatformAuthenticator' in can || 'hybridTransport' in can)) {
+        return Boolean(can.passkeyPlatformAuthenticator || can.hybridTransport);
+      }
+    }
+    if (typeof api.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+      return Boolean(await api.isUserVerifyingPlatformAuthenticatorAvailable());
+    }
+  } catch { return false; }
+  return false;
+}
+
+/** Hand `recoveryKey` to the browser's password manager, else save a file. */
+export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo', window = globalThis} = {}) {
+  const PasswordCredential = window.PasswordCredential;
+  if (PasswordCredential && window.navigator?.credentials?.store) {
+    try {
+      await window.navigator.credentials.store(new PasswordCredential({
+        id: `tilo-recovery-${userPublicKey?.slice(0, 12) ?? 'key'}`, name: `${name} (Tilo recovery key)`, password: recoveryKey,
+      }));
+      return 'password-manager';
+    } catch {
+      // Declined or unavailable: the file still keeps it.
+    }
+  }
+  const document = window.document;
+  const text = `Tilo recovery key\n\n${recoveryKey}\n\nIt opens your Tilo identity on any browser. Keep it somewhere safe.\n`;
+  const url = URL.createObjectURL(new Blob([text], {type: 'text/plain'}));
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'tilo-recovery-key.txt';
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return 'file';
+}
+
+/**
  * The identity actions of `identity` (a `browserIdentity`). `hosts()` lists
  * the origins of the hosts this person joined through (they keep the
- * profile). Attach the desktop with `attach(mount)`; route its
- * `onHostAction` to `perform`.
+ * envelope), `lookups()` every host worth asking on sign-in. Attach the
+ * desktop with `attach(mount)`; route its `onHostAction` to `perform`.
  * `photos` is the person's picture: `current()` (its `data:` URL, or
  * null), `choose()` (asks for one, resolving to its URL or null) and
  * `show(url)` (wears it here at once).
@@ -121,20 +197,25 @@ const PAIR_POLL_MS = 3000;
  * spent or expired.
  */
 export function createIdentityActions({
-  identity, hosts = () => [], name = () => undefined,
+  identity, hosts = () => [], lookups = hosts, rpId = globalThis.location?.hostname, name = () => undefined,
+  publish = publishEnvelope, find = fetchEnvelope, signIn = signInWithPasskey,
   profile = publishProfile,
-  onError = error => console.warn('identity:', error),
+  save = saveRecoveryKey, reload = () => globalThis.location?.reload(), onError = error => console.warn('identity:', error),
   naming = null, photos = null, pairing = null, copy = text => globalThis.navigator?.clipboard?.writeText(text), now = () => Date.now(),
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
-  invites = openInvites({now}),
+  invites = openInvites({now}), passkeys = passkeysUsable,
   profiled = () => {}, showAgentSetup = null, setupDue = () => false,
 }) {
   let mount;
   const offered = new Set();
+  // Learnt on attach: without passkeys a recovery key is the way to keep.
+  let withPasskeys = false;
+  const unkept = () => (withPasskeys ? [KEEP, RECOVERY, SIGN_IN] : [RECOVERY]);
   const actions = () => [...(naming ? [NAME] : []),
     ...(photos ? [PHOTO, ...(photos.current() ? [RESET_PHOTO] : [])] : []),
+    ...(identity.kept ? [RECOVERY] : unkept()),
     ...(pairing ? [PAIR] : []), ...(showAgentSetup ? [CONNECT_AGENT] : [])];
   // Keep the profile (name and picture) on every server; a refusal throws,
   // a server not reached is only reported.
@@ -187,6 +268,10 @@ export function createIdentityActions({
     offered.add(moment);
     mount.offerHostAction({action, title, body});
   };
+  const publishEverywhere = async () => {
+    const results = await Promise.allSettled(hosts().map(origin => publish({origin, identity})));
+    for (const result of results) if (result.status === 'rejected') onError(result.reason);
+  };
   const tryCopy = link => Promise.resolve().then(() => copy(link)).then(() => true, () => false);
   // What shows each open invite: its sheet, then the ask about the device
   // that answered it. Either closes once the invite is spent or expired.
@@ -221,14 +306,15 @@ export function createIdentityActions({
       shown.set(request.invite, askPairing(request, decide(request)));
     }
   };
-  // What the person did: separate actions.
+  // What the person did: separate actions, and the name they chose.
   let done = 0;
   let lastCount = 0;
   let lastChange = -Infinity;
+  let chosenName = null;
   let awaitingPause = false;
   const askedThisSession = () => { try { return session?.getItem(ASKED_KEY) === '1'; } catch { return false; } };
   const ask = () => {
-    if (!mount || askedThisSession() || done < ASK_AFTER_ACTIONS) return;
+    if (!mount || identity.kept || askedThisSession() || done < ASK_AFTER_ACTIONS) return;
     if (!pause()) {
       if (!awaitingPause) {
         awaitingPause = true;
@@ -247,14 +333,28 @@ export function createIdentityActions({
       offer({...CONNECT_AGENT, source: 'identity', title: 'Set up with your agent'}, 'Want a workspace of your own?',
         `Paste one line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, with your agent in a workspace of your own. Any time later: ${searchChord}, “${CONNECT_AGENT.title}”.`,
         'setup');
+      return;
+    }
+    const question = chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?';
+    if (withPasskeys) {
+      offer({...KEEP, title: 'Keep with passkey'}, question,
+        `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
+    } else {
+      // The button answers the question in the person's words: what it does
+      // for them, not the key it makes to do it (the body says that).
+      offer({...RECOVERY, title: 'Remember me'}, question,
+        `A recovery key, saved to your password manager or as a file, brings you back as yourself. Any time later: ${searchChord}, “${RECOVERY.title}”.`,
+        KEEP.id);
     }
   };
   const controller = {
     actions,
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
+      withPasskeys = await Promise.resolve().then(passkeys).then(Boolean, () => false);
       mount = target;
       refresh();
+      if (identity.kept) void publishEverywhere();
       ask();
     },
     /** The person has authored `count` changes so far. Changes in quick
@@ -269,19 +369,40 @@ export function createIdentityActions({
     /** The person's picture changed elsewhere: offer what fits it now. */
     pictured() { refresh(); },
     /** The person chose their name: who they are matters to them now. */
-    named() {
+    named(chosen) {
+      chosenName = chosen;
       done = Math.max(done, ASK_AFTER_ACTIONS);
       ask();
+    },
+    /** Be, in this browser, a person kept with a passkey elsewhere, and load
+     * the page again as them. Rejects with why not, for a caller that says it
+     * (the first screen); `perform` hands a failure to `onError`. */
+    async signIn() {
+      const origins = [...new Set(lookups())];
+      await signIn({rpId, fetchEnvelope: root => find(root, origins)});
+      reload();
     },
     /** Run the host action `id`, with what the person already typed for it
      * (`value`, the name from the profile card); resolves when done (errors
      * go to `onError`). */
     async perform(id, value) {
       try {
-        if (id === NAME.id && naming) {
+        if (id === KEEP.id) {
+          await identity.keepWithPasskey({rpId, userName: name()});
+          refresh();
+          await publishEverywhere();
+          // The next step, asked as the passkey sheet closes.
+          offer({...RECOVERY, title: 'Save it'}, 'Also save a recovery key?',
+            'In case this passkey is ever lost: to your password manager, or as a file.');
+        } else if (id === RECOVERY.id) {
+          const recoveryKey = await identity.createRecoveryKey();
+          await save(recoveryKey, {userPublicKey: identity.userPublicKey, name: name()});
+          refresh();
+          await publishEverywhere();
+        } else if (id === NAME.id && naming) {
           // The form stays open until the name is kept: a host's refusal
-          // is said there. A name typed in the desktop is kept as typed; a
-          // refusal reaches `onError`.
+          // is said there (`ask` shows what `save` throws). A name typed
+          // in the desktop is kept as typed; a refusal reaches `onError`.
           const keep = async typed => {
             const fitted = fitDisplayName(typed);
             if (!fitted) throw new IdentityError('malformed', 'Choose a name');
@@ -337,6 +458,8 @@ export function createIdentityActions({
           // A device of the person's, or an agent's grant, taken back: the
           // root revokes the key, for the reason the person chose.
           await identity.revokeDevice(value.key, value.reason);
+        } else if (id === SIGN_IN.id) {
+          await controller.signIn();
         } else if (id === CONNECT_AGENT.id && showAgentSetup) {
           // The first screen again, with a fresh code: the person's agent runs
           // `tilo login`, or an MCP-only client is added with Tilo's address.
@@ -345,6 +468,19 @@ export function createIdentityActions({
           throw new IdentityError('unknown-action', `no identity action ${id}`);
         }
       } catch (error) {
+        // The place cannot use passkeys (a web view inside an app that may
+        // not use this site's: `asked` in identity.mjs), whatever the browser
+        // said of itself on attach. From now on it is offered what a browser
+        // without passkeys is, and keeping goes on with a recovery key.
+        if ((id === KEEP.id || id === SIGN_IN.id) && ['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+          withPasskeys = false;
+          refresh();
+          if (id === KEEP.id) {
+            offer({...RECOVERY, title: 'Save a recovery key'}, 'Passkeys can’t be used here',
+              'A recovery key brings you back as yourself in their place: saved to your password manager, or as a file.', 'no-passkeys');
+            return;
+          }
+        }
         onError(error);
       }
     },

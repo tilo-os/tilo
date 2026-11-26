@@ -254,7 +254,7 @@ class Element {
 }
 
 const NAMES = ['heading', 'request', 'service', 'reaches', 'reachesRow', 'scope', 'scopeRow', 'until', 'untilRow',
-  'pages', 'pagesRow', 'message', 'actions', 'allow', 'cancel', 'signedOut', 'signedOutText', 'start', 'copy'];
+  'pages', 'pagesRow', 'message', 'actions', 'allow', 'cancel', 'signedOut', 'signedOutText', 'passkey', 'start', 'copy'];
 
 /** A store with the workspaces `entries` as this browser entered them, as
  * `rememberEntered` writes them. */
@@ -272,6 +272,7 @@ function entered(...entries) {
 function page({
   search = link(), kept = {rootPublicKey: ROOT, held: 'browser'}, local = entered(),
   identity = {userPublicKey: ROOT, locked: false, sign: async () => new Uint8Array(64)},
+  passkeys = true, signIn = async () => { throw Object.assign(new Error('no'), {code: 'passkey-cancelled'}); },
   ownDeviceKeyStore = false, siteEntry = null, documentLang = 'en',
 } = {}) {
   const store = {kept};
@@ -299,6 +300,8 @@ function page({
   const window = {
     document, location: {search, href: `https://web.example/sign-in${search}`},
     fetch: siteEntry ? async () => ({ok: true, json: async () => siteEntry}) : undefined,
+    PublicKeyCredential: passkeys ? function PublicKeyCredential() {} : undefined,
+    navigator: {credentials: passkeys ? {get() {}} : undefined},
     addEventListener: (type, listener) => listeners.set(type, listener),
     removeEventListener: type => listeners.delete(type),
     focus: async () => { await listeners.get('focus')?.(); for (let i = 0; i < 40; i++) await Promise.resolve(); },
@@ -315,6 +318,8 @@ function page({
     window,
     elements,
     storage: {get: async key => (key === PERSON_KEY && store.kept ? personJson() : undefined), put: async () => {}},
+    signIn: async options => { await signIn(options); store.kept = {rootPublicKey: ROOT, held: 'browser'}; },
+    hosts: async () => ['https://eu1.tilo.example'],
     local,
     identity,
     loadRuntime: async () => runtime,
@@ -573,10 +578,47 @@ test('a browser with nobody signed in asks the question and offers the ways in o
   assert.equal(shown().reaches, 'All your workspaces, and it may create new ones');
   assert.equal(elements.signedOut.hidden, false);
   assert.match(elements.signedOutText.textContent, /Sign in to Tilo in this browser/);
+  assert.equal(elements.passkey.hidden, false);
   assert.equal(elements.start.href, 'https://web.example/');
   assert.equal(shown().actions, 'none');
   await elements.allow.fire('click');
   assert.equal(formed.length, 0);
+});
+
+test('signing in with a passkey on the card goes on to the question', async () => {
+  const used = [];
+  const {elements, formed, shown, mounted} = page({search: link_(), kept: null, signIn: async options => used.push(options)});
+  await mounted;
+  await elements.passkey.fire('click');
+  assert.equal(used.length, 1);
+  assert.equal(typeof used[0].fetchEnvelope, 'function');
+  assert.equal(shown().state, 'asked');
+  assert.equal(elements.signedOut.hidden, true);
+  assert.equal(shown().actions, 'offered');
+  await elements.allow.fire('click');
+  assert.equal(formed.length, 1);
+});
+
+test('a passkey that opens no identity says so and keeps the ways in', async () => {
+  const {elements, shown, mounted} = page({search: link_(), kept: null,
+    signIn: async () => { throw Object.assign(new Error('none'), {code: 'no-envelope'}); }});
+  await mounted;
+  await elements.passkey.fire('click');
+  assert.equal(shown().state, 'signed-out');
+  assert.match(shown().message, /doesn’t open a Tilo identity/);
+  assert.equal(elements.passkey.disabled, false);
+});
+
+test('a place that cannot use passkeys says where the person can answer instead', async () => {
+  // A web view inside an app that may not use this site's passkeys: refused before anything
+  // was shown, which no second try changes.
+  const {elements, shown, mounted} = page({search: link_(), kept: null,
+    signIn: async () => { throw Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'}); }});
+  await mounted;
+  await elements.passkey.fire('click');
+  assert.equal(shown().state, 'signed-out');
+  assert.equal(shown().message, 'Passkeys can’t be used here. Open this page in the browser where you use Tilo.');
+  assert.equal(elements.passkey.disabled, false);
 });
 
 test('signing in from another tab brings the card on to the question', async () => {
@@ -586,6 +628,13 @@ test('signing in from another tab brings the card on to the question', async () 
   await window.focus();
   assert.equal(shown().state, 'asked');
   assert.equal(shown().actions, 'offered');
+});
+
+test('a browser without passkeys offers Tilo itself', async () => {
+  const {elements, mounted} = page({search: link_(), kept: null, passkeys: false});
+  await mounted;
+  assert.equal(elements.passkey.hidden, true);
+  assert.equal(elements.start.textContent, 'Open Tilo');
 });
 
 test('a link the route will not answer shows why, and asks nothing', async () => {
@@ -604,7 +653,7 @@ test('the route’s page is the card the module drives', () => {
   for (const id of ['sign-in-heading', 'sign-in-request', 'sign-in-service', 'sign-in-reaches',
     'sign-in-reaches-row', 'sign-in-scope', 'sign-in-scope-row', 'sign-in-until', 'sign-in-until-row',
     'sign-in-message', 'sign-in-actions', 'sign-in-allow', 'sign-in-cancel', 'sign-in-signed-out',
-    'sign-in-signed-out-text', 'sign-in-start', 'sign-in-copy']) {
+    'sign-in-signed-out-text', 'sign-in-passkey', 'sign-in-start', 'sign-in-copy']) {
     assert.match(html, new RegExp(`id="${id}"`), `${id} is missing`);
   }
   // The page starts this module, which layout.py names in the versioned

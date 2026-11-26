@@ -22,8 +22,10 @@
 //   3b. the same person on a browser new to the site signs in with their
 //      agent: the entry's wait list offers it, and the computer `tilo login`
 //      set up is a device of theirs, which signs the new tab in;
-//   4. they make a second workspace and are in it;
-//   5. someone else with no invitation still cannot get in, and leaves an
+//   4. they keep themselves with a passkey, their browser forgets the site,
+//      and the passkey brings them back into a workspace of their own;
+//   5. they make a second workspace and are in it;
+//   6. someone else with no invitation still cannot get in, and leaves an
 //      address on the wait list.
 //
 // The mails are the entry's own, kept by the mail sink the stack points it at:
@@ -167,7 +169,7 @@ const until = async (tab, expression, what, timeout = stepLimit(4)) => {
  * been to the site before, so the site treats it as a first visit. A person
  * who has been here before (`setupDone`) opens the site itself, not its first
  * screen: the workspace's own desktop, as the people who run it see it. */
-const visit = async (name, {setupDone = false} = {}) => {
+const visit = async (name, {passkey = false, setupDone = false} = {}) => {
   const browser = await launch();
   browsers.push(browser);
   const tab = await browser.tab({firstScreen: true});
@@ -200,9 +202,22 @@ const visit = async (name, {setupDone = false} = {}) => {
     }
   });
   await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
+  if (passkey) await authenticator(tab);
   said.push({name, tab});
   return {name, tab, browser};
 };
+/** The platform authenticator a person's device has: resident, verified, and
+ * answering PRF, which is what opens a Tilo identity. */
+const authenticator = async tab => {
+  const enabled = await tab.send('WebAuthn.enable', {enableUI: false});
+  if (enabled.error) await fail(`no WebAuthn: ${enabled.error.message}`);
+  const added = await tab.send('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
+    hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true}});
+  if (added.error) await fail(`no virtual authenticator: ${added.error.message}`);
+};
+/** The page's own identity module: the one it holds its person in. */
+const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
+  || document.querySelector('script[type="module"][src]').src))).href)`;
 /** Who this page is, and which workspace it holds. */
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey ?? null; } catch { return null; } })(),
@@ -405,9 +420,6 @@ const commandOf = prompt => {
     code: /^[2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}$/.test(text) ? text : null,
     site: prompt.match(/--site (\S+?)(?:,|\s|$)/)?.[1] ?? null};
 };
-/** The page's own identity module: the one it holds its person in. */
-const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
-  || document.querySelector('script[type="module"][src]').src))).href)`;
 
 /** The 24 recovery words, shown once right after a browser's person is first
  * let in, and confirmed before anything else opens. The words are read from
@@ -492,7 +504,7 @@ try {
 
   // -- 1. a stranger at the wait list ----------------------------------------
   step('a stranger arriving at the wait list');
-  const stranger = await visit('stranger');
+  const stranger = await visit('stranger', {passkey: true});
   await arrive(stranger, {expected: 'refused'});
   await until(stranger.tab, `document.documentElement.dataset.refusal === 'wait-list'`, "the entry showing its wait list", stepLimit(6));
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
@@ -502,7 +514,7 @@ try {
     body: document.getElementById('arrival-refusal-body')?.textContent?.trim() ?? null,
     note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
     button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
-    signIn: document.getElementById('arrival-sign-in-agent')?.textContent?.trim() ?? null,
+    signIn: document.getElementById('arrival-sign-in-open')?.textContent?.trim() ?? null,
     contact: document.getElementById('arrival-wait-contact')?.textContent?.trim() ?? null,
   })`);
   await dump(stranger.tab, '1-wait-list');
@@ -727,7 +739,8 @@ try {
   const returning = await visit('returning');
   await arrive(returning, {expected: 'refused'});
   await until(returning.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the wait list for a browser new to the site', stepLimit(6));
-  await pressId(returning.tab, 'arrival-sign-in-agent');
+  // "Sign in" opens the sign-in screen, whose first way is the agent's prompt.
+  await pressId(returning.tab, 'arrival-sign-in-open');
   // The prompt a person copies, read from what the screen shows: the code it
   // names, once the screen is ready to be copied.
   const signInShown = `(() => {
@@ -791,7 +804,50 @@ try {
   mark('a browser new to the site signed the person in with their agent');
   console.log(`ok: "Sign in with your agent" showed its code, and the person's computer signed the tab in to ${signedIn.title}`);
 
-  // -- 4. a second workspace -------------------------------------------------
+  // -- 4. a passkey brings the same person back, to a workspace of theirs -----
+  // Kept from the person's own desktop, as "Keep with passkey" does. A
+  // passkey is made in the tab a person is looking at: the second tab opened
+  // above closed, and this one is in front again before the browser is asked.
+  step('the passkey kept, and bringing the person back to a workspace of theirs');
+  await stranger.tab.front();
+  const kept = await stranger.tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    const person = await id.browserIdentity();
+    try {
+      const envelope = await person.keepWithPasskey({userName: 'wait list passkey'});
+      // Where the passkey signs in from: the hosts that know this person keep
+      // the envelope their passkey opens, as "Keep your name and work" does.
+      await id.publishEnvelope({origin: ${JSON.stringify(hostOrigin)}, identity: person});
+      return JSON.stringify({person: person.userPublicKey, wraps: (envelope?.wraps ?? []).filter(wrap => wrap.kind === 'passkey').length});
+    } catch (error) { return JSON.stringify({error: String(error?.message ?? error), code: error?.code ?? error?.name}); }
+  })()`).then(JSON.parse).catch(error => ({error: error.message}));
+  report.passkey = kept;
+  if (kept.error) await fail(`the passkey was not registered: ${kept.error} (${kept.code})`);
+  if (kept.person !== report.landed.user) await fail(`the passkey was made for ${kept.person}, not the person in the workspace`);
+  // The browser forgets the site, as a person who cleared it, or one on a
+  // computer that never had it: the authenticator alone remembers them.
+  await stranger.tab.send('Storage.clearDataForOrigin', {origin: siteOrigin, storageTypes: 'all'});
+  await arrive(stranger, {expected: 'refused'});
+  await until(stranger.tab, `!!document.getElementById('arrival-sign-in-open')?.offsetParent`, 'the entry offering a sign-in after the browser forgot the site', stepLimit(6));
+  // "Sign in" opens the sign-in screen, which offers the passkey beside the agent and the command.
+  await pressId(stranger.tab, 'arrival-sign-in-open');
+  await until(stranger.tab, `!!document.getElementById('first-screen-passkey-sign-in')?.offsetParent`, 'the sign-in screen offering a passkey', stepLimit(4));
+  await pressId(stranger.tab, 'first-screen-passkey-sign-in');
+  const back = await until(stranger.tab, `(['done', 'stopped'].includes(document.documentElement.dataset.arrival) && !document.documentElement.dataset.refusal) ? 'in' : (document.getElementById('arrival-sign-in-note')?.textContent?.trim() || document.getElementById('first-screen-status')?.textContent?.trim() || '')`,
+    'the passkey signing the person in', stepLimit(10));
+  if (back !== 'in') await fail(`the passkey did not sign the person in: ${back}`);
+  await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey`,
+    'the person back in a workspace', stepLimit(8));
+  const returned = await person(stranger.tab);
+  report.returned = returned;
+  if (returned.user !== kept.person) await fail(`the passkey signed in ${returned.user}, not ${kept.person}`);
+  await until(stranger.tab, OWN_WORKSPACE, 'the person back in their own workspace', stepLimit(3));
+  report.returnedTo = await ownWorkspace(stranger.tab);
+  await dump(stranger.tab, '6-passkey-back');
+  console.log(`ok: a passkey signed the same person back in, to ${report.returnedTo}`);
+  mark('a passkey signed the person back in to their own workspace');
+
+  // -- 5. a second workspace -------------------------------------------------
   step('a second workspace the person makes');
   await search(stranger.tab, 'new workspace', 'New workspace');
   await until(stranger.tab, `document.querySelector('.tilo-entry-card input') !== null`, 'the card asking what to name it', stepLimit(6));
@@ -818,15 +874,15 @@ try {
   if (before) await fail(`a workspace named ${named} was open before the person made one: ${before}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
   const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
-  if (made === report.landed?.workspace) await fail(`the second workspace is the first one again: ${made}`);
+  if (made === report.returned?.workspace) await fail(`the second workspace is the first one again: ${made}`);
   report.secondWorkspace = {workspace: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
   console.log(`ok: the person made and opened a second workspace (${named}, ${made})`);
   mark('the person made a second workspace');
 
-  // -- 5. a visitor with no invitation is still out --------------------------
+  // -- 6. a visitor with no invitation is still out --------------------------
   step('a visitor with no invitation, who still cannot get in');
-  const visitor = await visit('visitor');
+  const visitor = await visit('visitor', {passkey: false});
   await arrive(visitor, {expected: 'refused'});
   await until(visitor.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
   const other = 'grace@example.org';

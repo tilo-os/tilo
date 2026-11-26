@@ -90,6 +90,8 @@ mod outbox_replay;
 mod own_workspace;
 #[path = "pairing.rs"]
 mod pairing;
+#[path = "passkey_root.rs"]
+mod passkey_root;
 #[path = "place_workspace.rs"]
 mod place_workspace;
 #[path = "plain_http.rs"]

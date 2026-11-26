@@ -36,6 +36,12 @@
 //                   own, with the milliseconds since the last one. That is how
 //                   a check holds the person to seeing the agent's work on
 //                   their shell while it happens;
+//   --passkey       they keep themselves with a passkey (a virtual
+//                   authenticator, as a platform one answers), pressed from
+//                   the workspace page's own search, the browser then forgets
+//                   the site, and they sign in again with that passkey from
+//                   the page (or, at a site that turns them away, from its
+//                   own "Use a passkey"): the same person comes back.
 //   --answer FIFO   once the rest is done, the report is printed and they
 //                   stay on the site, where the page holding their root shows
 //                   what their agents' hosts ask them on its question sheet.
@@ -68,7 +74,7 @@
 //                   signs it in it opens WORKSPACE; with --answer it answers
 //                   the questions their agent's hosts put to it there.
 //
-// usage: node person.mjs SITE SERVER OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO] [--pair WORKSPACE]
+// usage: node person.mjs SITE SERVER OUT_DIR [--invite LINK] [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO] [--passkey] [--pair WORKSPACE]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -90,13 +96,14 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !server || !out) {
-  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--answer FIFO] [--pair WORKSPACE]');
+  console.error('usage: node person.mjs SITE SERVER OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--passkey] [--answer FIFO] [--pair WORKSPACE]');
   process.exit(2);
 }
 const invite = option('--invite');
 const follow = option('--follow');
 const keyName = option('--key');
 const noPages = rest.includes('--no-pages');
+const passkey = rest.includes('--passkey');
 const tiloBin = option('--tilo');
 const api = option('--api');
 const windowName = option('--window');
@@ -172,6 +179,20 @@ const capture = async name => {
   }
   await tab.send('Emulation.setEmulatedMedia', {features: []}).catch(() => {});
 };
+// The page's identity module, the very one the page holds its person in: the
+// page's modules live under the build's own version directory (/v/<hash>/),
+// which its preload hints name.
+const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
+  || document.querySelector('script[type="module"][src]').src))).href)`;
+// The same module on the page the server renders: it loads no module script,
+// and the site serves the build the entry loaded under its own version
+// directory, `version.json` naming the version it serves now.
+const pageIdentityModule = `(async () => {
+  const at = location.pathname.indexOf('/w/');
+  const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
+  const {version} = await (await fetch(new URL('version.json', base), {cache: 'no-store'})).json();
+  return import(new URL('v/' + version + '/identity.mjs', base).href);
+})()`;
 const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
 const entered = `JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]')`;
 
@@ -230,7 +251,7 @@ if (pairWorkspace) {
   // runs `tilo device add` with it, and the person's page, which holds the
   // root, is asked to sign this browser in (their --answer loop presses Sign
   // in). It opens as a visitor first: an invitation-only site turns it away to
-  // its wait list, where "Sign in with your agent" is offered; an open site
+  // its wait list, whose "Sign in" opens the sign-in screen; an open site
   // founds it a guest, whose first screen offers the same.
   if (!tiloBin) await finish(2, '--pair needs --tilo, the computer that runs `tilo device add`');
   await tab.navigate(invite ?? site);
@@ -246,10 +267,10 @@ if (pairWorkspace) {
   // or none at all. What the check waits for is the page in another one.
   const beforeWorkspace = await tab.evaluate(`document.documentElement.dataset.workspace ?? ''`);
   if (met === 'turned away') {
-    // A visitor the invitation-only entry does not know: its wait list offers
-    // "Sign in with your agent", which asks this tab's host for a sign-in
-    // ticket.
-    await tab.evaluate(`document.getElementById('arrival-sign-in-agent').click(); 1`);
+    // A visitor the invitation-only entry does not know: its wait list's
+    // "Sign in" opens the sign-in screen, which asks this tab's host for a
+    // sign-in ticket.
+    await tab.evaluate(`document.getElementById('arrival-sign-in-open').click(); 1`);
   } else {
     // A guest the open entry let in: the first screen offers the sign-in.
     await until(`document.getElementById('first-screen')?.dataset.signIn === 'ready'`, 'the first screen offering a sign-in');
@@ -299,6 +320,140 @@ if (pairWorkspace) {
   console.error(`ok: a browser signed in through a ticket is in ${pairWorkspace} after ${report.pairedMs} ms`);
 } else {
   membership = await freshArrival();
+}
+
+if (passkey) {
+  // A platform authenticator that answers with PRF, which is what lets a
+  // passkey open a Tilo person; resident, so signing in needs no name.
+  await tab.send('WebAuthn.enable', {enableUI: false});
+  const added = await tab.send('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
+    hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true}});
+  if (added.error) await finish(1, `no virtual authenticator: ${added.error.message}`);
+  const serverOrigin = new URL(server).origin;
+  // The workspace's search, as a person reaches it: the page's way in, typed
+  // into, narrowed to the rows that keep this browser's identity.
+  const searchForPasskey = async () => {
+    await until(`(() => {
+      if (document.querySelector('#tilo-page .tilo-search-field')) return true;
+      const home = document.querySelector('#tilo-page .tilo-home-search');
+      if (!home || home.dataset.pressed) return false;
+      home.dataset.pressed = '1';
+      home.click();
+      return false;
+    })()`, 'the page’s search opening');
+    await until(`(() => {
+      const field = document.querySelector('#tilo-page .tilo-search-field');
+      if (!field) return false;
+      if (field.value === 'passkey') return true;
+      field.focus();
+      field.value = 'passkey';
+      field.dispatchEvent(new Event('input', {bubbles: true}));
+      return false;
+    })()`, 'the search finding the passkey rows');
+  };
+  // A real pointer press on the row `title` names, once the page offers it: a
+  // row that runs in the browser is drawn disabled until it can, so a press
+  // reaches the passkey sheet at once, as a person's own press must.
+  const pressRow = async title => {
+    const box = JSON.parse(await until(`(() => {
+      const row = [...document.querySelectorAll('#tilo-page .tilo-search-row')]
+        .find(row => !row.disabled && (row.innerText || '').includes(${JSON.stringify(title)}));
+      if (!row) return '';
+      row.scrollIntoView({block: 'nearest'});
+      const rect = row.getBoundingClientRect();
+      return rect.width && rect.height
+        ? JSON.stringify({x: rect.x + Math.min(rect.width / 2, 40), y: rect.y + rect.height / 2}) : '';
+    })()`, `the row "${title}" ready to press`, stepLimit(12)));
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: box.x, y: box.y});
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
+    }
+  };
+  // They keep themselves with a passkey, from the page's own search: the
+  // ceremony runs in the page, where the root is, and the host keeps the
+  // envelope their next browser fetches.
+  await searchForPasskey();
+  await pressRow('Keep your name and work with a passkey');
+  const keptSaid = await until(`(() => {
+    const said = document.querySelector('#tilo-page [data-browser-status]');
+    return said?.dataset.state === 'kept' ? said.textContent.trim() : '';
+  })()`, 'the page saying the passkey was kept', stepLimit(18));
+  console.error(`ok: the page said "${keptSaid}"`);
+  // The assertions, read through the same module a person's next browser
+  // asks: the passkey wraps this browser's person, and a host keeps the
+  // envelope that passkey opens.
+  const kept = JSON.parse(await tab.evaluate(`(async () => {
+    const id = await ${pageIdentityModule};
+    const person = await id.browserIdentity();
+    const envelope = await id.fetchEnvelope(person.userPublicKey, [${JSON.stringify(serverOrigin)}]);
+    return JSON.stringify({person: person.userPublicKey,
+      rpIds: person.envelope.wraps.filter(wrap => wrap.kind === 'passkey').map(wrap => wrap.rp_id),
+      published: envelope?.root_public_key ?? null});
+  })()`));
+  if (!kept.rpIds.length) await finish(1, `no passkey wraps ${kept.person}'s envelope`);
+  if (kept.published !== kept.person) await finish(1, `no host kept the envelope of ${kept.person} (${kept.published})`);
+  console.error(`ok: ${kept.person} kept themselves with a passkey for ${kept.rpIds.join(', ')}, and the host keeps their envelope`);
+  // The browser forgets the site: a fresh visitor, the authenticator alone
+  // remembering them.
+  await tab.send('Storage.clearDataForOrigin', {origin: new URL(site).origin, storageTypes: 'all'});
+  await tab.navigate(site);
+  // A site that lets people in by invitation (production's) shows a visitor
+  // it does not know the invite-only page, and someone who has been here
+  // signs in from it with their passkey, as a person would: its "Sign in"
+  // opens the sign-in screen, whose "Use a passkey" asks for it. A stack whose
+  // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e check brings
+  // it up) lets the stranger in as a fresh guest instead; they sign in with
+  // the passkey from the page's own search.
+  const met = await until(`(() => {
+    if (document.querySelector('#arrival-sign-in-open')?.offsetParent) return 'invite-only';
+    return document.documentElement.dataset.arrival === 'done' ? 'open' : false;
+  })()`, 'the invite-only page offering a passkey, or the page arriving as a fresh guest');
+  let back;
+  if (met === 'invite-only') {
+    const before = await tab.evaluate(`(async () => (${identityModule}).currentIdentity()?.userPublicKey ?? null)()`);
+    await tab.evaluate(`document.querySelector('#arrival-sign-in-open').click(); 1`);
+    await until(`!!document.querySelector('#first-screen-passkey-sign-in')?.offsetParent`, 'the sign-in screen offering a passkey');
+    await tab.evaluate(`document.querySelector('#first-screen-passkey-sign-in').click(); 1`);
+    await until(`(document.documentElement.dataset.arrival === 'done' && !document.documentElement.dataset.refusal)
+      || !!document.querySelector('#arrival-sign-in-note')?.textContent || !!document.querySelector('#first-screen-status')?.textContent`,
+    'the page arriving after the passkey');
+    back = await tab.evaluate(`(async () => {
+      const note = document.querySelector('#arrival-sign-in-note')?.textContent || document.querySelector('#first-screen-status')?.textContent;
+      if (note && document.documentElement.dataset.arrival !== 'done') return JSON.stringify({before: ${JSON.stringify(before)}, error: note});
+      return JSON.stringify({before: ${JSON.stringify(before)}, person: (${identityModule}).currentIdentity()?.userPublicKey ?? null});
+    })()`).then(JSON.parse);
+  } else {
+    // What this browser is before the passkey signs in: a fresh guest the
+    // entry made, never the person it forgot.
+    const before = await tab.evaluate(`(async () => {
+      const id = await ${pageIdentityModule};
+      return (await id.keptIdentity())?.rootPublicKey ?? null;
+    })()`);
+    if (before === kept.person) await finish(1, 'the browser still held the person after it forgot the site');
+    await searchForPasskey();
+    // The page a press signs in from is a page of its own: sign in, then wait
+    // for the site's entry to let the person in as themselves and hand the
+    // browser to a page again. A passkey the page could not use is said there.
+    const shown = await tab.evaluate('performance.timeOrigin');
+    await pressRow('Sign in with a passkey');
+    const signedIn = await until(`(() => {
+      const failed = document.querySelector('#tilo-page [data-browser-status][data-state=failed]');
+      if (failed?.textContent.trim()) return JSON.stringify({error: failed.textContent.trim()});
+      if (location.pathname.includes('/w/') && document.documentElement.dataset.arrival === 'done'
+        && performance.timeOrigin !== ${shown}) return JSON.stringify({arrived: true});
+      return '';
+    })()`, 'the page arriving after the passkey', stepLimit(30)).then(JSON.parse);
+    if (signedIn.error) await finish(1, `signing in with the passkey failed: ${signedIn.error}`);
+    back = await tab.evaluate(`(async () => {
+      const id = await ${pageIdentityModule};
+      return JSON.stringify({before: ${JSON.stringify(before)}, person: (await id.browserIdentity()).userPublicKey});
+    })()`).then(JSON.parse);
+  }
+  if (back.error) await finish(1, `signing in with the passkey failed: ${back.error}`);
+  if (back.before === kept.person) await finish(1, 'the browser still held the person after it forgot the site');
+  if (back.person !== kept.person) await finish(1, `the passkey signed in ${back.person}, not ${kept.person}`);
+  report.passkey = {person: kept.person, rpIds: kept.rpIds};
+  console.error(`ok: after the browser forgot the site, the passkey signed ${back.person} in again`);
 }
 
 if (follow) {

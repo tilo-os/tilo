@@ -1,14 +1,16 @@
-// What the page keeps around the runtime's identity crypto: the names it
-// formats, the hex it reads, and the HTTP that carries a person's profile and
-// device certificates to their hosts. The crypto itself is the runtime's
-// (`Root`), proven in a browser by the peer's page driver.
+// What the page keeps around the runtime's envelope crypto: the names it
+// formats, the hex it reads, and the HTTP that carries a person's envelope,
+// profile and device certificates to their hosts. The crypto itself is the
+// runtime's (`Root`), proven in a browser by the peer's page driver.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {hex as sharedHex} from './hex.mjs';
 import {
-  answerSignIn, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
-  nodeInstallInfo, publishProfile, signInsWaiting, unhex,
+  answerSignIn, fetchEnvelope, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate,
+  keptIdentity, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishProfile, REFUSED_WITHIN_MS, signInsWaiting,
+  signInWithPasskey, unhex,
 } from './identity.mjs';
+import {personRecord, PERSON_KEY} from './device-key.mjs';
 
 /** What resolved a promise: its value, or the error it refused with. */
 const settled = promise => promise.then(value => ({value}), error => ({error}));
@@ -20,8 +22,8 @@ function signingIdentity(publicKey = 'ab'.repeat(32)) {
     userPublicKey: publicKey,
     locked: false,
     signed: [],
-    async signRecord(json, issuedAtMs) {
-      this.signed.push([json, issuedAtMs]);
+    async signRecord(record, json, issuedAtMs) {
+      this.signed.push([record, json, issuedAtMs]);
       return new Uint8Array(64).fill(7);
     },
     async sign() { return new Uint8Array(64).fill(7); },
@@ -64,6 +66,29 @@ test('hex reads and writes bytes, and refuses anything else', () => {
   for (const text of ['0', 'zz', '0g']) assert.throws(() => unhex(text), IdentityError);
 });
 
+test('an envelope is looked for at every host in turn, and "keeps none" is told apart from "could not ask"', async () => {
+  const root = 'ab'.repeat(32);
+  const envelope = {version: 1, root_public_key: root, wraps: []};
+  const origins = ['https://a.example', 'https://b.example'];
+  let fetcher = fakeFetch({
+    'https://b.example/peer/v1/envelope/fetch': {body: {envelope}},
+  });
+  assert.deepEqual(await fetchEnvelope(root, origins, {fetch: fetcher}), envelope);
+  assert.deepEqual(fetcher.requests.map(request => request.url),
+    ['https://a.example/peer/v1/envelope/fetch', 'https://b.example/peer/v1/envelope/fetch']);
+  assert.equal(fetcher.requests[0].init.method, 'POST');
+  assert.equal(fetcher.requests[0].init.body, root);
+
+  // A host that answers null keeps none.
+  fetcher = fakeFetch({'https://a.example/peer/v1/envelope/fetch': {body: {envelope: null}}});
+  assert.equal(await fetchEnvelope(root, ['https://a.example'], {fetch: fetcher}), null);
+  // Nobody answered: the caller can ask again later.
+  assert.equal(await fetchEnvelope(root, origins, {fetch: fakeFetch({})}), undefined);
+  // An answer naming another root is not this person's envelope.
+  fetcher = fakeFetch({'https://a.example/peer/v1/envelope/fetch': {body: {envelope: {...envelope, root_public_key: 'cd'.repeat(32)}}}});
+  assert.equal(await fetchEnvelope(root, ['https://a.example'], {fetch: fetcher}), null);
+});
+
 test('a profile is looked for the same way, and only one naming the person counts', async () => {
   const root = 'ab'.repeat(32);
   const profile = {version: 1, user_public_key: root, display_name: 'Ada'};
@@ -95,7 +120,7 @@ test('a profile is signed by the root and carries the name, picture and links th
   });
   assert.equal(body.issued_at_ms, 1_700);
   assert.equal(body.signature, '07'.repeat(64));
-  assert.deepEqual(identity.signed, [[body.profile, 1_700]]);
+  assert.deepEqual(identity.signed, [['profile', body.profile, 1_700]]);
 
   // Without a picture, its source has nothing to say.
   const plain = signingIdentity();
@@ -175,4 +200,71 @@ test('a page asks about the browsers waiting to sign in, and answers only those,
     'a device pairing is the person’s own Tilo’s to ask about, not this page’s');
   await answerSignIn(host, root, 'bb', true);
   assert.deepEqual(answers, [['bb', true]]);
+});
+
+/** A browser's IndexedDB store, in memory. */
+function memoryStorage(entries = {}) {
+  const kept = new Map(Object.entries(entries));
+  return {
+    get: async key => kept.get(key),
+    put: async (key, value) => { kept.set(key, value); },
+    delete: async key => { kept.delete(key); },
+  };
+}
+
+/** What the one store keeps for the person whose root is `rootHex`: the
+ * identity store's record, as the page writes it. */
+const storedPerson = rootHex => ({[PERSON_KEY]: JSON.stringify(personRecord({seed: new Uint8Array(32).fill(1), publicKey: unhex(rootHex)}))});
+
+test('a place that refuses a passkey at once is told apart from a person who closes the sheet', async () => {
+  const refusal = () => Object.assign(new Error('The request is not allowed'), {name: 'NotAllowedError'});
+  const stored = memoryStorage(storedPerson('ef'.repeat(32)));
+  let clock = 1000;
+  // `took` milliseconds pass before the browser answers with `error`.
+  const signIn = (took, error = refusal()) => signInWithPasskey({rpId: 'tilo.test', fetchEnvelope: async () => null, storage: stored,
+    credentials: {get: async () => { clock += took; throw error; }}, persist: null, runtime: {}, now: () => clock});
+  // A web view inside an app that may not use this site's passkeys answers in a few
+  // milliseconds, before anything is shown: the place cannot, and the page says what can.
+  const refused = await signIn(3).then(() => null, error => error);
+  assert.equal(refused?.code, 'passkeys-refused');
+  assert.equal(refused.cause?.name, 'NotAllowedError', 'what the browser said stays readable');
+  await assert.rejects(signIn(REFUSED_WITHIN_MS - 1), {code: 'passkeys-refused'});
+  // A person needs a moment to read a sheet and close it: that stays their own answer.
+  await assert.rejects(signIn(REFUSED_WITHIN_MS), {name: 'NotAllowedError'});
+  await assert.rejects(signIn(4000), {name: 'NotAllowedError'});
+  // Anything else the browser says at once is what it is.
+  await assert.rejects(signIn(1, Object.assign(new Error('insecure'), {name: 'SecurityError'})), {name: 'SecurityError'});
+  await assert.rejects(signIn(1, Object.assign(new Error('gone'), {name: 'AbortError'})), {name: 'AbortError'});
+  // A page that is not in front is refused at once as well, and may simply ask again.
+  globalThis.document = {hasFocus: () => false};
+  try {
+    await assert.rejects(signIn(1), {name: 'NotAllowedError'});
+  } finally {
+    delete globalThis.document;
+  }
+  assert.deepEqual(await keptIdentity({storage: stored}), {rootPublicKey: 'ef'.repeat(32)},
+    'a refusal leaves whoever this browser was');
+});
+
+test('a person signed in with a passkey is the person this browser keeps, replacing whoever it was', async () => {
+  const root = 'cd'.repeat(32);
+  // The browser was someone else first: a visitor it made at the entry.
+  const storage = memoryStorage(storedPerson('ef'.repeat(32)));
+  const envelope = {root, wraps: [{kind: 'passkey'}]};
+  const runtime = {
+    rootEnvelopePublicKey: () => root,
+    rootOpenPasskey: async () => ({seed: new Uint8Array(32).fill(5), publicKey: unhex(root)}),
+    rootHeld: async (seed, publicKey) => ({userPublicKey: publicKey, seed, lock() {}}),
+    rootEnvelopeKept: () => true,
+  };
+  const credentials = {get: async () => ({
+    rawId: new Uint8Array([1, 2, 3]).buffer,
+    response: {userHandle: new TextEncoder().encode(root).buffer},
+    getClientExtensionResults: () => ({prf: {results: {first: new Uint8Array(32).fill(9).buffer}}}),
+  })};
+  const signedIn = await signInWithPasskey({rpId: 'tilo.test', fetchEnvelope: async () => envelope, storage, credentials,
+    persist: null, runtime});
+  assert.equal(signedIn.userPublicKey, root);
+  assert.deepEqual(await keptIdentity({storage}), {rootPublicKey: root},
+    'the next load opens the person who signed in, not the visitor the browser was');
 });

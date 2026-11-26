@@ -1,27 +1,32 @@
 /**
- * The person this browser is: their Tilo root, kept here.
+ * The person this browser is: their Tilo root, kept here and, once they keep
+ * it, openable anywhere by a passkey or a recovery key.
  *
  * The root is an Ed25519 key that never exists in the clear in this page: the
- * runtime (`pkg/`) generates it, and this browser holds it wrapped under a
- * non-extractable `WebCrypto` key kept in `IndexedDB`. What its root signs is
- * the shared crates' rule (`tilo_user_identity::root_statement`); this module
- * also carries the profile to the person's hosts, and the HTTP that carries
- * it.
+ * runtime (`pkg/`) generates it, seals it in a root envelope (a JSON document
+ * safe to keep anywhere) and, in this browser, holds it wrapped under a
+ * non-extractable `WebCrypto` key kept in `IndexedDB`. Both the envelope and
+ * what its root signs are the shared crates' rules
+ * (`tilo_user_identity::root_envelope`, `root_statement`), so a page seals
+ * and opens exactly what a native device does; this module makes the
+ * `WebAuthn` ceremonies (minting and asserting passkeys) and the HTTP that
+ * carries the envelope and the profile to the person's hosts.
  *
- * The identity opened last is this page's current one: the calls below that
- * take an `identity` default to it.
+ * The identity created or unlocked last is this page's current one: the
+ * calls below that take an `identity` default to it.
  */
 
 import {hex} from './hex.mjs';
 import {isInvitedServer} from './site-host.mjs';
 
+const PRF_LABEL = new TextEncoder().encode('tilo-seal/v1/user-root-prf');
 /** The one store the page keeps its person in: `device-key.mjs`, which holds
  * the tab's device key beside the person's root as the identity store's
  * `IdentityRecord`. */
 const store = () => import('./device-key.mjs');
 let current;
 
-/** The identity this page opened last, unless locked. */
+/** The identity this page created or unlocked last, unless locked. */
 export function currentIdentity() {
   return current?.locked ? undefined : current;
 }
@@ -40,24 +45,274 @@ export const unhex = text => {
   return Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 };
 
-/** The runtime this module's crypto runs in (the page host's, loaded on first
- * use: importing this module alone reads no bundle). */
+/** Bytes from bytes or a buffer (a copy). */
+const bytesOf = value => (ArrayBuffer.isView(value)
+  ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
+  : new Uint8Array(value).slice());
+const random = length => globalThis.crypto.getRandomValues(new Uint8Array(length));
+const credentialsOf = ({credentials = globalThis.navigator?.credentials} = {}) => credentials;
+/** An envelope as the runtime takes it (JSON text) and as the page keeps it
+ * (a plain document). */
+const sealed = envelope => JSON.stringify(envelope);
+const documentOf = text => JSON.parse(text);
+
+/** The runtime the envelope's crypto runs in (the page host's, loaded on
+ * first use: importing this module alone reads no bundle). */
 const pageRuntime = async () => (await import('./host.mjs')).loadRuntime();
 
+/** The PRF output a `WebAuthn` answer carries. */
+const prfFirst = credential => {
+  const first = credential?.getClientExtensionResults?.()?.prf?.results?.first;
+  if (!first) return undefined;
+  return bytesOf(first);
+};
+
+/** How soon a refusal is the place's and not the person's (`asked`). */
+export const REFUSED_WITHIN_MS = 500;
+
 /**
- * The person `kept` keeps, made this page's current identity. `kept` is what
- * the one store hands back (`readPerson`): an `IdentityRecord` whose seed is
- * the root (the bytes a computer reads for the same person), and the
- * revocations its root signed. Adds `revocations`/`revokeDevice`, each saved
- * beside the record as it lands.
+ * What a `WebAuthn` call (`ask()`) answers. A browser says the same
+ * (`NotAllowedError`) of a person who closed its sheet and of a place where
+ * it shows none, so time is what tells them apart: reading a sheet and
+ * closing it takes a person a moment. Refused at once, with the page in
+ * front, it is the place that cannot use passkeys (`passkeys-refused`): a web
+ * view inside an app, which the system hands only the passkeys of the sites
+ * that app is associated with, or a frame nobody gave the permission. A page
+ * answers that with what to do instead. A refusal the person had time for
+ * stays the browser's own error: it is their answer. `now` is the clock, in
+ * milliseconds.
  */
-async function openKept(storage, kept, runtime) {
+async function asked(ask, now = () => globalThis.performance.now()) {
+  // A page that is not in front is refused at once too, and may ask again.
+  const inFront = globalThis.document?.hasFocus?.() !== false;
+  const since = now();
+  try {
+    return await ask();
+  } catch (error) {
+    if (error?.name !== 'NotAllowedError' || !inFront || now() - since >= REFUSED_WITHIN_MS) throw error;
+    const refused = new IdentityError('passkeys-refused', 'Passkeys cannot be used here');
+    refused.cause = error;
+    throw refused;
+  }
+}
+
+/**
+ * Ask the authenticator for PRF output: one assertion over `passkeys`
+ * (`[{credentialId, prfSalt, rpId}]`, from the runtime), each evaluated with
+ * its own PRF input so any of them can answer.
+ */
+async function assertPasskey(credentials, passkeys, rpId, now) {
+  if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
+  const evalByCredential = Object.fromEntries(passkeys.map(({credentialId, prfSalt}) => [
+    base64(credentialId), {first: bytesOf(prfSalt)},
+  ]));
+  const credential = await asked(() => credentials.get({
+    publicKey: {
+      challenge: random(32),
+      rpId,
+      allowCredentials: passkeys.map(({credentialId}) => ({type: 'public-key', id: bytesOf(credentialId)})),
+      userVerification: 'required',
+      extensions: {prf: {evalByCredential}},
+    },
+  }), now);
+  if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was used');
+  const output = prfFirst(credential);
+  if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');
+  return {credentialId: new Uint8Array(credential.rawId), output};
+}
+
+/** `bytes` as the base64url text `WebAuthn` names credentials by. */
+function base64(bytes) {
+  let text = '';
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Create a passkey for `options` and read its PRF output for `salt`. */
+async function createPasskey(credentials, {rpId, rpName = 'Tilo', userName, userId, displayName, now}, salt, exclude = []) {
+  if (!credentials?.create) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
+  if (!rpId || !userName || !userId) throw new TypeError('rpId, userName and userId are required');
+  const credential = await asked(() => credentials.create({
+    publicKey: {
+      rp: {id: rpId, name: rpName},
+      user: {id: new TextEncoder().encode(String(userId)).slice(0, 64), name: userName, displayName: displayName ?? userName},
+      challenge: random(32),
+      pubKeyCredParams: [{type: 'public-key', alg: -8}, {type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
+      authenticatorSelection: {residentKey: 'required', userVerification: 'required'},
+      // An authenticator that already holds one of this identity's passkeys
+      // declines, rather than replacing it (same user handle).
+      excludeCredentials: exclude.map(id => ({type: 'public-key', id: bytesOf(id)})),
+      extensions: {prf: {eval: {first: bytesOf(salt)}}},
+    },
+  }), now);
+  if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was created');
+  const credentialId = new Uint8Array(credential.rawId);
+  const prf = credential.getClientExtensionResults?.()?.prf;
+  // Some authenticators evaluate the PRF only on assertion.
+  let output = prfFirst(credential);
+  if (!output && prf?.enabled !== false) {
+    output = (await assertPasskey(credentials, [{credentialId, prfSalt: salt, rpId}], rpId, now)).output;
+  }
+  if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');
+  return {credentialId, output};
+}
+
+/**
+ * `envelope` with one more passkey wrap: a new passkey on an authenticator
+ * that holds none of the envelope's. `rpId` and the PRF input default to the
+ * envelope's first passkey's, so one login can evaluate the PRF without
+ * knowing which passkey answers; `userName`/`userId` to `options`.
+ */
+async function withPasskey(identity, envelope, options = {}) {
+  const runtime = await pageRuntime();
+  const passkeys = runtime.rootEnvelopePasskeys(sealed(envelope));
+  const first = passkeys[0];
+  const rpId = options.rpId ?? first?.rpId;
+  const prfSalt = options.prfSalt === undefined ? first?.prfSalt ?? random(32) : bytesOf(options.prfSalt);
+  const exclude = passkeys.filter(passkey => passkey.rpId === rpId).map(passkey => passkey.credentialId);
+  const {credentialId, output} = await createPasskey(credentialsOf(options), {
+    // The passkey's user handle is the root public key: a passkey picked on
+    // a new browser names the person whose envelope to fetch.
+    rpName: 'Tilo', userName: 'Tilo', ...options, rpId,
+    userId: options.userId ?? identity.userPublicKey,
+  }, prfSalt, exclude);
+  return documentOf(await identity.wrapPasskey(sealed(envelope), credentialId, rpId, prfSalt, output));
+}
+
+/**
+ * Create a new identity. With `passkey` (default) a passkey for `rpId` is
+ * created with the PRF extension and wraps the root; a recovery key always
+ * does. Resolves to `{envelope, recoveryKey, identity}`: store the envelope,
+ * show the recovery key once.
+ *
+ * @param options.rpId, options.userName, options.userId  the passkey's
+ *   relying party and user handle (`userId` ≤ 64 bytes)
+ * @param options.displayName, options.rpName  shown by the authenticator
+ * @param options.passkey  `false`: recovery key only
+ * @param options.prfSalt  the PRF input (32 bytes), default random; later
+ *   passkeys reuse it, so a login can evaluate the PRF with one known input
+ *   (`extensions.prf.eval`) whichever passkey answers
+ */
+export async function createIdentity(options = {}) {
+  const runtime = await pageRuntime();
+  const identity = await runtime.rootNew();
+  let envelope = documentOf(runtime.rootEnvelopeEmpty(identity.publicKey));
+  if (options.passkey !== false) {
+    const prfSalt = options.prfSalt === undefined ? random(32) : bytesOf(options.prfSalt);
+    if (prfSalt.length !== 32) throw new TypeError('prfSalt must be 32 bytes');
+    const {credentialId, output} = await createPasskey(credentialsOf(options), options, prfSalt);
+    envelope = documentOf(await identity.wrapPasskey(sealed(envelope), credentialId, options.rpId, prfSalt, output));
+  }
+  const wrapped = await identity.wrapRecoveryKey(sealed(envelope));
+  current = identity;
+  return {envelope: documentOf(wrapped.envelope), recoveryKey: wrapped.recoveryKey, identity};
+}
+
+/**
+ * Unlock `envelope` with a passkey (`{passkey: true, rpId?}`: one assertion
+ * over every passkey wrap of `rpId`, default the first wrap's), with the PRF
+ * output of an assertion the page ran itself (`{prfOutput, credentialId}`,
+ * bytes; evaluated with the wrap's `prf_salt`), or with `{recoveryKey}`.
+ * Resolves to the unlocked identity, current from now on.
+ */
+export async function unlockIdentity(envelope, how = {passkey: true}) {
+  const runtime = await pageRuntime();
+  let identity;
+  if (how.recoveryKey !== undefined) {
+    identity = await runtime.rootOpenRecovery(sealed(envelope), String(how.recoveryKey));
+  } else if (how.prfOutput !== undefined) {
+    identity = await runtime.rootOpenPasskey(sealed(envelope), bytesOf(how.credentialId ?? []), bytesOf(how.prfOutput));
+  } else if (how.passkey) {
+    const passkeys = runtime.rootEnvelopePasskeys(sealed(envelope));
+    const rpId = how.rpId ?? passkeys[0]?.rpId;
+    const candidates = passkeys.filter(passkey => passkey.rpId === rpId);
+    if (!candidates.length) throw new IdentityError('no-wrap', 'This identity has no passkey here');
+    const {credentialId, output} = await assertPasskey(credentialsOf(how), candidates, rpId, how.now);
+    identity = await runtime.rootOpenPasskey(sealed(envelope), credentialId, output);
+  } else {
+    throw new TypeError('unlock with {passkey: true}, {prfOutput, credentialId} or {recoveryKey}');
+  }
+  current = identity;
+  return identity;
+}
+
+/** `envelope` with a new passkey wrap, from `options.identity` (default the
+ * current identity); see `withPasskey` for the defaults. */
+export async function addPasskey(envelope, {identity = currentIdentity(), ...options} = {}) {
+  if (!identity?.wrapPasskey) throw new IdentityError('locked', 'addPasskey needs an unlocked identity');
+  return withPasskey(identity, envelope, options);
+}
+
+/** Whether `envelope` opens the root anywhere else: a passkey or a recovery
+ * key wraps it. */
+export async function envelopeKept(envelope) {
+  return (await pageRuntime()).rootEnvelopeKept(sealed(envelope));
+}
+
+/** The PRF input of every passkey that keeps a browser's person: one known
+ * value, so signing in on a new browser evaluates the PRF in the same
+ * assertion that names the person, before their envelope is fetched. */
+async function browserPrfSalt() {
+  return new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', PRF_LABEL));
+}
+
+/**
+ * Ask the browser to keep this site's storage (`navigator.storage.persist()`)
+ * through `storage`, without waiting for the answer. Firefox answers only
+ * once the person dismisses its permission prompt, so nothing may await it:
+ * it is asked once there is something worth keeping (a person kept with a
+ * passkey or a recovery key, or signed in with one), never while a page
+ * loads.
+ */
+export function askToKeepStorage(storage = globalThis.navigator?.storage) {
+  try {
+    void Promise.resolve(storage?.persist?.()).catch(() => {});
+  } catch { /* No storage manager: nothing to ask. */ }
+}
+
+/**
+ * The person `kept` keeps, unlocked and made this page's current identity.
+ * `kept` is what the one store hands back (`readPerson`): an `IdentityRecord`
+ * whose seed is the root (the bytes a computer reads for the same person), the
+ * envelope that opens it elsewhere, and the revocations its root signed. Adds
+ * `envelope`/`kept` (following what is kept), the two ways to keep it, and
+ * `revocations`/`revokeDevice`, each saved beside the record as it lands.
+ * Keeping it asks the browser to keep this site's storage through `persist`
+ * (`askToKeepStorage`).
+ */
+async function openKept(storage, kept, persist, runtime) {
   runtime ??= await pageRuntime();
-  const {writePerson, rootOfPerson} = await store();
-  let {record, revocations} = kept;
+  const {readPerson, writePerson, rootOfPerson} = await store();
+  let {record, envelope, revocations} = kept;
   const {seed, publicKey} = rootOfPerson(record);
   const identity = await runtime.rootHeld(seed, hex(publicKey));
+  // A person made before any envelope existed opens with an empty one, kept
+  // here once they keep it elsewhere.
+  envelope ??= documentOf(runtime.rootEnvelopeEmpty(publicKey));
+  const save = async next => {
+    envelope = next;
+    await writePerson(storage, {record, envelope, revocations});
+    askToKeepStorage(persist);
+    return next;
+  };
   return Object.defineProperties(identity, Object.getOwnPropertyDescriptors({
+    get envelope() { return envelope; },
+    get kept() { return runtime.rootEnvelopeKept(sealed(envelope)); },
+    /** Add a passkey for `rpId` (default this page's host) that opens this
+     * person; `userName` is what the authenticator lists it as. Resolves to
+     * the new envelope, also kept here. */
+    async keepWithPasskey({rpId = globalThis.location?.hostname, userName, displayName, credentials, now} = {}) {
+      const options = {rpId, prfSalt: await browserPrfSalt(), credentials, now};
+      if (userName) Object.assign(options, {userName, displayName: displayName ?? userName});
+      return save(await withPasskey(identity, envelope, options));
+    },
+    /** A new recovery key, replacing any earlier one; resolves to the key
+     * as the person writes it down (shown once, never stored here). */
+    async createRecoveryKey() {
+      const sealedEnvelope = await identity.wrapRecoveryKey(sealed(envelope));
+      await save(documentOf(sealedEnvelope.envelope));
+      return sealedEnvelope.recoveryKey;
+    },
     /** The revocations this person's root signed, as they were kept here:
      * one per key it no longer trusts, which every session of theirs
      * announces to its host. */
@@ -70,7 +325,7 @@ async function openKept(storage, kept, runtime) {
     async revokeDevice(keyHex, reason = 'retired') {
       const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex, reason));
       revocations = [...(revocations ?? []), entry];
-      await writePerson(storage, {record, revocations});
+      await writePerson(storage, {record, envelope, revocations});
       return entry;
     },
   }));
@@ -81,12 +336,17 @@ async function openKept(storage, kept, runtime) {
  * the identity store's `IdentityRecord` beside the tab's device key
  * (`device-key.mjs`), the same record a computer reads for the same person. It
  * is a real identity from the start: it joins and owns workspaces like any
- * other.
+ * other, and keeping it (`keepWithPasskey`, `createRecoveryKey`) only adds
+ * ways to open the same root elsewhere. Creating one asks the browser
+ * for nothing: a page that loads never waits on a permission prompt; the
+ * site's storage is asked to be kept once the person keeps it
+ * (`askToKeepStorage`, through `persist`).
  *
- * Resolves to the identity with `{revocations, revokeDevice}`, or `null` with
+ * Resolves to the identity with `{envelope, kept, keepWithPasskey,
+ * createRecoveryKey, revocations, revokeDevice}`, or `null` with
  * `create: false` and none kept.
  */
-export async function browserIdentity({storage, create = true} = {}) {
+export async function browserIdentity({storage, create = true, persist = globalThis.navigator?.storage} = {}) {
   const {idbStorage, readPerson, writePerson, personRecord} = await store();
   storage ??= idbStorage();
   const runtime = await pageRuntime();
@@ -95,12 +355,12 @@ export async function browserIdentity({storage, create = true} = {}) {
     if (!create) return null;
     const identity = await runtime.rootNew();
     const record = personRecord({seed: identity.seed, publicKey: identity.publicKey});
-    kept = {record, revocations: []};
+    kept = {record, envelope: documentOf(runtime.rootEnvelopeEmpty(identity.publicKey)), revocations: []};
     // Kept from the start: the same person on the next load, and in every
     // other tab of this site.
     await writePerson(storage, kept);
   }
-  const identity = await openKept(storage, kept);
+  const identity = await openKept(storage, kept, persist);
   current = identity;
   return identity;
 }
@@ -119,7 +379,7 @@ export async function keptIdentity({storage} = {}) {
 }
 
 /**
- * The person this browser joins workspaces as: the identity opened last,
+ * The person this browser joins workspaces as: the identity unlocked last,
  * else this browser's own (`browserIdentity`, created on the first visit).
  * Every caller that joins a workspace asks here.
  */
@@ -173,6 +433,52 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
   return Boolean(await storage?.persisted?.().catch(() => false));
 }
 
+/**
+ * Become, in this browser, a person kept with a passkey elsewhere: the
+ * person picks a passkey (a discoverable credential; its user handle names
+ * the root), `fetchEnvelope(rootPublicKeyHex)` finds that person's envelope
+ * (from a host that keeps it, `fetchEnvelope` below), and the PRF output the
+ * same assertion gave opens it. The root is then kept here as
+ * `browserIdentity` keeps it, replacing whoever this browser was. Where the
+ * place cannot use passkeys at all it rejects with `passkeys-refused`
+ * (`asked`; `now` is its clock), which is not the person's answer.
+ */
+export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime, now} = {}) {
+  if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
+  const {idbStorage, writePerson, personRecord} = await store();
+  storage ??= idbStorage();
+  runtime ??= await pageRuntime();
+  credentials = credentialsOf({credentials});
+  if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
+  const salt = await browserPrfSalt();
+  const credential = await asked(() => credentials.get({
+    publicKey: {challenge: random(32), rpId, userVerification: 'required', extensions: {prf: {eval: {first: salt}}}},
+  }), now);
+  if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was used');
+  const output = prfFirst(credential);
+  if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');
+  try {
+    const handle = credential.response?.userHandle;
+    const rootHex = handle ? new TextDecoder().decode(handle) : '';
+    if (!/^[0-9a-f]{64}$/.test(rootHex)) throw new IdentityError('not-tilo', 'This passkey does not name a Tilo identity');
+    const envelope = await find(rootHex);
+    if (!envelope) throw new IdentityError('no-envelope', 'No host this browser knows keeps this identity');
+    if (runtime.rootEnvelopePublicKey(sealed(envelope)) !== rootHex) throw new IdentityError('wrong-identity', 'The host answered with another identity');
+    const root = await runtime.rootOpenPasskey(sealed(envelope), new Uint8Array(credential.rawId), output);
+    currentIdentity()?.lock();
+    // Kept as this browser's person, replacing whoever it was: the page loads
+    // again as this person, and every other tab of the site is them too.
+    const kept = {record: personRecord({seed: root.seed, publicKey: unhex(rootHex)}), envelope, revocations: []};
+    await writePerson(storage, kept);
+    const signedIn = await openKept(storage, kept, persist, runtime);
+    current = signedIn;
+    askToKeepStorage(persist);
+    return signedIn;
+  } finally {
+    output.fill(0);
+  }
+}
+
 /** The longest name a host keeps in a person's profile, in UTF-8 bytes. */
 export const MAX_DISPLAY_NAME_BYTES = 128;
 
@@ -193,9 +499,9 @@ export function fitDisplayName(name) {
 }
 
 /** Have the host at `origin` keep a record (`json`) under `field`, signed by
- * `identity`'s root as the runtime's profile statement. */
-async function keepSigned({origin, identity, path, field, json, now, fetcher}) {
-  const signature = await identity.signRecord(json, now);
+ * `identity`'s root as the runtime's `record` statement. */
+async function keepSigned({origin, identity, path, record, field, json, now, fetcher}) {
+  const signature = await identity.signRecord(record, json, now);
   const response = await fetcher(new URL(path, origin).href, {
     method: 'POST',
     headers: {'content-type': 'application/json'},
@@ -230,11 +536,33 @@ async function fetchKept(path, field, rootPublicKeyHex, origins, accept, fetcher
 }
 
 /**
+ * Have the host at `origin` keep `identity`'s envelope (ciphertext only), so
+ * a new browser can fetch it there. The host keeps envelopes of its members
+ * alone, and of each the newest the root signed.
+ */
+export async function publishEnvelope({origin, identity = currentIdentity(), envelope = identity?.envelope, now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+  if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
+  const runtime = await pageRuntime();
+  if (!runtime.rootEnvelopeKept(sealed(envelope))) throw new IdentityError('not-kept', 'Only a kept identity has an envelope to publish');
+  if (runtime.rootEnvelopePublicKey(sealed(envelope)) !== identity.userPublicKey) throw new IdentityError('wrong-identity', 'This envelope belongs to another identity');
+  await keepSigned({
+    origin, identity, path: '/peer/v1/envelope', record: 'envelope', field: 'envelope', json: JSON.stringify(envelope), now, fetcher,
+  });
+}
+
+/** The envelope of root `rootPublicKeyHex` from the first of `origins` that
+ * keeps it; `null` when they answered without one, `undefined` when none
+ * answered. */
+export async function fetchEnvelope(rootPublicKeyHex, origins, {fetch: fetcher = (...args) => globalThis.fetch(...args)} = {}) {
+  return fetchKept('/peer/v1/envelope/fetch', 'envelope', rootPublicKeyHex, origins, envelope => envelope?.root_public_key === rootPublicKeyHex, fetcher);
+}
+
+/**
  * Have the host at `origin` keep `identity`'s profile: the name the person
  * chose, signed by their root, so each of their devices (paired, or signed
- * in) shows it. Hosts keep profiles of their members alone, and of each the
- * newest the root signed. Needs no kept identity: a device paired to this one
- * reads it from the same hosts.
+ * in on a new browser) shows it. Hosts keep profiles of their members alone,
+ * and of each the newest the root signed. Needs no kept identity: a device
+ * paired to this one reads it from the same hosts.
  */
 export async function publishProfile({origin, identity = currentIdentity(), displayName, photo = null, status = '', sharing = '',
   photoFrom = null, linked = [], now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
@@ -250,7 +578,7 @@ export async function publishProfile({origin, identity = currentIdentity(), disp
   const json = JSON.stringify({version: 1, user_public_key: identity.userPublicKey, display_name: name,
     ...(photo ? {photo} : {}), ...(status ? {status} : {}), ...(sharing ? {sharing} : {}),
     ...(photo && photoFrom ? {photo_from: photoFrom} : {}), ...(named.length ? {linked: named} : {})});
-  await keepSigned({origin, identity, path: '/peer/v1/profile', field: 'profile', json, now, fetcher});
+  await keepSigned({origin, identity, path: '/peer/v1/profile', record: 'profile', field: 'profile', json, now, fetcher});
 }
 
 /** The profile (`{version, user_public_key, display_name, photo?}`) of root

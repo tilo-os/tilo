@@ -36,7 +36,7 @@ arrival-invite-placeholder = Einladungs- oder Kopplungslink einfügen
 arrival-invite-open = Öffnen
 arrival-invite-not-a-link = Das ist kein Einladungs- oder Kopplungslink. Füge den ganzen Link ein.
 arrival-refusal-wait-heading = Ein Arbeitsbereich für dich, dein Team und deine KI-Agenten
-arrival-refusal-wait-body = Notizen, Aufgaben, Dateien und Chat an einem Ort, auf all deinen Geräten. Claude Code und andere Agenten arbeiten darin neben dir, und du siehst alles, was sie tun. In der frühen Alpha geht es nur mit Einladung: Hinterlass deine E-Mail-Adresse, und wir schicken dir eine.
+arrival-refusal-wait-body = Tilo geht im Moment nur mit Einladung. Hinterlass deine E-Mail-Adresse, und wir schicken dir eine.
 arrival-wait-email = E-Mail-Adresse
 arrival-wait-placeholder = du@beispiel.de
 arrival-wait-join = Auf die Warteliste
@@ -61,9 +61,10 @@ arrival-wait-invalid = Das sieht nicht nach einer E-Mail-Adresse aus.
 arrival-wait-too-many = Gerade kommen zu viele Anmeldungen aus deinem Netz. Versuch es später noch einmal.
 arrival-wait-full = Die Warteliste ist im Moment voll. Versuch es in ein paar Tagen noch einmal.
 arrival-wait-failed = Das hat nicht geklappt. Versuch es gleich noch einmal.
-arrival-sign-in-ask = Du hast schon eine Tilo-Identität?
-arrival-sign-in-agent = Mit deinem Agenten anmelden
-arrival-invite-toggle = Du hast einen Einladungs- oder Kopplungslink?
+arrival-sign-in-open = Anmelden
+arrival-sign-in-not-member = Du bist angemeldet, aber diese Identität ist noch nicht in { $workspace }. Trag dich auf die Warteliste ein oder bitte jemanden darin um eine Einladung.
+arrival-sign-in-not-member-unnamed = Du bist angemeldet, aber diese Identität ist noch nicht in diesem Arbeitsbereich. Bitte jemanden darin um eine Einladung.
+arrival-invite-toggle = Du hast einen Einladungslink?
 
 ## The reconnect screen: the page was not let in yet and tries again
 # { $time } is how long until the next try, such as "40 s" or "2 min 05 s".

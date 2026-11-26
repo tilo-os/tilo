@@ -3,7 +3,7 @@
 //!
 //! What a page needs before it holds a session rides it: the host's
 //! certificate and address (`/host`), joining a workspace, the public
-//! directory, profiles, the fetch proxy and the static
+//! directory, root envelopes and profiles, the fetch proxy and the static
 //! entry. Everything after that — certification, presence, membership,
 //! records, previews, calls — goes over iroh, as every device's does. Routes are listed in [`tilo_server_protocol::web`].
 //!
@@ -11,13 +11,13 @@
 //! own locks; workspace I/O already runs on the blocking pool.
 
 mod content;
+mod envelopes;
 mod fetch;
 pub mod install;
 mod link;
 pub(crate) mod live;
 mod page;
 mod page_errors;
-mod profiles;
 // The question sheet a page draws over its app: the same words a native
 // session's sheet asks it.
 #[cfg(feature = "agents")]
@@ -212,7 +212,10 @@ struct Web {
     /// The workspaces this server governs, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' profiles, for `/profile`.
-    profiles: Arc<profiles::Profiles>,
+    /// Members' root envelopes, for `/envelope`.
+    envelopes: envelopes::Envelopes,
+    /// Members' profiles, for `/profile`.
+    profiles: Arc<envelopes::Envelopes>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one, and the
     /// tokens its pages' sessions take for it.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
@@ -561,7 +564,11 @@ impl Server {
             endpoint: Some(self.endpoint()),
             allowed_origins: config.allowed_origins,
             workspaces: self.workspaces().cloned(),
-            profiles: Arc::new(profiles::Profiles::new(self.state_root().join("profiles"))),
+            envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
+            profiles: Arc::new(envelopes::Envelopes::of(
+                envelopes::Kind::Profile,
+                self.state_root().join("profiles"),
+            )),
             fetch: fetch.proxy,
             grants: Arc::default(),
             content_links: self.content_links(),
@@ -1330,16 +1337,21 @@ async fn route(
             let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             directory_entry(web, route, &bytes, client).await
         }
-        "/profile" => {
+        "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();
-            web.profiles
-                .publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
+            let kept = if route == "/profile" {
+                &web.profiles
+            } else {
+                &web.envelopes
+            };
+            kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
                 .map(|root| {
                     // A profile's name is the person's in every workspace here: each names them
                     // by it from now on.
-                    if let (Some(workspaces), Some(name)) =
-                        (web.workspaces.clone(), web.profiles.kept_name(&root))
+                    if route == "/profile"
+                        && let (Some(workspaces), Some(name)) =
+                            (web.workspaces.clone(), web.profiles.kept_name(&root))
                     {
                         tokio::spawn(async move {
                             workspaces
@@ -1351,17 +1363,21 @@ async fn route(
                 })
                 .map_err(|refusal| {
                     let code = match refusal {
-                        profiles::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-                        profiles::Refusal::BadSignature | profiles::Refusal::NotMember => {
+                        envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                        envelopes::Refusal::BadSignature | envelopes::Refusal::NotMember => {
                             StatusCode::FORBIDDEN
                         }
-                        profiles::Refusal::Stale => StatusCode::CONFLICT,
-                        profiles::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                        envelopes::Refusal::Stale => StatusCode::CONFLICT,
+                        envelopes::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
                     };
                     status(code, refusal.message())
                 })
         }
-        "/profile/fetch" => match web.profiles.answer(&bytes) {
+        "/envelope/fetch" | "/profile/fetch" => match if route == "/profile/fetch" {
+            web.profiles.answer(&bytes)
+        } else {
+            web.envelopes.answer(&bytes)
+        } {
             Some(json) => {
                 let mut response = reply(StatusCode::OK, json);
                 response.headers_mut().insert(
