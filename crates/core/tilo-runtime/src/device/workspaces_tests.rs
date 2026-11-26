@@ -1004,8 +1004,8 @@ async fn desktop_founds_its_persons_workspace(
 async fn a_server_answers_an_action_through_its_devices_dispatch() {
     use std::sync::Arc;
     use tilo_actions::remote::{
-        ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
-        TestProvider,
+        ActionProvider as _, CataloguePage, CatalogueRow, InvokeArgument, InvokeRequest,
+        ReceiptStatus, RemoteActionTarget, TestProvider,
     };
 
     const PROVIDER: &str = "so.tilo.devices";
@@ -1030,7 +1030,36 @@ async fn a_server_answers_an_action_through_its_devices_dispatch() {
         .clone();
     let workspace = hosted.create("Home").await.unwrap().workspace;
 
-    let provided = Arc::new(TestProvider::new());
+    // The provider declares the action it answers, as every provider does: what it declares
+    // its kind as is what the workspace's grants are read for.
+    let provided = Arc::new(TestProvider::new().with_catalogue(|_, query| {
+        let row = CatalogueRow::for_action(
+            PROVIDER,
+            PROVIDER,
+            tilo_actions::ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new("devices", "restart"),
+                resource_kind: "device".into(),
+                resource_label: "Devices".into(),
+                action_label: "Restart".into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Effect,
+                contract: tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Outside,
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        );
+        Ok(CataloguePage::from_rows("1".into(), vec![row], &query))
+    }));
     hosted.provide(PROVIDER, Arc::clone(&provided) as _);
     let caller = tilo_workspace_service::service::local_caller(&server_cert)
         .in_workspace(workspace.as_str());
