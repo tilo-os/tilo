@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -110,15 +111,24 @@ class RoutedSitesTests(unittest.TestCase):
         render = [line for line in script.splitlines() if "--no-tests=pass" in line]
         self.assertEqual(len(render), 1, script)
         self.assertIn('"${features[@]}"', render[0])
-        # The package whose golden test target needs a feature is one of the
-        # packages the filter names.
+        # Every feature a golden package's test target requires is one the helper enables, so a
+        # target `--tests` leaves out without it cannot pass the render.
         filter_text = (ROOT / ".config/nextest-filters.toml").read_text()
         golden = re.search(r'^golden = """(.*?)"""', filter_text, re.MULTILINE | re.DOTALL).group(1)
         packages = sorted(set(re.findall(r"package\(([A-Za-z0-9_-]+)\)", golden)))
         argv = subprocess.run([sys.executable, str(ROOT / "tools/ci/package_features.py"),
                                *[flag for name in packages for flag in ("-p", name)]],
                               capture_output=True, text=True, check=True).stdout.split()
-        self.assertIn("tilo-ui/test-support", argv[argv.index("--features") + 1].split(","))
+        enabled = argv[argv.index("--features") + 1].split(",") if "--features" in argv else []
+        for name in packages:
+            manifest = next(
+                candidate
+                for root in ("crates", "apps", "tools")
+                for candidate in (ROOT / root).rglob("Cargo.toml")
+                if tomllib.loads(candidate.read_text()).get("package", {}).get("name") == name)
+            for target in tomllib.loads(manifest.read_text()).get("test", []):
+                for feature in target.get("required-features", []):
+                    self.assertIn(f"{name}/{feature}", enabled, target)
 
 
 if __name__ == "__main__":
