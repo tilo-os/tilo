@@ -169,6 +169,14 @@ impl Workspace {
                 let _ = store.declare(tilo_resource_store::Schema::from_surface(surface));
             }
         }
+        // The host package's types, as a session's workspace declares them: what an app's actions
+        // write when one runs a block or waits for its person (`tl.tilo.host.Invocation`).
+        for surface in tilolang_tilo::surface::package_surfaces(
+            &tilolang_tilo::tilolang::host_meta(),
+            &tilolang_tilo::runtime::SourceWords,
+        ) {
+            let _ = store.declare(tilo_resource_store::Schema::from_surface(&surface));
+        }
     }
 
     /// The workspace's members' resource, as its governance has them now: what the store answers
