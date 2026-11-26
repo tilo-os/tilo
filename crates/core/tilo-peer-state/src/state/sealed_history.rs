@@ -131,42 +131,8 @@ fn check(
         }
         // A compaction's segment is admitted as part of it: the compaction
         // names it ([`sealed_compaction::check_stored`]).
-        let admitted = DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op)
-            .map_err(err)?;
-        // A write its author's mark covers was folded into that mark: its evidence is the mark,
-        // not an entry. A compaction is numbered as a write of its author it folds, and earlier
-        // builds marked an author up to a compaction's own number while a write of theirs below
-        // it, which the compaction did not fold, stayed in the history.
-        let exact = core.exact_admissions.get(&admitted.key) == Some(&admitted.operation_id);
-        let folded = core.exact_admissions.get(&admitted.key).is_none()
-            && core.exact_admissions.covers(&admitted.key);
-        if !collab_types::is_compaction_segment(op) && !exact && !folded {
-            let held = match (
-                core.exact_admissions.get(&admitted.key),
-                core.exact_admissions.mark(&admitted.key),
-            ) {
-                (Some(_), _) => "another write's bytes".to_owned(),
-                (None, Some(mark)) => format!("its author's compaction mark at {mark}"),
-                (None, None) => "nothing".to_owned(),
-            };
-            return Err(format!(
-                "sealed history lacks exact admission evidence: the {:?} write {} of author {} \
-                 to {} {}, {} of {} in the history after {} kept beside it{}, where the index \
-                 holds {held}",
-                op.kind,
-                op.seq,
-                hex::encode(&op.author.as_bytes()[..4]),
-                route.app,
-                route.record,
-                at.saturating_add(1),
-                ops.len(),
-                beside.len(),
-                if route.sealed_before_reader_sets(&core.workspace, op) {
-                    ", sealed before reader sets"
-                } else {
-                    ""
-                },
-            ));
+        if !collab_types::is_compaction_segment(op) {
+            admitted_by_evidence(core, route, op, (at, ops.len(), beside.len()))?;
         }
         if document
             .channel
@@ -179,6 +145,50 @@ fn check(
     }
     sealed_compaction::check_stored(ops, &document.channel.last_seq_per_author)?;
     Ok((leading, originals, at))
+}
+
+/// Whether the exact index is evidence of `op`, the write `place` names in a sealed history of
+/// `route` (its place, the history's length, and how many writes are kept beside it): its own
+/// entry, or its author's mark where it has none.
+fn admitted_by_evidence(
+    core: &PeerCore,
+    route: &super::Route,
+    op: &collab_types::SignedOp,
+    (at, of, beside): (usize, usize, usize),
+) -> Result<(), String> {
+    let admitted =
+        DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op).map_err(err)?;
+    // A write its author's mark covers was folded into that mark: its evidence is the mark, not
+    // an entry. A compaction is numbered as a write of its author it folds, and earlier builds
+    // marked an author up to a compaction's own number while a write of theirs below it, which
+    // the compaction did not fold, stayed in the history.
+    let entry = core.exact_admissions.get(&admitted.key);
+    let mark = core.exact_admissions.mark(&admitted.key);
+    if entry == Some(&admitted.operation_id)
+        || (entry.is_none() && core.exact_admissions.covers(&admitted.key))
+    {
+        return Ok(());
+    }
+    let held = match (entry, mark) {
+        (Some(_), _) => "another write's bytes".to_owned(),
+        (None, Some(mark)) => format!("its author's compaction mark at {mark}"),
+        (None, None) => "nothing".to_owned(),
+    };
+    Err(format!(
+        "sealed history lacks exact admission evidence: the {:?} write {} of author {} to {} {}, \
+         {} of {of} in the history after {beside} kept beside it{}, where the index holds {held}",
+        op.kind,
+        op.seq,
+        hex::encode(&op.author.as_bytes()[..4]),
+        route.app,
+        route.record,
+        at.saturating_add(1),
+        if route.sealed_before_reader_sets(&core.workspace, op) {
+            ", sealed before reader sets"
+        } else {
+            ""
+        },
+    ))
 }
 
 /// `beside`, what an entry keeps ahead of its history, parted into the originals of writes sealed
