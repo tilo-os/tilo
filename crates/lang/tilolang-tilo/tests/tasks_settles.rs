@@ -89,6 +89,48 @@ fn the_status_chip_closes_a_task_with_its_steps() {
     assert_eq!(last_action(&ada, &post), before);
 }
 
+/// The box beside a task's title on its page is the shared checkbox, bound to `done`: marking it
+/// is `check`, which closes the task through `set_status` and the step under it with it, and unmarking it opens the task
+/// again. The page never writes `done` itself.
+#[test]
+fn the_pages_box_checks_a_task_off_with_its_steps() {
+    let (ada, post, outline) = a_task_with_a_step();
+    let mut page = task_page(&ada, &post);
+    let done_box = chip(&ada, &page, "done");
+    let kind = |tree: &tilolang_runtime::UiNode| -> Option<String> {
+        fn find(node: &tilolang_runtime::UiNode, key: &str) -> Option<String> {
+            if node.key == key {
+                return Some(node.kind.clone());
+            }
+            node.children.iter().find_map(|child| find(child, key))
+        }
+        find(tree, &done_box)
+    };
+    assert_eq!(
+        kind(page.tree()).as_deref(),
+        Some("ui.Checkbox"),
+        "the page's box is the shared checkbox"
+    );
+
+    page.edit(&done_box, &Value::Bool(true)).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(status_of(&ada, &post), "done");
+    assert!(done(&ada, &outline), "the step is closed with its task");
+    // `check` moves the task through the board's own `set_status`, which records the change.
+    assert_eq!(
+        last_action(&ada, &post),
+        "set_status",
+        "the change is the action's, not a write of done"
+    );
+
+    page.edit(&done_box, &Value::Bool(false)).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    assert_eq!(status_of(&ada, &post), "todo", "opened again");
+    assert_eq!(read(&ada, &post, "done"), Value::Bool(false));
+}
+
 /// Moving a task's day on its page's day chip moves its moment and its reminder with it, at the
 /// same time of day, as the date picker does.
 #[test]
