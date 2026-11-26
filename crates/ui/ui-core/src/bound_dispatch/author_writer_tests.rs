@@ -37,13 +37,20 @@ tilo_test_env::scenario! {
         );
         assert!(
             publication
+                .target(&tilo_actions::ActionAddress::new("forged", "open"))
+                .unwrap()
+                .is_none(),
+            "a supplied descriptive identity is never a dispatch address"
+        );
+        assert!(
+            publication
                 .target(&tilo_actions::ActionAddress::new(
                     "app:so.tilo.chat",
                     "open"
                 ))
                 .unwrap()
-                .is_none(),
-            "descriptive identity must not become a dispatch-address fallback"
+                .is_some(),
+            "the app's own id resolves to the alias its publication recorded for it"
         );
         assert!(
             publication
