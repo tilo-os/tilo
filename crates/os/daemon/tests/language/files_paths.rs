@@ -931,43 +931,23 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
         };
 
         // The person's settings give their agent the run of the workspace's files: an agent does
-        // what its person granted it under Workspace settings → Agents, and nothing more. Files
-        // decides each verb at its own node, and a read of the tree at the tree's records' node.
+        // what its person granted it under Workspace settings → Agents, and nothing more. Files'
+        // app node is where the person's answer for it stands.
         let person = host.person().to_owned();
-        let agent = || tilo_action_policy::Grantee::agent("scout", person.clone());
-        let given = || tilo_action_policy::Grantee::person(person.clone());
-        let allow = |id: String, node, kind| {
-            tilo_action_policy::Grant::new(
-                id,
-                agent(),
-                node,
-                kind,
-                tilo_action_policy::Answer::Allow,
-                given(),
-            )
-        };
-        let mut grants = vec![allow(
-            "scout-files-records".to_owned(),
-            collab_types::document_node(
-                &workspace,
-                fs_protocol::tree::FILES_APP,
-                &fs_protocol::tree::document_id(),
-            ),
+        let grant = tilo_action_policy::Grant::new(
+            "scout-files",
+            tilo_action_policy::Grantee::agent("scout", person.clone()),
+            tilo_action_policy::TreePath::workspace(workspace.as_str())
+                .app(fs_protocol::tree::FILES_APP),
             tilo_action_policy::KindSet::READ_UNDOABLE,
-        )];
-        for verb in fs_protocol::file_action::verbs::ALL {
-            grants.push(allow(
-                format!("scout-files-{verb}"),
-                tilo_action_policy::TreePath::workspace(workspace.as_str())
-                    .joined(&fs_protocol::file_action::verb_node(None, verb)),
-                tilo_action_policy::KindSet::READ_UNDOABLE,
-            ));
-        }
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person.clone()),
+        );
         let daemon = host.daemon();
         tilo_workspace_service::workspaces::fixtures::record_grants(
             daemon.workspaces(),
             &workspace,
-            &grants,
+            std::slice::from_ref(&grant),
         )
         .await;
 
@@ -998,7 +978,7 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
         // The agent's rules in the workspace refuse it Files: every verb, the put and both reads,
         // and nothing of what it asked for is there. The person takes the run of Files back, then
         // denies it.
-        let revoked: Vec<_> = grants.iter().map(|grant| grant.id.clone()).collect();
+        let revoked = [grant.id.clone()];
         tilo_workspace_service::workspaces::fixtures::revoke_grants(
             daemon.workspaces(),
             &workspace,
