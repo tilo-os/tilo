@@ -92,9 +92,9 @@ impl Widget for OwnerProbe {
 
     fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _: &automerge::ObjId) {
         if self.seen.write_next.replace(false) {
-            edits
+            self.actions
                 .apply(
-                    &mut self.actions,
+                    edits,
                     "probe.background",
                     &BackgroundWrite,
                     tilo_actions::ActionContext::default(),

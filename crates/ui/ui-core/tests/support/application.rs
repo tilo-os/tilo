@@ -1067,9 +1067,9 @@ pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, v
             Ok(())
         }
     }
-    edits
+    tilo_ui::local_dispatch::LocalDispatch::new()
         .apply(
-            &mut tilo_ui::local_dispatch::LocalDispatch::new(),
+            edits,
             "test.fixture.write",
             &Write {
                 key: key.into(),
@@ -1092,9 +1092,9 @@ pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
             Ok(())
         }
     }
-    edits
+    tilo_ui::local_dispatch::LocalDispatch::new()
         .apply(
-            &mut tilo_ui::local_dispatch::LocalDispatch::new(),
+            edits,
             "test.fixture.flag",
             &Flag { key: key.into() },
             tilo_actions::ActionContext::default(),

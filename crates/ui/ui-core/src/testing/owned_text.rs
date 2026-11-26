@@ -43,8 +43,8 @@ impl OwnedText {
             }
         }
         let mut host = crate::local_dispatch::LocalDispatch::new();
-        doc.apply(
-            &mut host,
+        host.apply(
+            doc,
             "test.owned-text.write",
             &WriteText {
                 root: root.clone(),

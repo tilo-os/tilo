@@ -1014,22 +1014,6 @@ impl<'a> Edits<'a> {
         }
     }
 
-    /// Apply `action` of the action type `type_id` now, through `host`, under `context`. #
-    /// Errors Returns the action's refusal; nothing is written then.
-    #[doc(hidden)]
-    pub fn apply<A>(
-        &mut self,
-        host: &mut crate::local_dispatch::LocalDispatch,
-        type_id: &str,
-        action: &A,
-        context: tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError>
-    where
-        A: tilo_actions::Action + serde::Serialize,
-    {
-        host.try_dispatch_with_context(self.doc, type_id, action, context)
-    }
-
     /// The lent document, for the hosts that pass it on to a record of their own.
     pub(crate) fn document_mut(&mut self) -> &mut AutoCommit {
         self.doc

@@ -83,7 +83,7 @@ This design adds nothing there.
 What a Rust app's runner needs of storage is two things: **the state of its
 resources**, as its model types read them, and **a way to submit actions** on
 them, with the arguments a control supplies. Both are the resource the host
-opened for the window (`TypedRoot::sync` reads it, `Edits::apply` changes it),
+opened for the window (`TypedRoot::sync` reads it, `LocalDispatch::apply` changes it),
 for every launch: a window keeps its own document today, whichever host started
 it.
 

@@ -1622,8 +1622,8 @@ impl Widget for OnboardingView {
                 operation: acknowledgement(kind, checked),
                 now_ms: 0,
             };
-            if let Err(error) = edits.apply(
-                &mut self.acknowledgement_actions,
+            if let Err(error) = self.acknowledgement_actions.apply(
+                edits,
                 <tilo_onboarding::Onboarding as tilo_resource::Resource>::ACTION_TYPE,
                 &action,
                 tilo_actions::ActionContext::default(),

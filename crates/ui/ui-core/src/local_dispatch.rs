@@ -1,5 +1,5 @@
 //! The local executor every immediate action goes through. A bound view's dispatcher hands each action
-//! of its resource to [`LocalDispatch`] through [`Edits::apply`](crate::widget::Edits::apply): it runs
+//! of its resource to [`LocalDispatch`] through [`LocalDispatch::apply`]: it runs
 //! on the canonical executor with this device's actor, is reported to the collaboration route, and
 //! opens the undo boundary the host takes with [`LocalDispatch::take_committed`].
 
@@ -15,6 +15,25 @@ pub struct LocalDispatch {
 impl LocalDispatch {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Apply `action` of the action type `type_id` now to the document `edits` lends, under
+    /// `context`.
+    ///
+    /// # Errors
+    /// Returns the action's refusal; nothing is written then.
+    #[doc(hidden)]
+    pub fn apply<A>(
+        &mut self,
+        edits: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        action: &A,
+        context: ActionContext,
+    ) -> Result<(), tilo_actions::ActionError>
+    where
+        A: Action + serde::Serialize,
+    {
+        self.try_dispatch_with_context(edits.document_mut(), type_id, action, context)
     }
 
     /// [`Self::try_dispatch_with_context`] without an activity context.

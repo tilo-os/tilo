@@ -1003,11 +1003,11 @@ impl<R: Resource> Dispatcher<R> {
             group: Rc::default(),
             permission_of: Rc::new(tilo_resource::need_of::<R>),
             submit_now: Rc::new(|host, edits, action, context| {
-                edits.apply(host, R::ACTION_TYPE, action, context)
+                host.apply(edits, R::ACTION_TYPE, action, context)
             }),
             group_now: Some(Rc::new(|host, edits, group, context| {
-                edits.apply(
-                    host,
+                host.apply(
+                    edits,
                     &tilo_resource::group::group_type::<R>(),
                     group,
                     context,
