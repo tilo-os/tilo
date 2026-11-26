@@ -1557,9 +1557,7 @@ impl App {
                 // is answered while that control still is the one History
                 // holds, before a refresh may rebuild the chrome around it.
                 self.service_history_own_controls();
-                self.refresh_framework_history(
-                    self.layout.last_layout_logical.map_or(900.0, |size| size.0),
-                );
+                self.refresh_framework_history_at_layout_width();
                 self.service_pending_history_commands();
             } else {
                 self.dispatch_control_invocations();
@@ -1569,9 +1567,7 @@ impl App {
             self.layout.layout_dirty = true;
             #[cfg(feature = "model")]
             if framework {
-                self.refresh_framework_history(
-                    self.layout.last_layout_logical.map_or(900.0, |size| size.0),
-                );
+                self.refresh_framework_history_at_layout_width();
             }
             return Ok(None);
         }

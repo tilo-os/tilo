@@ -364,6 +364,16 @@ impl App {
         self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
+    /// [`Self::refresh_framework_history`] at the width the app was last laid out at. Input and an
+    /// assistive technology's action can reach History before a frame has placed anything, and a
+    /// width guessed there would rebuild its chrome for a window it does not stand in: the frame
+    /// that places the app takes up the width it finds.
+    #[cfg(feature = "model")]
+    pub(super) fn refresh_framework_history_at_layout_width(&mut self) {
+        if let Some((width, _)) = self.layout.last_layout_logical {
+            self.refresh_framework_history(width);
+        }
+    }
     /// Whether History's own chrome (the window's, or one the app embeds) takes `event`.
     pub(super) fn history_controls_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         #[cfg(feature = "model")]
@@ -502,9 +512,7 @@ impl App {
         // A genuine open request must seal the live queue before any History
         // output disposal. The refresh also invalidates admitted raw maps
         // before replacing framework chrome.
-        self.refresh_framework_history(
-            self.layout.last_layout_logical.map_or(900.0, |size| size.0),
-        );
+        self.refresh_framework_history_at_layout_width();
         if self
             .history
             .as_ref()
@@ -911,15 +919,16 @@ impl App {
 
         #[cfg(feature = "model")]
         {
-            let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
-            self.refresh_framework_history(width);
-            let status = self.window_status();
-            crate::history_mode::embedded::refresh(
-                self.root_widget.as_mut(),
-                &self.state.doc,
-                width,
-                status.as_ref(),
-            );
+            self.refresh_framework_history_at_layout_width();
+            if let Some((width, _)) = self.layout.last_layout_logical {
+                let status = self.window_status();
+                crate::history_mode::embedded::refresh(
+                    self.root_widget.as_mut(),
+                    &self.state.doc,
+                    width,
+                    status.as_ref(),
+                );
+            }
         }
         // The palette owns its measured overlay geometry. Admit its absolute
         // leaf as a separate presentation root so app/legacy authority and
