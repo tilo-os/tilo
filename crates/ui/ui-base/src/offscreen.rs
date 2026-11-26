@@ -1026,8 +1026,8 @@ impl OffscreenRenderer {
 
     /// Exact pixel oracles can use stable CPU segment ordering while keeping Vello's fine rasterization
     /// on the GPU.
-    #[cfg(test)]
-    pub(crate) fn try_new_for_pixel_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn try_new_for_pixel_test(
         width: u32,
         height: u32,
         use_cpu: bool,

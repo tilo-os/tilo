@@ -1,6 +1,7 @@
 use tilo_ui_base::widget::resource_operation::*;
 use crate::widget::Button;
 use tilo_ui_base::widget::Decorator;
+use tilo_ui_base::widget::Widget;
 use automerge::transaction::Transactable;
 use automerge::ObjId;
 

@@ -1015,8 +1015,8 @@ pub fn settle_widget_composition(
 /// identity rather than a traversal ordinal. Anonymous controls can retain focus on their existing
 /// instance; ambiguity/removal deliberately leaves no restoration target.
 pub struct CompositionFocus {
-    ambiguous: bool,
-    key: Option<String>,
+    pub ambiguous: bool,
+    pub key: Option<String>,
     semantic_key: Option<String>,
     qualified_semantic: bool,
     binding: Option<crate::widget::component_walk::Binding>,

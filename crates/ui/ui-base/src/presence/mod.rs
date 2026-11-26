@@ -640,7 +640,7 @@ impl PresenceCtx {
         self.presence_marks.borrow().clone()
     }
 
-    pub(crate) fn note_presence_mark(&self, mark: PresenceMark) {
+    pub fn note_presence_mark(&self, mark: PresenceMark) {
         self.presence_marks.borrow_mut().push(mark);
     }
 

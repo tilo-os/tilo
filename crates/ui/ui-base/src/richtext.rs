@@ -277,16 +277,16 @@ pub struct RichTextLayout {
     line_starts: Vec<usize>,
     /// Byte length of each logical line, excluding its trailing newline.
     line_lens: Vec<usize>,
-    offset_map: OffsetMap,
+    pub offset_map: OffsetMap,
     text_len: usize,
-    pub(crate) underlines: Vec<(usize, usize)>,
-    pub(crate) strikes: Vec<(usize, usize)>,
+    pub underlines: Vec<(usize, usize)>,
+    pub strikes: Vec<(usize, usize)>,
     /// Highlight bands: `(start_byte, end_byte, rgb)`.
-    pub(crate) backgrounds: Vec<(usize, usize, [u8; 3])>,
+    pub backgrounds: Vec<(usize, usize, [u8; 3])>,
     /// The bands of [`Self::backgrounds`] painted as chips' pills.
     pub(crate) pills: Vec<(usize, usize)>,
     /// Baseline-shifted runs: `(start_byte, end_byte, shift)`.
-    pub(crate) baselines: Vec<(usize, usize, BaselineShift)>,
+    pub baselines: Vec<(usize, usize, BaselineShift)>,
     /// The runs drawn as a workspace emoji's picture, in text order.
     pub(crate) inline_emoji: Vec<inline_emoji::InlineEmoji>,
     discretionary_hyphen_width: f32,
@@ -915,7 +915,7 @@ impl RichTextLayout {
         }
     }
 
-    fn reuse_unchanged_paragraphs(buffer: &mut Buffer, mut previous: Buffer) {
+    pub fn reuse_unchanged_paragraphs(buffer: &mut Buffer, mut previous: Buffer) {
         // BufferLine has separate shaping and line-wrapping caches. Width
         // changes only invalidate wrapping; retain shaping for paragraphs
         // whose text and attributes still match. Keep all other compatibility

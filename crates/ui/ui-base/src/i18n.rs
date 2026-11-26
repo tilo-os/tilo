@@ -152,7 +152,7 @@ pub struct I18nManager {
     /// Every catalogue added on this thread, by locale, the locales in the order they were first added.
     catalogs: Vec<(LanguageIdentifier, Vec<CatalogText>)>,
     /// The parsed catalogues of the active language and the source locale.
-    bundles: HashMap<LanguageIdentifier, LoadedBundle>,
+    pub bundles: HashMap<LanguageIdentifier, LoadedBundle>,
     /// The languages a window catalogue added on this thread is in: the languages this window speaks
     /// (see [`Self::speaking_locale`]).
     spoken: Vec<LanguageIdentifier>,

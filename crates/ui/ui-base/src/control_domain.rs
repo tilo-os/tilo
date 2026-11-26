@@ -51,10 +51,10 @@ pub struct ControlCoverage {
     pub unsafe_late_attachments: usize,
 }
 #[derive(Clone)]
-pub struct ControlDomain(Rc<RefCell<DomainState>>);
+pub struct ControlDomain(pub Rc<RefCell<DomainState>>);
 #[derive(Clone, Default)]
 pub struct WeakControlDomain(Weak<RefCell<DomainState>>);
-struct DomainState {
+pub struct DomainState {
     id: uuid::Uuid,
     incarnation: uuid::Uuid,
     closed: bool,
@@ -65,7 +65,7 @@ struct DomainState {
     children: Vec<WeakControlDomain>,
     leases: BTreeSet<uuid::Uuid>,
     producers: Vec<Rc<RefCell<Producer>>>,
-    order: Vec<DomainEntry>,
+    pub order: Vec<DomainEntry>,
     coverage: ControlCoverage,
 }
 /// Who registered a control a domain holds: the window's own root, or one of its components.
@@ -344,7 +344,7 @@ impl ControlDomain {
     pub fn unsafe_attachment(&self) {
         self.0.borrow_mut().coverage.unsafe_late_attachments += 1;
     }
-    fn children(&self) -> Vec<Self> {
+    pub fn children(&self) -> Vec<Self> {
         self.0
             .borrow()
             .children
@@ -422,7 +422,7 @@ impl ControlDomain {
         }
     }
 
-    pub(crate) fn drain_live(&self) -> Vec<OwnedControl> {
+    pub fn drain_live(&self) -> Vec<OwnedControl> {
         let mut output = Vec::new();
         self.detach_pending(&mut output);
         output

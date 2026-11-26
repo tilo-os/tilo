@@ -41,7 +41,7 @@ pub struct PainterSet {
     /// Unique per set made in this process, so a cache entry of one set is never taken for another's of
     /// the same name.
     id: u64,
-    painter: Arc<dyn PartPainter>,
+    pub painter: Arc<dyn PartPainter>,
 }
 
 impl PainterSet {

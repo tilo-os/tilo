@@ -30,7 +30,7 @@ pub enum KeycapLanguage {
 }
 
 impl KeycapLanguage {
-    const ALL: [Self; 11] = [
+    pub const ALL: [Self; 11] = [
         Self::English,
         Self::German,
         Self::French,
@@ -309,7 +309,7 @@ impl Keycaps {
         self.language.code() | family
     }
 
-    fn from_code(code: u8) -> Self {
+    pub fn from_code(code: u8) -> Self {
         Self {
             language: KeycapLanguage::from_code(code & 0x7f),
             family: if code & 0x80 == 0 {

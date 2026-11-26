@@ -73,8 +73,8 @@ impl HoverIntent {
     }
 
     /// Test fixture: as if the pointer had dwelt on `idx` long enough.
-    #[cfg(test)]
-    pub(crate) fn force_open(&mut self, idx: Option<usize>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn force_open(&mut self, idx: Option<usize>) {
         *self = Self::default();
         self.open = idx;
         self.rest = idx;

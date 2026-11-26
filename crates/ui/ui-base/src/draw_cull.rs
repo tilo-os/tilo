@@ -146,7 +146,7 @@ pub struct Culling {
     secret: bool,
     /// How many frames left anything out, and how many of those had their widgets drawn again in full.
     #[cfg(test)]
-    pub(crate) tally: (usize, usize),
+    pub tally: (usize, usize),
 }
 
 /// The scenes of a culled frame: the widgets', and what is painted over them, apart, so the widgets can

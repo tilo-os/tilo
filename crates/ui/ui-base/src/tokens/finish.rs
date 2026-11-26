@@ -210,8 +210,8 @@ impl Finish {
 
     /// The Glass set with
     /// `[blur, tint, saturation, refraction, edge_highlight, specular]`, for tests.
-    #[cfg(test)]
-    pub(crate) fn glass(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn glass(
         [blur, tint, saturation, refraction, edge_highlight, specular]: [f32; 6],
     ) -> Self {
         Self::builtin(
