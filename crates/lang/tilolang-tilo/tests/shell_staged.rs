@@ -91,6 +91,9 @@ pub(crate) fn staged(scenario: &str) -> (Host, Called) {
 pub(crate) struct StagedWindow {
     pub(crate) instance: tilolang_tilo::instance::Instance,
     pub(crate) harness: ui::headless::Driver,
+    /// What the shell's views called, in order: every action a press ran, so a test reads what a
+    /// press asked of a resource.
+    pub(crate) called: Called,
 }
 
 /// How many times the window and its instance may answer each other before the frames are taken
@@ -100,12 +103,14 @@ const EXCHANGES: usize = 8;
 
 /// The shell's package and the packages it uses, loaded as [`load`] loads them.
 #[cfg(target_os = "linux")]
-struct Shell;
+struct Shell {
+    called: Called,
+}
 
 #[cfg(target_os = "linux")]
 impl tilolang_tilo::instance::Platform for Shell {
     fn load(&self, host: &Host) -> u64 {
-        load(host, &Called::default());
+        load(host, &self.called);
         0
     }
 
@@ -133,6 +138,7 @@ impl StagedWindow {
 
         let (app_end, window_end) = tilo_render_protocol::patch::local::pair();
         let names = Rc::new(Installed);
+        let called = Called::default();
         let mut instance = Instance::new(
             Config {
                 app: SHELL.to_owned(),
@@ -147,7 +153,9 @@ impl StagedWindow {
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
                 link_home: None,
             },
-            Rc::new(Shell),
+            Rc::new(Shell {
+                called: called.clone(),
+            }),
             names,
             Box::new(app_end),
         );
@@ -170,7 +178,11 @@ impl StagedWindow {
         // The window takes the keyboard as it opens, as a session's window does: what the app's
         // entry is then holds it.
         harness.send(&ui::winit::event::WindowEvent::Focused(true));
-        let mut staged = Self { instance, harness };
+        let mut staged = Self {
+            instance,
+            harness,
+            called,
+        };
         staged.exchange();
         staged
     }
@@ -206,6 +218,44 @@ impl StagedWindow {
                 .settle_for_capture(ui::time::Duration::from_secs(30)),
             "the window comes to rest"
         );
+    }
+
+    /// Every accessible node of the window, as a screen reader reads it.
+    pub(crate) fn accessible(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        let snapshot = self.harness.inspection();
+        snapshot
+            .root
+            .nodes()
+            .into_iter()
+            .filter_map(|node| node.semantics.as_ref())
+            .flat_map(tilo_ui_base::a11y::AccessNode::nodes)
+            .cloned()
+            .collect()
+    }
+
+    /// Press the control `name` where it stands, as a person does.
+    pub(crate) fn press(&mut self, name: &str) {
+        // A row is named for what it shows: its title, then what stands beside it ("Sony
+        // WH-1000XM5, Connected"). The press names the title.
+        let bare = |shown: &str| shown == name || shown.starts_with(&format!("{name}, "));
+        let at = self
+            .accessible()
+            .into_iter()
+            .find(|node| node.name.as_deref().is_some_and(bare) && node.bounds.is_some())
+            .map_or_else(
+                || {
+                    let names: Vec<String> = self
+                        .accessible()
+                        .into_iter()
+                        .filter_map(|node| node.name)
+                        .collect();
+                    panic!("the window offers `{name}`: {names:?}")
+                },
+                |node| node.bounds.expect("the control's bounds"),
+            );
+        self.harness
+            .click_at(f64::midpoint(at.x0, at.x1), f64::midpoint(at.y0, at.y1));
+        self.exchange();
     }
 
     /// What holds the keyboard, named as a screen reader announces it.

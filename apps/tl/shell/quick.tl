@@ -21,10 +21,29 @@ view quick_settings() {
 /// takes that height and scrolls inside it. On a `compact` shell (the room the panel stands in,
 /// never the panel's own width) it takes the shell's width.
 view quick_settings_panel(fill_height: Bool, compact: Bool) {
+    // The page the panel shows: nothing for the controls, or one accessory's
+    // address for its own page. A page stands in the panel as a window's page
+    // stands in its window, with the way back in the header.
+    state page: Text = ""
+    let shown = if page == "" {
+        "Quick settings"
+    } else if let accessory = device.bluetooth.accessories.find(a -> a.address == page) {
+        accessory.name
+    } else { "Bluetooth accessory" }
     ui.FloatingPanel(width: if not compact { 360.0 }, fill: compact, fill_height: fill_height) {
         header: {
             row(gap: .related, align: .center, wrap: true) {
-                ui.Text("Quick settings", role: .heading)
+                if page != "" {
+                    ui.Button(
+                        "Back to quick settings",
+                        icon: .arrow_left,
+                        icon_only: true,
+                        role: .plain,
+                    ) {
+                        on press: set(page, "")
+                    }
+                }
+                ui.Text(shown, role: .heading)
                 spacer
                 battery_line()
             }
@@ -32,30 +51,34 @@ view quick_settings_panel(fill_height: Bool, compact: Bool) {
         body: {
             scroll {
                 stack(gap: .related) {
-                    // What was copied recently, above everything else: choosing one pastes it
-                    // where the person types, which is why the key that opens this panel opens
-                    // it.
-                    clipboard_section()
-                    // The tiles the person keeps on the panel, in their order: the same
-                    // setting the editor below changes.
-                    grid(min: 10rem, gap: .related) {
-                        for c in device.quick_settings.controls {
-                            control_tile(c)
+                    if page != "" {
+                        accessory_page(page, page)
+                    } else {
+                        // What was copied recently, above everything else: choosing one pastes it
+                        // where the person types, which is why the key that opens this panel opens
+                        // it.
+                        clipboard_section()
+                        // The tiles the person keeps on the panel, in their order: the same
+                        // setting the editor below changes.
+                        grid(min: 10rem, gap: .related) {
+                            for c in device.quick_settings.controls {
+                                control_tile(c)
+                            }
+                            // The appearance the whole desktop takes is not one of the
+                            // person's panel controls: it stays on the grid whatever they keep.
+                            dark_tile()
                         }
-                        // The appearance the whole desktop takes is not one of the
-                        // person's panel controls: it stays on the grid whatever they keep.
-                        dark_tile()
+                        levels()
+                        // What runs now — the song playing, the call, the timer — stands here: its
+                        // resource's own `live` view, which the shell composes from the index.
+                        live_section(compact)
+                        sound_section()
+                        network_section()
+                        bluetooth_section(page)
+                        devices_section()
+                        power_row()
+                        controls_editor()
                     }
-                    levels()
-                    // What runs now — the song playing, the call, the timer — stands here: its
-                    // resource's own `live` view, which the shell composes from the index.
-                    live_section(compact)
-                    sound_section()
-                    network_section()
-                    bluetooth_section()
-                    devices_section()
-                    power_row()
-                    controls_editor()
                 }
             }
         }
@@ -467,10 +490,15 @@ view network_section() {
     state hidden: Bool = false
     state hidden_name: Text = ""
     state hidden_password: Text = ""
-    let wifi = device.network.wifi
+    let net = device.network
+    let wifi = net.wifi
+    // An action the device works on now: the panel says it is under way
+    // instead of letting the person press it twice.
+    let joining = net.pending.contains("connect-wifi")
+        or net.pending.contains("connect-hidden-wifi")
     if wifi.available {
         ui.Section("Wi-Fi") {
-            if let wired = device.network.wired {
+            if let wired = net.wired {
                 ui.ListRow(
                     "Wired network",
                     secondary: if wired.connected { "Connected" } else { "Cable unplugged" },
@@ -486,7 +514,21 @@ view network_section() {
                 ui.StatusLine("A switch on this device holds Wi-Fi off", status: .warning)
             } else if not wifi.on {
                 ui.Text("Wi-Fi is off", role: .caption, secondary: true)
-            } else if wifi.networks.is_empty() {
+            }
+            // A search that failed says so where the networks stand, with what
+            // the device said and the press that looks again: an empty list
+            // that reads as "none in reach" would be a lie the person cannot
+            // act on.
+            if let why = wifi.scan_problem {
+                stack(gap: .tight) {
+                    ui.StatusLine(why, status: .error)
+                    row(fill, distribute: .end) {
+                        ui.Button("Look again", icon: .refresh, size: .small, role: .plain) {
+                            on press: device.scan_wifi(device.network)
+                        }
+                    }
+                }
+            } else if wifi.on and wifi.networks.is_empty() {
                 ui.EmptyState("Scanning for networks", icon: .wifi, inline: true)
             }
             for n in wifi.networks {
@@ -502,16 +544,39 @@ view network_section() {
                         set(password_for, n.name)
                     } else { n.join() }
                 }
-            }
-            if password_for != "" {
-                ui.Text("Enter the password for {password_for}", role: .caption, secondary: true)
-                row(gap: .related, align: .center, wrap: true) {
-                    ui.TextInput(bind: password, placeholder: "Password", fill)
-                    ui.Button("Join", role: .primary, size: .small) {
-                        on press: device.connect_wifi(device.network, password_for, password)
-                    }
-                    ui.Button("Cancel", size: .small, role: .plain) {
-                        on press: set(password_for, "")
+                // Why this one did not join, on its own row: a password the
+                // network did not take, or a device it would not let in.
+                if let why = n.problem {
+                    ui.StatusLine(why, status: .error)
+                }
+                // The password prompt stands under the row it is for, and stays
+                // open while the network is not joined: a wrong password leaves
+                // the field where the person can type the next one.
+                if password_for == n.name and not n.connected {
+                    stack(gap: .tight) {
+                        ui.Text("Enter the password for {n.name}", role: .caption, secondary: true)
+                        row(gap: .related, align: .center, wrap: true) {
+                            ui.TextInput(bind: password, placeholder: "Password", fill)
+                            ui.Button(
+                                "Join",
+                                role: .primary,
+                                size: .small,
+                                enabled: not joining,
+                                description: "This device is joining a network now",
+                            ) {
+                                on press: device.connect_wifi(
+                                    device.network,
+                                    password_for,
+                                    password,
+                                )
+                            }
+                            ui.Button("Cancel", size: .small, role: .plain) {
+                                on press: set(password_for, "")
+                            }
+                        }
+                        if joining {
+                            ui.Spinner(label: "Joining {n.name}", beside: .caption)
+                        }
                     }
                 }
             }
@@ -530,7 +595,13 @@ view network_section() {
                     row(gap: .related, align: .center, wrap: true) {
                         ui.TextInput(bind: hidden_name, placeholder: "Network name", fill)
                         ui.TextInput(bind: hidden_password, placeholder: "Password", fill)
-                        ui.Button("Join", role: .primary, size: .small) {
+                        ui.Button(
+                            "Join",
+                            role: .primary,
+                            size: .small,
+                            enabled: not joining,
+                            description: "This device is joining a network now",
+                        ) {
                             on press: device.connect_hidden_wifi(
                                 device.network,
                                 hidden_name,
@@ -541,9 +612,14 @@ view network_section() {
                             on press: set(hidden, false)
                         }
                     }
+                    // A name that does not show has no row of its own to be
+                    // refused on: what the device said stands under its form.
+                    if let why = net.problem {
+                        ui.StatusLine(why, status: .error)
+                    }
                 }
             }
-            let saved = device.network.saved.filter(s -> s.kind == .wifi)
+            let saved = net.saved.filter(s -> s.kind == .wifi)
             if not saved.is_empty() {
                 ui.Text("Saved networks", role: .caption, secondary: true)
                 for s in saved {
@@ -580,10 +656,10 @@ view network_section() {
     }
 }
 
-/// The paired accessories, connected first, each pressed to connect or disconnect it and offered
-/// to forget; then the devices in reach, pressed to pair; and the way to look again. Nothing on a
-/// device without Bluetooth.
-view bluetooth_section() {
+/// The paired accessories, connected first, each pressed open as its own
+/// page; then the devices in reach, pressed to pair; and the way to look again.
+/// Nothing on a device without Bluetooth.
+view bluetooth_section(page: State<Text>) {
     let b = device.bluetooth
     if b.available {
         ui.Section("Bluetooth") {
@@ -598,23 +674,20 @@ view bluetooth_section() {
                     icon: .bluetooth,
                     value: if let level = accessory.battery { "{level}%" } else { "" },
                 ) {
-                    on activate: if accessory.connected {
-                        accessory.disconnect()
-                    } else { accessory.connect() }
+                    on activate: set(page, accessory.address)
                     trailing: {
-                        row(gap: .related, align: .center) {
+                        ui.Button(
                             if accessory.connected {
-                                bluetooth_hand_off(accessory.address)
-                            }
-                            ui.Button(
-                                "Forget this device",
-                                icon: .trash,
-                                icon_only: true,
-                                size: .small,
-                                role: .plain,
-                            ) {
-                                on press: accessory.forget()
-                            }
+                                "Disconnect {accessory.name}"
+                            } else { "Connect {accessory.name}" },
+                            icon: if accessory.connected { .bluetooth_off } else { .bluetooth },
+                            icon_only: true,
+                            size: .small,
+                            role: .plain,
+                        ) {
+                            on press: if accessory.connected {
+                                accessory.disconnect()
+                            } else { accessory.connect() }
                         }
                     }
                 }
@@ -629,7 +702,13 @@ view bluetooth_section() {
                 }
             }
             for nearby in b.nearby {
-                ui.ListRow(nearby.name, secondary: "In reach", icon: .bluetooth) {
+                ui.ListRow(
+                    nearby.name,
+                    secondary: if let signal = nearby.signal {
+                        "{signal} dBm"
+                    } else { "In reach" },
+                    icon: .bluetooth,
+                ) {
                     on activate: nearby.pair()
                 }
             }
@@ -637,6 +716,98 @@ view bluetooth_section() {
                 ui.EmptyState("No devices found", icon: .bluetooth, inline: true)
             }
         }
+    }
+}
+
+/// One paired accessory's own page in the panel: what it is and where it
+/// stands, its address, its signal and its charge where the device knows
+/// them, the name this machine calls it by, the person's other devices it
+/// can move to, and the ways to disconnect or forget it. Its header's Back
+/// returns to the panel.
+view accessory_page(address: Text, page: State<Text>) {
+    let b = device.bluetooth
+    let paired = b.accessories.find(a -> a.address == address)
+    // What the person types to rename it, starting on the name it has now.
+    state rename_to: Text = if let accessory = device.bluetooth.accessories.find(
+            a -> a.address == address,
+        ) {
+        accessory.name
+    } else { "" }
+    if let accessory = paired {
+        ui.PropertyList {
+            ui.Property("Address", accessory.address, copyable: true)
+            ui.Property("State", if accessory.connected { "Connected" } else { "Paired" })
+            if let signal = accessory.signal {
+                ui.Property("Signal", "{signal} dBm")
+            }
+            if let battery = accessory.battery {
+                ui.Property("Battery", "{battery}%")
+            }
+        }
+        ui.Section("Name") {
+            ui.Text(
+                "What this device calls it; the name the accessory reports stays its own",
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(bind: rename_to, placeholder: accessory.name, fill)
+                ui.Button(
+                    "Rename",
+                    size: .small,
+                    role: .primary,
+                    description: "Call it what the field says",
+                ) {
+                    on press: accessory.rename(rename_to.trim())
+                }
+            }
+        }
+        ui.Section("Devices") {
+            // The accessory is paired with this machine: its page says so,
+            // and offers the person's other devices it can move to, which must
+            // already be paired with it.
+            ui.ListRow(
+                "This device",
+                secondary: if accessory.connected { "Connected here" } else { "Paired here" },
+                selected: accessory.connected,
+                icon: .laptop,
+            )
+            for d in device.devices.devices {
+                if not d.local {
+                    if d.online {
+                        ui.ListRow(d.label, secondary: "In reach", icon: .laptop) {
+                            on activate: device.hand_off(
+                                device.devices,
+                                address: address,
+                                device: d.id,
+                            )
+                        }
+                    } else {
+                        ui.ListRow(d.label, secondary: "Away", icon: .laptop)
+                    }
+                }
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button(
+                if accessory.connected { "Disconnect" } else { "Connect" },
+                icon: .bluetooth,
+            ) {
+                on press: if accessory.connected {
+                    accessory.disconnect()
+                } else { accessory.connect() }
+            }
+            ui.Button("Forget this device", icon: .trash, role: .destructive) {
+                on press: accessory.forget().then(set(page, ""))
+            }
+        }
+        if let problem = b.problem {
+            ui.StatusLine(problem, status: .error)
+        }
+    } else {
+        // Forgotten, or the radio went off: the page has nothing left to
+        // show, and the header's Back is the way out.
+        ui.EmptyState("This device is no longer paired", icon: .bluetooth, inline: true)
     }
 }
 
@@ -953,22 +1124,6 @@ fn nearby_place(lab: Bool, reachable: Bool) -> Text {
 /// What a transfer that is moving says: to whom, or from whom, and how far it got.
 fn transfer_moving(peer: Text, progress: Int, incoming: Bool) -> Text {
     if incoming { "From {peer}, {progress}%" } else { "To {peer}, {progress}%" }
-}
-
-/// The way to move a paired Bluetooth accessory to another of the person's devices: the accessory
-/// stays paired here and plays there.
-view bluetooth_hand_off(address: Text) {
-    let mine = device.devices
-    let others = mine.devices.filter(d -> not d.local and d.online)
-    if not others.is_empty() {
-        ui.MenuButton("Move it to…", icon: .laptop) {
-            for d in others {
-                ui.MenuItem(d.label) {
-                    on choose: device.hand_off(device.devices, address: address, device: d.id)
-                }
-            }
-        }
-    }
 }
 
 /// The controls the panel shows, and the way every person changes them: each tile is one row here,

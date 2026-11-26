@@ -1468,6 +1468,80 @@ scenario "the quick settings, at work" {
     )
 }
 
+/// The quick settings over a device that refused: a search for networks that failed, a network
+/// whose password it would not take, a network it keeps, and an accessory whose page shows what
+/// the device knows of it and the person's other devices it can move to.
+scenario "the quick settings, refused" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    stage(device.overlays, device.Overlays(here: "quick-settings"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.quick_settings,
+        device.QuickSettings(controls: ["wifi", "bluetooth", "night_light"]),
+    )
+    stage(
+        device.network,
+        device.Network(
+            airplane_mode: false,
+            wifi: device.Wifi(
+                available: true,
+                on: true,
+                scan_problem: "NetworkManager is not running",
+                networks: [
+                    device.WifiNetwork(
+                        name: "Studio",
+                        signal: 3,
+                        secure: true,
+                        known: false,
+                        problem: "Secrets were required, but not provided",
+                    ),
+                    device.WifiNetwork(name: "Home", signal: 2, secure: true, known: true),
+                ],
+            ),
+            saved: [
+                device.SavedNetwork(
+                    name: "Home",
+                    profile: "uuid-home",
+                    kind: .wifi,
+                    autoconnect: true,
+                    metered: .automatic,
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.bluetooth,
+        device.Bluetooth(
+            available: true,
+            on: true,
+            accessories: [
+                device.Accessory(
+                    name: "Sony WH-1000XM5",
+                    address: "AC:80:0A:11:22:33",
+                    battery: 82,
+                    signal: -48,
+                    connected: true,
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.devices,
+        device.Devices(
+            devices: [
+                device.PersonalDeviceView(
+                    id: "laptop",
+                    label: "This laptop",
+                    local: true,
+                    online: true,
+                ),
+                device.PersonalDeviceView(id: "desk", label: "Fern's desk", online: true),
+            ],
+        ),
+    )
+}
+
 /// Three banners, newest first, two with actions and one offering a reply; and more waiting behind
 /// them than fit.
 scenario "the banners" {

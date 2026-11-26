@@ -97,6 +97,8 @@ mod platform_packages;
 mod policy;
 mod print_centre;
 mod publication;
+mod quick_network;
+mod quick_states_shot;
 mod reach;
 mod read;
 mod readers;
