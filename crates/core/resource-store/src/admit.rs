@@ -12,7 +12,7 @@
 //! answer from the same change, so a change that is refused is kept beside the document but has
 //! no effect on it, on any holder; a change built on a refused one is refused too.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{Change as AmChange, ScalarValue};
 use collab_types::touch::{Touch, Touched};
@@ -188,6 +188,7 @@ pub(crate) fn within_verb(
     writes: &[(String, String, Option<ScalarValue>)],
     stamp: Option<&Stamp>,
     operations: usize,
+    queued_by: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let names = stamp.map(named_verbs).unwrap_or_default();
     let verbs: Vec<&crate::schema::Verb> = names
@@ -237,13 +238,12 @@ pub(crate) fn within_verb(
         };
         // One verb of the names that admits the resource's write is enough: a family declared
         // by prefix writes its own kinds beside a verb of the same name another app declares.
-        if !verbs
-            .iter()
-            .any(|verb| verb_admits(schema, verb, stamp, id, kind, touch, writes).is_ok())
-        {
-            return verbs
-                .iter()
-                .try_for_each(|verb| verb_admits(schema, verb, stamp, id, kind, touch, writes));
+        if !verbs.iter().any(|verb| {
+            verb_admits(schema, verb, stamp, id, kind, touch, writes, queued_by).is_ok()
+        }) {
+            return verbs.iter().try_for_each(|verb| {
+                verb_admits(schema, verb, stamp, id, kind, touch, writes, queued_by)
+            });
         }
     }
     Ok(())
@@ -352,6 +352,7 @@ fn verb_admits(
     kind: &str,
     touch: &Touch,
     writes: &[(String, String, Option<ScalarValue>)],
+    queued_by: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     // A move founds, fills and removes a resource of whatever kind the store declares, and a verb
     // the platform writes under (an invocation, a settling block, a step taken back or brought
@@ -450,7 +451,7 @@ fn verb_admits(
         // A queued effect is how an action's code reaches beyond the workspace: it writes one
         // only for a capability its own app's surface declares, and the entry names that app.
         if kind == QUEUED_EFFECT_KIND {
-            return queued_effect_admits(verb, id, touch, writes);
+            return queued_effect_admits(verb, id, touch, writes, queued_by);
         }
         return Err(format!("`{}` writes no `{kind}`", verb.name));
     };
@@ -485,23 +486,36 @@ fn verb_admits(
 
 /// Whether a change of `verb` queues the outside effect `id` writes: it makes the entry, its
 /// code declares the capability it names, and the app the entry says it is for is the app whose
-/// package wrote it. What it writes is an entry, never a change of one: the device that carries
-/// it out says how it went under the platform's own verbs.
+/// package wrote it. Once an entry waits, the app that queued it may take it back before it
+/// goes, settling it as withdrawn; what else becomes of it is the device carrying it out's to
+/// say, under the platform's own verbs.
 fn queued_effect_admits(
     verb: &crate::schema::Verb,
     id: &str,
     touch: &Touch,
     writes: &[(String, String, Option<ScalarValue>)],
+    queued_by: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     // Taking an effect back is how a person undoes a send before it goes: it queues nothing.
     if touch.removed && !touch.made {
         return Ok(());
     }
     if !touch.made {
-        return Err(format!(
-            "`{}` may not change a queued effect; only the device carrying it out says how it went",
-            verb.name
-        ));
+        // Taking it back before it goes: the app whose effect it is settles the entry as
+        // withdrawn, for the reason it gives, and changes nothing else of it. A queued send is
+        // its author's to stop until the device carries it out.
+        let mine = queued_by
+            .get(id)
+            .is_some_and(|app| declaring_apps(verb).contains(app));
+        return if mine && takes_back(id, writes) {
+            Ok(())
+        } else {
+            Err(format!(
+                "`{}` may not change a queued effect; only the app whose effect it is may take \
+                 it back, and the device carrying it out says how it went",
+                verb.name
+            ))
+        };
     }
     let written = |field: &str| -> Option<&str> {
         writes
@@ -547,6 +561,23 @@ fn queued_effect_admits(
     Ok(())
 }
 
+/// Whether the writes to the queued effect `id` take it back, and nothing else: they settle it
+/// as withdrawn, for the reason they give (`tilolang-tilo`'s `withdraw_in`). How it went any
+/// other way is the device's to write, never an action's.
+fn takes_back(id: &str, writes: &[(String, String, Option<ScalarValue>)]) -> bool {
+    let mut settled = false;
+    for (_, field, value) in writes.iter().filter(|(written, _, _)| written == id) {
+        match (field.as_str(), value) {
+            (QUEUED_EFFECT_SETTLED, Some(ScalarValue::Boolean(true))) => settled = true,
+            (QUEUED_EFFECT_OUTCOME, Some(ScalarValue::Str(word)))
+                if word.as_str() == QUEUED_EFFECT_WITHDRAWN => {}
+            (QUEUED_EFFECT_REASON, Some(ScalarValue::Str(_))) => {}
+            _ => return false,
+        }
+    }
+    settled
+}
+
 /// The apps whose packages the verb's writes are of: each `tl.<app>.<Type>` it writes, by the
 /// package the type is declared in.
 fn declaring_apps(verb: &crate::schema::Verb) -> BTreeSet<String> {
@@ -572,13 +603,26 @@ const HOST_NOTICE_KIND: &str = "tl.tilo.host.Notice";
 /// The kind an outside effect waits as, which a package's action queues one of
 /// (`tilolang.effect`). Its entry names the app that queued it and the capability it carries
 /// out.
-const QUEUED_EFFECT_KIND: &str = "tilolang.effect";
+pub(crate) const QUEUED_EFFECT_KIND: &str = "tilolang.effect";
 
 /// The field of a queued effect naming the app whose package queued it.
-const QUEUED_EFFECT_APP: &str = "app";
+pub(crate) const QUEUED_EFFECT_APP: &str = "app";
 
 /// The field of a queued effect naming the outside capability it carries out.
 const QUEUED_EFFECT_CAPABILITY: &str = "capability";
+
+/// The field of a queued effect that says it was settled, once it was.
+const QUEUED_EFFECT_SETTLED: &str = "settled";
+
+/// The field of a queued effect saying how it went: `withdrawn` for one a person took back
+/// before it went.
+const QUEUED_EFFECT_OUTCOME: &str = "outcome";
+
+/// The field of a queued effect giving the reason it was settled as it was.
+const QUEUED_EFFECT_REASON: &str = "reason";
+
+/// The outcome of an effect a person took back before it went.
+const QUEUED_EFFECT_WITHDRAWN: &str = "withdrawn";
 
 /// The tilolang package a kind of one (`tl.<app>.<Type>`) is of: none for another kind.
 fn tilolang_package(kind: &str) -> Option<&str> {

@@ -2761,6 +2761,7 @@ impl Store {
         let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
         let (touched, writes) =
             collab_types::touch::touched(doc, doc_id, &received.change).ok_or(Refusal::Unplaced)?;
+        let queued_by = apps_of_queued_effects(doc, &touched);
         // A document's reader set is the one it was placed by, whoever writes it.
         if touched
             .readers
@@ -2846,6 +2847,7 @@ impl Store {
                     &writes,
                     stamp.as_ref(),
                     received.change.len(),
+                    &queued_by,
                 )
                 .map_err(Refusal::Undeclared)?;
             }
@@ -3284,6 +3286,26 @@ fn held_key(id: &str) -> String {
 
 fn read(doc: &Automerge, id: &str) -> Option<(String, Resource)> {
     read_as_of(doc, None, id)
+}
+
+/// The app each queued effect the change `touched` touches says it is for, as `doc` stands:
+/// taking an entry back before it goes is that app's, and the entry names it when it is queued.
+fn apps_of_queued_effects(
+    doc: &Automerge,
+    touched: &collab_types::touch::Touched,
+) -> std::collections::BTreeMap<String, String> {
+    touched
+        .resources
+        .iter()
+        .filter(|(_, touch)| touch.kind.as_deref() == Some(crate::admit::QUEUED_EFFECT_KIND))
+        .filter_map(|(id, _)| {
+            let (_, held) = read(doc, id)?;
+            match held.fields.get(crate::admit::QUEUED_EFFECT_APP)? {
+                Cell::One(Value::Text(app)) => Some((id.clone(), app.clone())),
+                Cell::Set(_) | Cell::One(_) => None,
+            }
+        })
+        .collect()
 }
 
 /// [`read`] as the document stood at `heads`, or as it stands with none.
