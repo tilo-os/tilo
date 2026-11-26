@@ -467,6 +467,59 @@ async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one(
         .await;
 }
 
+/// A continuation this broker no longer holds — a page read before a
+/// republish replaced the registration with it — reads the level as it is now
+/// instead of refusing the ask.
+#[tokio::test(flavor = "current_thread")]
+async fn a_continuation_the_host_no_longer_holds_reads_the_level_now() {
+    use tilo_actions::remote::Caller;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = local_directory_fixture();
+            let caller = Caller::local_person("fixture-owner")
+                .in_workspace(fixture.cluster_id.clone())
+                .in_new_execution();
+            let actor = fixture.state.caller_actor(&caller);
+            let mut query = runtime_collab::ActionDirectoryQuery {
+                peer_id: fixture.peer_id,
+                revision: "directory-r0".into(),
+                cursor: b"a page read before the app republished".to_vec(),
+                needle: String::new(),
+                parent_resource: String::new(),
+                max_results: 8,
+                max_bytes: AppBrokerState::DIRECTORY_MAX_BYTES,
+                max_work: 8,
+                max_depth: 4,
+                resource_name: String::new(),
+            };
+            let page = fixture
+                .state
+                .query_action_directory_for_actor(
+                    &fixture.directories,
+                    &actor,
+                    &fixture.cluster_id,
+                    &query,
+                )
+                .await
+                .expect("the level reads as it is now");
+            assert_eq!(page.rows.len(), 1, "the directory's page answers");
+            query.cursor.clear();
+            query.revision.clear();
+            let now = fixture
+                .state
+                .query_action_directory_for_actor(
+                    &fixture.directories,
+                    &actor,
+                    &fixture.cluster_id,
+                    &query,
+                )
+                .await
+                .expect("the level reads");
+            assert_eq!(page.revision, now.revision, "read as it is now");
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};

@@ -1157,22 +1157,31 @@ impl AppBrokerState {
         let max_bytes = query.max_bytes.min(Self::DIRECTORY_MAX_BYTES);
         let max_work = query.max_work.min(Self::DIRECTORY_MAX_WORK);
         let max_depth = query.max_depth.min(Self::DIRECTORY_MAX_DEPTH);
-        let cursor = registered
-            .pagination
-            .source_cursor(
+        // A continuation names a page of the directory as it was read: one
+        // this broker no longer holds was read before a change (a republish
+        // replaces the registration and its continuations with it), so the
+        // level is read as it is now rather than the ask refused.
+        let cursor = tilo_failure::ignored!(
+            "a continuation this host no longer holds was read before the directory changed",
+            registered.pagination.source_cursor(
                 actor,
                 &query.revision,
                 &query.needle,
                 &query.parent_resource,
                 &query.cursor,
             )
-            .map_err(|error| Unserved::Refused(error.to_string()))?;
+        )
+        .ok();
+        let (revision, cursor) = match cursor {
+            Some(cursor) => (query.revision.clone(), cursor),
+            None => (String::new(), Vec::new()),
+        };
         let page = registered
             .directory
             .query(
                 runtime_collab::ActionDirectoryQuery {
                     peer_id: query.peer_id,
-                    revision: query.revision.clone(),
+                    revision,
                     cursor,
                     needle: query.needle.clone(),
                     parent_resource: query.parent_resource.clone(),
