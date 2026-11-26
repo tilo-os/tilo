@@ -387,14 +387,21 @@ impl Workspaces {
             |_, _| Ok(state),
         )?;
         let body = postcard::to_stdvec(&row).map_err(|error| error.to_string())?;
+        let workspace = hosted.workspace_id();
         self.inner
             .records
             .carry(
-                hosted.workspace_id(),
+                workspace,
                 cert.device_public_key,
                 &crate::workspace_documents::HostCommit { body },
             )
             .map_err(|error| format!("the device's own row was not carried: {error}"))?;
+        // A member copy serves no link the row could go out on: it goes to the device serving
+        // the workspace as the copy's other writes do. Carried alone, it reached that device only
+        // with the catch-up of a link made after it, never on a link already up.
+        if self.member_link(workspace).is_some() {
+            self.forward_member_document(workspace, row);
+        }
         self.settle(hosted).await
     }
 
