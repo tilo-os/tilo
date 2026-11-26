@@ -2,11 +2,145 @@
 //! runs: every session that says it runs "Claude Code" acts as the one agent the person's root and
 //! that name make ([`tilo_actions::remote::device_agent_id`]), named so in what it writes, and an
 //! agent under another name is another agent.
+use super::agent_mcp::tool;
+use super::hosted_page_stream::SignedPage;
 use super::*;
 use tilo_mcp::McpServer;
+use tilo_server_protocol::page::{PageAction, PageAnswer, PageAsk};
 use tilo_session_actions::SessionActions;
 
 const TASKS: &str = "so.tilo.tasks";
+
+/// The live agent's activity must be beside their name in the same People row.
+fn reviewer_is(html: &str, expected: Option<&str>) -> bool {
+    let Some((_, people)) = html.split_once("class=\"tilo-people\"") else {
+        return false;
+    };
+    let (people, _) = people.split_once("</section>").unwrap();
+    let mut rows = people
+        .split("<li ")
+        .skip(1)
+        .filter_map(|row| row.split_once("</li>").map(|(row, _)| row))
+        .filter(|row| row.contains(">Reviewer</span>"));
+    let reviewer = rows.next();
+    assert!(rows.next().is_none(), "one agent appears twice: {people}");
+    match expected {
+        Some(activity) => reviewer.is_some_and(|row| {
+            row.contains("data-present") && row.contains(&format!(">{activity}</span>"))
+        }),
+        None => reviewer
+            .is_none_or(|row| !row.contains("data-present") && !row.contains("tilo-person-what")),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_signed_home_follows_an_agents_activity_and_departure() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home server", DeviceCapabilities::member());
+    let device = enrol(&root, "browser", DeviceCapabilities::member());
+    let laptop = enrol(&root, "Reviewer on laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let workspace = hosted
+        .workspaces()
+        .unwrap()
+        .create("My workspace")
+        .await
+        .unwrap()
+        .workspace;
+    let mut person = Browser::open_at(&hosted, &device, &host, &workspace).await;
+    person.create("so.tilo.word-processor");
+    saved(&person.peer.barrier().unwrap()).unwrap();
+    let open = || SignedPage::open(&hosted, &device, &host, &workspace, "", "");
+    let mut home = open().await;
+    home.until("the initial home before the agent connects", |html| {
+        (html.contains("tilo-home-apps") && reviewer_is(html, None)).then_some(())
+    })
+    .await
+    .unwrap();
+
+    let computer = Browser::open_at(&hosted, &laptop, &host, &workspace).await;
+    tilo_session_client::device::session_as_agent(&computer.peer, "Reviewer")
+        .await
+        .unwrap();
+    let user = laptop.cert.user_public_key;
+    let mcp = McpServer::for_agent(
+        SessionActions::new(
+            &computer.peer,
+            computer.workspace,
+            host.cert.device_public_key,
+        ),
+        workspace.clone(),
+        &tilo_actions::remote::device_agent_id(&user, "Reviewer"),
+        &hex::encode(user),
+    )
+    .with_agent_session("reviewer-home");
+    let (reply, failed) = tool(&mcp, "tilo_ls", serde_json::json!({})).await;
+    assert!(!failed, "{reply}");
+    home.until("the open home shows the newly present agent", |html| {
+        reviewer_is(html, Some("Looking at the apps")).then_some(())
+    })
+    .await
+    .unwrap();
+    open()
+        .await
+        .until("a newly opened home already shows that activity", |html| {
+            (html.contains("tilo-home-apps") && reviewer_is(html, Some("Looking at the apps")))
+                .then_some(())
+        })
+        .await
+        .unwrap();
+
+    let (reply, failed) = tool(
+        &mcp,
+        "tilo_do",
+        serde_json::json!({
+            "path": "word-processor#append-paragraph", "args": {"text": "Reviewed"}
+        }),
+    )
+    .await;
+    assert!(!failed, "{reply}");
+    home.until("the same open home shows the agent's next action", |html| {
+        reviewer_is(html, Some("Working in Word processor")).then_some(())
+    })
+    .await
+    .unwrap();
+
+    home.ask(&PageAsk::Act {
+        id: 0,
+        target: None,
+        action: PageAction::Focus,
+    })
+    .await;
+    tilo_test_env::within(
+        "an unchanged home answers without replacing its People section",
+        async {
+            loop {
+                match home.next_answer().await {
+                    PageAnswer::Changed(patches) => assert!(
+                        patches
+                            .iter()
+                            .all(|patch| !patch.html.contains("class=\"tilo-people\""))
+                    ),
+                    PageAnswer::Patched(patches) => {
+                        assert!(patches.is_empty(), "{patches:?}");
+                        break;
+                    }
+                    other => panic!("unexpected home response: {other:?}"),
+                }
+            }
+        },
+    )
+    .await;
+
+    drop(mcp);
+    computer.peer.close();
+    home.until("the departed agent's activity is removed", |html| {
+        reviewer_is(html, None).then_some(())
+    })
+    .await
+    .unwrap();
+}
 
 /// Who `changes` recorded acting, from the actions they carry.
 fn invokers(changes: &[([u8; 32], Vec<u8>)]) -> Vec<tilo_actions::ActionInvoker> {

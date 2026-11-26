@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use collab_types::presence::{ShellPresence, ShellSelection};
+use collab_types::presence::{ShellPresence, ShellSelection, Shown};
 use tilo_actions::remote::{ActorPlace, Caller, ExecutionLease, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_live::presence::{Board, Device};
@@ -97,6 +97,17 @@ impl Sessions {
             board: None,
             by_session: HashMap::new(),
         }
+    }
+
+    /// The agents this host speaks for, as the workspace's people see them.
+    /// The relay sends this board's signed frames to the other devices only.
+    pub(super) fn present(&self) -> Vec<Shown> {
+        let now = now_ms();
+        self.board
+            .iter()
+            .flat_map(Board::here)
+            .map(|member| tilo_live::presence::shown(member, now))
+            .collect()
     }
 
     /// `caller`'s session takes the action `target` names (with `args`) in the

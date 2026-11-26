@@ -70,6 +70,18 @@ impl SignedPage {
             .unwrap();
     }
 
+    /// One decoded answer from the signed stream, including a response with no patches.
+    pub(super) async fn next_answer(&mut self) -> PageAnswer {
+        let bytes = read_frame(&mut self.recv, MAX_PAGE_FRAME_BYTES)
+            .await
+            .unwrap();
+        let frame = std::str::from_utf8(&bytes).unwrap();
+        if let Some(secret) = self.exclude {
+            assert!(!frame.contains(secret), "the page sent the test secret");
+        }
+        serde_json::from_str(frame).unwrap()
+    }
+
     /// Inspect every frame, including the initial page and the changes the worker publishes later.
     pub(super) async fn until<T>(
         &mut self,
@@ -78,14 +90,7 @@ impl SignedPage {
     ) -> Result<T, PageRefusal> {
         tilo_test_env::within(waiting_for, async {
             loop {
-                let bytes = read_frame(&mut self.recv, MAX_PAGE_FRAME_BYTES)
-                    .await
-                    .unwrap();
-                let frame = std::str::from_utf8(&bytes).unwrap();
-                if let Some(secret) = self.exclude {
-                    assert!(!frame.contains(secret), "the page sent the test secret");
-                }
-                match serde_json::from_str::<PageAnswer>(frame).unwrap() {
+                match self.next_answer().await {
                     PageAnswer::Shown { body, .. } => {
                         if let Some(value) = find(&body) {
                             return Ok(value);

@@ -6,6 +6,7 @@
 //! is checked against their access and saved as every bounded caller's write
 //! is.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use tilo_user_identity::DeviceCert;
 
@@ -28,6 +29,9 @@ use tilo_server_protocol::page::{
 /// system's own search over what the workspace holds, which the server asks
 /// and renders like a page.
 const SEARCH_APP: &str = "search";
+
+/// The People section of the signed workspace home, updated as its members come and go.
+const HOME_PEOPLE: u32 = 1;
 
 /// Whether `error` says the record is not ready yet, as a replica taking its
 /// parts in does.
@@ -87,9 +91,12 @@ pub(super) enum HeldPage {
         route: DocumentRoute,
         form_calls: Option<FormCalls>,
     },
-    /// The workspace's front page: the apps a member opens here. Nothing is
-    /// acted on it and it never changes.
-    Home { workspace_id: WorkspaceId },
+    /// The workspace's front page and the People section this member last saw.
+    Home {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        people: String,
+    },
     /// The workspace's search: what its apps, their actions and their records
     /// hold for what the person typed. The caller is kept: each keystroke is
     /// a question asked as them, answered with what they may read.
@@ -343,8 +350,10 @@ impl Pages {
             PageJob::Open { caller, .. } => Some(&**caller),
             PageJob::Act { page, .. } | PageJob::Close { page, .. } => match self.held.get(page) {
                 Some(HeldPage::App { who, .. }) => Some(&who.caller),
-                Some(HeldPage::Search { caller, .. }) => Some(caller),
-                Some(HeldPage::Home { .. }) | None => None,
+                Some(HeldPage::Home { caller, .. } | HeldPage::Search { caller, .. }) => {
+                    Some(caller)
+                }
+                None => None,
             },
         }
     }
@@ -526,7 +535,7 @@ impl Worker {
             return Err(PageRefusal::NotMember);
         }
         if address.is_home() {
-            return self.open_home(workspace_id);
+            return self.open_home(workspace_id, caller);
         }
         if address.app == SEARCH_APP {
             return self.open_search(
@@ -623,28 +632,12 @@ impl Worker {
 
     /// The workspace's front page: who is in it and who of them is here, and
     /// the apps a member opens, each a link to its own page.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one page read top to bottom: the people, then the apps"
-    )]
-    fn open_home(&mut self, workspace_id: WorkspaceId) -> Result<OpenedPage, PageRefusal> {
-        // The workspace has to be readable here, as an app's page does.
-        let state = self
-            .refresh(workspace_id, Needs::Workspace)
-            .map_err(refused)?;
-        state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
-        // Who the workspace has is its own governance; who is here is what the
-        // live session's devices say of themselves. Everyone the roster lists
-        // is a row, those away included, and the ones here carry what they are
-        // doing.
-        let (roster, present) = match self.workspaces.get(&workspace_id) {
-            Some(workspace) => (
-                workspace.member.roster(workspace_id),
-                workspace.member.present(workspace_id),
-            ),
-            None => (Vec::new(), Vec::new()),
-        };
-        let here = here(&present);
+    fn open_home(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<OpenedPage, PageRefusal> {
+        let people = self.home_people(workspace_id)?;
         let mut apps: Vec<_> = self
             .catalogue
             .iter()
@@ -670,54 +663,8 @@ impl Worker {
                 escape(&href)
             );
         }
-        // Who is here is said only when the live session says someone is: a
-        // page that claims "0 here" of a workspace someone is reading is
-        // wrong about the one person it can see.
-        let count = if here == 0 {
-            "People".to_owned()
-        } else {
-            format!("{here} here")
-        };
-        let _ = write!(
-            body,
-            "<section class=\"tilo-people\" aria-label=\"People\"><h2 class=\"tilo-people-count\">{count}</h2><ul class=\"tilo-people-list\">"
-        );
-        let mut rows = roster;
-        rows.sort_by(|a, b| a.name.cmp(&b.name));
-        for member in rows.into_iter().filter(|member| !member.removed) {
-            // A person is here by the name everyone calls them; an agent a
-            // host speaks for is here by the member its presence names.
-            let shown = present.iter().find(|shown| {
-                shown
-                    .member
-                    .as_ref()
-                    .is_some_and(|named| named.to_string() == member.id.to_string())
-                    || shown.label == member.name
-            });
-            let role = if member.administrator {
-                "owner"
-            } else {
-                match &member.role {
-                    Some(role) => role.name(),
-                    None => "agent",
-                }
-            };
-            let _ = write!(
-                body,
-                "<li class=\"tilo-person\"{present}><span class=\"tilo-person-name\">{name}</span>\
-                 <span class=\"tilo-person-kind\">{role}</span>{what}</li>",
-                present = if shown.is_some() { " data-present" } else { "" },
-                name = escape(&member.name),
-                role = escape(role),
-                what = shown
-                    .and_then(|shown| shown.activity.as_deref())
-                    .map_or_else(String::new, |what| format!(
-                        "<span class=\"tilo-person-what\">{}</span>",
-                        escape(what)
-                    )),
-            );
-        }
-        body.push_str("</ul></section><ul class=\"tilo-home-apps\">");
+        body.push_str(&people);
+        body.push_str("<ul class=\"tilo-home-apps\">");
         for app in apps {
             let name = app
                 .app_id()
@@ -741,9 +688,14 @@ impl Worker {
         body.push_str("</ul></div>");
         self.pages.next = self.pages.next.wrapping_add(1);
         let page = self.pages.next;
-        self.pages
-            .held
-            .insert(page, HeldPage::Home { workspace_id });
+        self.pages.held.insert(
+            page,
+            HeldPage::Home {
+                workspace_id,
+                caller: caller.clone(),
+                people,
+            },
+        );
         Ok(OpenedPage {
             page,
             title: "Tilo".to_owned(),
@@ -752,6 +704,46 @@ impl Worker {
                 + HOME_CSS,
             body,
         })
+    }
+
+    fn home_people(&mut self, workspace_id: WorkspaceId) -> Result<String, PageRefusal> {
+        self.refresh(workspace_id, Needs::Workspace)
+            .map_err(refused)?
+            .workspace
+            .ok_or(PageRefusal::Elsewhere)?;
+        let workspace = self
+            .workspaces
+            .get(&workspace_id)
+            .ok_or(PageRefusal::Elsewhere)?;
+        let mut present = workspace.member.present(workspace_id);
+        present.extend(workspace.sessions.present());
+        Ok(people_section(
+            workspace.member.roster(workspace_id),
+            present,
+        ))
+    }
+
+    fn patch_home(
+        &mut self,
+        workspace_id: WorkspaceId,
+        page: u64,
+        caller: &Caller,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
+        if !self.admits_member(workspace_id, caller) {
+            return Err(PageRefusal::NotMember);
+        }
+        let html = self.home_people(workspace_id)?;
+        let Some(HeldPage::Home { people, .. }) = self.pages.held.get_mut(&page) else {
+            return Err(unavailable("the page was closed"));
+        };
+        if *people == html {
+            return Ok(Vec::new());
+        }
+        people.clone_from(&html);
+        Ok(vec![PagePatch {
+            id: HOME_PEOPLE,
+            html,
+        }])
     }
 
     /// The workspace's search page: a field and what the system's search
@@ -1529,7 +1521,11 @@ impl Worker {
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
                 None,
             ),
-            Some(HeldPage::Home { workspace_id }) => (Some(*workspace_id), None, None),
+            Some(HeldPage::Home {
+                workspace_id,
+                caller,
+                ..
+            }) => (Some((*workspace_id, caller.clone())), None, None),
             Some(HeldPage::Search {
                 workspace_id,
                 caller,
@@ -1550,15 +1546,8 @@ impl Worker {
         if let Some(search) = search {
             return Some(self.act_on_search(page, search, act));
         }
-        // The workspace's front page holds no document and nothing acts on
-        // it: a pass over it answers that nothing changed. It is read again
-        // first, so a workspace no longer readable here is refused.
-        if let Some(workspace_id) = home {
-            return Some(
-                self.refresh(workspace_id, Needs::Workspace)
-                    .map_err(refused)
-                    .map(|_| Vec::new()),
-            );
+        if let Some((workspace_id, caller)) = home {
+            return Some(self.patch_home(workspace_id, page, &caller));
         }
         let Some((workspace_id, who, route)) = app else {
             return Some(Err(unavailable("the page was closed")));
@@ -2045,25 +2034,97 @@ margin-right:8px;border-radius:50%;background:var(--tilo-accent);vertical-align:
 .tilo-home-initial{width:52px;height:52px;border-radius:12px;display:grid;place-items:center;\
 background:var(--tilo-raised);color:var(--tilo-text-dim);font-size:22px;font-weight:600;}";
 
-/// An app's first letter, on the tile an icon stands on.
-/// How many are here of what `present` shows: a person's own device and
-/// their page say they are here twice, and each person, agent or device
-/// counts once.
-fn here(present: &[collab_types::presence::Shown]) -> usize {
-    let mut identities: Vec<String> = Vec::new();
-    for shown in present {
-        let identity = match (&shown.member, &shown.user) {
-            (Some(member), _) => format!("member:{member}"),
-            (None, Some(user)) => format!("user:{user}"),
-            (None, None) => format!("device:{}", shown.publisher),
+/// The authorized roster and the live board use the same member identities. A session that
+/// acts as an agent can be present without holding a permanent seat in the workspace.
+fn people_section(
+    members: Vec<collab_types::Member>,
+    present: Vec<collab_types::presence::Shown>,
+) -> String {
+    let mut roster: BTreeMap<_, _> = members
+        .into_iter()
+        .map(|member| (member.id.clone(), member))
+        .collect();
+    let mut activities = BTreeMap::<_, BTreeSet<String>>::new();
+    for face in present {
+        let Some(id) = face.member_id() else { continue };
+        let member = if face.agent {
+            roster
+                .entry(id.clone())
+                .or_insert_with(|| collab_types::Member::of_software(id.clone(), ""))
+        } else {
+            let Some(member) = roster.get_mut(&id) else {
+                continue;
+            };
+            member
         };
-        if !identities.contains(&identity) {
-            identities.push(identity);
+        if member.removed {
+            continue;
+        }
+        if ui::presence::shown_name(&member.name).is_none()
+            && let Some(label) = ui::presence::shown_name(&face.label)
+        {
+            label.clone_into(&mut member.name);
+        }
+        let lines = activities.entry(id).or_default();
+        if let Some(activity) = face.activity.filter(|line| !line.trim().is_empty()) {
+            lines.insert(activity);
         }
     }
-    identities.len()
+
+    let count = activities.len();
+    let heading = if count == 0 {
+        "People".to_owned()
+    } else {
+        format!("{count} here")
+    };
+    let mut html = format!(
+        "<section class=\"tilo-people\" aria-label=\"People\" data-p=\"{HOME_PEOPLE}\"><h2 class=\"tilo-people-count\">{heading}</h2><ul class=\"tilo-people-list\">"
+    );
+    let mut rows: Vec<_> = roster
+        .into_values()
+        .filter(|member| !member.removed)
+        .collect();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    for member in rows {
+        let name = ui::presence::shown_name(&member.name).map_or_else(
+            || {
+                if member.id.is_person() {
+                    ui::presence::unnamed_person_label()
+                } else {
+                    ui::i18n::widget_text("interaction-agent")
+                }
+            },
+            str::to_owned,
+        );
+        let role = if member.administrator {
+            "owner"
+        } else {
+            member.role.map_or("agent", collab_types::Role::name)
+        };
+        let lines = activities.remove(&member.id);
+        let present = if lines.is_some() { " data-present" } else { "" };
+        let _ = write!(
+            html,
+            "<li class=\"tilo-person\"{present}><span class=\"tilo-person-name\">{}</span>\
+             <span class=\"tilo-person-kind\">{}</span>",
+            escape(&name),
+            escape(role)
+        );
+        if let Some(lines) = lines.filter(|lines| !lines.is_empty()) {
+            let what = lines.into_iter().collect::<Vec<_>>().join(" · ");
+            let _ = write!(
+                html,
+                "<span class=\"tilo-person-what\">{}</span>",
+                escape(&what)
+            );
+        }
+        html.push_str("</li>");
+    }
+    html.push_str("</ul></section>");
+    html
 }
 
+/// An app's first letter on its tile.
 fn initial_tile(title: &str) -> String {
     let initial = title
         .chars()
