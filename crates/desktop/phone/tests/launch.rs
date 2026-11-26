@@ -29,8 +29,8 @@ fn the_phone_opens_its_window_on_the_device_it_started() {
     let spec = ui::framework::launch_spec::<tilo_phone::Phone>();
     let args = LaunchArgs::component();
     assert!(
-        !spec.attaches_runtime(&args),
-        "the phone is the runtime: it attaches to none beside it"
+        !ui::launch::connection_handed() && !spec.attaches_runtime(&args),
+        "a phone no one signed in to hands its window no connection, and it attaches to none"
     );
     assert!(
         !ui::application::NativeProcess::connected(),

@@ -70,10 +70,59 @@ fn worker() -> Result<&'static worker::Worker, String> {
 /// opens: the phone is Tilo on this device, so its window shows a device that already runs, and
 /// a file provider Android called first finds the same one.
 ///
+/// The phone is its own launcher, so once a person's identity has the device it makes its window's
+/// connection to the workspace here, as a launcher makes one for a process it starts, and hands it
+/// to the window ([`ui::launch::hand_connection`]): what the window keeps is then the workspace's.
+/// Before that the device is no one's, and the sign-in window keeps what it has on the phone.
+///
 /// # Errors
 /// The daemon did not start: what the window shows in its place.
 pub fn start() -> Result<(), String> {
-    worker().map(drop)
+    static HANDED: OnceLock<()> = OnceLock::new();
+    let worker = worker()?;
+    HANDED.get_or_init(|| hand_window_connection(worker));
+    Ok(())
+}
+
+/// Hand the phone's window its connection to the person's workspace, once a person's identity has
+/// the device, or why it has none: the window then does not open rather than keep the person's
+/// records on the phone alone. Nothing before anyone signed in.
+fn hand_window_connection(worker: &worker::Worker) {
+    let made = worker
+        .files()
+        .ask(|device| {
+            let devices = device.devices().map_err(|error| format!("{error:#}"))?;
+            if !devices.signed_in {
+                return Ok(None);
+            }
+            // The phone's window is the device's own, in the first of the person's workspaces.
+            let workspace = devices
+                .workspaces
+                .first()
+                .map(|workspace| workspace.key.clone())
+                .ok_or("none of your workspaces is on this phone yet")?;
+            device
+                .window_connection(TILO_PHONE, &workspace)
+                .map(|connection| Some((connection, workspace)))
+                .map_err(|error| format!("{error:#}"))
+        })
+        .and_then(|made| made);
+    let handed = match made {
+        Ok(None) => return,
+        Ok(Some((connection, workspace))) => uuid::Uuid::parse_str(&workspace)
+            .map_err(|_| format!("{workspace} does not name a workspace"))
+            .map(|workspace| ui::collaboration::HandedConnection {
+                collaboration: connection.collaboration,
+                identity: connection.identity,
+                app: TILO_PHONE.to_owned(),
+                workspace,
+            }),
+        Err(why) => Err(why),
+    };
+    ui::launch::hand_connection(handed.map_err(|why| {
+        tracing::error!(why, "the phone's window has no connection to its workspace");
+        format!("Tilo couldn't connect to your workspace, so nothing here would be kept: {why}")
+    }));
 }
 
 /// The launch's [`start`]: a daemon that did not start is what the window shows, so the window
@@ -198,7 +247,8 @@ impl ResourceApp for Phone {
     const ICON: Option<&'static str> = Some("tilo");
     const WORKSPACE_RESOURCE: bool = true;
     /// The phone runs the device's daemon in its own process ([`start`]): there is no runtime
-    /// beside it to attach to, and its window's records are this device's own.
+    /// beside it to attach to. Once a person signed in, its window joins their workspace over
+    /// the connection [`start`] handed it; before that its records are this device's own.
     const ATTACHES_RUNTIME: bool = false;
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {

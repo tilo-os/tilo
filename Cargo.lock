@@ -19189,6 +19189,7 @@ dependencies = [
  "tilo-app-window",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-collab-types",
  "tilo-daemon",
  "tilo-device-identity",
  "tilo-mime",

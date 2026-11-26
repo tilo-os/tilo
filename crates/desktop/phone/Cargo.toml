@@ -107,6 +107,8 @@ tilo-automerge-isolate.workspace = true
 # Clocks' records, written as another device of the person's writes them, and the language the
 # person's server runs.
 tilolang-workspace = { path = "../../../crates/lang/tilolang-workspace" }
+# The store commands the person's server is asked what it keeps of the phone's own window with.
+collab-types = { package = "tilo-collab-types", path = "../../../crates/core/collab-types" }
 
 [lints]
 workspace = true
