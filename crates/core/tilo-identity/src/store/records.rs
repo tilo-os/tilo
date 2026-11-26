@@ -121,11 +121,58 @@ pub fn account_identity_dir(root: &std::path::Path) -> PathBuf {
     }
 }
 
-/// [`account_identity_dir`] for this process's Tilo profile.
+/// The identity store this process serves, while its host named one.
+static SERVED_IDENTITY_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Name the identity store this process serves, until the guard it answers is dropped: the
+/// person's, for a device daemon that runs as the system's account and serves the account that
+/// signed in. Every reader here then reads that store — the registry, a join proof, the evidence
+/// a call is admitted with — rather than the account the process happens to run as.
+///
+/// A daemon serves one person for as long as it runs, and holds the guard that long; a process
+/// that names another store meanwhile, as a test does between devices, gets that one back.
+pub fn serve_identity_dir(dir: impl Into<PathBuf>) -> ServedIdentityDir {
+    let mut held = SERVED_IDENTITY_DIR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ServedIdentityDir {
+        previous: held.replace(dir.into()),
+    }
+}
+
+/// The store [`serve_identity_dir`] named, until it is dropped.
+pub struct ServedIdentityDir {
+    previous: Option<PathBuf>,
+}
+
+impl Drop for ServedIdentityDir {
+    fn drop(&mut self) {
+        let mut held = SERVED_IDENTITY_DIR
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = self.previous.take();
+    }
+}
+
+/// The identity store this process serves, when its host named one
+/// ([`serve_identity_dir`]).
+#[must_use]
+pub fn served_identity_dir() -> Option<PathBuf> {
+    SERVED_IDENTITY_DIR
+        .lock()
+        .ok()
+        .and_then(|held| held.clone())
+}
+
+/// [`account_identity_dir`] for this process's Tilo profile, or the store this process serves
+/// when its host named one ([`serve_identity_dir`]).
 ///
 /// # Errors
 /// This host keeps no Tilo profile.
 pub fn account_identity_dir_from_env() -> io::Result<PathBuf> {
+    if let Some(dir) = served_identity_dir() {
+        return Ok(dir);
+    }
     Ok(account_identity_dir(&identity_dir_from_env()?))
 }
 

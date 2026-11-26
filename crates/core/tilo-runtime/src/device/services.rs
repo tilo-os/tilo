@@ -181,6 +181,8 @@ pub struct Daemon {
         tilo_device_identity::persist::DeviceKeyLock,
         advisory_lock::FileLock,
     )>,
+    /// The account store this daemon serves, for as long as it runs.
+    _served: tilo_identity::store::ServedIdentityDir,
 }
 
 impl Daemon {
@@ -367,6 +369,9 @@ struct Identity {
     cert: DeviceCert,
     /// This computer's device directory, with its key and certificates.
     place: tilo_device_identity::login::Place,
+    /// The account store this daemon serves, named for as long as it runs: every reader of the
+    /// identity store in this process reads it.
+    served: tilo_identity::store::ServedIdentityDir,
 }
 
 impl Identity {
@@ -382,14 +387,22 @@ impl Identity {
         // person this device holds a certificate for. This daemon lists its own device with the
         // person's once it holds their record, so it starts from its certificate before any host
         // lists it.
-        let (key, cert) = tilo_identity::trusted_device::serving_in(
-            &device_identity_dir(profile, this_account_uid(), &keys)?,
-            &keys,
-        )
-        .map_err(|error| {
-            io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
-        })?;
-        Ok(Self { key, cert, place })
+        let identity_dir = device_identity_dir(profile, this_account_uid(), &keys)?;
+        // This daemon serves one person, and its services act as them: every reader of the
+        // identity store here — the registry, a join proof, the evidence of an admitted call —
+        // reads the store that account keeps, not the one of the account the unit runs as (the
+        // system daemon runs as root, whose store names nobody).
+        let served = tilo_identity::store::serve_identity_dir(identity_dir.clone());
+        let (key, cert) = tilo_identity::trusted_device::serving_in(&identity_dir, &keys)
+            .map_err(|error| {
+                io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
+            })?;
+        Ok(Self {
+            key,
+            cert,
+            place,
+            served,
+        })
     }
 
     /// Whether a ticket made this computer a device of its person's, rather than it holding their
@@ -2825,6 +2838,7 @@ impl Daemon {
             place,
             dir: identity.place.dir().to_path_buf(),
             _lock: lock,
+            _served: identity.served,
         };
         let _ = daemon.live.set(Arc::clone(&live));
         // A person founded while this daemon serves has their root marked in their devices record
