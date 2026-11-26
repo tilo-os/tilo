@@ -45,7 +45,7 @@ const STUB_MANIFEST: &str = "[package]\nname = \"workspace-hack\"\nversion = \"0
 /// dev-dependencies beside its others, so walking it from the SDK would
 /// reach whatever an SDK crate's tests start (a server host, its agents and
 /// their engines), which no app links.
-const TEST_ONLY: [&str; 2] = ["test-server", "tilo-server"];
+const TEST_ONLY: [&str; 3] = ["test-server", "tilo-server", "tilolang-tilo"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdkSource {

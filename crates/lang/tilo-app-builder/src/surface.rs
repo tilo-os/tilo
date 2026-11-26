@@ -883,8 +883,10 @@ fn history_messages(app: &str, resource: &Value) -> Vec<String> {
     {
         // The framework words its own content verbs in every app's history (a direct edit, a
         // storage migration); the catalogue names what the app's own actions did.
+        let id = text(verb, "id");
         if text(verb, "kind") != "read"
-            && !tilo_actions::surface::CONTENT_VERBS.contains(&text(verb, "id"))
+            && !tilo_actions::surface::CONTENT_VERBS.contains(&id)
+            && id != tilo_actions::stamp::Stamp::MIGRATE_VERB
         {
             keys.push(format!("{app}-{}", kebab(text(verb, "id"))));
         }

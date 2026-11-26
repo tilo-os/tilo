@@ -5466,7 +5466,12 @@ fn every_example_is_what_new_renders_for_it() {
         let mut rendered = render(&spec).expect("render");
         examples::overlay(&mut rendered, example, &spec).expect("overlay");
         let dir = root.join(example.path());
-        let on_disk = files_under(&dir);
+        // The compiled surface beside the authored one is `tilolang surface`'s file, not
+        // `new`'s: the app-surfaces check writes and compares it for every example.
+        let on_disk = files_under(&dir)
+            .into_iter()
+            .filter(|path| path.file_name().is_none_or(|name| name != "surface.json"))
+            .collect::<BTreeSet<_>>();
         let generated = rendered
             .iter()
             .map(|(path, _)| path.clone())

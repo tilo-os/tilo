@@ -127,6 +127,12 @@ fn workspace() -> tilolang_tilo::host::Host {
         || None,
     )
     .unwrap();
+    // The session the app plays through, which its `use` names.
+    host.load_builtin(
+        include_str!("../../../../apps/tl/playback/app.tl"),
+        include_str!("../../../../apps/tl/playback/app.ids"),
+    )
+    .expect("the session");
     host.load_builtin(
         include_str!("../../../../apps/tl/tube/app.tl"),
         include_str!("../../../../apps/tl/tube/app.ids"),
