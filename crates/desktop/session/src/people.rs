@@ -834,6 +834,31 @@ impl Panel {
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
     /// an edge with a mirror of each person's screen. One painting for both.
     fn draw_roster(&self, ctx: &mut tilo_ui_base::DrawCtx<'_>, shown: &mut Shown) {
+        // The roster is the panel's only while it is up or kept at an edge: closed, it draws
+        // nothing, so the surface stands transparent and a press under the bar reaches the bar.
+        if (shown.pinned.is_none() || shown.sheet()) && !self.open.get() {
+            return;
+        }
+        // The bar's faces open the roster where they stand, kept on screen or not.
+        if self.open.get() {
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text, theme, mut env) = ctx.parts();
+            self.draw_one_roster(
+                &mut tilo_ui_base::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                shown,
+                None,
+            );
+            return;
+        }
+        self.draw_pinned(ctx, shown);
+    }
+
+    /// The roster kept at an edge, where its pin placed it and layered over what it covers.
+    fn draw_pinned(&self, ctx: &mut tilo_ui_base::DrawCtx<'_>, shown: &mut Shown) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -842,20 +867,6 @@ impl Panel {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
-        // The roster is the panel's only while it is up or kept at an edge: closed, it draws
-        // nothing, so the surface stands transparent and a press under the bar reaches the bar.
-        if (shown.pinned.is_none() || shown.sheet()) && !self.open.get() {
-            return;
-        }
-        // The bar's faces open the roster where they stand, kept on screen or not.
-        if self.open.get() {
-            self.draw_one_roster(
-                &mut tilo_ui_base::DrawCtx::new(scene, transform, text, theme, env.clone()),
-                shown,
-                None,
-            );
-            return;
-        }
         if let Some(pin) = shown.pinned.as_mut() {
             match pin.rest {
                 Rest::Leaving => {

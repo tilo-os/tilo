@@ -136,9 +136,8 @@ pub(crate) async fn chat_stops_holding(host: &host::Host, needle: &str) -> bool 
     let deadline = tilo_test_env::hang_deadline();
     loop {
         match chat_stands_with(host, needle).await {
-            Ok(Some(true)) => {}
+            Ok(Some(true) | None) => {}
             Ok(Some(false)) => return true,
-            Ok(None) => {}
             Err(error) => panic!("{error}"),
         }
         if std::time::Instant::now() >= deadline {
