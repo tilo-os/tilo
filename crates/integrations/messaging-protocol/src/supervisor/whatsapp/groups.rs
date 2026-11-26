@@ -217,4 +217,142 @@ impl AccountSupervisor {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use whatsapp_rust::features::{GroupParticipant, ParticipantType};
+    fn required<T, E>(result: Result<T, E>) -> T {
+        let Ok(value) = result else {
+            panic!("controlled fixture construction failed");
+        };
+        value
+    }
+    async fn fixture() -> (
+        tempfile::TempDir,
+        Host,
+        Arc<super::super::network::tests::Hold>,
+    ) {
+        let root = required(tempfile::tempdir());
+        let (check, _, network) = super::super::network::tests::fixture(false, false);
+        let owner = crate::journal::Owner {
+            actor: "11".repeat(32),
+            device: "device".into(),
+            service: crate::Service::Whatsapp,
+            account: "account-a".into(),
+            linking_generation: 1,
+        };
+        let bootstrap = required(
+            super::super::WhatsappBootstrap::open_profile(
+                &root.path().join("sdk"),
+                owner,
+                secret_vault::VaultKey::from_bytes([21; 32]),
+                network,
+                check.clone(),
+            )
+            .await,
+        );
+        (
+            root,
+            Host {
+                source: bootstrap.client(),
+                authority: check.clone(),
+                account: ServiceAccount::new("whatsapp", "account-a"),
+                identity: ("123@s.whatsapp.net".into(), Some("456@lid".into())),
+                backend: bootstrap.backend,
+                contact: None,
+                broker: None,
+            },
+            check,
+        )
+    }
+    #[tokio::test]
+    async fn default_sdk_group_inspection_refuses_unlinked_and_revoked_sessions() {
+        let (_root, host, check) = fixture().await;
+        assert!(matches!(host.list().await, Err(SendError::Unavailable)));
+        assert!(matches!(
+            host.read("123@g.us".into()).await,
+            Err(SendError::Unavailable)
+        ));
+        let request = || tilo_messaging::GroupChangeRequest {
+            group: "123@g.us".into(),
+            review: "review".into(),
+            operation: uuid::Uuid::new_v4().to_string(),
+            change: tilo_messaging::GroupChange::Leave,
+        };
+        assert!(matches!(
+            host.change(request()).await,
+            Err(SendError::Unavailable)
+        ));
+        assert!(matches!(
+            host.send(tilo_messaging::GroupSendRequest {
+                group: "123@g.us".into(),
+                review: "review".into(),
+                operation: uuid::Uuid::new_v4().to_string(),
+                text: "text".to_owned().into()
+            })
+            .await,
+            Err(SendError::Unavailable)
+        ));
+        assert!(matches!(
+            host.history("123@g.us".into()).await,
+            Err(SendError::Unavailable)
+        ));
+        check.0.store(false, Ordering::Release);
+        assert!(matches!(host.list().await, Err(SendError::Revoked)));
+        assert!(matches!(
+            host.read("123@g.us".into()).await,
+            Err(SendError::Revoked)
+        ));
+        assert!(matches!(
+            host.change(request()).await,
+            Err(SendError::Revoked)
+        ));
+        assert!(matches!(
+            host.history("123@g.us".into()).await,
+            Err(SendError::Revoked)
+        ));
+        assert!(!host.source.is_logged_in());
+        assert!(!host.source.is_connected());
+    }
+    #[tokio::test]
+    async fn service_group_membership_cannot_substitute_names_or_another_account_identity() {
+        let (_root, host, _check) = fixture().await;
+        let identity = ("123@s.whatsapp.net".into(), Some("456@lid".into()));
+        let participant = |jid: &str| GroupParticipant {
+            jid: required(jid.parse()),
+            phone_number: None,
+            lid: None,
+            username: None,
+            participant_type: ParticipantType::Admin,
+            details: None,
+        };
+        let mut meta = GroupMetadata {
+            id: required("123@g.us".parse()),
+            subject: "Private group fixture".into(),
+            participants: vec![participant("456@lid")],
+            ..Default::default()
+        };
+        let page = required(host.membership(meta.clone(), &identity));
+        assert_eq!(page.members[0].address, "456@lid");
+        assert!(matches!(page.members[0].role, GroupRole::Admin));
+        meta.participants = vec![participant("789@lid")];
+        assert!(matches!(
+            host.membership(meta.clone(), &identity),
+            Err(SendError::Revoked)
+        ));
+        meta.participants[0].phone_number = Some(required("123@s.whatsapp.net".parse()));
+        assert!(matches!(
+            host.membership(meta.clone(), &identity),
+            Err(SendError::Revoked)
+        ));
+        meta.participants = vec![participant("456@lid")];
+        meta.has_missing_participant_identification = true;
+        assert!(matches!(
+            host.membership(meta, &identity),
+            Err(SendError::Revoked)
+        ));
+    }
+}
+
 mod actions;

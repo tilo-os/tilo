@@ -295,6 +295,9 @@ fn valid_member(value: &str) -> bool {
         })
 }
 
+#[cfg(test)]
+mod tests;
+
 fn valid_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128

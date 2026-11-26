@@ -421,6 +421,10 @@ fn append(block: &mut Value, key: &str, piece: &str) {
     put(block, key, Value::String(joined));
 }
 
+#[cfg(test)]
+#[path = "anthropic_cache_tests.rs"]
+mod cache_tests;
+
 /// Anthropic's limit on `cache_control` breakpoints in one request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 

@@ -151,3 +151,70 @@ fn secure(endpoint: &str) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn issuer() -> DescribedIssuer {
+        DescribedIssuer {
+            id: "chat".into(),
+            label: "Chat".into(),
+            authorization_endpoint: "https://chat.example/oauth2/authorize".into(),
+            token_endpoint: "https://chat.example/api/oauth2/token".into(),
+            identity_endpoint: "https://chat.example/api/users/@me".into(),
+            revocation_endpoint: None,
+            id_field: "id".into(),
+            name_field: "username".into(),
+            scopes: vec!["identify".into()],
+            redirect_port: 47655,
+        }
+    }
+
+    #[test]
+    fn a_description_sends_codes_and_tokens_only_over_tls_or_to_this_computer() {
+        assert_eq!(issuer().check(), Ok(()));
+        let mut plain = issuer();
+        plain.token_endpoint = "http://chat.example/api/oauth2/token".into();
+        assert!(plain.check().unwrap_err().contains("token endpoint"));
+        let mut local = issuer();
+        local.token_endpoint = "http://127.0.0.1:9000/token".into();
+        assert_eq!(local.check(), Ok(()));
+        let mut revoke = issuer();
+        revoke.revocation_endpoint = Some("ftp://chat.example/revoke".into());
+        assert!(revoke.check().unwrap_err().contains("revocation"));
+        let mut privileged = issuer();
+        privileged.redirect_port = 80;
+        assert!(privileged.check().is_err());
+    }
+
+    #[test]
+    fn the_redirect_is_the_one_registered_port_and_the_account_its_described_fields() {
+        let issuer = issuer();
+        assert_eq!(issuer.redirect_uri(), "http://127.0.0.1:47655/oauth");
+        let registration = issuer.registration("1234");
+        assert_eq!(
+            registration.redirect_ports,
+            RedirectPorts::Registered(vec![47655])
+        );
+        assert_eq!(registration.client_secret, None);
+        assert_eq!(
+            issuer.account_of(&serde_json::json!({"id": "80351110224678912", "username": "ada"})),
+            Ok(ConfirmedAccount {
+                id: "80351110224678912".into(),
+                name: "ada".into()
+            })
+        );
+        assert_eq!(
+            issuer
+                .account_of(&serde_json::json!({"id": 7}))
+                .map(|account| account.name),
+            Ok("7".into())
+        );
+        assert!(
+            issuer
+                .account_of(&serde_json::json!({"username": "ada"}))
+                .is_err()
+        );
+    }
+}

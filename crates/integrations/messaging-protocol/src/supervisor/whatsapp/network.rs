@@ -92,3 +92,7 @@ impl Transport for GuardedTransport {
         self.source.disconnect().await;
     }
 }
+
+#[cfg(test)]
+#[path = "network_tests.rs"]
+pub(super) mod tests;

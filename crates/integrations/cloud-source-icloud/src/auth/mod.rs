@@ -185,3 +185,31 @@ impl AccountInfo {
         Ok((drive.url.clone(), docs.url.clone()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn web_access_is_refused_under_advanced_data_protection() {
+        let info: AccountInfo = serde_json::from_value(json!({
+            "webservices": {
+                "drivews": {"url": "https://p1-drivews.icloud.com", "pcsRequired": true},
+                "docws": {"url": "https://p1-docws.icloud.com", "pcsRequired": true}
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            info.check_web_access(&Cookies::default()),
+            Err(AuthError::AdvancedDataProtection)
+        ));
+        let granted = Cookies::from_header("X-APPLE-WEBAUTH-PCS-Documents=grant");
+        assert!(info.check_web_access(&granted).is_ok());
+        assert_eq!(
+            AuthError::AdvancedDataProtection.to_string(),
+            "iCloud web access is unavailable with Advanced Data Protection"
+        );
+    }
+}

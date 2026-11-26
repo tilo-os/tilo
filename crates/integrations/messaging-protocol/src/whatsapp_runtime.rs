@@ -234,3 +234,307 @@ fn prepare(route: &Route, operation: &str, text: &str) -> Result<Prepared, Error
         frozen,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoNetwork(Arc<AtomicUsize>);
+
+    #[whatsapp_rust::async_trait]
+    impl whatsapp_rust::http::HttpClient for NoNetwork {
+        async fn execute(
+            &self,
+            _: whatsapp_rust::http::HttpRequest,
+        ) -> whatsapp_rust::anyhow::Result<whatsapp_rust::http::HttpResponse> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(whatsapp_rust::anyhow::anyhow!("fixture forbids network"))
+        }
+    }
+
+    #[whatsapp_rust::async_trait]
+    impl whatsapp_rust::transport::TransportFactory for NoNetwork {
+        async fn create_transport(
+            &self,
+        ) -> whatsapp_rust::anyhow::Result<(
+            Arc<dyn whatsapp_rust::transport::Transport>,
+            whatsapp_rust::async_channel::Receiver<whatsapp_rust::transport::TransportEvent>,
+        )> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(whatsapp_rust::anyhow::anyhow!("fixture forbids network"))
+        }
+    }
+
+    struct Fixture {
+        calls: Arc<AtomicUsize>,
+        owner: Owner,
+        root: tempfile::TempDir,
+        binding: LiveBinding,
+        runtime: WhatsappRuntime,
+        accounts: accounts::person::AccountList,
+        route: Route,
+        client: Arc<Client>,
+    }
+
+    async fn fixture() -> Fixture {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let backend = Arc::new(whatsapp_rust::wacore::store::in_memory::InMemoryBackend::new());
+        let manager = Arc::new(
+            whatsapp_rust::store::persistence_manager::PersistenceManager::new(backend)
+                .await
+                .unwrap(),
+        );
+        let (client, _worker) = Client::builder()
+            .with_runtime(whatsapp_rust::TokioRuntime)
+            .with_persistence_manager(manager)
+            .with_http_client(NoNetwork(calls.clone()))
+            .with_transport_factory(NoNetwork(calls.clone()))
+            .build()
+            .await
+            .unwrap()
+            .into_parts();
+        let owner = Owner {
+            actor: "11".repeat(32),
+            device: "device-a".into(),
+            service: Service::Whatsapp,
+            account: "tilo-account".into(),
+            linking_generation: 1,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let journal = EncryptedJournal::open(
+            root.path(),
+            &owner,
+            secret_vault::VaultKey::from_bytes([7; 32]),
+        )
+        .unwrap();
+        let binding = LiveBinding {
+            owner: owner.clone(),
+            state: crate::routing::LinkState::Linked,
+        };
+        let runtime = WhatsappRuntime::new(owner.clone(), client.clone(), journal).unwrap();
+        let mut accounts = accounts::person::AccountList::default();
+        accounts
+            .keep(&accounts::Account::new("tilo-account", "whatsapp"))
+            .unwrap();
+        let route = Route::new(Service::Whatsapp, "tilo-account".into(), "123@lid".into()).unwrap();
+        Fixture {
+            calls,
+            owner,
+            root,
+            binding,
+            runtime,
+            accounts,
+            route,
+            client,
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_unlinked_sdk_refuses_send_without_reserving_or_network_access() {
+        let Fixture {
+            calls,
+            root: _root,
+            binding,
+            mut runtime,
+            accounts,
+            route,
+            ..
+        } = fixture().await;
+        assert_eq!(
+            runtime
+                .send(
+                    &accounts,
+                    &binding,
+                    &route,
+                    "op",
+                    "private text",
+                    Duration::from_secs(1)
+                )
+                .await,
+            Err(before(Error::ConnectionUnavailable))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(runtime.status("op").is_none());
+    }
+
+    fn receipt_fixture() -> whatsapp_rust::wacore::types::events::Receipt {
+        whatsapp_rust::wacore::types::events::Receipt::builder()
+            .source(whatsapp_rust::wacore::types::message::MessageSource {
+                chat: "123@lid".parse().unwrap(),
+                sender: "123@lid".parse().unwrap(),
+                ..Default::default()
+            })
+            .message_ids(vec!["op".into()])
+            .timestamp("2026-10-06T00:00:00Z".parse().unwrap())
+            .r#type(whatsapp_rust::wacore::types::presence::ReceiptType::Delivered)
+            .offline(false)
+            .build()
+    }
+
+    fn exercise_receipt_refusals(
+        runtime: &mut WhatsappRuntime,
+        context: &ReceiptContext<'_>,
+        event: &mut whatsapp_rust::wacore::types::events::Receipt,
+    ) {
+        event.r#type = whatsapp_rust::wacore::types::presence::ReceiptType::Sent;
+        assert_eq!(
+            runtime.observe_receipt(context, event),
+            Ok(crate::whatsapp::Evidence::SentOnly)
+        );
+        assert_eq!(runtime.recipient_evidence("op"), None);
+        event.r#type =
+            whatsapp_rust::wacore::types::presence::ReceiptType::Other("delivery".into());
+        assert_eq!(
+            runtime.observe_receipt(context, event),
+            Err(Error::Unsupported)
+        );
+        assert_eq!(runtime.recipient_evidence("op"), None);
+        event.r#type = whatsapp_rust::wacore::types::presence::ReceiptType::Delivered;
+        event.source.is_from_me = true;
+        assert_eq!(
+            runtime.observe_receipt(context, event),
+            Ok(crate::whatsapp::Evidence::NoRecipientEvidence)
+        );
+        assert_eq!(runtime.recipient_evidence("op"), None);
+        event.source.is_from_me = false;
+        event.source.sender = "456@lid".parse().unwrap();
+        assert_eq!(
+            runtime.observe_receipt(context, event),
+            Err(Error::InvalidIdentity)
+        );
+        event.source.sender = "123@lid".parse().unwrap();
+        event.message_ids = vec!["other-op".into()];
+        assert_eq!(
+            runtime.observe_receipt(context, event),
+            Err(Error::WrongRequest)
+        );
+        event.message_ids = vec!["op".into()];
+        let wrong_route =
+            Route::new(Service::Whatsapp, "tilo-account".into(), "456@lid".into()).unwrap();
+        let wrong_context = ReceiptContext {
+            route: &wrong_route,
+            ..*context
+        };
+        assert_eq!(
+            runtime.observe_receipt(&wrong_context, event),
+            Err(Error::WrongRequest)
+        );
+        let revoked = LiveBinding {
+            owner: context.binding.owner.clone(),
+            state: crate::routing::LinkState::Revoked,
+        };
+        let revoked_context = ReceiptContext {
+            binding: &revoked,
+            ..*context
+        };
+        assert_eq!(
+            runtime.observe_receipt(&revoked_context, event),
+            Err(Error::WrongAccount)
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_sdk_receipts_reconcile_exact_operations_durably_without_resending() {
+        let Fixture {
+            calls,
+            owner,
+            root,
+            binding,
+            mut runtime,
+            accounts,
+            route,
+            client,
+        } = fixture().await;
+        let mut event = receipt_fixture();
+        let context = ReceiptContext {
+            accounts: &accounts,
+            binding: &binding,
+            source: &client,
+            route: &route,
+            operation: "op",
+        };
+        assert_eq!(
+            runtime.observe_receipt(&context, &event),
+            Err(Error::WrongRequest)
+        );
+        runtime
+            .journal
+            .begin("op", &route, b"frozen fixture")
+            .unwrap();
+        runtime
+            .journal
+            .complete("op", Completion::Uncertain)
+            .unwrap();
+        let other = fixture().await;
+        let other_context = ReceiptContext {
+            source: &other.client,
+            ..context
+        };
+        assert_eq!(
+            runtime.observe_receipt(&other_context, &event),
+            Err(Error::WrongAccount)
+        );
+        assert_eq!(other.calls.load(Ordering::SeqCst), 0);
+        exercise_receipt_refusals(&mut runtime, &context, &mut event);
+        assert_eq!(
+            runtime.observe_receipt(&context, &event),
+            Ok(crate::whatsapp::Evidence::RecipientDelivered)
+        );
+        assert_eq!(
+            runtime.recipient_evidence("op"),
+            Some(RecipientEvidence::Delivered)
+        );
+        event.r#type = whatsapp_rust::wacore::types::presence::ReceiptType::Read;
+        assert_eq!(
+            runtime.observe_receipt(&context, &event),
+            Ok(crate::whatsapp::Evidence::RecipientRead)
+        );
+        event.r#type = whatsapp_rust::wacore::types::presence::ReceiptType::Delivered;
+        runtime.observe_receipt(&context, &event).unwrap();
+        assert_eq!(
+            runtime.recipient_evidence("op"),
+            Some(RecipientEvidence::Read)
+        );
+        // Late receipt reconciliation never repeats the original uncertain send.
+        assert_eq!(runtime.status("op"), Some(Status::Uncertain));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(runtime);
+        let reopened = EncryptedJournal::open(
+            root.path(),
+            &owner,
+            secret_vault::VaultKey::from_bytes([7; 32]),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.recipient_evidence("op"),
+            Some(RecipientEvidence::Read)
+        );
+    }
+
+    #[test]
+    fn real_sdk_inputs_keep_lid_route_stanza_and_text_exact() {
+        let route = Route::new(Service::Whatsapp, "tilo-account".into(), "123@lid".into()).unwrap();
+        let prepared = prepare(&route, "stanza-id", "private text").unwrap();
+        assert_eq!(prepared.recipient.to_string(), "123@lid");
+        assert_eq!(prepared.options.message_id.as_deref(), Some("stanza-id"));
+        assert_eq!(
+            prepared.message.conversation.as_deref(),
+            Some("private text")
+        );
+        let frozen: serde_json::Value = serde_json::from_slice(&prepared.frozen).unwrap();
+        assert_eq!(frozen["route"]["account"], "tilo-account");
+        assert_eq!(frozen["stanza_id"], "stanza-id");
+        assert_eq!(frozen["text"], "private text");
+        for recipient in [
+            "123@g.us",
+            "123:2@s.whatsapp.net",
+            "name@lid",
+            "status@broadcast",
+        ] {
+            let unsupported =
+                Route::new(Service::Whatsapp, "tilo-account".into(), recipient.into()).unwrap();
+            assert!(prepare(&unsupported, "stanza-id", "private text").is_err());
+        }
+    }
+}

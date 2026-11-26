@@ -110,3 +110,24 @@ pub(crate) fn opening(row: &CatalogueRow) -> Option<(u8, SearchEntry)> {
 }
 
 const OPEN_ACTION: &str = "open";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_entry_id_round_trips_only_through_its_exact_form() {
+        let id = EntryId::of("so.tilo.notes", "notes:page:1");
+        assert_eq!(id.to_string().parse::<EntryId>().unwrap(), id);
+        assert_ne!(id, EntryId::of("so.tilo.notes", "notes:page:2"));
+        assert_ne!(
+            EntryId::of("a", "bc"),
+            EntryId::of("ab", "c"),
+            "length-prefixed parts"
+        );
+        let upper = id.to_string().to_uppercase();
+        for foreign in ["", "12", "+000000000000001", "0x00000000000001", &upper] {
+            assert!(foreign.parse::<EntryId>().is_err(), "{foreign}");
+        }
+    }
+}

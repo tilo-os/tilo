@@ -1212,3 +1212,6 @@ fn slug(text: &str, limit: usize) -> String {
         slug
     }
 }
+
+#[cfg(test)]
+mod tests;

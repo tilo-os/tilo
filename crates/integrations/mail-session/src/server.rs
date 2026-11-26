@@ -582,3 +582,74 @@ fn message_id_search(mime: &[u8]) -> Option<String> {
     let parsed = mail_parser::MessageParser::default().parse(mime)?;
     message_id_query(parsed.message_id()?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listing(entries: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+        entries
+            .iter()
+            .map(|(name, uses)| {
+                (
+                    (*name).to_owned(),
+                    uses.iter().map(|u| (*u).to_owned()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// A folder is found by its special-use mark before its name, a server that marks nothing
+    /// is still read by the names people know, and one it does not list is made under its
+    /// usual name.
+    #[test]
+    fn a_folder_is_found_by_its_mark_then_its_name() {
+        let gmail = Places::from_list(&listing(&[
+            ("INBOX", &[]),
+            ("[Gmail]/All Mail", &["All"]),
+            ("[Gmail]/Sent Mail", &["Sent"]),
+            ("[Gmail]/Spam", &["Junk"]),
+            ("[Gmail]/Trash", &["Trash"]),
+            ("[Gmail]/Drafts", &["Drafts"]),
+        ]));
+        assert_eq!(gmail.listed("inbox"), Some("INBOX"));
+        assert_eq!(gmail.listed("starred"), Some("INBOX"));
+        assert_eq!(gmail.listed("sent"), Some("[Gmail]/Sent Mail"));
+        assert_eq!(gmail.listed("archive"), Some("[Gmail]/All Mail"));
+        assert_eq!(gmail.listed("junk"), Some("[Gmail]/Spam"));
+        assert_eq!(gmail.listed("trash"), Some("[Gmail]/Trash"));
+
+        let outlook = Places::from_list(&listing(&[
+            ("INBOX", &[]),
+            ("Sent Items", &[]),
+            ("Deleted Items", &[]),
+            ("Junk Email", &[]),
+        ]));
+        assert_eq!(outlook.listed("sent"), Some("Sent Items"));
+        assert_eq!(outlook.listed("trash"), Some("Deleted Items"));
+        assert_eq!(outlook.listed("junk"), Some("Junk Email"));
+        assert_eq!(outlook.listed("archive"), None);
+        assert_eq!(outlook.name("archive"), Some("Archive"));
+        let archiving = Places::from_list(&listing(&[("INBOX", &[]), ("Archive", &[])]));
+        assert_eq!(archiving.listed("archive"), Some("Archive"));
+
+        let dovecot = Places::from_list(&listing(&[("INBOX", &[]), ("INBOX.Sent", &[])]));
+        assert_eq!(dovecot.listed("sent"), Some("INBOX.Sent"));
+        assert_eq!(dovecot.listed("drafts"), None);
+        assert_eq!(dovecot.name("drafts"), Some("Drafts"));
+        assert_eq!(dovecot.name("elsewhere"), None);
+    }
+
+    /// Words a server is searched for are quoted, and words it cannot be sent are none.
+    #[test]
+    fn search_words_are_quoted_or_refused() {
+        assert_eq!(quoted(" invoice ").as_deref(), Some("\"invoice\""));
+        assert_eq!(
+            quoted(r#"say "hi" \ bye"#).as_deref(),
+            Some(r#""say \"hi\" \\ bye""#)
+        );
+        assert_eq!(quoted("Grüße"), None);
+        assert_eq!(quoted("line\nbreak"), None);
+        assert_eq!(quoted("  "), None);
+    }
+}

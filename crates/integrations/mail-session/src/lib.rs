@@ -1400,3 +1400,384 @@ async fn take_arrivals(
     heard.arrived(messages, mark);
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+
+    /// The envelope `sending` leaves in, as its send reads it.
+    fn envelope(sending: &SendMail) -> Result<lettre::address::Envelope, String> {
+        Leaving::read(sending.clone())?.envelope()
+    }
+
+    /// Sessions that reach the public internet alone connect to nothing of
+    /// this machine, to read or to send: an account whose servers are named
+    /// `localhost` is refused in the words of the judge of addresses, and a
+    /// listener here counts nobody.
+    #[test]
+    fn a_session_on_the_public_internet_connects_to_nothing_of_this_machine() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = || std::iter::from_fn(|| listener.accept().ok()).count();
+        let mut account = accounts::Account::new("ada@example.test", accounts::email::TYPE_ID);
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "imap_host": "localhost",
+            "imap_port": port,
+            "smtp_host": "localhost",
+            "smtp_port": port,
+        });
+        let secret = accounts::Secret::password("a made-up password");
+        let inside = "localhost answers with an address of this machine or its network";
+        let session =
+            LiveMailSession::default().reaching(tilo_account_probe::imap::Reach::public());
+
+        let asking = FetchMail {
+            account: "ada@example.test".into(),
+            folder: "inbox".into(),
+            ..FetchMail::default()
+        };
+        let read = session
+            .fetch(&account, &secret, &asking)
+            .map(drop)
+            .unwrap_err();
+        assert!(read.contains(inside), "{read}");
+        assert_eq!(connections(), 0, "nothing is connected to, to read");
+
+        let leaving = Leaving::read(SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "Bob <bob@example.test>".into(),
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..SendMail::default()
+        })
+        .unwrap();
+        let sent = session
+            .send(&account, &secret, &leaving, &[], None)
+            .map(drop)
+            .unwrap_err();
+        assert!(sent.contains(inside), "{sent}");
+        assert_eq!(connections(), 0, "nothing is connected to, to send");
+    }
+
+    /// An account a provider signed in on its own page carries a bearer
+    /// token, and both of its servers take it by XOAUTH2: the session reads
+    /// its inbox, sends, and finds what it sent arrived there.
+    #[test]
+    fn an_oauth_account_signs_in_and_sends_with_its_bearer_token() {
+        use tilo_account_probe::stand_in::{Serving, started};
+
+        let up = started(Serving {
+            names: vec!["localhost".to_owned()],
+            login: "ada@example.test".to_owned(),
+            password: String::new(),
+            oauth_token: Some("access-token-1".to_owned()),
+            imap: "127.0.0.1:0".to_owned(),
+            smtp: "127.0.0.1:0".to_owned(),
+            imap_wrapped: false,
+            smtp_wrapped: false,
+            layout: tilo_account_probe::stand_in::Layout::Plain,
+            seeded: true,
+        })
+        .expect("the stand-in starts");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(up.certificate.clone()).expect("its certificate");
+        let tls =
+            Arc::new(tilo_net::client_config_with_roots(roots).expect("a client configuration"));
+        let mut account = accounts::Account::new("ada@example.test", accounts::email::TYPE_ID);
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "username": "ada@example.test",
+            "imap_host": "localhost",
+            "imap_port": up.imap.port(),
+            "imap_tls": false,
+            "smtp_host": "localhost",
+            "smtp_port": up.smtp.port(),
+            "auth": "oauth",
+        });
+        let secret = accounts::Secret::password("access-token-1");
+        let reach = tilo_account_probe::imap::Reach::any();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let inbox_holds = || {
+            runtime.block_on(async {
+                let mut session = sign_in(Some(Arc::clone(&tls)), Some(&reach), &account, &secret)
+                    .await
+                    .expect("the bearer token signs in");
+                let inbox = session.select("INBOX").await.expect("an inbox");
+                let _ = session.logout().await;
+                inbox.exists
+            })
+        };
+        let before = inbox_holds();
+
+        let leaving = Leaving::read(SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "Ada <ada@example.test>".into(),
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..SendMail::default()
+        })
+        .expect("a message");
+        let mime = write_leaving(&leaving, &[], None).expect("its text");
+        runtime
+            .block_on(hand_over(
+                Some(&reach),
+                &account,
+                &secret,
+                leaving.envelope().expect("its envelope"),
+                &mime,
+                std::slice::from_ref(&up.certificate),
+            ))
+            .expect("the bearer token sends");
+        // The stand-in delivers what its SMTP server takes for its login to the inbox.
+        assert_eq!(inbox_holds(), before.saturating_add(1));
+    }
+
+    /// Blind recipients reach the delivery envelope and no copy header.
+    #[test]
+    fn blind_recipients_are_enveloped_and_never_written() {
+        let sending = SendMail {
+            account: "ada@example.test".into(),
+            from_name: Some("Ada".into()),
+            from_address: "ada@example.test".into(),
+            to: "Bob <bob@example.test>".into(),
+            cc: String::new(),
+            bcc: "Hidden <hidden@example.test>".into(),
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..SendMail::default()
+        };
+        let envelope = envelope(&sending).unwrap();
+        let recipients: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
+        assert_eq!(recipients, vec!["bob@example.test", "hidden@example.test"]);
+        let mime = String::from_utf8_lossy(&write_mime(&sending, &[], None).unwrap()).to_string();
+        assert!(mime.contains("bob@example.test"), "{mime}");
+        assert!(
+            !mime.to_ascii_lowercase().contains("hidden@example.test"),
+            "{mime}"
+        );
+        // And so the message that leaves, written from what it was read as.
+        let leaving = Leaving::read(sending).unwrap();
+        let left = write_leaving(&leaving, &[], None).unwrap();
+        let left = String::from_utf8_lossy(&left).to_string();
+        assert!(left.contains("\"Bob\" <bob@example.test>"), "{left}");
+        assert!(
+            !left.to_ascii_lowercase().contains("hidden@example.test"),
+            "{left}"
+        );
+    }
+
+    /// The files a message carries are its parts, as is a calendar
+    /// invitation: the host writes them into the MIME it builds, so the page
+    /// that sent them never builds one.
+    #[test]
+    fn files_and_an_invitation_are_written_as_parts() {
+        let sending = SendMail {
+            account: "ada@example.test".into(),
+            from_name: Some("Ada".into()),
+            from_address: "ada@example.test".into(),
+            to: "bob@example.test".into(),
+            subject: "Contract".into(),
+            body: "Attached.".into(),
+            ..SendMail::default()
+        };
+        let files = [Attachment {
+            filename: "contract.pdf".into(),
+            mime: "application/pdf".into(),
+            bytes: b"%PDF-1.4 fixture".to_vec(),
+        }];
+        let invitation = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n";
+        let mime =
+            String::from_utf8_lossy(&write_mime(&sending, &files, Some(invitation)).unwrap())
+                .to_string();
+        let lowered = mime.to_ascii_lowercase();
+        assert!(lowered.contains("multipart/mixed"), "{mime}");
+        assert!(lowered.contains("contract.pdf"), "{mime}");
+        assert!(lowered.contains("application/pdf"), "{mime}");
+        assert!(lowered.contains("invitation.ics"), "{mime}");
+        assert!(lowered.contains("text/calendar"), "{mime}");
+        assert!(mime.contains("method=REQUEST"), "{mime}");
+    }
+
+    /// What a folder's messages say is answered as far as one answer holds:
+    /// the newest whole, and one that does not fit by its start, saying so.
+    #[test]
+    fn an_answer_carries_the_newest_messages_whole_and_the_rest_by_their_start() {
+        let message = |uid: u32| FetchedMessage {
+            uid,
+            body: "a".repeat(3000),
+            html_body: Some("b".repeat(3000)),
+            ..FetchedMessage::default()
+        };
+        let mut messages = vec![message(1), message(2), message(3)];
+        let mut room = 9000;
+        fit(&mut messages, &mut room);
+        assert!(!messages[2].partial, "the newest is answered whole");
+        assert_eq!(messages[2].body.len(), 3000);
+        assert_eq!(messages[2].html_body.as_ref().map(String::len), Some(3000));
+        for older in &messages[..2] {
+            assert!(older.partial);
+            assert_eq!(older.body.len(), EXCERPT_WORDS);
+            assert!(older.html_body.is_none());
+        }
+
+        // A message is cut at a letter's edge, never inside one.
+        let mut words = "ää".to_owned();
+        shorten(&mut words, 3);
+        assert_eq!(words, "ä");
+    }
+
+    /// A search asks a server for every part it names, in words a server can
+    /// be sent, and one that names nothing is no search.
+    #[test]
+    fn a_search_asks_for_every_part_it_names() {
+        let searching = SearchMail {
+            text: Some("cap table".into()),
+            from: Some("jonas@northzone.example".into()),
+            ..SearchMail::default()
+        };
+        assert_eq!(
+            search_keys(&searching).unwrap(),
+            "TEXT \"cap table\" FROM \"jonas@northzone.example\""
+        );
+        let quoting = SearchMail {
+            subject: Some("the \"big\" one".into()),
+            ..SearchMail::default()
+        };
+        assert_eq!(
+            search_keys(&quoting).unwrap(),
+            "SUBJECT \"the \\\"big\\\" one\""
+        );
+        assert!(search_keys(&SearchMail::default()).is_err());
+        for unsendable in ["line\r\nA1 DELETE INBOX", "grüße"] {
+            let searching = SearchMail {
+                text: Some(unsendable.into()),
+                ..SearchMail::default()
+            };
+            assert!(search_keys(&searching).is_err(), "{unsendable:?}");
+        }
+    }
+
+    /// A fetched message is read into what a reader shows, never into how
+    /// it is stored.
+    #[test]
+    fn a_fetched_message_is_read_as_a_reader_shows_it() {
+        let raw = b"From: Ada <ada@example.test>\r\n\
+To: Bob <bob@example.test>\r\n\
+Subject: Hello\r\n\
+Message-ID: <42@example.test>\r\n\
+In-Reply-To: <1@example.test>\r\n\
+Content-Type: text/plain\r\n\r\n\
+Hi Bob\r\n";
+        let message = parse_message(raw, 42, false, true, 100).unwrap();
+        assert_eq!(message.uid, 42);
+        assert_eq!(message.message_id.as_deref(), Some("42@example.test"));
+        assert_eq!(message.in_reply_to.as_deref(), Some("1@example.test"));
+        assert_eq!(message.from.email, "ada@example.test");
+        assert_eq!(message.from.name.as_deref(), Some("Ada"));
+        assert_eq!(message.to[0].email, "bob@example.test");
+        assert_eq!(message.subject, "Hello");
+        assert_eq!(message.body.trim(), "Hi Bob");
+        assert!(message.starred);
+        assert!(!message.read);
+        assert!(message.html_body.is_none());
+    }
+
+    /// A line break in what a message's head is written from never begins a
+    /// header of the writer's own: neither in a list of recipients, nor in
+    /// the subject, the sender, or the ids that join it to a conversation.
+    /// Whether the message is refused or the break is dropped, no line of
+    /// its head says where answers go.
+    #[test]
+    fn a_line_break_in_a_field_writes_no_header_of_its_own() {
+        let lunch = || SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "bo@example.test".into(),
+            subject: "Lunch".into(),
+            body: "Friday at one works.".into(),
+            ..SendMail::default()
+        };
+        let smuggled = "1@example.test>\r\nReply-To: <eve@elsewhere.test".to_owned();
+        let broken = [
+            SendMail {
+                to: "bo@example.test, Bo <bo@example.test>\r\nReply-To: <eve@elsewhere.test>"
+                    .into(),
+                ..lunch()
+            },
+            SendMail {
+                cc: "Cy <cy@example.test>\nReply-To: <eve@elsewhere.test>".into(),
+                ..lunch()
+            },
+            SendMail {
+                subject: "Lunch\r\nReply-To: eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                from_name: Some("Ada\r\nReply-To: eve@elsewhere.test".into()),
+                ..lunch()
+            },
+            SendMail {
+                from_address: "ada@example.test>\r\nReply-To: <eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                message_id: Some(smuggled.clone()),
+                ..lunch()
+            },
+            SendMail {
+                in_reply_to: Some(smuggled.clone()),
+                ..lunch()
+            },
+            SendMail {
+                references: vec!["0@example.test".into(), smuggled],
+                ..lunch()
+            },
+        ];
+        for message in broken {
+            // No such message leaves at all.
+            let read = Leaving::read(message.clone());
+            assert!(read.is_err(), "{message:?} was read for sending: {read:?}");
+            // Kept as a draft, it says what it said without the break.
+            let Ok(mime) = write_mime(&message, &[], None) else {
+                continue;
+            };
+            let written = String::from_utf8_lossy(&mime).to_string();
+            let head = written.split("\r\n\r\n").next().unwrap_or_default();
+            assert!(
+                !head
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with("reply-to")),
+                "{message:?} wrote a header of its own:\n{head}"
+            );
+        }
+    }
+
+    /// Security review, 17 November 2026. Every address a list names is a
+    /// recipient in the envelope, however far into the list it stands: so
+    /// what a person is shown of the list before they allow the message has
+    /// to reach as far.
+    #[test]
+    fn an_address_after_a_stretch_of_blanks_is_a_recipient() {
+        let sending = SendMail {
+            from_address: "ada@example.test".into(),
+            to: format!("bo@example.test,{}eve@elsewhere.test", " ".repeat(700)),
+            ..SendMail::default()
+        };
+        let envelope = envelope(&sending).unwrap();
+        let recipients: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
+        assert_eq!(recipients, ["bo@example.test", "eve@elsewhere.test"]);
+    }
+}

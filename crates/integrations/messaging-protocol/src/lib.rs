@@ -154,6 +154,23 @@ impl ProtocolReference {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_do_not_merge_routes_and_drafts_remain_account_specific() {
+        let a = Route::new(Service::Signal, "account-a".into(), "person".into()).unwrap();
+        let b = Route::new(Service::Signal, "account-b".into(), "person".into()).unwrap();
+        let c = Route::new(Service::Sms, "account-a".into(), "person".into()).unwrap();
+        let drafts = std::collections::BTreeMap::from([(a.clone(), "private draft")]);
+        assert_eq!(drafts.get(&a), Some(&"private draft"));
+        assert!(!drafts.contains_key(&b));
+        assert!(!drafts.contains_key(&c));
+        assert!(!format!("{a:?}").contains("account-a"));
+    }
+}
+
 #[cfg(all(unix, feature = "signal-broker"))]
 pub mod signal_broker;
 

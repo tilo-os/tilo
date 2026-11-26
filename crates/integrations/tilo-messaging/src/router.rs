@@ -140,3 +140,157 @@ impl HistoryHost for MessagingRouter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Delivery, HistoryPage, SendReceipt};
+    use std::{
+        sync::Mutex,
+        task::{Context, Poll, Waker},
+    };
+    use tilo_resource::Id;
+    type Calls = Arc<Mutex<Vec<(String, String)>>>;
+    struct Host {
+        calls: Calls,
+        identity: ServiceAccount,
+    }
+    impl MessagingHost for Host {
+        fn supports(&self, route: &Route) -> bool {
+            ServiceAccount::route(route) == self.identity
+        }
+        fn send(&self, request: SendRequest) -> SendFuture {
+            self.calls.lock().expect("fixture calls lock").push((
+                request.route.service.clone(),
+                request.route.sender.as_str().into(),
+            ));
+            Box::pin(std::future::ready(Ok(SendReceipt {
+                route: request.route,
+                operation: request.operation,
+                delivery: Delivery::ServerAcknowledged,
+            })))
+        }
+    }
+    impl HistoryHost for Host {
+        fn read(&self, route: Route, _: Option<crate::HistoryCursor>, _: usize) -> HistoryFuture {
+            self.calls
+                .lock()
+                .expect("fixture value")
+                .push((route.service.clone(), route.sender.as_str().into()));
+            Box::pin(std::future::ready(Ok(HistoryPage {
+                route,
+                messages: Vec::new(),
+                more: false,
+            })))
+        }
+    }
+    fn route(service: &str, account: &str) -> Route {
+        Route {
+            service: service.into(),
+            sender: Id::from_raw(account),
+            person: Id::from_raw("person"),
+            association: Id::from_raw("association"),
+            scope: "scope".into(),
+            recipient: "recipient".into(),
+            revision: "revision".into(),
+        }
+    }
+    fn client(actor: &str, service: &str, account: &str, calls: &Calls) -> MessagingClient {
+        MessagingClient::new(
+            actor,
+            Arc::new(Host {
+                calls: calls.clone(),
+                identity: ServiceAccount::new(service, account),
+            }),
+        )
+    }
+    #[test]
+    fn exact_service_and_account_dispatch_never_falls_back() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let services = [
+            ServiceAccount::new("signal", "personal"),
+            ServiceAccount::new("signal", "work"),
+            ServiceAccount::new("whatsapp", "personal"),
+        ];
+        let router = MessagingRouter::new(
+            "owner",
+            services
+                .iter()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        client("owner", &id.service, &id.account, &calls),
+                    )
+                })
+                .collect(),
+        )
+        .expect("owned router")
+        .client();
+        let history = router.history();
+        for id in &services {
+            let route = route(&id.service, &id.account);
+            assert!(router.supports(&route));
+            let mut read = Box::pin(history.read(route.clone(), None));
+            assert!(matches!(
+                read.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Ok(_))
+            ));
+            let mut send = Box::pin(router.send(SendRequest {
+                route,
+                operation: "operation".into(),
+                text: zeroize::Zeroizing::new("fixture text".into()),
+            }));
+            assert!(matches!(
+                send.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Ok(_))
+            ));
+        }
+        let before = calls.lock().expect("fixture calls lock").clone();
+        for missing in [route("sms", "personal"), route("signal", "missing")] {
+            assert!(!router.supports(&missing));
+            let mut send = Box::pin(router.send(SendRequest {
+                route: missing.clone(),
+                operation: "missing".into(),
+                text: zeroize::Zeroizing::new("fixture text".into()),
+            }));
+            assert!(matches!(
+                send.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Err(SendError::Unavailable))
+            ));
+            let mut read = Box::pin(history.read(missing, None));
+            assert!(matches!(
+                read.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Err(crate::HistoryError::Unavailable))
+            ));
+        }
+        assert_eq!(*calls.lock().expect("fixture calls lock"), before);
+        assert_eq!(
+            before,
+            services
+                .iter()
+                .flat_map(|id| vec![(id.service.clone(), id.account.clone()); 2])
+                .collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn duplicate_and_cross_person_registrations_are_refused() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let id = ServiceAccount::new("signal", "personal");
+        let owned = client("owner", "signal", "personal", &calls);
+        assert!(matches!(
+            MessagingRouter::new(
+                "owner",
+                vec![(id.clone(), owned.clone()), (id.clone(), owned)]
+            ),
+            Err(RegistrationError::DuplicateAccount)
+        ));
+        assert!(matches!(
+            MessagingRouter::new(
+                "owner",
+                vec![(id, client("other", "signal", "personal", &calls))]
+            ),
+            Err(RegistrationError::WrongActor)
+        ));
+        assert!(calls.lock().expect("fixture calls lock").is_empty());
+    }
+}

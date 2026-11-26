@@ -466,3 +466,83 @@ pub(super) fn history(host: Host, group: String) -> GroupHistoryFuture {
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use whatsapp_rust::wacore::{
+        proto_helpers::MessageBuilderExt,
+        types::message::{MessageInfo, MessageSource},
+    };
+    fn event() -> InboundMessage {
+        let Ok(chat) = "123@g.us".parse() else {
+            panic!("fixture group")
+        };
+        let Ok(sender) = "222@lid".parse() else {
+            panic!("fixture member")
+        };
+        let Ok(timestamp) = "2026-10-11T00:00:00Z".parse() else {
+            panic!("fixture timestamp")
+        };
+        InboundMessage::builder()
+            .message(Arc::new(whatsapp_rust::waproto::whatsapp::Message::text(
+                "private group text",
+            )))
+            .info(Arc::new(MessageInfo {
+                source: MessageSource {
+                    chat,
+                    sender,
+                    is_group: true,
+                    ..Default::default()
+                },
+                id: "stanza-a".into(),
+                timestamp,
+                ..Default::default()
+            }))
+            .build()
+    }
+    #[test]
+    fn production_group_codec_requires_current_membership_and_preserves_privacy_modes() {
+        let review = Review {
+            group: "123@g.us".into(),
+            identity: ("123@s.whatsapp.net".into(), Some("456@lid".into())),
+            title: "Group".into(),
+            members: vec![
+                ("456@lid".into(), "admin".into()),
+                ("222@lid".into(), "member".into()),
+            ],
+            announcement: false,
+            restricted: false,
+            expires: 100,
+        };
+        let Ok(row) = incoming(&review, &event()) else {
+            panic!("valid fixture text refused")
+        };
+        assert_eq!(row.author, "222@lid");
+        assert_eq!(row.text, "private group text");
+        let mut changed = review.clone();
+        changed.members.retain(|(id, _)| id != "222@lid");
+        assert!(incoming(&changed, &event()).is_err());
+        changed = review.clone();
+        changed.restricted = true;
+        assert!(incoming(&changed, &event()).is_err());
+        let mut expired = event();
+        Arc::make_mut(&mut expired.info).ephemeral_expiration = Some(60);
+        assert!(incoming(&review, &expired).is_err());
+        let mut false_self = event();
+        Arc::make_mut(&mut false_self.info).source.is_from_me = true;
+        assert!(incoming(&review, &false_self).is_err());
+        let mut foreign = event();
+        let Ok(chat) = "789@g.us".parse() else {
+            panic!("fixture group")
+        };
+        Arc::make_mut(&mut foreign.info).source.chat = chat;
+        assert!(incoming(&review, &foreign).is_err());
+        let mut wrapped = event();
+        Arc::make_mut(&mut wrapped.message)
+            .ephemeral_message
+            .get_or_insert_default();
+        assert!(wrapped.message.ephemeral_message.as_option().is_some());
+        assert!(incoming(&review, &wrapped).is_err());
+    }
+}

@@ -193,3 +193,32 @@ pub mod secret {
         String::deserialize(deserializer).map(Zeroizing::new)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use reqwest::header::HeaderValue;
+
+    use super::*;
+
+    #[test]
+    fn set_cookie_headers_update_and_expire_the_jar() {
+        let mut jar = Cookies::from_header("A=1; B=2");
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, HeaderValue::from_static("A=3; Path=/; Secure"));
+        headers.append(SET_COOKIE, HeaderValue::from_static("B=gone; Max-Age=0"));
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("C=\"v=1:t=abc\"; Domain=.icloud.com"),
+        );
+        jar.absorb(&headers);
+        assert_eq!(jar.header().as_str(), "A=3; C=\"v=1:t=abc\"");
+        assert!(!format!("{jar:?}").contains('3'));
+    }
+
+    #[test]
+    fn cookies_round_trip_through_serde() {
+        let jar = Cookies::from_header("X=1; Y=2");
+        let json = serde_json::to_string(&jar).unwrap();
+        assert_eq!(serde_json::from_str::<Cookies>(&json).unwrap(), jar);
+    }
+}

@@ -58,3 +58,55 @@ pub fn config_for_account(
     };
     Ok((config, username))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn nextcloud_accounts_mount_their_files_root() {
+        let (config, user) = config_for_account(
+            NEXTCLOUD_TYPE,
+            &json!({"server_url": "https://cloud.example/base", "username": "ada"}),
+        )
+        .unwrap();
+        assert_eq!(user, "ada");
+        assert_eq!(
+            config.root.as_str(),
+            "https://cloud.example/base/remote.php/dav/files/ada/"
+        );
+        assert_eq!(
+            config_for_account(
+                NEXTCLOUD_TYPE,
+                &json!({"server_url": "https://cloud.example", "username": "ada", "use_files": false}),
+            ),
+            Err(AccountError::NotFiles)
+        );
+    }
+
+    #[test]
+    fn only_https_or_loopback_urls_without_secrets_are_mounted() {
+        for url in [
+            "http://files.example/dav",
+            "https://ada:pw@files.example/dav",
+            "https://files.example/dav?token=1",
+        ] {
+            assert_eq!(
+                config_for_account(WEBDAV_TYPE, &json!({"server_url": url})),
+                Err(AccountError::InvalidConfiguration),
+                "{url}"
+            );
+        }
+        let (config, _) = config_for_account(
+            WEBDAV_TYPE,
+            &json!({"server_url": "http://127.0.0.1:8080/dav"}),
+        )
+        .unwrap();
+        assert_eq!(config.root.as_str(), "http://127.0.0.1:8080/dav/");
+        assert_eq!(
+            config_for_account("caldav", &json!({})),
+            Err(AccountError::NotFiles)
+        );
+    }
+}

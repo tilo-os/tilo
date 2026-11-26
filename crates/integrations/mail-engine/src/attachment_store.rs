@@ -199,3 +199,36 @@ pub fn materialize(
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_attachments_are_portable_and_bounded() {
+        {
+            let path = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(path.path(), b"portable attachment").unwrap();
+            let content = ContentStore::memory();
+            let staged = stage_file(
+                &content,
+                tilo_dialogs::portal::OpenedFile::new(
+                    std::fs::File::open(path.path()).unwrap(),
+                    "../report.txt",
+                ),
+            )
+            .unwrap();
+            assert!(valid_content_id(&staged.content_id));
+            assert_eq!(staged.filename, "report.txt");
+            assert_eq!(
+                materialize(&content, &staged).unwrap(),
+                b"portable attachment"
+            );
+        }
+
+        {
+            let bytes = vec![0; MAX_ATTACHMENT_BYTES + 1];
+            assert!(stage_bytes(&ContentStore::memory(), &bytes, "too-large.bin").is_err());
+        }
+    }
+}

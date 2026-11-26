@@ -1,0 +1,104 @@
+use super::super::*;
+use super::*;
+use serde_json::json;
+use test_http::{Reply, Responder};
+
+fn peer(answer: &serde_json::Value) -> (ProviderProfile, Responder) {
+    let body = answer.to_string();
+    let responder = Responder::start(vec![
+        Reply::status(200)
+            .header("Content-Type", "application/json")
+            .body(body),
+    ]);
+    let profile = ProviderProfile {
+        endpoint: format!("{}/v1", responder.url()),
+        ..ProviderProfile::default()
+    };
+    (profile, responder)
+}
+
+async fn invoke(
+    request: neutral::ModelRequest,
+    answer: serde_json::Value,
+) -> Result<neutral::ModelResponse, String> {
+    // Held until the call answers, which is when the provider is spoken to.
+    let (profile, _served) = peer(&answer);
+    host_complete(
+        &provider_client().unwrap(),
+        &profile,
+        None,
+        "checked-model",
+        request,
+        tilo_test_env::hang_bound(),
+        crate::openai::Target::Standard,
+    )
+    .await
+    .map_err(|failure| failure.why)
+}
+
+fn answer(finish: serde_json::Value, tool: bool) -> serde_json::Value {
+    let message = if tool {
+        json!({"role":"assistant", "content":null, "tool_calls":[{
+            "id":"call_1", "type":"function", "function":{"name":"lookup", "arguments":"{\"count\":2}"}
+        }]})
+    } else {
+        json!({"role":"assistant", "content":"answer"})
+    };
+    let mut response = json!({"id":"reply", "object":"chat.completion", "created":1, "model":"checked-model",
+        "choices":[{"index":0, "message":message}],
+        "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}});
+    response["choices"][0]["finish_reason"] = finish;
+    response
+}
+
+fn request() -> neutral::ModelRequest {
+    let mut request = neutral::Conversation::new("instructions", "question").request(
+        vec![neutral::ToolDefinition {
+            name: "lookup".into(),
+            description: "Look up a resource".into(),
+            input_schema: json!({"type":"object"}),
+        }],
+        64,
+    );
+    request.tool_choice = neutral::ToolChoice::Auto;
+    request
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_turn_rejects_unsolicited_tools_and_accepts_declared_names() {
+    {
+        for case in ["empty", "none", "unknown", "declared"] {
+            let mut request = request();
+            match case {
+                "empty" => request.tools.clear(),
+                "none" => request.tool_choice = neutral::ToolChoice::None,
+                "unknown" => request.tools[0].name = "different".into(),
+                _ => {}
+            }
+            let result = invoke(request, answer(json!("tool_calls"), true)).await;
+            assert_eq!(result.is_ok(), case == "declared", "{case}: {result:?}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn terminal_metadata_is_required_and_non_dispatchable_outcomes_survive() {
+    let mut missing = answer(serde_json::Value::Null, false);
+    missing["choices"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("finish_reason");
+    assert!(invoke(request(), missing).await.is_err());
+    {
+        for (finish, reason) in [
+            ("length", neutral::StopReason::OutputLimit),
+            ("content_filter", neutral::StopReason::Refusal),
+        ] {
+            let response = invoke(request(), answer(json!(finish), true))
+                .await
+                .unwrap();
+            assert_eq!(response.stop_reason, reason, "{finish}");
+            assert!(response.tool_calls().is_err());
+        }
+    }
+}

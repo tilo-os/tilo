@@ -164,3 +164,170 @@ impl CredentialStore {
         Ok(session)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use browser_continuity_core::sessions::{Cookie, SameSite, Service};
+    fn selected() -> SessionCookies {
+        SessionCookies {
+            schema: 1,
+            session_id: "selected-slack".into(),
+            service: Service::Slack,
+            identity_public_key: [7; 32],
+            setup_binding: "setup-operation".into(),
+            source_snapshot_digest: [9; 32],
+            origin_storage: Vec::new(),
+            cookies: vec![Cookie {
+                host: "app.slack.com".into(),
+                domain: "slack.com".into(),
+                host_only: false,
+                name: "d".into(),
+                value: "private-cookie-marker".into(),
+                path: "/".into(),
+                expires_unix_seconds: None,
+                secure: true,
+                http_only: true,
+                same_site: SameSite::None,
+            }],
+        }
+    }
+    /// The workspace's account of the selected session.
+    fn selected_account() -> accounts::Account {
+        let mut account =
+            accounts::Account::new(AccountId::from(selected().session_id), SERVICE_SESSION_TYPE);
+        account.config = serde_json::json!({"service":"slack","setup_binding":"setup-operation"});
+        account
+    }
+
+    /// A selection sealed before the person's vault had one ownership: under
+    /// the owner-only key beside the ciphertext, as the local path wrote it.
+    #[cfg(unix)]
+    #[test]
+    fn a_selection_sealed_under_an_owner_only_key_is_read_and_its_key_migrates() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("config");
+        let person = config.join("tilo");
+        std::fs::create_dir_all(&person).unwrap();
+        std::fs::set_permissions(&person, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &config)
+            .set("HOME", home.path())
+            .set(tilo_secrets::SECRETS_DIR_ENV, home.path().join("secrets"));
+
+        let session = selected();
+        let account = selected_account();
+        let mut legacy = SecretVault::open_in(&person);
+        legacy.put(&account.id, &service_session_secret(&session).unwrap());
+        legacy.try_save().unwrap();
+        let key = accounts::vault_dir_in(&person).join("vault.key");
+        assert!(key.exists(), "the old path kept the vault key beside it");
+
+        let resolved = CredentialStore::live()
+            .service_session(
+                &account,
+                session.identity_public_key,
+                &session.setup_binding,
+            )
+            .expect("a keyring that answers reads the selection the person kept");
+        assert_eq!(resolved, session, "byte for byte the selection they made");
+        assert!(
+            !key.exists(),
+            "the key moved into the keyring; nothing reads the vault beside it"
+        );
+        let vault = SecretVault::open_person(Some(&person));
+        assert_eq!(vault.backend(), accounts::VaultBackend::System);
+        assert!(
+            vault.get(&account.id).is_some(),
+            "the selection stayed in the vault"
+        );
+    }
+
+    tilo_test_env::scenario! {
+        /// The selected session and its codec.
+        fn a_selected_service_session_is_bound_private_and_strictly_decoded;
+
+        phase selected_session_private_vault_binding_and_redacted_debug;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let session = selected();
+            let id = AccountId::from(session.session_id.clone());
+            let secret = service_session_secret(&session).unwrap();
+            assert!(!format!("{secret:?} {session:?}").contains("private-cookie-marker"));
+            let account = selected_account();
+            let mut vault = SecretVault::open_in(root.path());
+            vault.put(&id, &secret);
+            vault.try_save().unwrap();
+            let credential_store = CredentialStore::for_root(Some(root.path().to_owned()));
+            assert_eq!(
+                credential_store
+                    .service_session(&account, [7; 32], "setup-operation")
+                    .unwrap(),
+                session
+            );
+            assert!(
+                credential_store
+                    .service_session(&account, [8; 32], "setup-operation")
+                    .is_err()
+            );
+            assert!(
+                credential_store
+                    .service_session(&account, [7; 32], "another-operation")
+                    .is_err()
+            );
+            assert!(
+                crate::password_credential(&secret).is_empty(),
+                "Canonical password consumer must refuse session kind"
+            );
+            let bytes = std::fs::read(root.path().join("accounts/vault/vault.enc")).unwrap();
+            assert!(
+                !bytes
+                    .windows(b"private-cookie-marker".len())
+                    .any(|v| v == b"private-cookie-marker")
+            );
+        }
+
+        phase protected_origin_only_secret_preserves_raw_dom_and_exact_person_binding;
+        {
+            let mut session = selected();
+            session.schema = 2;
+            session.service = Service::Discord;
+            session.cookies.clear();
+            session.origin_storage = vec![browser_continuity_core::sessions::OriginStorage {
+                origin: "https://discord.com".into(),
+                key: "token".into(),
+                value: "\"private-origin-marker\"".into(),
+                source_snapshot_digest: [8; 32],
+            }];
+            let id = AccountId::from(session.session_id.clone());
+            let secret = service_session_secret(&session).unwrap();
+            assert_eq!(
+                service_session_from_secret(&secret, &id, [7; 32], "setup-operation").unwrap(),
+                session
+            );
+            assert!(service_session_from_secret(&secret, &id, [8; 32], "setup-operation").is_err());
+            assert!(!format!("{secret:?}").contains("private-origin-marker"));
+            assert!(crate::password_credential(&secret).is_empty());
+        }
+
+        phase codec_probe_checks_ownership_contract_and_refuses_malformed_selection;
+        {
+            let session = selected();
+            verify_service_session_codec(&session).unwrap();
+            let mut foreign = session;
+            foreign.cookies[0].host = "foreign.example".into();
+            assert!(verify_service_session_codec(&foreign).is_err());
+        }
+
+        phase malformed_selected_session_refuses_before_secret_publication;
+        {
+            let mut session = selected();
+            session.cookies[0].host = "foreign.example".into();
+            assert!(service_session_secret(&session).is_err());
+            let mut session = selected();
+            session.cookies[0].name = "__Host-session".into();
+            assert!(service_session_secret(&session).is_err());
+        }
+    }
+}

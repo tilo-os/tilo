@@ -138,3 +138,6 @@ impl Drop for WhatsappReceiptSubscription {
         self.handler.sender.close();
     }
 }
+
+#[cfg(test)]
+mod tests;

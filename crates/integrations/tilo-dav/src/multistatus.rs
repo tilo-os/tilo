@@ -322,3 +322,193 @@ fn children<'a, 'input: 'a>(
     node.children()
         .filter(move |child| child.is_element() && child.tag_name().name() == name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_default(xml: &str) -> Result<Multistatus, XmlError> {
+        parse(xml, &Limits::default())
+    }
+
+    /// Nextcloud's PROPFIND shape: `d:`/`oc:`/`nc:` prefixes, a 404 propstat
+    /// for unsupported properties and an empty `getcontentlength` on folders.
+    const NEXTCLOUD_PROPFIND: &str = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+ <d:response>
+  <d:href>/remote.php/dav/files/ada/</d:href>
+  <d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:getetag>&quot;65f1&quot;</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  <d:propstat><d:prop><d:getcontentlength/><d:getcontenttype/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/files/ada/Notes%20and%20plans.md</d:href>
+  <d:propstat><d:prop><d:displayname>Notes and plans.md</d:displayname><d:getcontentlength>1234</d:getcontentlength><d:getcontenttype>text/markdown</d:getcontenttype><d:resourcetype/><d:getetag>&quot;a1b2&quot;</d:getetag><oc:fileid>42</oc:fileid></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+ </d:response>
+</d:multistatus>"#;
+
+    /// Radicale's sync-collection REPORT: default-namespace `DAV:`, a
+    /// `C:`-prefixed `CalDAV` payload and a 404 response for a removed member.
+    const RADICALE_SYNC: &str = r#"<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><response><href>/ada/work/event-1.ics</href><propstat><prop><getetag>"8e5d3a"</getetag><C:calendar-data>BEGIN:VCALENDAR&#13;
+VERSION:2.0&#13;
+END:VCALENDAR&#13;
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/ada/work/event-0.ics</href><status>HTTP/1.1 404 Not Found</status></response><sync-token>http://radicale.org/ns/sync/2b7c</sync-token></multistatus>"#;
+
+    /// A Fastmail-like calendar-query: absolute hrefs and a CDATA payload.
+    const FASTMAIL_QUERY: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>https://caldav.fastmail.example/dav/calendars/user/ada@example.com/Default/abc.ics</D:href><D:propstat><D:prop><D:getetag>"1700000000"</D:getetag><C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:abc
+END:VEVENT
+END:VCALENDAR
+]]></C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"#;
+
+    #[test]
+    fn server_multistatus_documents_parse_props_changes_and_payloads() {
+        {
+            let parsed = parse_default(NEXTCLOUD_PROPFIND).unwrap();
+            assert_eq!(parsed.responses.len(), 2);
+            let root = &parsed.responses[0];
+            assert!(root.is_collection());
+            assert_eq!(root.prop_text("getetag"), Some("\"65f1\""));
+            assert_eq!(
+                root.prop("getcontentlength"),
+                None,
+                "404 propstat is not a value"
+            );
+            let file = &parsed.responses[1];
+            assert_eq!(
+                file.href,
+                "/remote.php/dav/files/ada/Notes%20and%20plans.md"
+            );
+            assert!(!file.is_collection());
+            assert_eq!(file.prop_text("getcontentlength"), Some("1234"));
+            let fileid = file.prop("fileid").unwrap();
+            assert_eq!(fileid.namespace.as_deref(), Some("http://owncloud.org/ns"));
+        }
+        {
+            let parsed = parse_default(RADICALE_SYNC).unwrap();
+            assert_eq!(
+                parsed.sync_token.as_deref(),
+                Some("http://radicale.org/ns/sync/2b7c")
+            );
+            let changed = &parsed.responses[0];
+            assert_eq!(changed.status, None);
+            let data = changed.prop("calendar-data").unwrap();
+            assert_eq!(
+                data.namespace.as_deref(),
+                Some("urn:ietf:params:xml:ns:caldav")
+            );
+            assert!(
+                data.text
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("BEGIN:VCALENDAR\r\n")
+            );
+            assert_eq!(parsed.responses[1].status, Some(404));
+            assert!(!parsed.responses[1].has_success());
+        }
+        {
+            let parsed = parse_default(FASTMAIL_QUERY).unwrap();
+            let response = &parsed.responses[0];
+            assert!(
+                response
+                    .href
+                    .starts_with("https://caldav.fastmail.example/")
+            );
+            let data = response
+                .prop("calendar-data")
+                .unwrap()
+                .text
+                .as_deref()
+                .unwrap();
+            assert!(data.contains("UID:abc\n"));
+            assert_eq!(response.prop_text("getetag"), Some("\"1700000000\""));
+        }
+        {
+            let xml = r#"<multistatus xmlns="DAV:"><response><href>/a</href><propstat><prop><getetag>x</getetag></prop><status>HTTP/1.1 200</status></propstat></response></multistatus>"#;
+            assert_eq!(
+                parse_default(xml).unwrap().responses[0].propstats[0].status,
+                Some(200)
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_or_malformed_multistatus_documents_are_rejected_within_limits() {
+        {
+            let laughs = r#"<?xml version="1.0"?>
+    <!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>
+    <multistatus xmlns="DAV:"><response><href>&lol2;</href></response></multistatus>"#;
+            assert_eq!(parse_default(laughs), Err(XmlError::Doctype));
+            let external = r#"<?xml version="1.0"?><!DOCTYPE x [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><multistatus xmlns="DAV:"><response><href>&xxe;</href></response></multistatus>"#;
+            assert_eq!(parse_default(external), Err(XmlError::Doctype));
+        }
+        {
+            let limits = Limits {
+                max_bytes: 64,
+                ..Limits::default()
+            };
+            let huge = format!(
+                "<multistatus xmlns=\"DAV:\">{}</multistatus>",
+                " ".repeat(64)
+            );
+            assert_eq!(parse(&huge, &limits), Err(XmlError::TooLarge));
+            assert_eq!(
+                parse_bytes(huge.as_bytes(), &limits),
+                Err(XmlError::TooLarge)
+            );
+        }
+        {
+            let depth = 200_000;
+            let xml = format!(
+                "<multistatus xmlns=\"DAV:\">{}{}</multistatus>",
+                "<x>".repeat(depth),
+                "</x>".repeat(depth)
+            );
+            assert_eq!(parse_default(&xml), Err(XmlError::TooDeep));
+        }
+        {
+            let many = format!(
+                "<multistatus xmlns=\"DAV:\">{}</multistatus>",
+                "<response><href>/a</href></response>".repeat(20)
+            );
+            let limits = Limits {
+                max_responses: 10,
+                ..Limits::default()
+            };
+            assert_eq!(parse(&many, &limits), Err(XmlError::TooManyResponses));
+            let limits = Limits {
+                max_nodes: 16,
+                ..Limits::default()
+            };
+            assert_eq!(parse(&many, &limits), Err(XmlError::TooManyNodes));
+        }
+        {
+            assert_eq!(
+                parse_default("<html><body>Login</body></html>"),
+                Err(XmlError::NotMultistatus)
+            );
+            assert_eq!(parse_default("<D:multistatus>"), Err(XmlError::Malformed));
+            assert_eq!(
+                parse_bytes(b"\xff\xfe", &Limits::default()),
+                Err(XmlError::NotUtf8)
+            );
+        }
+        {
+            for href in ["", "   "] {
+                let xml = format!(
+                    "<multistatus xmlns=\"DAV:\"><response><href>{href}</href></response></multistatus>"
+                );
+                assert_eq!(parse_default(&xml), Err(XmlError::InvalidHref));
+            }
+            let missing = "<multistatus xmlns=\"DAV:\"><response><status>HTTP/1.1 200 OK</status></response></multistatus>";
+            assert_eq!(parse_default(missing), Err(XmlError::InvalidHref));
+            let long = format!(
+                "<multistatus xmlns=\"DAV:\"><response><href>/{}</href></response></multistatus>",
+                "a".repeat(4096)
+            );
+            assert_eq!(parse_default(&long), Err(XmlError::InvalidHref));
+        }
+    }
+}

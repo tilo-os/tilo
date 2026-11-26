@@ -68,3 +68,52 @@ pub(crate) fn check_route(route: &Route, account: &str) -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn route() -> Route {
+        Route::new(Service::Whatsapp, "account-a".into(), "123@lid".into()).unwrap()
+    }
+
+    #[test]
+    fn self_reads_and_feature_incapable_receipts_do_not_invent_recipient_delivery() {
+        let mut event = Receipt {
+            account: "account-a",
+            chat_jid: "123@lid",
+            wire_type: "read-self",
+            message_ids: &["message-id"],
+            feature_incapable: false,
+        };
+        assert_eq!(
+            receipt(&route(), "message-id", &event),
+            Ok(Evidence::NoRecipientEvidence)
+        );
+        event.wire_type = "delivery";
+        event.feature_incapable = true;
+        assert_eq!(
+            receipt(&route(), "message-id", &event),
+            Ok(Evidence::SentOnly)
+        );
+        event.feature_incapable = false;
+        assert_eq!(
+            receipt(&route(), "message-id", &event),
+            Ok(Evidence::RecipientDelivered)
+        );
+        event.wire_type = "read";
+        assert_eq!(
+            receipt(&route(), "message-id", &event),
+            Ok(Evidence::RecipientRead)
+        );
+        event.chat_jid = "123@s.whatsapp.net";
+        assert_eq!(
+            receipt(&route(), "message-id", &event),
+            Err(Error::InvalidIdentity)
+        );
+        event.chat_jid = "123@lid";
+        assert_eq!(
+            receipt(&route(), "another-message", &event),
+            Err(Error::WrongRequest)
+        );
+    }
+}

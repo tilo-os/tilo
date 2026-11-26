@@ -353,3 +353,166 @@ pub fn install_arguments(
     );
     Ok(args)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app_cli::client::TrustLevel;
+
+    const OWNER: &str = "bb";
+
+    fn program_bytes() -> Vec<u8> {
+        let shortcut: Shortcut = serde_json::from_value(serde_json::json!({
+            "id": "echo", "name": "Echo",
+            "steps": [{"id": "post", "step": "invoke",
+                "action": {"app": "so.tilo.chat", "kind": "chat.workspace", "action": "post"},
+                "resource": {"first_of_kind": "chat.workspace"},
+                "args": {"text": {"literal": "echo"}}}],
+            "triggers": [{"trigger": "resource_changed", "kind": "chat.workspace"}]
+        }))
+        .unwrap();
+        tilo_automation::program::canonical_bytes(&shortcut).unwrap()
+    }
+
+    fn listing(program: &[u8], versions: &[&str], apps: &[&str]) -> Vec<VerifiedEntry> {
+        let hash = tilo_automation::program::program_hash(program);
+        let versions = versions
+            .iter()
+            .map(|version| registry_types::RegistryVersion {
+                version: (*version).into(),
+                released_at_unix: 1,
+                artifact: registry_types::VersionArtifact::Bot(BotArtifact {
+                    program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
+                    program_blake3_hex: hash.clone(),
+                    program_size_bytes: program.len() as u64,
+                    requires: registry_types::BotRequirements {
+                        connectors: Vec::new(),
+                        apps: apps.iter().map(|app| (*app).to_owned()).collect(),
+                        appearance: false,
+                        triggers: vec!["resource_changed".into()],
+                    },
+                }),
+            })
+            .collect();
+        vec![VerifiedEntry {
+            entry: RegistryEntry {
+                package_id: "so.tilo.bots.echo".into(),
+                kind: EntryKind::Bot,
+                name: "Echo".into(),
+                description: "Posts echo".into(),
+                tagline: "Echo".into(),
+                images: registry_types::LocalizedImages::default(),
+                supported_languages: vec!["en".into()],
+                categories: vec!["Bots".into()],
+                source_url: None,
+                homepage: None,
+                publisher_pubkey_hex: "aa".repeat(32),
+                versions,
+                updated_at_unix: 1,
+                signature_hex: String::new(),
+            },
+            trust: TrustLevel::PublisherSigned,
+            version_index: None,
+        }]
+    }
+
+    struct NoConnectors;
+    impl HostConnectors for NoConnectors {
+        fn status(&self, _: &str, _: &str) -> ConnectorState {
+            ConnectorState::NotInstalled
+        }
+    }
+
+    #[test]
+    fn a_listed_bot_is_verified_against_its_entry() {
+        let program = program_bytes();
+        let entries = listing(&program, &["1.0.0"], &["so.tilo.chat"]);
+        let bot =
+            verify_listed_bot(&entries, OWNER, "so.tilo.bots.echo", "1.0.0", &program).unwrap();
+        assert_eq!(bot.source.entry, "so.tilo.bots.echo");
+        assert_eq!(bot.source.version, "1.0.0");
+        assert_eq!(bot.source.registry_owner, OWNER);
+        assert_eq!(bot.program_text.as_bytes(), program.as_slice());
+        let dishonest = listing(&program, &["1.0.0"], &["so.tilo.notes"]);
+        assert!(matches!(
+            verify_listed_bot(&dishonest, OWNER, "so.tilo.bots.echo", "1.0.0", &program),
+            Err(DirectoryError::RequirementsMismatch(_))
+        ));
+        assert!(matches!(
+            verify_listed_bot(&entries, OWNER, "so.tilo.bots.echo", "1.0.0", b"{}"),
+            Err(DirectoryError::Program(_))
+        ));
+    }
+
+    #[test]
+    fn newest_is_the_most_recently_released_version() {
+        let program = program_bytes();
+        let mut entries = listing(&program, &["1.0.0", "2.0.0", "1.5.0"], &["so.tilo.chat"]);
+        let versions = &mut entries[0].entry.versions;
+        versions[0].released_at_unix = 10;
+        versions[1].released_at_unix = 20;
+        versions[2].released_at_unix = 30;
+        assert_eq!(newest_version(&entries[0].entry).as_deref(), Some("1.5.0"));
+        entries[0].entry.versions.clear();
+        assert_eq!(newest_version(&entries[0].entry), None);
+    }
+
+    #[test]
+    fn a_version_no_longer_listed_is_refused() {
+        let program = program_bytes();
+        let entries = listing(&program, &["1.1.0"], &["so.tilo.chat"]);
+        assert!(matches!(
+            verify_listed_bot(&entries, OWNER, "so.tilo.bots.echo", "1.0.0", &program),
+            Err(DirectoryError::NotListed { .. })
+        ));
+        assert!(matches!(
+            verify_listed_bot(&[], OWNER, "so.tilo.bots.echo", "1.1.0", &program),
+            Err(DirectoryError::NotListed { .. })
+        ));
+    }
+
+    #[test]
+    fn the_plan_shows_the_grant_and_what_is_missing() {
+        let program = program_bytes();
+        let entries = listing(&program, &["1.0.0"], &["so.tilo.chat"]);
+        let bot =
+            verify_listed_bot(&entries, OWNER, "so.tilo.bots.echo", "1.0.0", &program).unwrap();
+        let catalog = ActionCatalog::new(Vec::new());
+        let without_chat = plan_install(
+            &bot,
+            &catalog,
+            &NoConnectors,
+            &BTreeSet::new(),
+            &tilo_action_policy::Ids,
+        );
+        assert_eq!(without_chat.missing_apps, ["so.tilo.chat"]);
+        assert!(!without_chat.ready());
+        assert!(matches!(
+            install_arguments(&without_chat, &InstallInputs::default()),
+            Err(DirectoryError::NotReady(_))
+        ));
+        let installed = BTreeSet::from(["so.tilo.chat".to_owned()]);
+        let plan = plan_install(
+            &bot,
+            &catalog,
+            &NoConnectors,
+            &installed,
+            &tilo_action_policy::Ids,
+        );
+        assert!(plan.ready());
+        assert!(!plan.rules.is_empty(), "the trigger reads what it watches");
+        assert!(!plan.grant_sentence.is_empty());
+        assert_eq!(
+            plan.program_hash,
+            tilo_automation::program::program_hash(&program)
+        );
+        let args = install_arguments(&plan, &InstallInputs::default()).unwrap();
+        assert_eq!(
+            args["program"],
+            serde_json::Value::String(plan.program_text)
+        );
+        assert_eq!(args["appearance"], "own");
+        assert_eq!(args["source"]["entry"], "so.tilo.bots.echo");
+        assert!(!args.contains_key("installation"));
+    }
+}

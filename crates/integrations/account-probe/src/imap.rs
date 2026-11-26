@@ -367,3 +367,222 @@ where
         Err("server did not provide a valid IMAP greeting".into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, TcpListener};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{Reach, reach};
+
+    const STEP: std::time::Duration = std::time::Duration::from_secs(8);
+    /// A mail server's name, made up for this file.
+    const NAMED: &str = "mail.example.test";
+
+    /// A look-up that answers every name with this machine, and counts how
+    /// often it was asked.
+    fn this_machine(asked: &Arc<AtomicUsize>) -> tilo_net::address::Lookup {
+        let asked = Arc::clone(asked);
+        Arc::new(move |_name: String| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Ok(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]) })
+        })
+    }
+
+    /// How many connections were made to `listener`, which waits for none: a
+    /// connection that was made is counted.
+    fn connections(listener: &TcpListener) -> usize {
+        std::iter::from_fn(|| listener.accept().ok()).count()
+    }
+
+    #[test]
+    fn a_name_that_answers_with_this_machine_is_connected_to_nowhere_on_the_public_internet() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that waits for nobody");
+        let port = listener.local_addr().expect("its address").port();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let own = |name: &str| {
+            Err(format!(
+                "{name} answers with an address of this machine or its network"
+            ))
+        };
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sockets and a clock");
+        asking.block_on(async {
+            let public = Reach::public().looked_up_by(this_machine(&asked));
+            let named = reach(&public, NAMED, port, STEP).await.map(drop);
+            assert_eq!(named, own(NAMED));
+            assert_eq!(connections(&listener), 0, "nothing is connected to");
+            assert_eq!(asked.load(Ordering::SeqCst), 1, "one look-up");
+
+            // An address written out is judged as itself and never looked up.
+            let written = reach(&public, "127.0.0.1", port, STEP).await.map(drop);
+            assert_eq!(written, own("127.0.0.1"));
+            assert_eq!(connections(&listener), 0, "nothing is connected to");
+            assert_eq!(
+                asked.load(Ordering::SeqCst),
+                1,
+                "an address is not looked up"
+            );
+
+            // Where any address is reached, what the one look-up answered is
+            // what is connected to.
+            let any = Reach::any().looked_up_by(this_machine(&asked));
+            let reached = reach(&any, NAMED, port, STEP).await;
+            assert!(reached.is_ok(), "{reached:?}");
+            assert_eq!(connections(&listener), 1, "one connection, to this machine");
+            assert_eq!(asked.load(Ordering::SeqCst), 2, "one look-up for it");
+        });
+    }
+
+    #[test]
+    fn a_reach_asks_at_every_connection_whether_its_operator_opened_the_own_network() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that waits for nobody");
+        let port = listener.local_addr().expect("its address").port();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let opened = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let open = Arc::clone(&opened);
+        let to = Reach::public_unless(move || open.load(Ordering::SeqCst))
+            .looked_up_by(this_machine(&asked));
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sockets and a clock");
+        asking.block_on(async {
+            assert!(to.is_public());
+            let shut = reach(&to, NAMED, port, STEP).await.map(drop);
+            assert_eq!(
+                shut,
+                Err(format!(
+                    "{NAMED} answers with an address of this machine or its network"
+                ))
+            );
+            assert_eq!(connections(&listener), 0, "nothing is connected to");
+
+            // The same reach, kept: its operator opens the own network.
+            opened.store(true, Ordering::SeqCst);
+            assert!(!to.is_public());
+            let reached = reach(&to, NAMED, port, STEP).await;
+            assert!(reached.is_ok(), "{reached:?}");
+            assert_eq!(connections(&listener), 1, "one connection, to this machine");
+
+            // And shuts it again: the next connection is judged again.
+            opened.store(false, Ordering::SeqCst);
+            assert!(reach(&to, NAMED, port, STEP).await.is_err());
+            assert_eq!(connections(&listener), 0, "nothing is connected to");
+        });
+    }
+
+    /// The bearer token is written as Google's documentation writes it.
+    #[test]
+    fn an_xoauth2_response_matches_the_documented_vector() {
+        use base64::Engine as _;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.encode(super::xoauth2_token(
+                "someuser@example.com",
+                "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
+            )),
+            "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
+        );
+    }
+
+    fn address(text: &str) -> std::net::SocketAddr {
+        text.parse().expect("an address")
+    }
+
+    #[test]
+    fn address_families_take_turns_starting_with_ipv6() {
+        let ordered = super::interleaved(vec![
+            address("192.0.2.1:993"),
+            address("192.0.2.2:993"),
+            address("[2001:db8::1]:993"),
+            address("[2001:db8::2]:993"),
+            address("[2001:db8::3]:993"),
+        ]);
+        assert_eq!(
+            ordered,
+            [
+                address("[2001:db8::1]:993"),
+                address("192.0.2.1:993"),
+                address("[2001:db8::2]:993"),
+                address("192.0.2.2:993"),
+                address("[2001:db8::3]:993"),
+            ]
+        );
+    }
+
+    /// An address that never answers, as a network that drops one family leaves it.
+    async fn silent<T>() -> std::io::Result<T> {
+        std::future::pending().await
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_silent_address_does_not_hold_up_a_live_one() {
+        let (dropped, live) = (address("[2001:db8::1]:25"), address("192.0.2.1:25"));
+        let started = tokio::time::Instant::now();
+        let won = super::race(vec![dropped, live], STEP, move |at| async move {
+            if at == dropped {
+                silent::<()>().await?;
+            }
+            Ok(at)
+        })
+        .await;
+        assert_eq!(won, Ok(live));
+        assert_eq!(started.elapsed(), super::STAGGER);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn silent_addresses_time_out_at_their_deadline_in_words_a_person_acts_on() {
+        let started = tokio::time::Instant::now();
+        let lost = super::race(
+            vec![address("[2001:db8::1]:25"), address("192.0.2.1:25")],
+            STEP,
+            |_| silent::<()>(),
+        )
+        .await;
+        assert_eq!(lost, Err(super::TIMED_OUT));
+        assert_eq!(started.elapsed(), super::STAGGER + super::ATTEMPT);
+    }
+
+    #[test]
+    fn a_refused_port_says_what_to_check() {
+        let port = {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+            listener.local_addr().expect("its address").port()
+        };
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sockets and a clock");
+        let refused = asking.block_on(reach(&Reach::any(), "127.0.0.1", port, STEP));
+        assert_eq!(
+            refused.map(drop),
+            Err(format!(
+                "could not reach 127.0.0.1:{port}: nothing answers on that port. Check the \
+                 server name and port"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_name_is_taken_before_a_connection_only_as_the_judge_answers_for_it() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let public = Reach::public().looked_up_by(this_machine(&asked));
+        assert!(!public.takes(NAMED), "a name that answers inside");
+        assert!(!public.takes("127.0.0.1"), "an address inside, written out");
+        assert!(
+            public.takes("93.184.216.34"),
+            "a public address, written out"
+        );
+        let any = Reach::any().looked_up_by(this_machine(&asked));
+        assert!(any.takes(NAMED), "any address is reached");
+    }
+}

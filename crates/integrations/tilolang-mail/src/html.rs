@@ -28,3 +28,27 @@ pub fn of_markdown(markdown: &str) -> String {
     };
     render_html(&document.as_ref().materialize(), options, &inputs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::of_markdown;
+
+    /// What a person formats in the composer reaches the recipient formatted: the Markdown the
+    /// editor writes is rendered, and a message with nothing in it carries no alternative.
+    #[test]
+    fn the_markdown_a_person_writes_becomes_the_formatted_alternative() {
+        let html =
+            of_markdown("Hello **Ada**,\n\n- one\n- two\n\n[the plan](https://example.test)");
+        assert!(html.contains("<strong>Ada</strong>"), "{html}");
+        assert!(html.contains("<li>one</li>"), "{html}");
+        assert!(
+            html.contains("<a href=\"https://example.test\">the plan</a>"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<!doctype"),
+            "a part of a message, not a page: {html}"
+        );
+        assert_eq!(of_markdown("   \n"), "", "nothing said, no alternative");
+    }
+}

@@ -569,3 +569,500 @@ pub fn keep_staged_in(
     }
     tilo_files::native::atomic::write(&path, &record.save())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_resource::AppNamed;
+    use tilo_resource::Replica;
+
+    #[test]
+    fn browser_picker_projects_settings_accounts_without_crossing_identity_or_origin() {
+        let root = "ab".repeat(32);
+        let origin = "https://host.example";
+        let mut record = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
+        for (id, key, host, enabled) in [
+            ("work", root.clone(), origin, true),
+            ("disabled", root.clone(), origin, false),
+            ("other-root", "cd".repeat(32), origin, true),
+            ("other-host", root.clone(), "https://other.example", true),
+        ] {
+            record
+                .apply(AccountList::SAVE_ACCOUNT.with((
+                    id.into(),
+                    TILO_IDENTITY_TYPE.into(),
+                    id.into(),
+                    serde_json::json!({
+                        "userPublicKey": key, "origin": host, "privateField": "never-exported"
+                    }),
+                    enabled,
+                    0,
+                )))
+                .unwrap();
+        }
+        let state = record.state().unwrap();
+        let rows = state.browser_accounts(&root, origin);
+        assert_eq!(
+            rows,
+            vec![BrowserAccount {
+                id: "work".into(),
+                display_name: "work".into(),
+                user_public_key: root.clone()
+            }]
+        );
+        assert!(
+            !serde_json::to_string(&rows)
+                .unwrap()
+                .contains("privateField")
+        );
+        assert!(
+            state
+                .browser_accounts(&root, "http://host.example")
+                .is_empty()
+        );
+        assert!(state.browser_accounts("invalid", origin).is_empty());
+        record
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("work")))
+            .unwrap();
+        assert!(
+            record
+                .state()
+                .unwrap()
+                .browser_accounts(&root, origin)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn identity_publication_uses_the_shared_account_record_and_preserves_disabled_choices() {
+        let root = "ab".repeat(32);
+        let origin = "https://host.example";
+        let mut record = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
+        let publication = AccountList::PUBLISH_BROWSER_IDENTITY.with((
+            root.clone(),
+            origin.into(),
+            "Work".into(),
+        ));
+        record.apply(publication.clone()).unwrap();
+        record.apply(publication.clone()).unwrap();
+        let choices = record.state().unwrap().browser_accounts(&root, origin);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].display_name, "Work");
+        let id = choices[0].id.clone();
+        let account = record.state().unwrap().account(&id).unwrap();
+        assert_eq!(
+            account.config,
+            serde_json::json!({"userPublicKey": root, "origin": origin})
+        );
+        record
+            .apply(AccountList::SAVE_ACCOUNT.with((
+                id.clone(),
+                TILO_IDENTITY_TYPE.into(),
+                "Private".into(),
+                account.config,
+                false,
+                0,
+            )))
+            .unwrap();
+        record.apply(publication).unwrap();
+        assert!(
+            record
+                .state()
+                .unwrap()
+                .browser_accounts(&root, origin)
+                .is_empty()
+        );
+        assert_eq!(
+            record.state().unwrap().account(&id).unwrap().display_name,
+            "Private"
+        );
+        for invalid in [
+            "http://host.example",
+            "https://host.example/path",
+            "https://name:secret@host.example",
+            "https://host.example/?key=value",
+        ] {
+            assert!(
+                record
+                    .apply(AccountList::PUBLISH_BROWSER_IDENTITY.with((
+                        root.clone(),
+                        invalid.into(),
+                        "Work".into()
+                    )))
+                    .is_err()
+            );
+        }
+        assert_eq!(record.state().unwrap().len(), 1);
+    }
+
+    fn save(replica: &mut Replica<AccountList, AppNamed>, id: &str, type_id: &str, host: &str) {
+        replica
+            .apply(AccountList::SAVE_ACCOUNT.with((
+                id.into(),
+                type_id.into(),
+                format!("{id} inbox"),
+                serde_json::json!({ "host": host }),
+                true,
+                2,
+            )))
+            .unwrap();
+    }
+
+    #[test]
+    fn accounts_are_saved_by_id_and_removed() {
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
+        save(&mut replica, "a@x.example", "email", "imap.x");
+        save(&mut replica, "b@y.example", "email", "imap.y");
+        save(&mut replica, "work", "caldav", "dav.example");
+        save(&mut replica, "a@x.example", "email", "imap.new");
+
+        let accounts = replica.state().unwrap();
+        assert_eq!(accounts.of_type("email").len(), 2, "saving again replaces");
+        assert_eq!(
+            accounts.account("a@x.example").unwrap().config["host"],
+            "imap.new"
+        );
+
+        replica
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("b@y.example")))
+            .unwrap();
+        let accounts = replica.state().unwrap();
+        assert!(accounts.account("b@y.example").is_none());
+        assert_eq!(
+            accounts.of_type("email").len(),
+            1,
+            "the other account stays"
+        );
+        assert!(
+            replica
+                .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("gone")))
+                .is_err()
+        );
+    }
+
+    /// The edit that reports `health` for `id` from `device` at `at_ms`.
+    fn report(
+        id: &str,
+        device: &str,
+        health: SyncHealth,
+        at_ms: u64,
+        message: &str,
+    ) -> Invoke<AccountList> {
+        AccountList::REPORT_SYNC.with((
+            Id::from_raw(id),
+            device.into(),
+            health,
+            at_ms,
+            false,
+            message.into(),
+        ))
+    }
+
+    /// Every member reads how an account's sync went from the device that
+    /// reported last; a report saying nothing new is not written, a success
+    /// is again once it is ten minutes newer, and saving the account keeps
+    /// what its sync says.
+    #[test]
+    fn the_last_device_to_report_says_how_an_accounts_sync_went() {
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
+        save(&mut replica, "work", "caldav", "dav.example");
+        let minute = 60_000;
+        let succeeded = |replica: &Replica<AccountList, AppNamed>| {
+            replica
+                .state()
+                .unwrap()
+                .sync_of("work")
+                .unwrap()
+                .succeeded_ms
+        };
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                minute,
+                "Up to date",
+            ))
+            .unwrap();
+        replica
+            .apply(report(
+                "work",
+                "phone",
+                SyncHealth::Offline,
+                2 * minute,
+                "Waiting\nfor a connection\u{7}",
+            ))
+            .unwrap();
+        let sync = replica.state().unwrap().sync_of("work").cloned().unwrap();
+        assert_eq!(sync.device, "phone", "the last device wins");
+        assert_eq!(sync.health, SyncHealth::Offline);
+        assert_eq!(sync.succeeded_ms, Some(minute), "the last success stays");
+        assert_eq!(
+            sync.message, "Waiting for a connection",
+            "one line, no control characters"
+        );
+
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                3 * minute,
+                "Up to date",
+            ))
+            .unwrap();
+        let written = replica.save();
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                5 * minute,
+                "Up to date",
+            ))
+            .unwrap();
+        assert_eq!(
+            succeeded(&replica),
+            Some(3 * minute),
+            "the same success minutes later is not written"
+        );
+        assert_eq!(replica.save(), written, "nothing new is written");
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                14 * minute,
+                "Up to date",
+            ))
+            .unwrap();
+        assert_eq!(succeeded(&replica), Some(14 * minute));
+
+        let long = "x".repeat(400);
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Error,
+                15 * minute,
+                &long,
+            ))
+            .unwrap();
+        save(&mut replica, "work", "caldav", "dav.moved.example");
+        let sync = replica.state().unwrap().sync_of("work").cloned().unwrap();
+        assert_eq!(
+            sync.health,
+            SyncHealth::Error,
+            "saving the account keeps its sync"
+        );
+        assert_eq!(sync.message.chars().count(), SYNC_MESSAGE_LIMIT);
+        assert!(
+            replica
+                .apply(report("gone", "laptop", SyncHealth::Healthy, minute, ""))
+                .is_err(),
+            "no report for an account the workspace does not have"
+        );
+    }
+
+    /// A sync report is a change of the same kind as saving an account, so
+    /// the grant that saves one reports its sync and nothing less does.
+    #[test]
+    fn whoever_saves_an_account_reports_its_sync() {
+        use tilo_resource::Operation as _;
+        let reporting = report("work", "laptop", SyncHealth::Healthy, 1, "")
+            .build(1)
+            .unwrap();
+        let saving = saving("work", "caldav", calendar("https://dav.example/"))
+            .build(1)
+            .unwrap();
+        assert_eq!(reporting.operation.kind(), saving.operation.kind());
+    }
+
+    /// The edit that saves the account `id` of `type_id` with `config`.
+    fn saving(id: &str, type_id: &str, config: serde_json::Value) -> Invoke<AccountList> {
+        AccountList::SAVE_ACCOUNT.with((id.into(), type_id.into(), "Work".into(), config, true, 0))
+    }
+
+    /// What the account `id` keeps as its settings in `replica`; none when
+    /// it is gone.
+    fn kept(replica: &Replica<AccountList, AppNamed>, id: &str) -> Option<serde_json::Value> {
+        replica
+            .state()
+            .unwrap()
+            .accounts
+            .get(&Id::from_raw(id))
+            .map(|account| account.config.clone())
+    }
+
+    /// Whoever acts for a member, an agent included, changes the workspace's
+    /// accounts as the member may: what an account is, where it signs in, a
+    /// new account, a removal, and an account no longer connected for
+    /// reading only.
+    #[test]
+    fn an_agent_acting_for_a_member_changes_the_workspaces_accounts() {
+        let person = "ab".repeat(32);
+        let mut theirs = workspace_accounts(&person);
+        let mut agent = Replica::<AccountList>::load(&theirs.save())
+            .unwrap()
+            .in_app("so.tilo.model", "Model")
+            .as_agent_for("helper", &person);
+        let elsewhere = "imap.elsewhere.example";
+        agent
+            .apply(saving("ada@example.test", "email", mail(elsewhere)))
+            .unwrap();
+        assert_eq!(kept(&agent, "ada@example.test"), Some(mail(elsewhere)));
+        agent
+            .apply(saving(
+                "work",
+                "webdav",
+                calendar("https://dav.elsewhere.example/"),
+            ))
+            .unwrap();
+        assert_eq!(
+            kept(&agent, "work"),
+            Some(calendar("https://dav.elsewhere.example/"))
+        );
+        agent
+            .apply(saving("news@example.test", "email", mail(elsewhere)))
+            .unwrap();
+        assert_eq!(kept(&agent, "news@example.test"), Some(mail(elsewhere)));
+        agent
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("ada@example.test")))
+            .unwrap();
+        assert_eq!(kept(&agent, "ada@example.test"), None);
+        let reading_only = serde_json::json!({
+            "server_url": "https://dav.example/", "username": "ada", "read_only": true,
+        });
+        agent.apply(saving("read", "caldav", reading_only)).unwrap();
+        agent
+            .apply(saving("read", "caldav", calendar("https://dav.example/")))
+            .unwrap();
+        assert_eq!(kept(&agent, "read"), Some(calendar("https://dav.example/")));
+    }
+
+    /// A mail account's settings, reading at `incoming`.
+    fn mail(incoming: &str) -> serde_json::Value {
+        serde_json::json!({"incoming": incoming, "outgoing": "smtp.example", "username": "ada"})
+    }
+
+    /// A calendar account's settings, at `address`.
+    fn calendar(address: &str) -> serde_json::Value {
+        serde_json::json!({"server_url": address, "username": "ada"})
+    }
+
+    /// The workspace's accounts as a member's device keeps them: a mail
+    /// account, a calendar account, and one added and removed again.
+    fn workspace_accounts(person: &str) -> Replica<AccountList, AppNamed> {
+        let mut theirs = Replica::<AccountList>::new()
+            .in_app("so.tilo.model", "Model")
+            .as_invoker(person);
+        theirs
+            .apply(saving("ada@example.test", "email", mail("imap.example")))
+            .unwrap();
+        theirs
+            .apply(saving("work", "caldav", calendar("https://dav.example/")))
+            .unwrap();
+        theirs
+            .apply(saving("old@example.test", "email", mail("imap.example")))
+            .unwrap();
+        theirs
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("old@example.test")))
+            .unwrap();
+        theirs
+    }
+
+    /// The device's own code, with nobody invoking, and a member at their
+    /// device change the workspace's accounts as before.
+    #[test]
+    fn a_members_own_device_changes_the_accounts_as_before() {
+        let person = "ab".repeat(32);
+        let mut theirs = workspace_accounts(&person);
+        let mut device = Replica::<AccountList>::load(&theirs.save())
+            .unwrap()
+            .in_app("so.tilo.model", "Model");
+        device
+            .apply(saving("news@example.test", "email", mail("imap.example")))
+            .unwrap();
+        device
+            .apply(saving(
+                "news@example.test",
+                "email",
+                mail("imap.moved.example"),
+            ))
+            .unwrap();
+        device
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("news@example.test")))
+            .unwrap();
+        assert_eq!(kept(&device, "news@example.test"), None);
+
+        theirs
+            .apply(saving(
+                "ada@example.test",
+                "email",
+                mail("imap.moved.example"),
+            ))
+            .unwrap();
+        assert_eq!(
+            kept(&theirs, "ada@example.test"),
+            Some(mail("imap.moved.example"))
+        );
+        theirs
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("work")))
+            .unwrap();
+        assert_eq!(kept(&theirs, "work"), None);
+    }
+
+    /// The workspace's roles decide who changes its accounts, as they decide
+    /// any workspace action: an Editor, whether their own device or an agent
+    /// they grant Mail, adds and removes accounts; a Viewer is refused.
+    #[test]
+    fn an_editor_changes_the_accounts_and_a_viewer_is_refused() {
+        use tilo_action_policy::{
+            Acting, ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Role,
+            TreePath, WorkspacePolicy,
+        };
+        use tilo_resource::Resource as _;
+        const WORKSPACE: &str = "w";
+        const MAIL: &str = "so.tilo.mail";
+        let editor = "ab".repeat(32);
+        let viewer = "cd".repeat(32);
+        let mut policy = WorkspacePolicy::new(WORKSPACE, &editor);
+        policy.members.insert(editor.clone(), Role::Editor);
+        policy.members.insert(viewer.clone(), Role::Viewer);
+        // Mail publishes the accounts record, so its actions are Mail's.
+        let accounts = TreePath::workspace(WORKSPACE)
+            .app(MAIL)
+            .kind(AccountList::KIND);
+        let cx = Context::at_secs(1);
+        let answer = |acting: &Acting, granted: &[Grant]| {
+            Authority::of_acting(acting, &policy, granted)
+                .decide(&accounts, ActionKind::Undoable, &cx)
+                .answer
+        };
+        assert_eq!(answer(&Acting::person(&editor), &[]), Answer::Allow);
+        assert_eq!(answer(&Acting::person(&viewer), &[]), Answer::Deny);
+        // The grant an agent's turn gives it, on Mail.
+        let mail = [Grant::new(
+            "turn:helper:0",
+            Grantee::agent("helper", &editor),
+            TreePath::workspace(WORKSPACE).app(MAIL),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Grantee::person(&editor),
+        )];
+        assert_eq!(
+            answer(
+                &Acting::agent("helper", &editor).acting_for(Acting::person(&editor)),
+                &mail
+            ),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(
+                &Acting::agent("helper", &viewer).acting_for(Acting::person(&viewer)),
+                &mail
+            ),
+            Answer::Deny
+        );
+    }
+}

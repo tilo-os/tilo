@@ -262,3 +262,133 @@ pub fn listed_price_of(id: &str) -> Option<Price> {
 pub fn cost_micros(id: &str, usage: &Usage) -> u64 {
     price_of(id).map_or(0, |price| price.of(usage))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Usage with the given counts.
+    fn usage(input: u64, cached: u64, written: u64, output: u64) -> Usage {
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input.saturating_add(output),
+            cached_input_tokens: cached,
+            cache_write_tokens: written,
+            reasoning_tokens: 0,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The price table applied to a turn's usage.
+        fn a_turn_costs_what_its_models_row_charges_for_the_tokens_counted;
+
+        phase a_million_tokens_costs_the_rows_price;
+        {
+            let price = price_of("claude-sonnet-4-5").expect("a priced model");
+            assert_eq!(price.of(&usage(1_000_000, 0, 0, 0)), 3_000_000);
+            assert_eq!(price.of(&usage(0, 0, 0, 1_000_000)), 15_000_000);
+        }
+
+        phase the_current_claude_models_cost_what_their_provider_lists;
+        {
+            let million = usage(1_000_000, 0, 0, 0);
+            for (model, input, output) in [
+                ("claude-fable-5-1", 10_000_000, 50_000_000),
+                ("claude-opus-5-5", 4_000_000, 20_000_000),
+                ("claude-opus-5", 5_000_000, 25_000_000),
+                ("claude-opus-4-8", 5_000_000, 25_000_000),
+                ("claude-sonnet-5-5", 2_000_000, 10_000_000),
+                ("claude-sonnet-5", 2_000_000, 10_000_000),
+                ("claude-sonnet-4-6", 3_000_000, 15_000_000),
+                ("claude-haiku-5-5", 100_000, 500_000),
+                ("claude-haiku-4-5", 1_000_000, 5_000_000),
+            ] {
+                assert_eq!(cost_micros(model, &million), input, "{model}");
+                assert_eq!(
+                    cost_micros(model, &usage(0, 0, 0, 1_000_000)),
+                    output,
+                    "{model}"
+                );
+            }
+            // A prompt read from the cache costs what each model's row says.
+            let cached = usage(1_000_000, 1_000_000, 0, 0);
+            assert_eq!(cost_micros("claude-fable-5-1", &cached), 250_000);
+            assert_eq!(cost_micros("claude-opus-5-5", &cached), 200_000);
+            assert_eq!(cost_micros("claude-sonnet-5-5", &cached), 200_000);
+        }
+
+        phase the_most_specific_row_names_the_price;
+        {
+            let opus = cost_micros("claude-opus-4-1", &usage(1_000_000, 0, 0, 0));
+            let sonnet = cost_micros("claude-sonnet-4-5", &usage(1_000_000, 0, 0, 0));
+            let haiku = cost_micros("claude-haiku-4-5", &usage(1_000_000, 0, 0, 0));
+            assert_eq!((opus, sonnet, haiku), (15_000_000, 3_000_000, 1_000_000));
+            assert_eq!(
+                cost_micros("gpt-4o-mini", &usage(1_000_000, 0, 0, 0)),
+                150_000
+            );
+            assert_eq!(cost_micros("gpt-4o", &usage(1_000_000, 0, 0, 0)), 2_500_000);
+        }
+
+        phase a_cached_prompt_is_charged_what_its_provider_charges;
+        {
+            // A provider counts the tokens it read from its cache in the input;
+            // they cost a tenth of it at Anthropic, half at OpenAI.
+            let cached = usage(1_000_000, 1_000_000, 0, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &cached), 300_000);
+            assert_eq!(cost_micros("gpt-4o", &cached), 1_250_000);
+            // Written to the cache: a quarter more than the input.
+            let written = usage(1_000_000, 0, 1_000_000, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &written), 3_750_000);
+            // Half cached, half not: each part at its own price.
+            let half = usage(1_000_000, 500_000, 0, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &half), 1_650_000);
+        }
+
+        phase a_model_with_no_price_is_not_charged;
+        {
+            assert_eq!(
+                cost_micros("llama-3.3-70b", &usage(1_000_000, 0, 0, 1_000)),
+                0
+            );
+            assert_eq!(cost_micros("my-local-model", &usage(10, 0, 0, 10)), 0);
+            assert!(price_of("llama-3.3-70b").is_none());
+        }
+
+        phase a_prompt_never_costs_more_than_its_tokens_are_counted;
+        {
+            // More cached tokens than the candidate says were used is a broken
+            // count, not a windfall: only the counted input is charged.
+            let broken = usage(10, 1_000, 1_000, 0);
+            assert_eq!(cost_micros("claude-sonnet-4-5", &broken), 3);
+            // A reply with no usage counted costs nothing.
+            assert_eq!(cost_micros("claude-sonnet-4-5", &Usage::default()), 0);
+        }
+    }
+
+    /// Only a model's own row is its listed price: a family's row prices a
+    /// newer model for the day's bound and says nothing of what it costs.
+    #[test]
+    fn only_a_models_own_row_is_its_listed_price() {
+        for listed in [
+            "gemini-2.5-pro",
+            "models/gemini-2.5-pro",
+            "vendor/gpt-4o-mini",
+        ] {
+            assert_eq!(listed_price_of(listed), price_of(listed), "{listed}");
+            assert!(listed_price_of(listed).is_some(), "{listed}");
+        }
+        for guessed in [
+            "models/gemini-9-ultra",
+            "claude-opus-9",
+            "grok-7",
+            "deepseek-chat",
+        ] {
+            assert!(listed_price_of(guessed).is_none(), "{guessed}");
+            // What an agent's bound counts by stays as it was.
+            assert!(price_of(guessed).is_some(), "{guessed}");
+        }
+        assert!(listed_price_of("my-local-model").is_none());
+    }
+}

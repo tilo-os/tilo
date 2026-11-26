@@ -689,3 +689,532 @@ impl Sources for Live<'_> {
         self.first(candidates, false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// What a look for mail servers found is greeted only within its reach:
+    /// a found server whose name answers with this machine is connected to by
+    /// nobody where the public internet alone is reached, to read or to send.
+    #[test]
+    fn a_found_server_whose_name_answers_with_this_machine_is_greeted_by_nobody() {
+        let listener =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that waits for nobody");
+        let port = listener.local_addr().expect("its address").port();
+        let everyone = |_: &str| true;
+        let found = [Server::new("localhost", port)];
+        let public = Live::new(&everyone).within(crate::imap::Reach::public());
+        assert!(public.reads(&found).is_none());
+        assert!(public.sends(&found).is_none());
+        assert_eq!(
+            std::iter::from_fn(|| listener.accept().ok()).count(),
+            0,
+            "nothing is connected to"
+        );
+    }
+
+    /// A network that answers what a test says, and keeps what it was asked.
+    #[derive(Default)]
+    struct Told {
+        /// The documents, each by the start of its address.
+        documents: Vec<(&'static str, String)>,
+        services: Vec<(&'static str, Vec<Server>)>,
+        exchangers: Vec<&'static str>,
+        /// The servers that greet, whatever they are asked as.
+        greet: Vec<Server>,
+        /// The names this machine may not ask.
+        inside: Vec<&'static str>,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl Told {
+        fn first(&self, candidates: &[Server]) -> Option<Server> {
+            self.asked.lock().expect("the test's own lock").extend(
+                candidates
+                    .iter()
+                    .map(|server| format!("{}:{}", server.name, server.port)),
+            );
+            candidates
+                .iter()
+                .find(|candidate| self.greet.contains(candidate))
+                .cloned()
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().expect("the test's own lock").clone()
+        }
+    }
+
+    impl Sources for Told {
+        fn allowed(&self, name: &str) -> bool {
+            !self.inside.contains(&name)
+        }
+
+        fn documents(&self, urls: &[String]) -> Vec<Option<String>> {
+            self.asked
+                .lock()
+                .expect("the test's own lock")
+                .extend(urls.iter().cloned());
+            urls.iter()
+                .map(|url| {
+                    self.documents
+                        .iter()
+                        .find(|(start, _)| url.starts_with(start))
+                        .map(|(_, text)| text.clone())
+                })
+                .collect()
+        }
+
+        fn service(&self, name: &str) -> Vec<Server> {
+            self.services
+                .iter()
+                .find(|(named, _)| *named == name)
+                .map(|(_, servers)| servers.clone())
+                .unwrap_or_default()
+        }
+
+        fn exchangers(&self, _domain: &str) -> Vec<String> {
+            self.exchangers
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+        }
+
+        fn reads(&self, candidates: &[Server]) -> Option<Server> {
+            self.first(candidates)
+        }
+
+        fn sends(&self, candidates: &[Server]) -> Option<Server> {
+            self.first(candidates)
+        }
+    }
+
+    /// A settings document as mail providers publish it.
+    fn settings(incoming: &str, outgoing: &str, outgoing_port: u16, socket: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="hoster.example">
+    <domain>hoster.example</domain>
+    <incomingServer type="pop3">
+      <hostname>pop.hoster.example</hostname><port>995</port><socketType>SSL</socketType>
+    </incomingServer>
+    <incomingServer type="imap">
+      <hostname>{incoming}</hostname><port>143</port><socketType>STARTTLS</socketType>
+      <username>%EMAILADDRESS%</username>
+    </incomingServer>
+    <incomingServer type="imap">
+      <hostname>{incoming}</hostname><port>993</port><socketType>SSL</socketType>
+      <username>%EMAILADDRESS%</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>{outgoing}</hostname><port>{outgoing_port}</port><socketType>{socket}</socketType>
+      <username>%EMAILLOCALPART%</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>"#
+        )
+    }
+
+    /// A person on a domain of their own whose mail a provider keeps: the
+    /// domain publishes nothing and names no mail service, the servers that
+    /// take its mail and its autodiscover service name lead to the provider,
+    /// and the provider's own document gives the servers.
+    #[test]
+    fn a_domain_kept_by_a_provider_is_found_through_what_the_provider_publishes() {
+        let network = Told {
+            documents: vec![(
+                "https://autoconfig.hoster.example/",
+                settings("imap.hoster.example", "smtp.hoster.example", 465, "SSL"),
+            )],
+            services: vec![(
+                "_autodiscover._tcp.example.test",
+                vec![Server::new("adsredir.hoster.example.", 443)],
+            )],
+            exchangers: vec!["mx00.mail.hoster.example.", "mx01.mail.hoster.example."],
+            greet: vec![
+                Server::new("imap.hoster.example", 993),
+                Server::new("smtp.hoster.example", 465),
+            ],
+            ..Told::default()
+        };
+        let found = find(" ada@Example.Test ", &network).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.hoster.example", 993));
+        assert_eq!(found.outgoing, Server::new("smtp.hoster.example", 465));
+        assert_eq!(found.found, Found::Published);
+        assert_eq!(found.username.as_deref(), Some("ada@Example.Test"));
+        assert_eq!(found.own_sign_in, None);
+        let asked = network.asked();
+        // Its own domain is told the address; the provider is not.
+        assert!(
+            asked.contains(
+                &"https://autoconfig.example.test/mail/config-v1.1.xml?emailaddress=ada@Example.Test"
+                    .to_owned()
+            ),
+            "{asked:?}"
+        );
+        assert!(
+            asked.contains(&"https://autoconfig.hoster.example/mail/config-v1.1.xml".to_owned()),
+            "{asked:?}"
+        );
+        assert!(
+            asked
+                .iter()
+                .filter(|asked| asked.contains("emailaddress"))
+                .all(|asked| asked.contains("example.test/")),
+            "{asked:?}"
+        );
+    }
+
+    /// A provider that publishes nothing is found by the usual names under
+    /// its domain, after the names under the person's own.
+    #[test]
+    fn a_provider_that_publishes_nothing_is_found_by_its_usual_names() {
+        let network = Told {
+            exchangers: vec!["mx00.hoster.example"],
+            greet: vec![
+                Server::new("imap.hoster.example", 993),
+                Server::new("smtp.hoster.example", 587),
+            ],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &network).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.hoster.example", 993));
+        assert_eq!(found.outgoing, Server::new("smtp.hoster.example", 587));
+        assert_eq!(found.found, Found::Names);
+        assert_eq!(found.username, None);
+        let asked: Vec<String> = network
+            .asked()
+            .into_iter()
+            .filter(|asked| asked.ends_with(":993"))
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                "imap.example.test:993",
+                "mail.example.test:993",
+                "example.test:993",
+                "imap.hoster.example:993",
+                "mail.hoster.example:993",
+                "hoster.example:993",
+            ]
+        );
+    }
+
+    /// What is published is taken before what a domain names as services, and
+    /// that before the usual names; a published server nobody greets at is
+    /// passed over for the next way, and a service that names nobody is asked
+    /// nothing.
+    #[test]
+    fn what_is_published_comes_before_services_and_those_before_the_usual_names() {
+        let services = vec![
+            (
+                "_imaps._tcp.example.test",
+                vec![Server::new("in.mailer.example.", 993)],
+            ),
+            ("_submissions._tcp.example.test", vec![Server::new(".", 0)]),
+            (
+                "_submission._tcp.example.test",
+                vec![Server::new("out.mailer.example", 587)],
+            ),
+        ];
+        let greet = vec![
+            Server::new("in.mailer.example", 993),
+            Server::new("out.mailer.example", 587),
+            Server::new("post.example.test", 993),
+            Server::new("imap.example.test", 993),
+            Server::new("smtp.example.test", 465),
+        ];
+        let publishing = Told {
+            documents: vec![(
+                "https://example.test/.well-known/",
+                settings("post.example.test", "gone.example.test", 587, "STARTTLS"),
+            )],
+            services: services.clone(),
+            greet: greet.clone(),
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &publishing).expect("its servers");
+        assert_eq!(found.incoming, Server::new("post.example.test", 993));
+        // Nobody greets at the published outgoing server: the service is next.
+        assert_eq!(found.outgoing, Server::new("out.mailer.example", 587));
+        assert_eq!(found.found, Found::Service);
+
+        let naming = Told {
+            services,
+            greet,
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &naming).expect("its servers");
+        assert_eq!(found.incoming, Server::new("in.mailer.example", 993));
+        assert_eq!(found.outgoing, Server::new("out.mailer.example", 587));
+        assert_eq!(found.found, Found::Service);
+        assert!(
+            !naming.asked().iter().any(|asked| asked.starts_with(':')),
+            "a service that names nobody is asked nothing: {:?}",
+            naming.asked()
+        );
+    }
+
+    /// A domain that publishes nothing itself is found through the settings
+    /// the database of what providers publish keeps for it: asked after the
+    /// domain's own documents and before the services the domain names, so a
+    /// document that answers is not passed over for a service name.
+    #[test]
+    fn a_domain_that_publishes_nothing_is_found_in_the_providers_database() {
+        let network = Told {
+            documents: vec![(
+                "https://autoconfig.thunderbird.net/v1.1/example.test",
+                settings(
+                    "imap.database.example",
+                    "smtp.database.example",
+                    587,
+                    "STARTTLS",
+                ),
+            )],
+            services: vec![(
+                "_imaps._tcp.example.test",
+                vec![Server::new("in.mailer.example", 993)],
+            )],
+            greet: vec![
+                Server::new("imap.database.example", 993),
+                Server::new("smtp.database.example", 587),
+                Server::new("in.mailer.example", 993),
+            ],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &network).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.database.example", 993));
+        assert_eq!(found.outgoing, Server::new("smtp.database.example", 587));
+        assert_eq!(found.found, Found::Published);
+        assert_eq!(found.username.as_deref(), Some("ada@example.test"));
+        let asked = network.asked();
+        let own = asked
+            .iter()
+            .position(|asked| asked.starts_with("https://autoconfig.example.test/"))
+            .expect("the domain's own document is asked");
+        let database = asked
+            .iter()
+            .position(|asked| {
+                asked.starts_with("https://autoconfig.thunderbird.net/v1.1/example.test")
+            })
+            .expect("the database is asked");
+        assert!(own < database, "{asked:?}");
+        assert!(
+            !asked
+                .iter()
+                .any(|asked| asked.starts_with("in.mailer.example:")),
+            "a document that answers is not passed over: {asked:?}"
+        );
+    }
+
+    /// What a domain publishes itself is taken before the database is asked,
+    /// and a database this machine may not ask is asked nothing.
+    #[test]
+    fn a_domains_own_document_comes_before_the_database() {
+        let both = Told {
+            documents: vec![
+                (
+                    "https://autoconfig.example.test/",
+                    settings("imap.example.test", "smtp.example.test", 465, "SSL"),
+                ),
+                (
+                    "https://autoconfig.thunderbird.net/v1.1/",
+                    settings(
+                        "imap.database.example",
+                        "smtp.database.example",
+                        587,
+                        "STARTTLS",
+                    ),
+                ),
+            ],
+            greet: vec![
+                Server::new("imap.example.test", 993),
+                Server::new("smtp.example.test", 465),
+                Server::new("imap.database.example", 993),
+                Server::new("smtp.database.example", 587),
+            ],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &both).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.example.test", 993));
+        assert_eq!(found.outgoing, Server::new("smtp.example.test", 465));
+        assert!(
+            !both
+                .asked()
+                .iter()
+                .any(|asked| asked.contains("autoconfig.thunderbird.net")),
+            "the database is not asked once a document answered: {:?}",
+            both.asked()
+        );
+
+        let inside = Told {
+            greet: vec![
+                Server::new("imap.example.test", 993),
+                Server::new("smtp.example.test", 465),
+            ],
+            inside: vec!["autoconfig.thunderbird.net"],
+            ..Told::default()
+        };
+        find("ada@example.test", &inside).expect("the usual name answered");
+        assert!(
+            !inside
+                .asked()
+                .iter()
+                .any(|asked| asked.contains("autoconfig.thunderbird.net")),
+            "a database this machine may not ask is asked nothing: {:?}",
+            inside.asked()
+        );
+    }
+
+    /// A provider known by name is asked nothing, one whose accounts sign in
+    /// on its own page is said to, and a domain whose mail such a provider
+    /// takes signs in there too.
+    #[test]
+    fn a_provider_known_by_name_is_asked_nothing_and_says_where_it_signs_in() {
+        let network = Told::default();
+        let google = find("ada@gmail.com", &network).expect("its servers");
+        assert_eq!(google.incoming, Server::new("imap.gmail.com", 993));
+        assert_eq!(google.outgoing, Server::new("smtp.gmail.com", 587));
+        assert_eq!(google.found, Found::Known);
+        assert_eq!(google.own_sign_in, Some("Google"));
+        let microsoft = find("ada@outlook.com", &network).expect("its servers");
+        assert_eq!(microsoft.own_sign_in, Some("Microsoft"));
+        let other = find("ada@icloud.com", &network).expect("its servers");
+        assert_eq!(other.own_sign_in, None);
+        assert!(network.asked().is_empty(), "{:?}", network.asked());
+
+        let kept_by_google = Told {
+            exchangers: vec!["aspmx.l.google.com."],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &kept_by_google).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.gmail.com", 993));
+        assert_eq!(found.own_sign_in, Some("Google"));
+        let kept_by_microsoft = Told {
+            exchangers: vec!["example-test.mail.protection.outlook.com"],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &kept_by_microsoft).expect("its servers");
+        assert_eq!(found.own_sign_in, Some("Microsoft"));
+        assert!(kept_by_microsoft.asked().is_empty());
+    }
+
+    /// A name this machine may not ask is asked nothing, whoever named it;
+    /// words that are no address are asked nothing either; and a domain
+    /// nobody answers under says which server to name.
+    #[test]
+    fn a_name_inside_is_never_asked_and_nothing_found_says_what_to_name() {
+        let network = Told {
+            documents: vec![(
+                "https://autoconfig.example.test/",
+                settings("inner.example.test", "smtp.example.test", 465, "SSL"),
+            )],
+            services: vec![(
+                "_imaps._tcp.example.test",
+                vec![Server::new("inner.example.test", 993)],
+            )],
+            greet: vec![
+                Server::new("inner.example.test", 993),
+                Server::new("mail.example.test", 993),
+                Server::new("smtp.example.test", 465),
+            ],
+            inside: vec!["inner.example.test", "mail.example.test", "example.test"],
+            ..Told::default()
+        };
+        let nothing = find("ada@example.test", &network).unwrap_err();
+        assert!(nothing.contains("incoming (IMAP)"), "{nothing}");
+        assert!(nothing.contains("example.test"), "{nothing}");
+        let asked = network.asked();
+        assert!(
+            !asked.iter().any(|asked| asked.starts_with("inner.")
+                || asked.starts_with("mail.")
+                || asked.starts_with("example.test:")
+                || asked.starts_with("https://example.test/")),
+            "{asked:?}"
+        );
+
+        let reads_only = Told {
+            greet: vec![Server::new("imap.example.test", 993)],
+            ..Told::default()
+        };
+        let no_sending = find("ada@example.test", &reads_only).unwrap_err();
+        assert!(no_sending.contains("outgoing (SMTP)"), "{no_sending}");
+
+        let unasked = Told::default();
+        for words in [
+            "",
+            "ada",
+            "@example.test",
+            "ada@",
+            "ada@localhost",
+            "ada@10.0.0.8",
+            "ada@exa mple.test",
+            "ada@-example.test",
+            "a da@example.test",
+        ] {
+            assert_eq!(
+                find(words, &unasked),
+                Err(NOT_AN_ADDRESS.to_owned()),
+                "{words:?}"
+            );
+        }
+        assert!(unasked.asked().is_empty());
+    }
+
+    /// A settings document that is no document, or that offers no secured
+    /// IMAP server, says nothing.
+    #[test]
+    fn a_document_that_offers_no_secured_server_says_nothing() {
+        assert_eq!(published_in("not a document", "ada@example.test"), None);
+        let clear = settings("imap.hoster.example", "smtp.hoster.example", 25, "plain");
+        assert_eq!(published_in(&clear, "ada@example.test"), None);
+        let said = settings("imap.%EMAILDOMAIN%", "smtp.hoster.example", 587, "STARTTLS");
+        let (incoming, outgoing, username) =
+            published_in(&said, "ada@example.test").expect("what it says");
+        assert_eq!(incoming, Server::new("imap.example.test", 993));
+        assert_eq!(outgoing, Server::new("smtp.hoster.example", 587));
+        assert_eq!(username.as_deref(), Some("ada@example.test"));
+    }
+
+    /// The live look takes the first name, in its order, at which a mail
+    /// server greets with a certificate this machine trusts for that name: a
+    /// closed port is passed over, and a server whose certificate is not
+    /// trusted is no server.
+    #[test]
+    fn the_live_look_takes_a_server_only_with_a_certificate_for_its_name() {
+        let greeting = "* OK [CAPABILITY IMAP4rev1] ready\r\n";
+        let (server, roots) = crate::tests::server_tls();
+        let (reading, read) = crate::tests::imap_server(server, greeting, "TAG OK done\r\n");
+        let closed = crate::tests::closed_port();
+        let everything = |_: &str| true;
+        let live = Live::new(&everything).trusting(roots);
+        let found = live.reads(&[
+            Server::new("localhost", closed),
+            Server::new("localhost", reading),
+        ]);
+        assert_eq!(found, Some(Server::new("localhost", reading)));
+        drop(read.join());
+
+        let (server, _) = crate::tests::server_tls();
+        let (sending, sent) = crate::tests::smtp_server(server, crate::tests::Smtp::ACCEPTS);
+        // That server presents another certificate than the trusted one.
+        assert_eq!(live.sends(&[Server::new("localhost", sending)]), None);
+        drop(sent.join());
+
+        let (server, roots) = crate::tests::server_tls();
+        let (sending, sent) = crate::tests::smtp_server(server, crate::tests::Smtp::ACCEPTS);
+        let live = Live::new(&everything).trusting(roots);
+        assert_eq!(
+            live.sends(&[Server::new("localhost", sending)]),
+            Some(Server::new("localhost", sending))
+        );
+        drop(sent.join());
+    }
+}

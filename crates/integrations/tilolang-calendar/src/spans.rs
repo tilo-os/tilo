@@ -848,3 +848,296 @@ pub fn free(busy: &[Occurrence], span: &Span, hours: &Hours) -> Vec<Gap> {
     }
     gaps
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::OccurrenceOverride;
+
+    fn at(y: i16, m: i8, d: i8, h: i8, min: i8) -> DateTime {
+        Date::new(y, m, d).unwrap().at(h, min, 0, 0)
+    }
+
+    fn day(y: i16, m: i8, d: i8) -> Date {
+        Date::new(y, m, d).unwrap()
+    }
+
+    fn event(title: &str, zone: &str, start: DateTime, minutes: i64) -> Event {
+        Event {
+            id: uuid::Uuid::new_v4(),
+            title: title.into(),
+            start,
+            end: start.saturating_add(jiff::SignedDuration::from_mins(minutes)),
+            timezone: zone.into(),
+            ..Event::default()
+        }
+    }
+
+    fn span(from: &str, to: &str, zone: &str) -> Span {
+        Span::asked(from, to, Some(zone), []).unwrap()
+    }
+
+    /// Each occurrence's start in the zone asked, as the answer writes it.
+    fn starts(found: &Found) -> Vec<&str> {
+        found
+            .entries
+            .iter()
+            .map(|entry| entry.start.as_str())
+            .collect()
+    }
+
+    tilo_test_env::scenario! {
+        /// A span of a calendar, read as what happens in it.
+        fn a_span_answers_every_occurrence_at_its_instant;
+
+        phase a_weekday_series_with_an_exception_and_a_moved_occurrence_reads_across_two_weeks;
+        {
+            // Every weekday at 09:30 Berlin time from Monday 16 November:
+            // not on Wednesday the 18th, and Tuesday the 24th moved to 15:00.
+            let mut standup = event("Standup", "Europe/Berlin", at(2026, 11, 16, 9, 30), 15);
+            standup.recurrence = Recurrence::Weekdays;
+            standup.recurrence_exdates = [day(2026, 11, 18)].into_iter().collect();
+            standup.occurrence_overrides = vec![OccurrenceOverride {
+                original_date: day(2026, 11, 24),
+                start: Some(at(2026, 11, 24, 15, 0)),
+                end: Some(at(2026, 11, 24, 15, 15)),
+                ..OccurrenceOverride::default()
+            }]
+            .into();
+            let found = occurrences(
+                [&standup],
+                &span("2026-11-16", "2026-11-30", "Europe/Berlin"),
+                &Only::default(),
+            );
+            assert_eq!(
+                starts(&found),
+                [
+                    "2026-11-16T09:30:00+01:00",
+                    "2026-11-17T09:30:00+01:00",
+                    "2026-11-19T09:30:00+01:00",
+                    "2026-11-20T09:30:00+01:00",
+                    "2026-11-23T09:30:00+01:00",
+                    "2026-11-24T15:00:00+01:00",
+                    "2026-11-25T09:30:00+01:00",
+                    "2026-11-26T09:30:00+01:00",
+                    "2026-11-27T09:30:00+01:00",
+                ],
+                "nine of the ten weekdays, one of them moved"
+            );
+            assert!(!found.partial);
+            let moved: Vec<_> = found.entries.iter().filter(|entry| entry.moved).collect();
+            assert_eq!(moved.len(), 1);
+            assert_eq!(moved[0].occurrence, "2026-11-24", "it keeps its place's name");
+            assert_eq!(moved[0].end, "2026-11-24T15:15:00+01:00");
+            assert!(found.entries.iter().all(|entry| {
+                entry.repeats && entry.entry == standup.id.to_string() && entry.zone == "Europe/Berlin"
+            }));
+        }
+
+        phase a_series_keeps_its_time_of_day_over_a_clock_change;
+        {
+            // Berlin leaves summer time on Sunday 25 October 2026.
+            let mut walk = event("Walk", "Europe/Berlin", at(2026, 10, 24, 9, 0), 60);
+            walk.recurrence = Recurrence::Daily;
+            let found = occurrences(
+                [&walk],
+                &span("2026-10-24", "2026-10-27", "Europe/Berlin"),
+                &Only::default(),
+            );
+            assert_eq!(
+                starts(&found),
+                [
+                    "2026-10-24T09:00:00+02:00",
+                    "2026-10-25T09:00:00+01:00",
+                    "2026-10-26T09:00:00+01:00",
+                ]
+            );
+            let hours_apart: Vec<i64> = found
+                .entries
+                .windows(2)
+                .map(|pair| (pair[1].start_ms - pair[0].start_ms) / 3_600_000)
+                .collect();
+            assert_eq!(hours_apart, [25, 24], "the day the clock went back has 25 hours");
+        }
+
+        phase an_entry_of_another_zone_is_answered_in_the_zone_asked;
+        {
+            let call = event("Call", "America/New_York", at(2026, 11, 17, 10, 0), 30);
+            let found = occurrences(
+                [&call],
+                &span("2026-11-17T15:00", "2026-11-17T17:00", "Europe/Berlin"),
+                &Only::default(),
+            );
+            assert_eq!(starts(&found), ["2026-11-17T16:00:00+01:00"]);
+            assert_eq!(found.entries[0].zone, "America/New_York");
+            // A span that ends as it begins does not hold it.
+            let before = occurrences(
+                [&call],
+                &span("2026-11-17T15:00", "2026-11-17T16:00", "Europe/Berlin"),
+                &Only::default(),
+            );
+            assert!(before.entries.is_empty());
+        }
+
+        phase an_all_day_entry_names_its_first_and_last_day;
+        {
+            let mut fair = event("Fair", "floating", at(2026, 11, 18, 0, 0), 0);
+            fair.all_day = true;
+            fair.end = at(2026, 11, 21, 0, 0);
+            let found = occurrences(
+                [&fair],
+                &span("2026-11-20", "2026-11-21", "Europe/Berlin"),
+                &Only::default(),
+            );
+            assert_eq!(found.entries.len(), 1, "it reaches into the span from before it");
+            let entry = &found.entries[0];
+            assert_eq!((entry.start.as_str(), entry.end.as_str()), ("2026-11-18", "2026-11-20"));
+            assert!(entry.all_day);
+            assert_eq!(
+                entry.end_ms - entry.start_ms,
+                3 * 24 * 3_600_000,
+                "three days in the zone asked"
+            );
+        }
+
+        phase a_category_some_words_or_a_calendar_narrow_what_is_answered;
+        {
+            let mut board = event("Board meeting", "Europe/Berlin", at(2026, 11, 17, 10, 0), 60);
+            board.categories = ["Board".to_owned()].into_iter().collect();
+            board.calendar_id = Some("work".into());
+            let mut lunch = event("Lunch", "Europe/Berlin", at(2026, 11, 17, 12, 0), 60);
+            lunch.location = "Canteen".into();
+            let week = span("2026-11-16", "2026-11-23", "Europe/Berlin");
+            let titles = |only: Only| -> Vec<String> {
+                occurrences([&board, &lunch], &week, &only)
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.title)
+                    .collect()
+            };
+            assert_eq!(titles(Only::default()), ["Board meeting", "Lunch"]);
+            assert_eq!(
+                titles(Only { category: Some("board".into()), ..Only::default() }),
+                ["Board meeting"],
+                "a category is compared without regard to case"
+            );
+            assert_eq!(
+                titles(Only { text: Some("canteen".into()), ..Only::default() }),
+                ["Lunch"]
+            );
+            assert_eq!(
+                titles(Only { calendars: vec!["work".into()], ..Only::default() }),
+                ["Board meeting"]
+            );
+            let held = occurrences([&board], &week, &Only::default());
+            assert_eq!(held.entries[0].categories, ["Board"]);
+            assert_eq!(held.entries[0].calendar, "work");
+        }
+
+        phase a_span_that_does_not_read_names_what_is_wrong;
+        {
+            let asked = |from: &str, to: &str, zone: Option<&str>| {
+                Span::asked(from, to, zone, []).unwrap_err()
+            };
+            assert!(asked("next week", "2026-11-23", None).starts_with("from is a date"));
+            assert!(asked("2026-11-16", "soon", None).starts_with("to is a date"));
+            assert!(asked("2026-11-16", "2026-11-23", Some("Berlin")).starts_with("zone is"));
+            assert_eq!(asked("2026-11-23", "2026-11-16", None), "to comes after from");
+            assert!(asked("2026-01-01", "2027-06-01", None).starts_with("a span is at most"));
+        }
+
+        phase a_reader_who_names_no_zone_is_answered_in_the_calendars_own;
+        {
+            let berlin = event("A", "Europe/Berlin", at(2026, 11, 17, 10, 0), 60);
+            let berlin_too = event("B", "Europe/Berlin", at(2026, 11, 18, 10, 0), 60);
+            let york = event("C", "America/New_York", at(2026, 11, 17, 10, 0), 60);
+            let events = [&berlin, &berlin_too, &york];
+            let span = Span::asked("2026-11-17", "2026-11-18", None, events).unwrap();
+            assert_eq!(span.zone, "Europe/Berlin");
+            assert_eq!(Span::asked("2026-11-17", "2026-11-18", None, []).unwrap().zone, "UTC");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// The gaps between a span's entries, inside the hours asked.
+        fn free_time_is_what_the_entries_leave_inside_the_hours_asked;
+
+        phase a_working_week_reads_as_its_gaps;
+        {
+            let mut standup = event("Standup", "Europe/Berlin", at(2026, 11, 16, 9, 30), 15);
+            standup.recurrence = Recurrence::Weekdays;
+            let review = event("Review", "Europe/Berlin", at(2026, 11, 16, 13, 0), 120);
+            // Two entries that overlap take their time once.
+            let also = event("Also", "Europe/Berlin", at(2026, 11, 16, 14, 0), 90);
+            let monday = span("2026-11-16", "2026-11-17", "Europe/Berlin");
+            let busy = occurrences([&standup, &review, &also], &monday, &Only::default());
+            let gaps = free(&busy.entries, &monday, &Hours::default());
+            let read: Vec<(&str, &str, i64)> = gaps
+                .iter()
+                .map(|gap| (gap.start.as_str(), gap.end.as_str(), gap.minutes))
+                .collect();
+            assert_eq!(
+                read,
+                [
+                    ("2026-11-16T09:00:00+01:00", "2026-11-16T09:30:00+01:00", 30),
+                    ("2026-11-16T09:45:00+01:00", "2026-11-16T13:00:00+01:00", 195),
+                    ("2026-11-16T15:30:00+01:00", "2026-11-16T17:00:00+01:00", 90),
+                ]
+            );
+            let long = Hours::asked(None, None, &[], Some(60), false).unwrap();
+            assert_eq!(free(&busy.entries, &monday, &long).len(), 2, "half an hour is too short");
+        }
+
+        phase a_weekend_counts_only_when_asked_and_an_all_day_entry_only_when_told;
+        {
+            let mut holiday = event("Holiday", "floating", at(2026, 11, 20, 0, 0), 0);
+            holiday.all_day = true;
+            holiday.end = at(2026, 11, 21, 0, 0);
+            // Friday the 20th to Monday the 23rd.
+            let days = span("2026-11-20", "2026-11-23", "Europe/Berlin");
+            let busy = occurrences([&holiday], &days, &Only::default());
+            let firsts = |hours: &Hours| -> Vec<String> {
+                free(&busy.entries, &days, hours)
+                    .into_iter()
+                    .map(|gap| gap.start)
+                    .collect()
+            };
+            assert_eq!(firsts(&Hours::default()), ["2026-11-20T09:00:00+01:00"]);
+            let every_day = Hours::asked(
+                Some("10:00"),
+                Some("12:00"),
+                &["fri".into(), "Saturday".into(), "sun".into()],
+                None,
+                true,
+            )
+            .unwrap();
+            assert_eq!(
+                firsts(&every_day),
+                ["2026-11-21T10:00:00+01:00", "2026-11-22T10:00:00+01:00"],
+                "the holiday takes Friday once it is told to"
+            );
+        }
+
+        phase a_whole_day_asked_over_a_clock_change_is_as_long_as_that_day_was;
+        {
+            let sunday = span("2026-10-25", "2026-10-26", "Europe/Berlin");
+            let whole = Hours::asked(Some("00:00"), Some("24:00"), &["sun".into()], None, false)
+                .unwrap();
+            let gaps = free(&[], &sunday, &whole);
+            assert_eq!(gaps.len(), 1);
+            assert_eq!(gaps[0].minutes, 25 * 60);
+        }
+
+        phase hours_that_do_not_read_name_what_is_wrong;
+        {
+            let asked = |start: Option<&str>, end: Option<&str>, days: &[String], least: Option<u32>| {
+                Hours::asked(start, end, days, least, false).unwrap_err()
+            };
+            assert!(asked(Some("nine"), None, &[], None).starts_with("dayStart is a time"));
+            assert!(asked(None, Some("5pm"), &[], None).starts_with("dayEnd is a time"));
+            assert_eq!(asked(Some("17:00"), Some("09:00"), &[], None), "dayEnd comes after dayStart");
+            assert!(asked(None, None, &["someday".into()], None).starts_with("days are"));
+            assert_eq!(asked(None, None, &[], Some(0)), "atLeastMinutes is between 1 and 1440");
+        }
+    }
+}

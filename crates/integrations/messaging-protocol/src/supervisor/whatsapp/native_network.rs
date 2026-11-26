@@ -310,3 +310,66 @@ fn pipe(
     }
     (pipe, receiver)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    struct Grant(AtomicBool);
+    impl AccountAuthority for Grant {
+        fn check(&self) -> std::result::Result<(), tilo_messaging::SendError> {
+            if self.0.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(tilo_messaging::SendError::Revoked)
+            }
+        }
+    }
+    async fn sockets() -> (Socket, Socket) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connecting = tokio::spawn(async move { TcpStream::connect(address).await.unwrap() });
+        let (server, _) = listener.accept().await.unwrap();
+        let client = connecting.await.unwrap();
+        (
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                .await,
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(server), Role::Server, None)
+                .await,
+        )
+    }
+    #[tokio::test]
+    async fn native_pipe_revocation_stops_receives_and_new_writes_and_closes_owned_stream() {
+        let (client, mut server) = sockets().await;
+        let grant = Arc::new(Grant(AtomicBool::new(true)));
+        let (transport, events) = pipe(client, grant.clone());
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            TransportEvent::Connected
+        ));
+        transport
+            .send(Bytes::from_static(b"fixture encrypted frame"))
+            .await
+            .unwrap();
+        assert_eq!(
+            server.next().await.unwrap().unwrap(),
+            Message::Binary(Bytes::from_static(b"fixture encrypted frame"))
+        );
+        grant.0.store(false, Ordering::Release);
+        assert!(
+            transport
+                .send(Bytes::from_static(b"refused frame"))
+                .await
+                .is_err()
+        );
+        let next = tilo_test_env::within("the transport's disconnect", events.recv())
+            .await
+            .unwrap();
+        assert!(matches!(next, TransportEvent::Disconnected(_)));
+        assert!(events.recv().await.is_err());
+        let closing = tilo_test_env::within("the server side to close", server.next()).await;
+        assert!(matches!(closing, Some(Ok(Message::Close(_))) | None));
+        transport.disconnect().await;
+    }
+}

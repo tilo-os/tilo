@@ -78,3 +78,43 @@ pub fn quick_xor_base64(bytes: &[u8]) -> String {
     hash.update(bytes);
     hash.base64()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode(text: &str) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .unwrap()
+    }
+
+    /// Vectors from rclone's reference implementation
+    /// (`backend/onedrive/quickxorhash`), input and output base64.
+    #[test]
+    fn matches_reference_vectors() {
+        for (input, expected) in [
+            ("", "AAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            ("Sg==", "SgAAAAAAAAAAAAAAAQAAAAAAAAA="),
+            ("0pZP", "0rDEEwAAAAAAAAAAAwAAAAAAAAA="),
+            ("h490d57Pqz5q2rtT", "h3gEHe7giWeswgdq3MYupgAAAAA="),
+            ("2fuxhBJXtpWFe8dOfdGeHw==", "O9tHLAghgSvYohKFyMMxnNCHaHg="),
+            (
+                "NbYXsp5/K6mR+NmHwExjvWeWDJFnXTKWVlzYHoesp2E=",
+                "wjuAuWDiq04qDt1R8hHWDDcwVoQ=",
+            ),
+        ] {
+            assert_eq!(quick_xor_base64(&decode(input)), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn incremental_updates_match_one_shot_across_the_period() {
+        let bytes: Vec<u8> = (0..5000_u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut hash = QuickXorHash::new();
+        for chunk in bytes.chunks(333) {
+            hash.update(chunk);
+        }
+        assert_eq!(hash.base64(), quick_xor_base64(&bytes));
+    }
+}

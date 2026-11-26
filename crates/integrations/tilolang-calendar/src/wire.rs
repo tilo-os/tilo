@@ -118,3 +118,44 @@ pub fn read<T: for<'de> Deserialize<'de>>(from: &mut impl Read) -> io::Result<Op
         .map(Some)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_reads_back_as_written_and_the_end_reads_as_none() {
+        let sent = ToConnector::Sync {
+            request: uuid::Uuid::new_v4(),
+            account: "caldav:ada@calendar.example".into(),
+            known: Vec::new(),
+        };
+        let mut bytes = Vec::new();
+        write(&mut bytes, &sent).unwrap();
+        write(
+            &mut bytes,
+            &ToConnector::Remove {
+                request: uuid::Uuid::new_v4(),
+                account: "caldav:ada@calendar.example".into(),
+                calendar: "https://calendar.example/dav/calendars/ada/work/".into(),
+                href: "https://calendar.example/dav/calendars/ada/work/a.ics".into(),
+            },
+        )
+        .unwrap();
+        let mut reading = bytes.as_slice();
+        assert_eq!(read::<ToConnector>(&mut reading).unwrap(), Some(sent));
+        assert!(matches!(
+            read::<ToConnector>(&mut reading).unwrap(),
+            Some(ToConnector::Remove { .. })
+        ));
+        assert_eq!(read::<ToConnector>(&mut reading).unwrap(), None);
+    }
+
+    #[test]
+    fn an_oversized_frame_is_refused_before_it_is_read() {
+        let mut bytes = u32::MAX.to_be_bytes().to_vec();
+        bytes.extend_from_slice(b"{}");
+        let error = read::<FromConnector>(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+}

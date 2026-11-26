@@ -703,3 +703,109 @@ pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
 pub const CHATGPT_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
 /// GitHub Copilot's chat endpoint.
 pub const COPILOT_ENDPOINT: &str = "https://api.githubcopilot.com";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ProviderConfig;
+
+    #[test]
+    fn every_preset_makes_a_valid_profile() {
+        for preset in Preset::ALL.iter().copied() {
+            assert_eq!(Preset::from_slug(preset.slug()), Some(preset));
+            let profile = preset.profile();
+            // The gateway stores only a valid configuration, so a preset's
+            // placeholder endpoint is a valid address too.
+            let config = ProviderConfig {
+                profiles: vec![profile.clone()],
+                ..ProviderConfig::default()
+            };
+            assert_eq!(config.validation_errors(), [], "{preset:?}");
+            assert!(url::Url::parse(&profile.endpoint).is_ok(), "{preset:?}");
+            // Until the person fills it in, the form says what goes there.
+            assert_eq!(
+                Preset::matching(&profile).and_then(|matched| matched.fill_in_for(&profile)),
+                preset.fill_in_text(),
+                "{preset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_catalogue_is_complete_and_unambiguous() {
+        let slugs: std::collections::BTreeSet<_> =
+            Preset::ALL.iter().map(|preset| preset.slug()).collect();
+        assert_eq!(slugs.len(), Preset::ALL.len());
+        assert!(Preset::ALL.len() >= 40, "{}", Preset::ALL.len());
+        for preset in Preset::ALL {
+            assert!(!preset.label().is_empty() && !preset.description().is_empty());
+            assert!(preset.description().ends_with('.'), "{preset:?}");
+            assert!(preset.docs().starts_with("https://"), "{preset:?}");
+            // A hosted provider is reached over TLS.
+            if preset.location() == EndpointLocation::Hosted && !preset.endpoint_editable() {
+                assert!(preset.endpoint().starts_with("https://"), "{preset:?}");
+            }
+        }
+        let anthropic: Vec<_> = Preset::ALL
+            .iter()
+            .filter(|preset| preset.protocol() == ProviderProtocol::Anthropic)
+            .map(|preset| preset.slug())
+            .collect();
+        assert_eq!(
+            anthropic,
+            [
+                "anthropic",
+                "deepseek-anthropic",
+                "moonshot-anthropic",
+                "zai-anthropic",
+                "minimax-anthropic",
+                "anthropic-compatible"
+            ]
+        );
+    }
+
+    #[test]
+    fn profiles_carry_their_key_header_and_models_path() {
+        let azure = Preset::AZURE_OPENAI.profile();
+        assert_eq!(azure.key_header, Some(KeyHeader::ApiKey));
+        assert_eq!(azure.models_path, None);
+        let anthropic = Preset::ANTHROPIC.profile();
+        assert_eq!((anthropic.key_header, anthropic.models_path), (None, None));
+        let fireworks = Preset::FIREWORKS.profile();
+        assert_eq!(fireworks.models_path.as_deref(), Some(""));
+        assert_eq!(crate::transform::models_url(&fireworks), None);
+        // Moonshot's Anthropic endpoint lists its models beside its OpenAI
+        // one, and takes the key as a bearer token.
+        let kimi = Preset::MOONSHOT_ANTHROPIC.profile();
+        assert_eq!(kimi.key_header, Some(KeyHeader::Bearer));
+        assert_eq!(
+            crate::transform::models_url(&kimi).as_deref(),
+            Some("https://api.moonshot.ai/v1/models")
+        );
+        // Two profiles of one preset are two providers.
+        let (first, second) = (Preset::OPENROUTER.profile(), Preset::OPENROUTER.profile());
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.credential, second.credential);
+        assert_eq!(Preset::matching(&first), Some(Preset::OPENROUTER));
+    }
+
+    #[test]
+    fn local_servers_need_no_key_and_subscriptions_sign_in() {
+        let ollama = Preset::OLLAMA.profile();
+        assert_eq!(ollama.location, EndpointLocation::ThisDevice);
+        assert!(ollama.credential.is_none() && ollama.sign_in.is_none());
+        assert!(crate::is_supervised_loopback(&ollama));
+        let chatgpt = Preset::CHATGPT.profile();
+        assert_eq!(chatgpt.sign_in_issuer(), Some(SignInIssuer::ChatGpt));
+        assert!(chatgpt.credential.is_none());
+        let openai = Preset::OPENAI.profile();
+        assert_eq!(
+            openai.credential,
+            Some(SecretReference::provider_api_key(&openai.id))
+        );
+        assert_eq!(
+            openai.token_limit_param,
+            Some(TokenLimitParam::MaxCompletionTokens)
+        );
+    }
+}

@@ -143,3 +143,42 @@ impl Paths {
         self.vacated.remove(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untagged_file_metadata_is_a_file() {
+        let entry = Entry::parse(&serde_json::json!({
+            "name": "a.txt", "id": "id:1", "rev": "015f00000001", "size": 3
+        }))
+        .unwrap();
+        assert_eq!(entry.kind(), Kind::File);
+        let folder = Entry::parse(&serde_json::json!({"name": "D", "id": "id:2"})).unwrap();
+        assert_eq!(folder.kind(), Kind::Folder);
+        let deleted =
+            Entry::parse(&serde_json::json!({".tag": "deleted", "name": "x", "path_lower": "/x"}))
+                .unwrap();
+        assert_eq!(deleted.kind(), Kind::Deleted);
+    }
+
+    #[test]
+    fn paths_follow_moves_and_deletions() {
+        let mut paths = Paths::default();
+        let (folder, child) = (ItemId::new("id:f"), ItemId::new("id:c"));
+        paths.insert(&folder, "/a");
+        paths.insert(&child, "/a/c.txt");
+        paths.insert(&folder, "/b");
+        paths.rebase("/a", "/b");
+        assert!(paths.take_vacated("/a"));
+        assert_eq!(paths.get("/b/c.txt"), Some(&child));
+        assert!(paths.get("/a/c.txt").is_none());
+        assert_eq!(paths.remove_tree("/b"), vec![folder, child]);
+        assert!(paths.get("/b").is_none());
+        assert!(is_within("/a/b", "/a"));
+        assert!(!is_within("/ab", "/a"));
+        assert_eq!(parent_path("/a/b"), "/a");
+        assert_eq!(parent_path("/a"), "");
+    }
+}

@@ -278,3 +278,174 @@ fn base32(seed: &str) -> Option<Zeroizing<Vec<u8>>> {
     }
     (!bytes.is_empty()).then_some(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::NewItem;
+    use super::*;
+
+    /// The seed RFC 6238 tests SHA-1 with, the bytes `12345678901234567890`,
+    /// as the setup key a site would show for it.
+    const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    /// The standard's SHA-256 seed: the same twenty bytes, repeated to the
+    /// thirty-two bytes that hash takes.
+    const SEED_256: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA";
+    /// The standard's SHA-512 seed: the same twenty bytes, repeated to the
+    /// sixty-four bytes that hash takes.
+    const SEED_512: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNA";
+
+    /// The codes are the standard's own: RFC 6238's table, by its last six
+    /// digits, each good for its whole period.
+    #[test]
+    fn a_seed_gives_the_code_the_standard_gives() {
+        let params = CodeParams::default();
+        for (at, code) in [
+            (59, "287082"),
+            (1_111_111_109, "081804"),
+            (1_111_111_111, "050471"),
+            (1_234_567_890, "005924"),
+            (2_000_000_000, "279037"),
+            (20_000_000_000, "353130"),
+        ] {
+            assert_eq!(code_of(SEED, at, params).unwrap().as_str(), code, "at {at}");
+        }
+        assert_eq!(
+            code_of(SEED, 30, params),
+            code_of(SEED, 59, params),
+            "one period"
+        );
+        assert_ne!(
+            code_of(SEED, 59, params),
+            code_of(SEED, 60, params),
+            "the next one"
+        );
+        // A last symbol that fills no whole byte adds nothing, and what is
+        // no base32 gives no code.
+        assert_eq!(
+            code_of(&format!("{SEED}A"), 59, params),
+            code_of(SEED, 59, params)
+        );
+        assert_eq!(code_of("not a seed", 59, params), None);
+        assert_eq!(code_of("", 59, params), None);
+        // RFC 6238's SHA-256 and SHA-512 rows, by their last six digits.
+        let sha256 = CodeParams {
+            algorithm: Algorithm::Sha256,
+            ..CodeParams::default()
+        };
+        let sha512 = CodeParams {
+            algorithm: Algorithm::Sha512,
+            ..CodeParams::default()
+        };
+        let eight_256 = CodeParams {
+            digits: 8,
+            ..sha256
+        };
+        let eight_512 = CodeParams {
+            digits: 8,
+            ..sha512
+        };
+        for (at, sha256_code, sha512_code) in [
+            (59, "46119246", "90693936"),
+            (1_111_111_109, "68084774", "25091201"),
+        ] {
+            assert_eq!(
+                code_of(SEED_256, at, eight_256).unwrap().as_str(),
+                sha256_code,
+                "SHA-256 at {at}"
+            );
+            assert_eq!(
+                code_of(SEED_512, at, eight_512).unwrap().as_str(),
+                sha512_code,
+                "SHA-512 at {at}"
+            );
+        }
+        // Six digits are the same code without its first two.
+        assert_eq!(code_of(SEED_256, 59, sha256).unwrap().as_str(), "119246");
+        assert_eq!(code_of(SEED_512, 59, sha512).unwrap().as_str(), "693936");
+    }
+
+    /// A code generator gives the code of this moment at its own site and
+    /// nowhere else, each time written down, and its seed is still never
+    /// handed out; what is no code generator gives no code.
+    #[test]
+    fn a_code_generator_gives_its_code_at_its_site_and_never_its_seed() {
+        let site = Place::parse("https://example.test").unwrap();
+        let mut items = VaultItems::default();
+        let generator = items
+            .add(NewItem::new(
+                ItemKind::CodeGenerator,
+                vec![site.clone()],
+                String::new(),
+                SEED.to_owned(),
+            ))
+            .unwrap();
+        let login = items
+            .add(NewItem::new(
+                ItemKind::Login,
+                vec![site.clone()],
+                "ada@example.test".to_owned(),
+                "correct horse battery staple".to_owned(),
+            ))
+            .unwrap();
+
+        let before = unix_now();
+        let code = items.code_at(&generator.id, &site, " Assistant ").unwrap();
+        let after = unix_now();
+        let params = CodeParams::default();
+        let either = [code_of(SEED, before, params), code_of(SEED, after, params)];
+        assert!(
+            either
+                .iter()
+                .flatten()
+                .any(|good| good.as_str() == code.digits()),
+            "the code of the moment it was asked for"
+        );
+        assert_eq!(code.digits().len(), 6);
+        assert!(code.digits().bytes().all(|digit| digit.is_ascii_digit()));
+        assert!(code.until_unix > before && code.until_unix <= after.saturating_add(CODE_SECS));
+        let printed = format!("{code:?}");
+        assert!(!printed.contains(code.digits()), "{printed}");
+
+        // Anywhere else, and for anything else, there is no code.
+        for elsewhere in [
+            "https://login.example.test",
+            "http://example.test",
+            "https://example.test:8443",
+            "https://example.test.elsewhere.test",
+        ] {
+            let elsewhere = Place::parse(elsewhere).unwrap();
+            assert_eq!(
+                items.code_at(&generator.id, &elsewhere, "Assistant").err(),
+                Some(ItemError::WrongPlace),
+                "{elsewhere}"
+            );
+        }
+        assert_eq!(
+            items.code_at(&login.id, &site, "Assistant").err(),
+            Some(ItemError::WrongKind)
+        );
+        let nobody = ItemId::parse(&"0".repeat(32)).unwrap();
+        assert_eq!(
+            items.code_at(&nobody, &site, "Assistant").err(),
+            Some(ItemError::NotFound)
+        );
+        // The seed itself still leaves for nobody.
+        assert_eq!(
+            items.use_at(&generator.id, &site, "Assistant").err(),
+            Some(ItemError::NeverReleased)
+        );
+
+        // The one code that was given is the one use written down, and what
+        // was refused left nothing.
+        let uses = items.uses(&generator.id).unwrap();
+        assert_eq!(uses.len(), 1, "{uses:?}");
+        let written = uses.first().unwrap();
+        assert_eq!(written.places, vec![site.clone()]);
+        assert_eq!(written.by, "Assistant");
+        assert!(written.at_unix >= before && written.at_unix <= after);
+        assert!(items.uses(&login.id).unwrap().is_empty());
+        let facts = VaultItems::of_entries(items.kept()).facts();
+        let kept = facts.iter().find(|item| item.id == generator.id).unwrap();
+        assert_eq!(kept.last_used_unix, Some(written.at_unix));
+    }
+}

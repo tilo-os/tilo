@@ -403,3 +403,8 @@ pub(crate) fn count(usage: Option<&Value>, key: &str) -> u64 {
 pub(crate) fn extra<'a>(extra: Option<&'a Value>, key: &str) -> Option<&'a Value> {
     extra.and_then(|extra| extra.get(key))
 }
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod thought_tests;

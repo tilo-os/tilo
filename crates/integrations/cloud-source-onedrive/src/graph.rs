@@ -310,3 +310,155 @@ impl DriveType {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "samples.rs"]
+mod samples;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::samples;
+
+    fn parse<'a, T: Deserialize<'a>>(json: &'a str) -> T {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn the_drive_root_is_a_folder_without_parents() {
+        let root: DriveItem = parse(samples::GET_ROOT);
+        let item = root.to_item().unwrap();
+        assert_eq!(item.id.as_str(), "01NKDM7HMOJTVYMDOSXFDK2QJDXCDI3WUK");
+        assert!(item.is_folder());
+        assert!(item.parents.is_empty());
+        assert_eq!(
+            item.size, None,
+            "a folder's size is its contents, not a body"
+        );
+        assert_eq!(
+            item.revision.unwrap().as_str(),
+            "\"{86EB4C8E-D20D-46B9-AD41-23B8868DDA8A},1\""
+        );
+        assert_eq!(
+            item.modified,
+            cloud_source::http::parse_rfc3339("2016-03-21T20:01:37Z"),
+        );
+    }
+
+    #[test]
+    fn created_folders_and_moves_name_their_parent() {
+        let folder: DriveItem = parse(samples::CREATE_FOLDER);
+        let item = folder.to_item().unwrap();
+        assert_eq!(item.name, "New Folder");
+        assert!(item.is_folder());
+        assert_eq!(
+            item.parents,
+            [ItemId::new("E67A8F34-B0AA-46E1-8FF7-0750A29553DF")]
+        );
+
+        let moved: DriveItem = parse(samples::MOVE);
+        let item = moved.to_item().unwrap();
+        assert_eq!(item.name, "new-item-name.txt");
+        assert_eq!(item.parents, [ItemId::new("1231203102!1011")]);
+    }
+
+    #[test]
+    fn children_pages_carry_a_next_link() {
+        let page: Page<DriveItem> = parse(samples::LIST_CHILDREN);
+        assert_eq!(page.value.len(), 4);
+        assert_eq!(page.next_link.as_deref(), Some("https://..."));
+        assert!(page.value[0].file.is_some());
+        assert!(page.value[1].is_folder());
+        assert!(page.value[0].to_item().is_none());
+    }
+
+    #[test]
+    fn delta_pages_mark_deletions_and_end_with_a_delta_link() {
+        let first: Page<DriveItem> = parse(samples::DELTA_FIRST);
+        assert!(first.next_link.is_some() && first.delta_link.is_none());
+        assert!(first.value[2].is_deleted());
+        assert!(!first.value[1].is_deleted());
+        let last: Page<DriveItem> = parse(samples::DELTA_LAST);
+        assert!(last.next_link.is_none());
+        assert!(last.delta_link.unwrap().contains("token="));
+        assert!(last.value[0].is_deleted() && last.value[0].is_folder());
+        let file = last.value[1].to_item().unwrap();
+        assert!(file.is_file());
+        assert_eq!(file.size, Some(0));
+    }
+
+    #[test]
+    fn versions_list_newest_first_with_authors() {
+        let page: Page<Version> = parse(samples::VERSIONS);
+        let infos: Vec<RevisionInfo> = page.value.iter().filter_map(Version::to_info).collect();
+        assert_eq!(infos.len(), 3);
+        assert_eq!(infos[0].revision.as_str(), "3.0");
+        assert_eq!(infos[0].size, Some(123));
+        assert_eq!(infos[0].author.as_deref(), Some("Ryan Gregg"));
+        assert!(infos[0].modified > infos[1].modified);
+    }
+
+    #[test]
+    fn upload_sessions_report_the_next_missing_range() {
+        let created: UploadSessionInfo = parse(samples::UPLOAD_SESSION);
+        assert_eq!(
+            created.upload_url.as_deref(),
+            Some("https://sn3302.up.1drv.com/up/fe6987415ace7X4e1eF866337")
+        );
+        assert_eq!(created.next_offset(), None);
+        let fragment: UploadSessionInfo = parse(samples::UPLOAD_FRAGMENT);
+        assert_eq!(fragment.next_offset(), Some(12_345));
+        let open: UploadSessionInfo = parse(r#"{"nextExpectedRanges": ["26-"]}"#);
+        assert_eq!(open.next_offset(), Some(26));
+        let done: DriveItem = parse(samples::UPLOAD_COMPLETE);
+        assert_eq!(done.to_item().unwrap().size, Some(128));
+    }
+
+    #[test]
+    fn share_links_and_quotas_parse() {
+        let permission: Permission = parse(samples::CREATE_LINK);
+        assert_eq!(
+            permission.link.unwrap().web_url.as_deref(),
+            Some("https://1drv.ms/A6913278E564460AA616C71B28AD6EB6")
+        );
+        let drive: Drive = parse(samples::GET_DRIVE);
+        assert_eq!(
+            DriveType::parse(drive.drive_type.as_deref().unwrap()),
+            Some(DriveType::Business)
+        );
+        let quota = drive.quota.unwrap().to_quota().unwrap();
+        assert_eq!(quota.total, Some(1_099_511_627_776));
+        assert_eq!(quota.used, 1_099_511_627_776 - 1_099_447_353_539 - 256_938);
+    }
+
+    #[test]
+    fn hashes_and_notebooks_map_to_neutral_types() {
+        let item: DriveItem = parse(
+            r#"{"id": "A!1", "name": "a.bin", "size": 3, "eTag": "\"{A},2\"",
+                "parentReference": {"id": "A!0"},
+                "file": {"mimeType": "application/octet-stream", "hashes": {
+                    "quickXorHash": "SgAAAAAAAAAAAAAAAQAAAAAAAAA=",
+                    "sha256Hash": "ABCDEF", "sha1Hash": "0123"}}}"#,
+        );
+        let item = item.to_item().unwrap();
+        assert_eq!(
+            item.hash(&HashAlgorithm::QuickXor),
+            Some("SgAAAAAAAAAAAAAAAQAAAAAAAAA=")
+        );
+        assert_eq!(item.hash(&HashAlgorithm::Sha256), Some("abcdef"));
+        assert_eq!(item.mime.as_deref(), Some("application/octet-stream"));
+
+        let notebook: DriveItem = parse(
+            r#"{"id": "A!2", "name": "Notes", "package": {"type": "oneNote"},
+                "webUrl": "https://onedrive.live.com/notes"}"#,
+        );
+        let ItemKind::Native(document) = notebook.to_item().unwrap().kind else {
+            panic!("a notebook is a native document");
+        };
+        assert_eq!(document.link_extension, NOTEBOOK_LINK_EXTENSION);
+        assert_eq!(
+            document.web_url.as_deref(),
+            Some("https://onedrive.live.com/notes")
+        );
+    }
+}

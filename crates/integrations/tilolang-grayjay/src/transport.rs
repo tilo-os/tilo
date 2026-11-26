@@ -996,3 +996,341 @@ fn parse_history_urls(payload: &[u8]) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::thread;
+
+    use super::*;
+
+    fn private(seed: u8) -> DeviceKey {
+        DeviceKey::from_private(&[seed; 32]).unwrap()
+    }
+
+    /// A device's own side of one exchange, run on a thread: accept, authorize, answer the
+    /// state exchange with `subscriptions` and `history`, then read what the client pushed.
+    fn serve_once(
+        listener: TcpListener,
+        device: DeviceKey,
+        code: Option<&'static str>,
+        subscriptions: Vec<&'static str>,
+        history: Vec<&'static str>,
+    ) -> thread::JoinHandle<Vec<String>> {
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut session =
+                Session::accept_responder(stream, &device, "peer", |_, carried| carried == code)
+                    .unwrap();
+            session
+                .complete_authorization(tilo_test_env::hang_deadline())
+                .unwrap();
+
+            // Wait for the state-exchange request. A connection that only paired sends
+            // none: it closes, and that is the whole of it.
+            loop {
+                match session.recv() {
+                    Ok(Incoming::Data { sub_opcode, .. })
+                        if sub_opcode == sync_opcode::SYNC_STATE_EXCHANGE =>
+                    {
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => return Vec::new(),
+                }
+            }
+            let package = SyncSubscriptionsPackage {
+                subscriptions: subscriptions
+                    .into_iter()
+                    .map(|url| Subscription {
+                        channel: SerializedChannel::from_url(url),
+                        creation_time: 111,
+                    })
+                    .collect(),
+                subscription_removals: BTreeMap::new(),
+            };
+            session
+                .send_data(
+                    sync_opcode::SYNC_SUBSCRIPTIONS,
+                    &serde_json::to_string(&package).unwrap(),
+                )
+                .unwrap();
+            let entries: Vec<serde_json::Value> = history
+                .into_iter()
+                .map(|url| serde_json::json!({ "video": { "url": url } }))
+                .collect();
+            session
+                .send_data(
+                    sync_opcode::SYNC_HISTORY,
+                    &serde_json::to_string(&entries).unwrap(),
+                )
+                .unwrap();
+
+            loop {
+                match session.recv() {
+                    Ok(Incoming::Data {
+                        sub_opcode,
+                        payload,
+                    }) if sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS => {
+                        let package: SyncSubscriptionsPackage =
+                            serde_json::from_slice(&payload).unwrap();
+                        return package
+                            .subscriptions
+                            .into_iter()
+                            .map(|subscription| subscription.channel.url)
+                            .collect();
+                    }
+                    Ok(_) => {}
+                    Err(_) => return Vec::new(),
+                }
+            }
+        })
+    }
+
+    tilo_test_env::scenario! {
+        fn the_grayjay_transport_frames_pairs_streams_and_bounds_payloads;
+
+        phase the_transport_frames_a_message_with_its_length_first;
+        {
+            {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let address = listener.local_addr().unwrap();
+                let serve = thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    write_frame(&mut stream, b"noise").unwrap();
+                    read_frame(&mut stream).unwrap()
+                });
+                let mut client = TcpStream::connect(address).unwrap();
+                assert_eq!(read_frame(&mut client).unwrap(), b"noise");
+                write_frame(&mut client, b"back").unwrap();
+                assert_eq!(serve.join().unwrap(), b"back");
+            }
+            {
+                // The frame's four length bytes are little-endian, as Grayjay writes them.
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let address = listener.local_addr().unwrap();
+                let serve = thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut bytes = [0u8; 9];
+                    stream.read_exact(&mut bytes).unwrap();
+                    bytes
+                });
+                let mut client = TcpStream::connect(address).unwrap();
+                write_frame(&mut client, b"noise").unwrap();
+                assert_eq!(serve.join().unwrap(), [5, 0, 0, 0, b'n', b'o', b'i', b's', b'e']);
+            }
+        }
+
+        phase an_invite_refuses_a_key_the_device_does_not_hold;
+        {
+            let peer_key = private(7);
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = i32::from(listener.local_addr().unwrap().port());
+            let serve = serve_once(listener, peer_key, Some("SECRET42"), vec![], vec![]);
+
+            let invite = serde_json::to_string(&SyncDeviceInfo {
+                public_key: private(11).public_base64(),
+                addresses: vec!["127.0.0.1".into()],
+                port,
+                code: Some("SECRET42".into()),
+            })
+            .unwrap();
+            // The invite names a key the device does not hold: the handshake never opens,
+            // and no route comes back.
+            let client = SyncClient::new(private(9), "Tilo Tube");
+            assert!(client.pair(&invite).is_err());
+            drop(serve);
+        }
+
+        phase an_invite_carries_its_code_and_the_exchange_runs_both_ways;
+        {
+            let peer_key = private(7);
+            let peer_public = peer_key.public_base64();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = i32::from(listener.local_addr().unwrap().port());
+            let serve = serve_once(
+                listener,
+                peer_key,
+                Some("SECRET42"),
+                vec!["https://youtube.com/@alice", "https://youtube.com/@bob"],
+                vec!["https://youtube.com/watch?v=one"],
+            );
+
+            let info = SyncDeviceInfo {
+                public_key: peer_public.clone(),
+                addresses: vec!["127.0.0.1".into()],
+                port,
+                code: Some("SECRET42".into()),
+            };
+            let wrapped = format!(
+                "grayjay://sync/{}",
+                b64_encode(serde_json::to_string(&info).unwrap().as_bytes())
+            );
+            let client = SyncClient::new(private(9), "Tilo Tube");
+            let route = client.pair(&wrapped).unwrap();
+            assert_eq!(route.key, peer_public, "the route is the peer's own key");
+            assert_eq!(route.port, port);
+            assert_eq!(route.addresses, vec!["127.0.0.1".to_string()]);
+            assert!(route.name.starts_with("Grayjay "));
+
+            let pushed = serve.join().unwrap();
+            assert!(pushed.is_empty(), "adding a device sends no subscriptions yet");
+
+            // The paired device, as the app recorded it, syncs through its route.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = i32::from(listener.local_addr().unwrap().port());
+            let serve = serve_once(
+                listener,
+                private(7),
+                None,
+                vec!["https://youtube.com/@carol"],
+                vec!["https://youtube.com/watch?v=two"],
+            );
+            let route = PeerRoute {
+                key: private(7).public_base64(),
+                name: "Grayjay peer".into(),
+                addresses: vec!["127.0.0.1".into()],
+                port,
+            };
+            let pulled = client
+                .sync(
+                    &route,
+                    &[SharedSubscription {
+                        url: "https://youtube.com/@mine".into(),
+                        name: "Mine".into(),
+                    }],
+                )
+                .unwrap();
+            assert_eq!(
+                pulled.subscriptions,
+                vec![SharedSubscription {
+                    url: "https://youtube.com/@carol".into(),
+                    name: "https://youtube.com/@carol".into(),
+                }]
+            );
+            assert_eq!(
+                pulled.history,
+                vec!["https://youtube.com/watch?v=two".to_string()]
+            );
+            assert_eq!(serve.join().unwrap(), vec!["https://youtube.com/@mine"]);
+        }
+
+        phase an_oversized_package_streams_across_packets;
+        {
+            let subscriptions: Vec<String> = (0..4000)
+                .map(|index| format!("https://youtube.com/channel/UC{index:08}xxxxxxxx"))
+                .collect();
+            let package = SyncSubscriptionsPackage {
+                subscriptions: subscriptions
+                    .iter()
+                    .map(|url| Subscription {
+                        channel: SerializedChannel::from_url(url),
+                        creation_time: 0,
+                    })
+                    .collect(),
+                subscription_removals: BTreeMap::new(),
+            };
+            let json = serde_json::to_string(&package).unwrap();
+            assert!(
+                json.len() > MAXIMUM_PACKET_SIZE,
+                "the payload must exceed one packet to be streamed"
+            );
+            let expected = subscriptions.len();
+
+            let peer_key = private(7);
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = i32::from(listener.local_addr().unwrap().port());
+            let serve = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                let mut session =
+                    Session::accept_responder(stream, &peer_key, "peer", |_, _| true).unwrap();
+                session
+                    .complete_authorization(tilo_test_env::hang_deadline())
+                    .unwrap();
+                session
+                    .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
+                    .unwrap();
+                thread::sleep(Duration::from_millis(100));
+            });
+
+            let stream = TcpStream::connect(("127.0.0.1", u16::try_from(port).unwrap())).unwrap();
+            stream
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut session = Session::connect_initiator(
+                stream,
+                &private(9),
+                &private(7).public_base64(),
+                None,
+                "Tilo Tube",
+            )
+            .unwrap();
+            session
+                .complete_authorization(tilo_test_env::hang_deadline())
+                .unwrap();
+
+            let got = loop {
+                if let Incoming::Data {
+                    sub_opcode,
+                    payload,
+                } = session.recv().unwrap()
+                    && sub_opcode == sync_opcode::SYNC_SUBSCRIPTIONS
+                {
+                    let received: SyncSubscriptionsPackage =
+                        serde_json::from_slice(&payload).unwrap();
+                    break received.subscriptions.len();
+                }
+            };
+            serve.join().unwrap();
+            assert_eq!(got, expected);
+        }
+
+        phase invites_and_payloads_stay_bounded;
+        {
+            {
+                let json = serde_json::to_string(&SyncDeviceInfo {
+                    public_key: b64_encode(&[3; 32]),
+                    addresses: vec!["10.0.0.2".into()],
+                    port: 12315,
+                    code: Some("Xy".into()),
+                })
+                .unwrap();
+                let parsed = parse_invite(&json).unwrap();
+                assert_eq!(parsed.port, 12315);
+                let wrapped = format!("grayjay://sync/{}", b64_encode(json.as_bytes()));
+                assert_eq!(parse_invite(&wrapped).unwrap(), parsed);
+            }
+            {
+                assert!(parse_invite(&"x".repeat(MAX_INVITE_BYTES + 1)).is_err());
+                let too_many_addresses = serde_json::to_string(&SyncDeviceInfo {
+                    public_key: b64_encode(&[4; 32]),
+                    addresses: vec!["127.0.0.1".into(); MAX_PEER_ADDRESSES + 1],
+                    port: 12315,
+                    code: Some("ok".into()),
+                })
+                .unwrap();
+                assert!(parse_invite(&too_many_addresses).is_err());
+                // A key that is not 32 bytes is no Noise static key.
+                let short_key = serde_json::to_string(&SyncDeviceInfo {
+                    public_key: b64_encode(&[5; 16]),
+                    addresses: vec!["127.0.0.1".into()],
+                    port: 12315,
+                    code: None,
+                })
+                .unwrap();
+                assert!(parse_invite(&short_key).is_err());
+            }
+            {
+                let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
+                let error = gzip_decompress(&compressed).unwrap_err();
+                assert!(error.to_string().contains("resource bound"));
+            }
+        }
+    }
+}

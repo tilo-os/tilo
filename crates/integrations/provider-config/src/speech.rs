@@ -109,3 +109,60 @@ pub fn request(kind: RequestKind, sequence: u64, payload: &[u8]) -> Vec<u8> {
     bytes.extend(payload);
     bytes
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_interrupt_capability_is_explicit_and_legacy_defaults_safe() {
+        let legacy: SpeechReply = serde_json::from_slice(
+            br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            SpeechReply::Ready {
+                finish_interrupts_draft: false,
+                ..
+            }
+        ));
+        let supported = br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1","finish_interrupts_draft":true}"#;
+        let ready: SpeechReply = serde_json::from_slice(supported).unwrap();
+        assert!(matches!(
+            ready,
+            SpeechReply::Ready {
+                finish_interrupts_draft: true,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_vec(&ready).unwrap(), supported);
+        assert!(serde_json::from_slice::<SpeechReply>(br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1","finish_interrupts_draft":"yes"}"#).is_err());
+    }
+
+    #[test]
+    fn ready_wire_preserves_legacy_context_and_rejects_unbounded_policy() {
+        let legacy = br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1"}"#;
+        let ready: SpeechReply = serde_json::from_slice(legacy).unwrap();
+        assert!(matches!(
+            ready,
+            SpeechReply::Ready {
+                draft_policy: DraftPolicy::FullContext,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_vec(&ready).unwrap(), legacy);
+        let incremental = br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1","draft_policy":"incremental"}"#;
+        let ready: SpeechReply = serde_json::from_slice(incremental).unwrap();
+        assert!(matches!(
+            ready,
+            SpeechReply::Ready {
+                draft_policy: DraftPolicy::Incremental,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_vec(&ready).unwrap(), incremental);
+        let arbitrary = br#"{"kind":"ready","sequence":1,"model":"fixture","revision":"1","draft_policy":{"interval_ms":0}}"#;
+        assert!(serde_json::from_slice::<SpeechReply>(arbitrary).is_err());
+    }
+}

@@ -365,3 +365,7 @@ fn validate(contents: &Contents, owner: &Owner) -> Result<(), ProfileError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "signal_profile_tests.rs"]
+mod tests;

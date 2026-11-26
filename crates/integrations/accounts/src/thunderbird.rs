@@ -747,3 +747,6 @@ fn calendars(prefs: &Preferences, metadata: &mut ProfileMetadata) {
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

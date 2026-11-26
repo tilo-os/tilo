@@ -461,3 +461,248 @@ impl PasswordSealedAccounts {
         matching_bundle(self, password, setup_binding, expected).map(drop)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const PASSWORD: &[u8] = b"a long transport password";
+
+    fn source(root: &Path) -> AccountId {
+        let account = Account::new(
+            AccountId::new("chosen"),
+            accounts::AccountTypeId::new("webdav"),
+        );
+        let id = account.id.clone();
+        let mut vault = SecretVault::open_in(root);
+        vault.put(&id, &Secret::password("private account password"));
+        vault.try_save().unwrap();
+        let mut record = accounts::person::staged_in(root).unwrap();
+        record
+            .apply_confirmed(AccountList::saving(&account))
+            .unwrap();
+        record
+            .apply_confirmed(AccountList::saving(&Account::new(
+                AccountId::new("not-chosen"),
+                accounts::AccountTypeId::new("webdav"),
+            )))
+            .unwrap();
+        accounts::person::keep_staged_in(root, &mut record).unwrap();
+        id
+    }
+
+    tilo_test_env::scenario! {
+        /// The password-sealed bundle of accounts an install carries over.
+        fn portable_account_bundles_are_authenticated_before_anything_is_written;
+
+        phase canonical_roundtrip_selects_and_reseals_without_changing_source;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let from = temp.path().join("from");
+            let to = temp.path().join("to");
+            let id = source(&from);
+            let source_key = std::fs::read(accounts::vault_dir_in(&from).join("vault.key")).unwrap();
+            let source_cipher = std::fs::read(accounts::vault_dir_in(&from).join("vault.enc")).unwrap();
+            let binding = PortableBinding::new("operation", "disk", "person", 1000).unwrap();
+            let selected = std::slice::from_ref(&id);
+            let artifact =
+                seal_selected_accounts_with_password(&from, selected, PASSWORD, binding.as_bytes())
+                    .unwrap();
+            let artifact = PasswordSealedAccounts::from_bytes(artifact.as_bytes()).unwrap();
+            assert_eq!(
+                import_password_sealed_accounts_matching(
+                    &to,
+                    &artifact,
+                    PASSWORD,
+                    binding.as_bytes(),
+                    selected
+                )
+                .unwrap(),
+                selected
+            );
+            assert_eq!(
+                import_password_sealed_accounts_matching(
+                    &to,
+                    &artifact,
+                    PASSWORD,
+                    binding.as_bytes(),
+                    selected
+                )
+                .unwrap(),
+                selected
+            );
+            assert_eq!(
+                accounts::person::staged_in(&to)
+                    .unwrap()
+                    .state()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                SecretVault::open_read_only_in(&to)
+                    .get(&id)
+                    .unwrap()
+                    .password,
+                "private account password"
+            );
+            assert_ne!(
+                std::fs::read(accounts::vault_dir_in(&to).join("vault.key")).unwrap(),
+                source_key
+            );
+            assert_eq!(
+                std::fs::read(accounts::vault_dir_in(&from).join("vault.key")).unwrap(),
+                source_key
+            );
+            assert_eq!(
+                std::fs::read(accounts::vault_dir_in(&from).join("vault.enc")).unwrap(),
+                source_cipher
+            );
+            assert!(
+                seal_selected_accounts_with_password(
+                    &from,
+                    &[id.clone(), id],
+                    PASSWORD,
+                    binding.as_bytes()
+                )
+                .is_err()
+            );
+        }
+
+        phase operation_target_user_and_uid_are_authenticated_before_writes;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let from = temp.path().join("from");
+            let to = temp.path().join("to");
+            let id = source(&from);
+            let key = SymmetricKey::generate().unwrap();
+            let intended = PortableBinding::new("op", "disk", "alice", 1000).unwrap();
+            let artifact = seal_selected_accounts(&from, &[id], &key, intended.as_bytes()).unwrap();
+            for binding in [
+                PortableBinding::new("other", "disk", "alice", 1000).unwrap(),
+                PortableBinding::new("op", "other", "alice", 1000).unwrap(),
+                PortableBinding::new("op", "disk", "bob", 1000).unwrap(),
+                PortableBinding::new("op", "disk", "alice", 1001).unwrap(),
+            ] {
+                assert_eq!(
+                    import_sealed_accounts(&to, &artifact, &key, binding.as_bytes()),
+                    Err(PortableError::CredentialUnavailable)
+                );
+                assert!(!to.exists());
+            }
+            assert!(PortableBinding::new("op", "disk", "root", 0).is_err());
+        }
+
+        phase legacy_version_one_wire_and_domains_are_preserved;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let from = temp.path().join("from");
+            let to = temp.path().join("to");
+            let id = source(&from);
+            let selected = std::slice::from_ref(&id);
+            let artifact =
+                seal_selected_accounts_with_password(&from, selected, PASSWORD, b"legacy-setup")
+                    .unwrap();
+            let wire = artifact.as_bytes();
+            assert_eq!(&wire[..8], b"TILOACC1");
+            let wrapped_len = u32::from_le_bytes(wire[8..12].try_into().unwrap()) as usize;
+            let key = envelope::open_with_password(
+                PASSWORD,
+                Context::new(
+                    Label::MigrationPackage,
+                    b"tilo-prepared-account-key/v1\0legacy-setup",
+                ),
+                &wire[12..12 + wrapped_len],
+            )
+            .unwrap();
+            let key = SymmetricKey::from_bytes(key.as_slice().try_into().unwrap());
+            let start = 16 + wrapped_len;
+            assert_eq!(
+                u32::from_le_bytes(wire[start - 4..start].try_into().unwrap()) as usize,
+                wire.len() - start
+            );
+            let plain = envelope::open(
+                &key,
+                Context::new(
+                    Label::MigrationPackage,
+                    b"tilo-prepared-accounts/v1\0legacy-setup",
+                ),
+                &wire[start..],
+            )
+            .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+            assert_eq!(json["version"], 1);
+            assert_eq!(json["entries"][0]["account"]["id"], "chosen");
+            assert_eq!(
+                json["entries"][0]["secret"]["password"],
+                "private account password"
+            );
+            assert_eq!(json.as_object().unwrap().len(), 2);
+            assert!(
+                import_password_sealed_accounts_matching(
+                    &to,
+                    &artifact,
+                    PASSWORD,
+                    b"legacy-setup",
+                    &[AccountId::new("other")]
+                )
+                .is_err()
+            );
+            assert!(!to.exists());
+            import_password_sealed_accounts_matching(
+                &to,
+                &artifact,
+                PASSWORD,
+                b"legacy-setup",
+                selected,
+            )
+            .unwrap();
+            let mut trailing = wire.to_vec();
+            trailing.push(0);
+            assert!(PasswordSealedAccounts::from_bytes(&trailing).is_err());
+        }
+
+        phase untrusted_expensive_kdf_and_framing_are_refused_before_decryption;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let from = temp.path().join("from");
+            let id = source(&from);
+            let artifact =
+                seal_selected_accounts_with_password(&from, &[id], PASSWORD, b"setup").unwrap();
+            let mut expensive = artifact.as_bytes().to_vec();
+            expensive[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(PasswordSealedAccounts::from_bytes(&expensive).is_err());
+            let short = &artifact.as_bytes()[..artifact.as_bytes().len() - 1];
+            assert!(PasswordSealedAccounts::from_bytes(short).is_err());
+        }
+
+        phase invalid_bundle_is_refused_before_target_creation;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let to = temp.path().join("never-created");
+            let key = SymmetricKey::generate().unwrap();
+            let account = Account::new(AccountId::new(""), accounts::AccountTypeId::new("webdav"));
+            let bundle = Bundle {
+                version: 1,
+                entries: vec![Entry {
+                    account,
+                    secret: Secret::password("private-member-password"),
+                }],
+            };
+            let plain = Zeroizing::new(serde_json::to_vec(&bundle).unwrap());
+            let context = binding(b"setup-1").unwrap();
+            let sealed = SealedAccounts(
+                envelope::seal(
+                    &key,
+                    Context::new(Label::MigrationPackage, &context),
+                    &plain,
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                import_sealed_accounts(&to, &sealed, &key, b"setup-1"),
+                Err(PortableError::InvalidConfiguration)
+            );
+            assert!(!to.exists());
+        }
+    }
+}

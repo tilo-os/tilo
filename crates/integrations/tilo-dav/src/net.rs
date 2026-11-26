@@ -289,3 +289,156 @@ async fn send(request: RequestBuilder) -> Result<DavResponse, Error> {
 fn method(name: &'static [u8]) -> Method {
     Method::from_bytes(name).unwrap_or(Method::GET)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::body::props;
+    use test_http::{Reply, Responder};
+
+    fn client() -> DavClient {
+        DavClient::new(&Options::default())
+            .unwrap()
+            .with_credentials(Credentials::new("ada", "s3cret"))
+    }
+
+    fn run<T>(future: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    const LISTING: &str = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/a.txt</d:href><d:propstat><d:prop><d:getetag>"1"</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+
+    #[test]
+    fn propfind_sends_depth_props_and_basic_auth() {
+        let server = Responder::start(vec![Reply::status(207).body(LISTING)]);
+        let listing = run(async {
+            let response = client()
+                .propfind(
+                    &format!("{}/dav/", server.url()),
+                    Depth::One,
+                    &[props::GETETAG],
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::MULTI_STATUS);
+            response.multistatus(&Limits::default()).await.unwrap()
+        });
+        assert_eq!(listing.responses[0].prop_text("getetag"), Some("\"1\""));
+        let request = server.next_request();
+        assert_eq!(request.method, "PROPFIND");
+        assert_eq!(request.target, "/dav/");
+        assert_eq!(request.header("depth"), Some("1"));
+        assert_eq!(request.header("content-type"), Some(XML_CONTENT_TYPE));
+        assert_eq!(
+            request.header("authorization"),
+            Some("Basic YWRhOnMzY3JldA==")
+        );
+        assert!(request.body_text().contains("<D:getetag/>"));
+    }
+
+    #[test]
+    fn conditional_writes_carry_their_preconditions() {
+        let server = Responder::start(vec![
+            Reply::status(201).header("ETag", "\"v1\""),
+            Reply::status(412),
+            Reply::status(204),
+            Reply::status(204),
+        ]);
+        let url = format!("{}/cal/a.ics", server.url());
+        run(async {
+            let client = client();
+            let created = client
+                .put(
+                    &url,
+                    b"x".to_vec(),
+                    Some("text/calendar"),
+                    Precondition::IfNoneMatchAny,
+                )
+                .await
+                .unwrap();
+            assert_eq!(created.etag().as_deref(), Some("\"v1\""));
+            let conflict = client
+                .put(&url, b"y".to_vec(), None, Precondition::IfMatch("\"v0\""))
+                .await
+                .unwrap();
+            assert_eq!(conflict.status(), StatusCode::PRECONDITION_FAILED);
+            // A removal says what it is given to say beside its
+            // precondition, and nothing more where it is given nothing.
+            let told = client
+                .delete_saying(
+                    &url,
+                    &[("Schedule-Reply", "F")],
+                    Precondition::IfMatch("\"v1\""),
+                )
+                .await
+                .unwrap();
+            assert_eq!(told.status(), StatusCode::NO_CONTENT);
+            client
+                .delete(&url, Precondition::IfMatch("\"v2\""))
+                .await
+                .unwrap();
+        });
+        let create = server.next_request();
+        assert_eq!(create.header("if-none-match"), Some("*"));
+        assert_eq!(create.header("content-type"), Some("text/calendar"));
+        assert_eq!(server.next_request().header("if-match"), Some("\"v0\""));
+        let told = server.next_request();
+        assert_eq!(
+            (told.method.as_str(), told.target.as_str()),
+            ("DELETE", "/cal/a.ics")
+        );
+        assert_eq!(told.header("schedule-reply"), Some("F"));
+        assert_eq!(told.header("if-match"), Some("\"v1\""));
+        let plain = server.next_request();
+        assert_eq!(plain.method, "DELETE");
+        assert_eq!(plain.header("schedule-reply"), None);
+        assert_eq!(plain.header("if-match"), Some("\"v2\""));
+    }
+
+    #[test]
+    fn bodies_are_bounded_with_and_without_content_length() {
+        let server = Responder::start(vec![
+            Reply::status(200).body(vec![b'x'; 64]),
+            Reply::status(200)
+                .body(vec![b'x'; 64])
+                .without_content_length(),
+        ]);
+        run(async {
+            let client = client();
+            for _ in 0..2 {
+                let response = client.get(&server.url()).await.unwrap();
+                assert!(matches!(
+                    response.read_bounded(63).await,
+                    Err(Error::TooLarge)
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn refused_redirects_reach_the_caller_and_never_the_target() {
+        let target = Responder::silent();
+        let location = format!("{}/stolen", target.url());
+        let server = Responder::start(vec![Reply::status(302).header("Location", &location)]);
+        let client = DavClient::new(&Options {
+            redirects: Redirects::Refuse,
+            ..Options::default()
+        })
+        .unwrap()
+        .with_credentials(Credentials::new("ada", "s3cret"));
+        let status = run(async {
+            client
+                .propfind(&server.url(), Depth::Zero, &[])
+                .await
+                .unwrap()
+                .status()
+        });
+        assert_eq!(status, StatusCode::FOUND);
+        assert!(server.next_request().header("authorization").is_some());
+        target.assert_untouched();
+    }
+}

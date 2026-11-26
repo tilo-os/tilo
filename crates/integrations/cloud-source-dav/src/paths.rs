@@ -100,3 +100,69 @@ pub fn percent_decode(raw: &str) -> Option<String> {
 pub fn parse_http_date(value: &str) -> Option<SystemTime> {
     cloud_source::http::parse_http_date(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root() -> Url {
+        Url::parse("https://cloud.example/remote.php/dav/files/ada/").unwrap()
+    }
+
+    #[test]
+    fn hrefs_map_to_decoded_relative_ids_and_back() {
+        let root = root();
+        assert_eq!(
+            id_for_href(&root, "/remote.php/dav/files/ada/Notes%20and%20plans.md"),
+            Some(ItemId::new("Notes and plans.md"))
+        );
+        assert_eq!(
+            id_for_href(&root, "/remote.php/dav/files/ada/"),
+            Some(ItemId::new(""))
+        );
+        assert_eq!(id_for_href(&root, "Photos/"), Some(ItemId::new("Photos")));
+        let url = url_for(&root, &ItemId::new("Notes and plans.md"), false).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://cloud.example/remote.php/dav/files/ada/Notes%20and%20plans.md"
+        );
+        assert!(
+            url_for(&root, &ItemId::new("Photos"), true)
+                .unwrap()
+                .as_str()
+                .ends_with("/Photos/")
+        );
+    }
+
+    #[test]
+    fn unsafe_hrefs_are_refused() {
+        let root = root();
+        for href in [
+            "https://attacker.example/remote.php/dav/files/ada/x",
+            "/remote.php/dav/files/ada/bad%2Fname",
+            "/remote.php/dav/files/ada/%2e%2e",
+            "/remote.php/dav/files/ada/a?token=1",
+            "/remote.php/dav/files/adam/x",
+            "/remote.php/dav/files/ada/%ff",
+        ] {
+            assert_eq!(id_for_href(&root, href), None, "{href}");
+        }
+        assert!(url_for(&root, &ItemId::new("../x"), false).is_none());
+    }
+
+    #[test]
+    fn http_dates_round_trip() {
+        let time = parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT").unwrap();
+        assert_eq!(
+            time.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            784_111_777
+        );
+        assert_eq!(
+            cloud_source::http::format_http_date(time),
+            "Sun, 06 Nov 1994 08:49:37 GMT"
+        );
+        assert!(parse_http_date("yesterday").is_none());
+    }
+}

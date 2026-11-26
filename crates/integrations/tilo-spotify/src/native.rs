@@ -803,3 +803,404 @@ impl Drop for PcmSink {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn playback_metadata_errors_name_the_providers_status_and_no_secret;
+
+        phase spotify_metadata_refusal_classifies_only_bounded_provider_codes;
+        {
+            use librespot_core::http_client::HttpClientError;
+            let status = "403".parse().unwrap();
+            for (body, expected) in [
+                (
+                    br#"{"error":"insufficient_scope","error_description":"fixture-private-token"}"#
+                        .as_slice(),
+                    "insufficient_scope",
+                ),
+                (
+                    br#"{"error":{"reason":"PREMIUM_REQUIRED","message":"fixture-private-token"}}"#
+                        .as_slice(),
+                    "PREMIUM_REQUIRED",
+                ),
+                (
+                    br#"{"error":"fixture-private-token","access_token":"fixture-private-token"}"#
+                        .as_slice(),
+                    "unclassified-json",
+                ),
+                (
+                    br#"{"error":{"message":"fixture-private-token"}}"#.as_slice(),
+                    "unclassified-json",
+                ),
+                (
+                    b"<html>fixture-private-token</html>".as_slice(),
+                    "non-json-body",
+                ),
+                (b"".as_slice(), "empty-body"),
+            ] {
+                let source = HttpClientError::from_status_body(status, body);
+                assert_eq!(source.reason(), Some(expected));
+                let error: librespot_core::Error = source.into();
+                assert_eq!(
+                    error.kind,
+                    librespot_core::error::ErrorKind::PermissionDenied
+                );
+                let public = playback_metadata_error(&error);
+                assert!(public.contains(expected));
+                assert!(public.contains("HTTP 403"));
+                assert!(!format!("{error:?} {error} {public}").contains("fixture-private-token"));
+            }
+            let oversized = vec![b'x'; 8193];
+            let error = HttpClientError::from_status_body(status, &oversized);
+            assert_eq!(error.reason(), Some("body-limit-exceeded"));
+        }
+
+        phase playback_metadata_failure_preserves_provider_status_without_secret_sources;
+        {
+            use librespot_core::http_client::HttpClientError;
+
+            for status in ["401", "402", "403"] {
+                let error = HttpClientError::StatusCode(status.parse().unwrap()).into();
+                assert_eq!(
+                    playback_metadata_error(&error),
+                    format!("Spotify refused the playback metadata request (HTTP {status})")
+                );
+            }
+            let error = librespot_core::Error::permission_denied(
+                "private bearer and request URL must not enter collaborative state",
+            );
+            assert_eq!(
+                playback_metadata_error(&error),
+                "Spotify playback metadata request failed (PermissionDenied)"
+            );
+            let error = std::io::Error::from_raw_os_error(13).into();
+            assert_eq!(
+                playback_metadata_error(&error),
+                "Spotify playback metadata transport failed (PermissionDenied, OS error Some(13))"
+            );
+        }
+    }
+
+    fn eligibility_output() -> Output {
+        Output::Capture(CaptureOutput {
+            on_pcm: Arc::new(|_| {}),
+            on_rendered: Arc::new(|| {}),
+        })
+    }
+
+    #[test]
+    fn native_output_waits_for_confirmed_premium_metadata() {
+        tilo_rt::block_on(async {
+            let session = Session::new(SessionConfig::default(), None);
+            let cancel = AtomicBool::new(false);
+            let frames = Arc::new(AtomicU64::new(0));
+            let output = eligibility_output();
+            let unknown = verified_sink(
+                &session,
+                &cancel,
+                &output,
+                &frames,
+                Duration::from_millis(20),
+            )
+            .await;
+            assert!(unknown.err().unwrap().contains("did not confirm Premium"));
+            assert_eq!(frames.load(Ordering::Acquire), 0);
+            let updates = session.clone();
+            let received = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                updates.set_user_attribute("type", "premium");
+            });
+            let mut sink = verified_sink(
+                &session,
+                &cancel,
+                &output,
+                &frames,
+                tilo_test_env::hang_bound(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            received.await.unwrap();
+            assert_eq!(sink.pipeline.current_state(), gst::State::Null);
+            assert_eq!(frames.load(Ordering::Acquire), 0);
+            sink.start().unwrap();
+            sink.write(
+                AudioPacket::Samples(vec![0.0; 2048]),
+                &mut Converter::new(None),
+            )
+            .unwrap();
+            sink.source.end_of_stream().unwrap();
+            drain_output(&sink.pipeline, &cancel).await.unwrap();
+            assert!(
+                frames.load(Ordering::Acquire) > 0,
+                "real clocked PCM follows confirmed Premium"
+            );
+            session.set_user_attribute("type", "free");
+            assert!(
+                premium_confirmed(&session).is_err(),
+                "active playback must reject a withdrawn subscription"
+            );
+            session.shutdown();
+        })
+        .unwrap();
+    }
+
+    tilo_test_env::scenario! {
+        fn native_output_without_confirmed_premium_is_cancelled_or_refused;
+
+        phase native_eligibility_wait_is_cancellable_without_output;
+        {
+            tilo_rt::block_on(async {
+                let session = Session::new(SessionConfig::default(), None);
+                let cancel = Arc::new(AtomicBool::new(false));
+                let frames = Arc::new(AtomicU64::new(0));
+                let cancelled = cancel.clone();
+                let update = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    cancelled.store(true, Ordering::Release);
+                });
+                let sink = verified_sink(
+                    &session,
+                    &cancel,
+                    &eligibility_output(),
+                    &frames,
+                    tilo_test_env::hang_bound(),
+                )
+                .await
+                .unwrap();
+                update.await.unwrap();
+                assert!(sink.is_none());
+                assert_eq!(frames.load(Ordering::Acquire), 0);
+                session.shutdown();
+            })
+            .unwrap();
+        }
+
+        phase native_output_rejects_non_premium_and_unknown_product_types;
+        {
+            tilo_rt::block_on(async {
+                for product in ["free", "open", "", "premium-like"] {
+                    let session = Session::new(SessionConfig::default(), None);
+                    session.set_user_attribute("type", product);
+                    let frames = Arc::new(AtomicU64::new(0));
+                    let result = verified_sink(
+                        &session,
+                        &AtomicBool::new(false),
+                        &eligibility_output(),
+                        &frames,
+                        tilo_test_env::hang_bound(),
+                    )
+                    .await;
+                    assert!(result.is_err(), "{product:?} must not authorize audio");
+                    assert!(session.is_invalid());
+                    assert_eq!(frames.load(Ordering::Acquire), 0);
+                }
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn spotify_decoded_pcm_reaches_the_shared_clocked_capture_sink() {
+        let rendered = Arc::new(AtomicU64::new(0));
+        let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let pcm = bytes.clone();
+        let count = rendered.clone();
+        let capture = CaptureOutput {
+            on_pcm: Arc::new(move |data| pcm.lock().unwrap().extend_from_slice(data)),
+            on_rendered: Arc::new(move || {
+                count.fetch_add(1, Ordering::Relaxed);
+            }),
+        };
+        let frames = Arc::new(AtomicU64::new(0));
+        let mut sink = PcmSink::new(&Output::Capture(capture), &frames).unwrap();
+        let mut converter = Converter::new(PlayerConfig::default().ditherer);
+        sink.start().unwrap();
+        for _ in 0..12 {
+            sink.write(AudioPacket::Samples(vec![0.25; 2048]), &mut converter)
+                .unwrap();
+        }
+        tilo_test_env::wait_until("clocked PCM to arrive", || {
+            rendered.load(Ordering::Relaxed) >= 4
+        });
+        assert!(bytes.lock().unwrap().len() >= 16_384);
+        assert!(bytes.lock().unwrap().iter().any(|byte| *byte != 0));
+        assert!(frames.load(Ordering::Relaxed) > 0);
+        assert!(
+            sink.write(AudioPacket::Raw(vec![1, 2, 3]), &mut converter)
+                .is_err()
+        );
+        sink.source.end_of_stream().unwrap();
+        tilo_rt::block_on(drain_output(&sink.pipeline, &AtomicBool::new(false)))
+            .unwrap()
+            .unwrap();
+        sink.stop().unwrap();
+    }
+
+    #[test]
+    fn spotify_interrupted_pcm_sessions_release_output_before_the_next_start() {
+        for _ in 0..3 {
+            let rendered = Arc::new(AtomicU64::new(0));
+            let count = rendered.clone();
+            let frames = Arc::new(AtomicU64::new(0));
+            let capture = CaptureOutput {
+                on_pcm: Arc::new(|_| {}),
+                on_rendered: Arc::new(move || {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }),
+            };
+            let mut sink = PcmSink::new(&Output::Capture(capture), &frames).unwrap();
+            let pipeline = sink.pipeline.clone();
+            sink.start().unwrap();
+            let mut converter = Converter::new(PlayerConfig::default().ditherer);
+            for _ in 0..8 {
+                sink.write(AudioPacket::Samples(vec![0.25; 2048]), &mut converter)
+                    .unwrap();
+            }
+            tilo_test_env::wait_until("each new output to deliver clocked PCM", || {
+                rendered.load(Ordering::Relaxed) > 0
+            });
+            // An interruption must not wait for EOS that will never be sent.
+            tilo_rt::block_on(drain_output(&pipeline, &AtomicBool::new(true)))
+                .unwrap()
+                .unwrap();
+            drop(sink);
+            assert_eq!(
+                pipeline.current_state(),
+                gst::State::Null,
+                "the old output releases before another session starts"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn native_audio_bounds_its_commands_and_counts_only_an_observed_sink;
+
+        phase spotify_preload_follows_the_latest_valid_local_queue_and_does_not_flood_commands;
+        {
+            let (commands, mut receiver) = tokio::sync::mpsc::channel(16);
+            let native = NativeAudio {
+                commands,
+                cancel: Arc::new(AtomicBool::new(false)),
+                status: Arc::new(Mutex::new(Status::default())),
+                frames: Arc::new(AtomicU64::new(0)),
+                started: Mutex::new(tilo_clock::now()),
+                requested_play: AtomicBool::new(false),
+                next: Arc::new(Mutex::new(None)),
+            };
+            let first = "spotify:track:1234567890123456789012";
+            native.prepare_next(Some(first));
+            assert!(matches!(receiver.try_recv().unwrap(), Command::Preload(uri) if uri == first));
+            for _ in 0..100 {
+                native.prepare_next(Some(first));
+            }
+            assert!(receiver.try_recv().is_err());
+            native.prepare_next(Some("spotify:track:abcdefghijklmnopqrstuv"));
+            assert!(
+                matches!(receiver.try_recv().unwrap(), Command::Preload(uri) if uri.ends_with("abcdefghijklmnopqrstuv"))
+            );
+            native.prepare_next(Some("spotify:track:../wrong"));
+            assert!(native.next.lock().unwrap().is_none());
+            assert!(receiver.try_recv().is_err());
+            native.prepare_next(Some(first));
+            native.prepare_next(None);
+            assert!(
+                native.next.lock().unwrap().is_none(),
+                "queue removal wins before end of track"
+            );
+        }
+
+        phase spotify_audio_confirmation_rejects_an_unobserved_or_fake_system_sink;
+        {
+            let (commands, _receiver) = tokio::sync::mpsc::channel(1);
+            let status = Arc::new(Mutex::new(Status {
+                playing: true,
+                ..Default::default()
+            }));
+            let native = NativeAudio {
+                commands,
+                status: status.clone(),
+                frames: Arc::new(AtomicU64::new(10)),
+                cancel: Arc::new(AtomicBool::new(false)),
+                started: Mutex::new(tilo_clock::now()),
+                requested_play: AtomicBool::new(false),
+                next: Arc::new(Mutex::new(None)),
+            };
+            assert_eq!(native.frames(), 0);
+            assert!(!native.playing());
+            status.lock().unwrap().sink = Some("fakesink".into());
+            assert_eq!(native.frames(), 0);
+            status.lock().unwrap().sink = Some("pulsesink".into());
+            assert_eq!(native.frames(), 10);
+            assert!(native.playing());
+            native.play();
+            native.pause();
+            assert!(
+                native.pump(),
+                "bounded commands must report refusal rather than fabricate success"
+            );
+            assert!(native.error().unwrap().contains("command queue"));
+        }
+    }
+    #[test]
+    fn external_oauth_bearer_never_uses_stored_credential_login5() {
+        use librespot_core::{Error, error::ErrorKind, token::Token};
+        use std::time::SystemTime;
+        tilo_rt::block_on(async {
+            let session = Session::new(
+                SessionConfig {
+                    client_id: "fixture-own-oauth-client".into(),
+                    ..Default::default()
+                },
+                None,
+            );
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Token {
+                            access_token: "fixture-approved-bearer".into(),
+                            expires_in: Duration::from_secs(60),
+                            token_type: "Bearer".into(),
+                            scopes: vec!["streaming".into()],
+                            timestamp: SystemTime::now(),
+                        })
+                    })
+                }));
+            let token = session.login5().auth_token().await.unwrap();
+            assert_eq!(token.access_token, "fixture-approved-bearer");
+            assert_eq!(session.client_id(), "fixture-own-oauth-client");
+            // This disconnected session has no AP stored credentials. A fallback
+            // to login5 would fail, and must never hide provider refusal/expiry.
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async { Err(Error::invalid_argument("fixture-provider-refusal")) })
+                }));
+            let error = session.login5().auth_token().await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidArgument);
+            assert!(error.to_string().contains("fixture-provider-refusal"));
+            session
+                .login5()
+                .set_external_token_provider(std::sync::Arc::new(|| {
+                    Box::pin(async {
+                        Ok(Token {
+                            access_token: "fixture-expired-bearer".into(),
+                            expires_in: Duration::ZERO,
+                            token_type: "Bearer".into(),
+                            scopes: Vec::new(),
+                            timestamp: SystemTime::now(),
+                        })
+                    })
+                }));
+            assert_eq!(
+                session.login5().auth_token().await.unwrap_err().kind,
+                ErrorKind::Unauthenticated
+            );
+        })
+        .unwrap();
+    }
+}

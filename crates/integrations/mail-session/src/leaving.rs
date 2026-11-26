@@ -321,3 +321,180 @@ fn written(recipients: &[Recipient]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+
+    fn to(list: &str) -> SendMail {
+        SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: list.into(),
+            subject: "Lunch".into(),
+            body: "Friday at one works.".into(),
+            ..SendMail::default()
+        }
+    }
+
+    /// The addresses and names `list` is read as.
+    fn read(list: &str) -> Vec<(String, String)> {
+        Leaving::read(to(list))
+            .unwrap_or_else(|refused| panic!("{list:?} reads: {refused}"))
+            .to()
+            .iter()
+            .map(|one| (one.name().to_owned(), one.address().to_owned()))
+            .collect()
+    }
+
+    fn pair(name: &str, address: &str) -> (String, String) {
+        (name.to_owned(), address.to_owned())
+    }
+
+    /// A list is read as a mail program writes one: addresses alone or after
+    /// a name, separated by commas or semicolons, with blanks and empty
+    /// entries meaning nothing. What separates inside a quoted name
+    /// separates nothing, and the address is the one in the brackets
+    /// whatever the name before it reads as.
+    #[test]
+    fn a_list_is_read_into_the_addresses_it_names() {
+        assert_eq!(read("bo@example.test"), [pair("", "bo@example.test")]);
+        assert_eq!(
+            read(" Bo <bo@example.test> ;; cy@example.test, "),
+            [pair("Bo", "bo@example.test"), pair("", "cy@example.test")]
+        );
+        assert_eq!(
+            read("\"Lee, Sam; Dr.\" <sam@example.test>, \"A \\\"B\\\" C\" <abc@example.test>"),
+            [
+                pair("Lee, Sam; Dr.", "sam@example.test"),
+                pair("A \"B\" C", "abc@example.test")
+            ]
+        );
+        assert_eq!(
+            read("bo@example.test <eve@elsewhere.test>, \"cy@example.test\" <dee@elsewhere.test>"),
+            [
+                pair("bo@example.test", "eve@elsewhere.test"),
+                pair("cy@example.test", "dee@elsewhere.test")
+            ]
+        );
+        let far = format!("bo@example.test,{}eve@elsewhere.test", " ".repeat(700));
+        assert_eq!(
+            read(&far),
+            [pair("", "bo@example.test"), pair("", "eve@elsewhere.test")]
+        );
+    }
+
+    /// What is no address refuses the message; nothing is left out of the
+    /// envelope in silence. So does a group, a second address behind the
+    /// first, a name or an address left open, and a line break anywhere in
+    /// the message's head.
+    #[test]
+    fn what_is_no_list_of_addresses_refuses_the_message() {
+        for list in [
+            "Bo",
+            "bo@example.test, Bo",
+            "bo@example.test eve@elsewhere.test",
+            "Bo <bo@example.test> <eve@elsewhere.test>",
+            "Bo <bo@example.test> eve@elsewhere.test",
+            "Bo <bo@example.test",
+            "\"Bo <bo@example.test>",
+            "bo@example.test>",
+            "friends: bo@example.test, eve@elsewhere.test;",
+            "friends: Bo <bo@example.test>;",
+            "bo@example.test\r\nBcc: eve@elsewhere.test",
+            "bo@example.test\teve@elsewhere.test",
+            "",
+            " , ; ",
+        ] {
+            let refused = Leaving::read(to(list));
+            assert!(refused.is_err(), "{list:?} read as {refused:?}");
+        }
+        let lunch = || to("bo@example.test");
+        let smuggled = "1@example.test>\r\nReply-To: <eve@elsewhere.test".to_owned();
+        for message in [
+            SendMail {
+                subject: "Lunch\r\nReply-To: eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                from_name: Some("Ada\nReply-To: eve@elsewhere.test".into()),
+                ..lunch()
+            },
+            SendMail {
+                from_address: "ada@example.test>\r\nReply-To: <eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                from_address: "Ada".into(),
+                ..lunch()
+            },
+            SendMail {
+                cc: "Cy".into(),
+                ..lunch()
+            },
+            SendMail {
+                bcc: "dee@example.test\u{b}eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                message_id: Some(smuggled.clone()),
+                ..lunch()
+            },
+            SendMail {
+                in_reply_to: Some(smuggled.clone()),
+                ..lunch()
+            },
+            SendMail {
+                references: vec!["0@example.test".into(), smuggled],
+                ..lunch()
+            },
+        ] {
+            let refused = Leaving::read(message.clone());
+            assert!(refused.is_err(), "{message:?} read as {refused:?}");
+        }
+    }
+
+    /// What was read is what the envelope carries, in the lists' order, and
+    /// what the lists say afterwards reads back as the very same recipients:
+    /// nobody who reads them as text again finds another address there.
+    #[test]
+    fn the_envelope_and_the_lists_say_what_was_read() {
+        let message = SendMail {
+            cc: "\"Lee, Sam\" <sam@example.test>; \"a\\\\b \\\"c\\\"\" <abc@example.test>".into(),
+            bcc: "bo@example.test <eve@elsewhere.test>".into(),
+            ..to("Bo <bo@example.test>, cy@example.test")
+        };
+        let leaving = Leaving::read(message).unwrap();
+        let envelope = leaving.envelope().unwrap();
+        let handed: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
+        assert_eq!(
+            handed,
+            [
+                "bo@example.test",
+                "cy@example.test",
+                "sam@example.test",
+                "abc@example.test",
+                "eve@elsewhere.test"
+            ]
+        );
+        let named: Vec<&str> = leaving.recipients().map(Recipient::address).collect();
+        assert_eq!(named, handed);
+        assert_eq!(
+            envelope.from().map(ToString::to_string),
+            Some("ada@example.test".into())
+        );
+
+        let again = Leaving::read(leaving.message().clone()).unwrap();
+        assert_eq!(again.to(), leaving.to());
+        assert_eq!(again.cc(), leaving.cc());
+        assert_eq!(again.bcc(), leaving.bcc());
+        assert_eq!(again.message(), leaving.message());
+        assert_eq!(leaving.cc()[1].name(), "a\\b \"c\"");
+    }
+}

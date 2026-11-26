@@ -591,3 +591,699 @@ fn seal(key: &VaultKey, plaintext: &[u8]) -> Option<Vec<u8>> {
 fn open(key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     FORMAT.open(key, blob)
 }
+
+#[cfg(test)]
+mod tests {
+    use tilo_files::native::private as private_fs;
+
+    #[test]
+    fn secret_debug_never_exposes_password_or_token() {
+        let secret = super::Secret {
+            password: "debug-password-marker".into(),
+            token: Some("debug-token-marker".into()),
+        };
+        let output = format!("{secret:?}");
+        assert!(!output.contains("debug-password-marker"));
+        assert!(!output.contains("debug-token-marker"));
+        let encoded = serde_json::to_string(&secret).unwrap();
+        assert_eq!(
+            serde_json::from_str::<super::Secret>(&encoded).unwrap(),
+            secret
+        );
+    }
+
+    use super::*;
+    use secret_vault::KEY_LEN;
+    #[cfg(windows)]
+    use std::time::Duration;
+
+    fn local_file_key(dir: &Path) -> Option<VaultKey> {
+        load_or_create_key(dir, VaultBackend::LocalFile)
+    }
+
+    fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
+        use std::io::Read as _;
+        let mut bytes = Zeroizing::new(Vec::new());
+        tilo_files::native::private::read(path)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    #[cfg(windows)]
+    mod readonly_windows {
+        use super::*;
+        use std::os::windows::fs::MetadataExt as _;
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct Proof {
+            name: std::ffi::OsString,
+            bytes: Vec<u8>,
+            attributes: u32,
+            created: u64,
+            modified: u64,
+            acl: Vec<u8>,
+        }
+
+        fn acl(path: &Path) -> Vec<u8> {
+            let result = bounded_command::run(
+                "icacls.exe",
+                &[path.to_str().unwrap()],
+                None,
+                16 * 1024,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            result.stdout
+        }
+
+        fn snapshot(directory: &Path) -> Vec<Proof> {
+            let mut paths: Vec<_> = std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            paths.sort();
+            paths.insert(0, directory.to_owned());
+            paths
+                .into_iter()
+                .map(|path| {
+                    let metadata = std::fs::symlink_metadata(&path).unwrap();
+                    let bytes = if metadata.is_file() {
+                        let private = private_fs::read(&path).unwrap();
+                        assert_eq!(private.metadata().unwrap().len(), metadata.len());
+                        std::fs::read(&path).unwrap()
+                    } else {
+                        Vec::new()
+                    };
+                    Proof {
+                        name: path.file_name().unwrap().to_owned(),
+                        bytes,
+                        attributes: metadata.file_attributes(),
+                        created: metadata.creation_time(),
+                        modified: metadata.last_write_time(),
+                        acl: acl(&path),
+                    }
+                })
+                .collect()
+        }
+
+        fn source(root: &Path) -> (AccountId, PathBuf) {
+            let id = AccountId::from("readonly-dpapi-account");
+            let mut writable = SecretVault::open_in(root);
+            writable.put(&id, &Secret::password("original-private-secret"));
+            writable.try_save().unwrap();
+            let directory = crate::vault_dir_in(root);
+            assert!(private_fs::read(&directory.join("vault.key.dpapi")).is_ok());
+            assert!(!directory.join("vault.key").exists());
+            std::fs::remove_file(directory.join("vault-key.lock")).unwrap();
+            (id, directory)
+        }
+
+        #[test]
+        fn readonly_dpapi_source_authenticates_without_recreating_lock_or_changing_acl() {
+            let root = temp_root();
+            let (id, directory) = source(&root);
+            let before = snapshot(&directory);
+            let mut readonly = SecretVault::open_read_only_in(&root);
+            assert!(readonly.recovery_error().is_none());
+            assert_eq!(readonly.backend(), VaultBackend::WindowsDpapi);
+            assert_eq!(
+                readonly.get(&id),
+                Some(Secret::password("original-private-secret"))
+            );
+            readonly.put(&id, &Secret::password("memory-only-edit"));
+            assert!(readonly.try_save().is_err());
+            assert!(!directory.join("vault-key.lock").exists());
+            assert_eq!(snapshot(&directory), before);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn readonly_missing_or_corrupt_dpapi_key_never_creates_or_repairs_source() {
+            let root = temp_root();
+            let missing = root.join("absent");
+            assert!(
+                SecretVault::open_read_only_in(&missing)
+                    .recovery_error()
+                    .is_some()
+            );
+            assert!(!missing.exists());
+            let (_, directory) = source(&root);
+            let key = directory.join("vault.key.dpapi");
+            let ciphertext = std::fs::read(directory.join("vault.enc")).unwrap();
+            std::fs::remove_file(&key).unwrap();
+            let missing_before = snapshot(&directory);
+            assert!(
+                SecretVault::open_read_only_in(&root)
+                    .recovery_error()
+                    .is_some()
+            );
+            assert!(!key.exists());
+            assert!(!directory.join("vault-key.lock").exists());
+            assert_eq!(snapshot(&directory), missing_before);
+            private_fs::create_atomic(&key, b"invalid DPAPI ciphertext").unwrap();
+            let corrupt_before = snapshot(&directory);
+            assert!(
+                SecretVault::open_read_only_in(&root)
+                    .recovery_error()
+                    .is_some()
+            );
+            assert!(!directory.join("vault-key.lock").exists());
+            assert_eq!(snapshot(&directory), corrupt_before);
+            assert_eq!(
+                std::fs::read(directory.join("vault.enc")).unwrap(),
+                ciphertext
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_source_vault_authenticates_without_changing_files_or_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = temp_root();
+        let id = AccountId::from("source-account");
+        let mut writable = SecretVault::open_in(&root);
+        writable.put(&id, &Secret::password("source-secret"));
+        writable.try_save().unwrap();
+        let directory = crate::vault_dir_in(&root);
+        let snapshot = || {
+            let mut entries: Vec<_> = std::fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (
+                        entry.file_name(),
+                        std::fs::read(entry.path()).unwrap(),
+                        entry.metadata().unwrap().permissions().mode(),
+                    )
+                })
+                .collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            entries
+        };
+        let before = snapshot();
+        let mut readonly = SecretVault::open_read_only_in(&root);
+        assert!(
+            readonly.recovery_error().is_none(),
+            "{:?}",
+            readonly.recovery_error()
+        );
+        assert_eq!(readonly.get(&id), Some(Secret::password("source-secret")));
+        readonly.put(&id, &Secret::password("changed-in-memory"));
+        assert!(readonly.try_save().is_err());
+        assert_eq!(snapshot(), before);
+        let ciphertext = directory.join("vault.enc");
+        let retained = directory.join("original.enc");
+        std::fs::rename(&ciphertext, &retained).unwrap();
+        std::os::unix::fs::symlink(&retained, &ciphertext).unwrap();
+        assert!(
+            SecretVault::open_read_only_in(&root)
+                .recovery_error()
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(&retained).unwrap(),
+            before
+                .iter()
+                .find(|(name, _, _)| name == "vault.enc")
+                .unwrap()
+                .1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_missing_or_corrupt_source_ownership_never_creates_or_repairs_files() {
+        use std::io::Write as _;
+        let root = temp_root();
+        let missing = root.join("absent");
+        assert!(
+            SecretVault::open_read_only_in(&missing)
+                .recovery_error()
+                .is_some()
+        );
+        assert!(!missing.exists());
+        let mut writable = SecretVault::open_in(&root);
+        writable.put(&AccountId::from("account"), &Secret::password("secret"));
+        writable.try_save().unwrap();
+        let directory = crate::vault_dir_in(&root);
+        let blob = directory.join("vault.enc");
+        let key = directory.join("vault.key");
+        let ciphertext = std::fs::read(&blob).unwrap();
+        // The writable setup leaves its advisory lock behind. Remove it so
+        // read-only recovery must prove it never recreates a writer's lock.
+        std::fs::remove_file(directory.join("vault.lock")).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        assert!(
+            SecretVault::open_read_only_in(&root)
+                .recovery_error()
+                .is_some()
+        );
+        assert!(!key.exists());
+        assert_eq!(std::fs::read(&blob).unwrap(), ciphertext);
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+        private_fs::create_new(&key)
+            .unwrap()
+            .write_all(b"malformed")
+            .unwrap();
+        assert!(
+            SecretVault::open_read_only_in(&root)
+                .recovery_error()
+                .is_some()
+        );
+        assert_eq!(std::fs::read(&key).unwrap(), b"malformed");
+        assert_eq!(std::fs::read(&blob).unwrap(), ciphertext);
+        assert!(!directory.join("vault.lock").exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_keyring_keeps_the_persons_vault_under_an_owner_only_local_key() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = temp_root();
+        let dir = crate::vault_dir_in(&root);
+        let mut vault = SecretVault::open_at(dir.clone(), VaultBackend::LocalFile);
+        assert!(vault.recovery_error().is_none());
+        vault.put(&AccountId::from("a"), &Secret::password("secret"));
+        vault.try_save().unwrap();
+        let key = dir.join("vault.key");
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o077,
+            0,
+            "the key beside the vault is the person's alone"
+        );
+        let reopened = SecretVault::open_at(dir.clone(), VaultBackend::LocalFile);
+        assert!(reopened.recovery_error().is_none());
+        assert_eq!(
+            reopened.get(&AccountId::from("a")).unwrap().password,
+            "secret"
+        );
+
+        // A store of another root is sealed under a key of its own, never
+        // the person's.
+        let other = temp_root();
+        let mut elsewhere = SecretVault::open_in(&other);
+        elsewhere.put(&AccountId::from("a"), &Secret::password("other"));
+        elsewhere.try_save().unwrap();
+        assert_ne!(
+            std::fs::read(crate::vault_dir_in(&other).join("vault.key")).unwrap(),
+            std::fs::read(dir.join("vault.key")).unwrap()
+        );
+        assert_eq!(
+            format!("{:?}", Secret::password("sensitive-value")),
+            "Secret { .. }"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(other).unwrap();
+    }
+
+    #[test]
+    fn vault_key_is_created_once_and_owner_only() {
+        {
+            let root = temp_root();
+            let check = std::sync::Arc::new(std::sync::Barrier::new(4));
+            // Spawn every member before joining: interleaving spawn/join
+            // would deadlock the barrier.
+            let mut workers = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let root = root.clone();
+                let check = std::sync::Arc::clone(&check);
+                workers.push(std::thread::spawn(move || {
+                    check.wait();
+                    local_file_key(&root).unwrap()
+                }));
+            }
+            let keys: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            let persisted = read_key_bytes(&root.join("vault.key")).unwrap();
+            assert!(
+                keys.iter()
+                    .all(|key| key.expose_secret().as_slice() == persisted.as_slice())
+            );
+            assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let root = temp_root();
+            let mut v = SecretVault::open_in(&root);
+            v.put(&AccountId::from("a"), &Secret::password("pw"));
+            v.save();
+            let mode = std::fs::metadata(crate::vault_dir_in(&root).join("vault.key"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "vault key must be owner-only");
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn windows_key_ownership_never_leaks_rotates_or_falls_back() {
+        {
+            let root = temp_root();
+            let mut vault =
+                SecretVault::open_at(crate::vault_dir_in(&root), VaultBackend::LocalFile);
+            vault.put(&AccountId::from("protected"), &Secret::password("secret"));
+            vault.try_save().unwrap();
+            let directory = crate::vault_dir_in(&root);
+            let key_path = directory.join("vault.key");
+            let sealed_path = directory.join("vault.enc");
+            let key_before = std::fs::read(&key_path).unwrap();
+            let sealed_before = std::fs::read(&sealed_path).unwrap();
+            let result = bounded_command::run(
+                "icacls.exe",
+                &[key_path.to_str().unwrap(), "/grant", "*S-1-1-0:(R)"],
+                None,
+                4096,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            assert!(local_file_key(&directory).is_none());
+            assert!(vault.try_save().is_err());
+            assert_eq!(std::fs::read(&key_path).unwrap(), key_before);
+            assert_eq!(std::fs::read(&sealed_path).unwrap(), sealed_before);
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let mut item = crate::SecretItem::login("Owned fixture", "user", "fixture secret");
+            let mut store = crate::SecretStore::open_in(&root);
+            store.put(&mut item).unwrap();
+            let dir = crate::vault_dir_in(&root);
+            assert!(!dir.join("vault.key").exists());
+            assert!(tilo_files::native::private::read(&dir.join("vault.key.dpapi")).is_ok());
+            let reopened = crate::SecretStore::open_in(&root);
+            assert!(reopened.recovery_error().is_none());
+            assert_eq!(
+                reopened.reveal_password(&item.id).unwrap().as_str(),
+                "fixture secret"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(&AccountId::from("protected"), &Secret::password("fixture"));
+            vault.try_save().unwrap();
+            let dir = crate::vault_dir_in(&root);
+            let key_path = dir.join("vault.key.dpapi");
+            let key_before = std::fs::read(&key_path).unwrap();
+            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+            let result = bounded_command::run(
+                "icacls.exe",
+                &[key_path.to_str().unwrap(), "/grant", "*S-1-1-0:(R)"],
+                None,
+                4096,
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            assert!(SecretVault::open_in(&root).recovery_error().is_some());
+            assert!(vault.try_save().is_err());
+            assert!(!dir.join("vault.key").exists());
+            assert_eq!(std::fs::read(key_path).unwrap(), key_before);
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let dir = crate::vault_dir_in(&root);
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(&AccountId::from("original"), &Secret::password("fixture"));
+            vault.try_save().unwrap();
+            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+            let stray_key = [7; KEY_LEN];
+            tilo_files::native::private::create_atomic(&dir.join("vault.key"), &stray_key).unwrap();
+            tilo_files::native::private::write_atomic(
+                &dir.join("vault.key.dpapi"),
+                b"corrupt protected key",
+            )
+            .unwrap();
+            let failed = SecretVault::open_in(&root);
+            assert!(failed.recovery_error().is_some());
+            assert!(failed.try_save().is_err());
+            assert_eq!(
+                std::fs::read(dir.join("vault.key")).unwrap(),
+                stray_key.as_slice()
+            );
+            assert_eq!(
+                std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+                b"corrupt protected key"
+            );
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let check = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let mut workers = Vec::new();
+            for _ in 0..4 {
+                let root = root.clone();
+                let check = check.clone();
+                workers.push(std::thread::spawn(move || {
+                    check.wait();
+                    load_or_create_key(&root, VaultBackend::WindowsDpapi).unwrap()
+                }));
+            }
+            let keys: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+            let persisted = load_or_create_key(&root, VaultBackend::WindowsDpapi).unwrap();
+            assert!(keys.iter().all(|key| *key == persisted));
+            assert!(!root.join("vault.key").exists());
+            assert!(tilo_files::native::private::read(&root.join("vault.key.dpapi")).is_ok());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_vault_that_cannot_be_opened_is_never_overwritten_or_misread() {
+        {
+            let root = temp_root();
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(
+                &AccountId::from("existing"),
+                &Secret::password("preserve me"),
+            );
+            vault.try_save().unwrap();
+            let dir = crate::vault_dir_in(&root);
+            let before = std::fs::read(dir.join("vault.enc")).unwrap();
+            std::fs::remove_file(dir.join(active_key_filename())).unwrap();
+            let reopened = SecretVault::open_in(&root);
+            assert!(reopened.try_save().is_err());
+            assert!(!dir.join(active_key_filename()).exists());
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), before);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let mut vault = SecretVault::open_in(&root);
+            let id = AccountId::from("existing");
+            vault.put(&id, &Secret::password("preserve me"));
+            vault.try_save().unwrap();
+            let dir = crate::vault_dir_in(&root);
+            let before = std::fs::read(dir.join("vault.enc")).unwrap();
+            let key = std::fs::read(dir.join(active_key_filename())).unwrap();
+            std::fs::write(dir.join(active_key_filename()), [0u8; KEY_LEN]).unwrap();
+            let mut failed = SecretVault::open_in(&root);
+            std::fs::write(dir.join(active_key_filename()), key).unwrap();
+            failed.put(&AccountId::from("new"), &Secret::password("new value"));
+            assert!(failed.try_save().is_err());
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), before);
+            assert_eq!(
+                SecretVault::open_in(&root).get(&id).unwrap().password,
+                "preserve me"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(
+                &AccountId::from("existing"),
+                &Secret::password("preserve me"),
+            );
+            vault.try_save().unwrap();
+            let enc = crate::vault_dir_in(&root).join("vault.enc");
+            std::fs::write(&enc, b"corrupt existing vault").unwrap();
+            assert!(vault.try_save().is_err());
+            assert_eq!(std::fs::read(&enc).unwrap(), b"corrupt existing vault");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let dir = crate::vault_dir_in(&root);
+            let key = local_file_key(&dir).unwrap();
+            let blob = seal(&key, b"not valid JSON").unwrap();
+            std::fs::write(dir.join("vault.enc"), &blob).unwrap();
+            let vault = SecretVault::open_in(&root);
+            assert!(vault.recovery_error().is_some());
+            assert!(vault.try_save().is_err());
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), blob);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        {
+            let root = temp_root();
+            let id = AccountId::from("x");
+            {
+                let mut v = SecretVault::open_in(&root);
+                v.put(&id, &Secret::password("pw"));
+                v.save();
+            }
+            // Corrupt the key file: the sealed vault can no longer be opened, and it degrades to empty
+            // rather than surfacing garbage.
+            let key_path = crate::vault_dir_in(&root).join(active_key_filename());
+            std::fs::write(&key_path, [0u8; KEY_LEN]).unwrap();
+            let v = SecretVault::open_in(&root);
+            assert!(
+                v.get(&id).is_none(),
+                "a wrong key must not decrypt the vault"
+            );
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
+    fn active_key_filename() -> &'static str {
+        if cfg!(windows) {
+            "vault.key.dpapi"
+        } else {
+            "vault.key"
+        }
+    }
+    fn temp_root() -> PathBuf {
+        std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn a_view_sees_what_another_process_saved_and_keeps_its_own_unsaved_edits() {
+        let root = temp_root();
+        let mut messaging = SecretVault::open_in(&root);
+        let mut passwords = SecretVault::open_in(&root);
+        let (key, grant, draft) = (
+            AccountId::from("profile-key"),
+            AccountId::from("grant"),
+            AccountId::from("draft"),
+        );
+        messaging.put(&key, &Secret::password("prepared"));
+        messaging.put(&grant, &Secret::password("granted"));
+        messaging.try_save().unwrap();
+        passwords.put(&draft, &Secret::password("unsaved"));
+        assert_eq!(passwords.get(&key), None, "not read again yet");
+        passwords.refresh();
+        assert_eq!(passwords.get(&key), Some(Secret::password("prepared")));
+        assert_eq!(passwords.get(&draft), Some(Secret::password("unsaved")));
+        passwords.remove(&grant);
+        passwords.try_save().unwrap();
+        messaging.refresh();
+        assert_eq!(messaging.get(&grant), None);
+        assert_eq!(messaging.get(&draft), Some(Secret::password("unsaved")));
+        assert_eq!(messaging.get(&key), Some(Secret::password("prepared")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_thread_that_must_not_wait_commits_the_vault_on_a_writer_of_its_own() {
+        let root = temp_root();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&AccountId::from("frame-loop"), &Secret::password("kept"));
+        {
+            let _loop = tilo_files::waiting::forbid_strictly_on_this_thread();
+            assert_eq!(
+                vault.commit().unwrap(),
+                Saved::Pending,
+                "the frame loop never writes the vault itself"
+            );
+            vault.put(
+                &AccountId::from("edited-meanwhile"),
+                &Secret::password("too"),
+            );
+        }
+        // A caller that may wait takes the write under way, then writes
+        // the edit made meanwhile.
+        vault.try_save().unwrap();
+        let reopened = SecretVault::open_in(&root);
+        assert_eq!(
+            reopened.get(&AccountId::from("frame-loop")),
+            Some(Secret::password("kept"))
+        );
+        assert_eq!(
+            reopened.get(&AccountId::from("edited-meanwhile")),
+            Some(Secret::password("too"))
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sealed_vault_round_trips_and_never_exposes_the_secret() {
+        {
+            let key = VaultKey::from_bytes([7u8; KEY_LEN]);
+            let plaintext = b"secret vault bytes";
+            let blob = seal(&key, plaintext).expect("seal");
+            assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
+            assert!(blob.starts_with(b"TSEAL"));
+            assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
+            // A different key can't open it.
+            assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
+            let mut tampered = blob;
+            let last = tampered.len() - 1;
+            tampered[last] ^= 0x01;
+            assert!(open(&key, &tampered).is_none());
+        }
+
+        {
+            let root = temp_root();
+            let id = AccountId::from("ada@example.com");
+            {
+                let mut v = SecretVault::open_in(&root);
+                #[cfg(not(windows))]
+                assert_eq!(v.backend(), VaultBackend::LocalFile);
+                #[cfg(windows)]
+                assert_eq!(v.backend(), VaultBackend::WindowsDpapi);
+                v.put(&id, &Secret::password("hunter2"));
+                v.save();
+            }
+            let v = SecretVault::open_in(&root);
+            assert_eq!(v.get(&id).unwrap().password, "hunter2");
+            std::fs::remove_dir_all(&root).ok();
+        }
+
+        {
+            let root = temp_root();
+            let mut v = SecretVault::open_in(&root);
+            v.put(&AccountId::from("a"), &Secret::password("s3cr3t-value"));
+            v.save();
+            let enc = crate::vault_dir_in(&root).join("vault.enc");
+            let raw = std::fs::read(&enc).unwrap();
+            assert!(
+                !raw.windows(b"s3cr3t-value".len())
+                    .any(|w| w == b"s3cr3t-value"),
+                "password must not be recoverable from the sealed file"
+            );
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+}

@@ -480,7 +480,16 @@ impl HistoryHost for ExternalBroker {
 }
 
 #[cfg(test)]
+#[cfg(feature = "whatsapp-sdk")]
+#[path = "external_broker/receipt_tests.rs"]
+mod receipt_tests;
+#[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[cfg(feature = "whatsapp-sdk")]
+#[path = "external_broker/incoming_tests.rs"]
+mod incoming_tests;
 
 #[cfg(feature = "whatsapp-sdk")]
 mod whatsapp_hook;

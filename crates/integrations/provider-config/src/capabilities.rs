@@ -329,3 +329,133 @@ pub fn refresh(stored: &mut ModelDescriptor, listed: &ModelDescriptor) {
     stored.tool_calling = listed.tool_calling;
     stored.capabilities_from = listed.capabilities_from;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn listed(id: &str, entry: &Value) -> ModelDescriptor {
+        let mut model = ModelDescriptor::new(id);
+        apply_listing(&mut model, entry);
+        model
+    }
+
+    #[test]
+    fn openrouter_modalities_and_parameters_decide() {
+        let entry = json!({
+            "id": "acme/seer",
+            "context_length": 131_072,
+            "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+            "supported_parameters": ["max_tokens", "tools", "tool_choice"]
+        });
+        let model = listed("acme/seer", &entry);
+        assert!(model.vision && model.tool_calling);
+        assert_eq!(model.context_window, Some(131_072));
+        assert_eq!(model.capabilities_from, CapabilitySource::Provider);
+        // The list outranks the family table: a Claude the list says is
+        // text-only and tool-less is that.
+        let entry = json!({
+            "architecture": {"input_modalities": ["text"]},
+            "supported_parameters": ["max_tokens"]
+        });
+        let model = listed("anthropic/claude-x", &entry);
+        assert!(!model.vision && !model.tool_calling);
+    }
+
+    #[test]
+    fn a_listed_output_limit_becomes_the_models_declared_limit() {
+        let openrouter = json!({
+            "id": "deepseek/x", "context_length": 131_072,
+            "top_provider": {"max_completion_tokens": 32_768}
+        });
+        let model = listed("deepseek/x", &openrouter);
+        assert_eq!(model.max_output_tokens, Some(32_768));
+        let gemini =
+            json!({"id": "gemini-x", "inputTokenLimit": 1_000_000, "outputTokenLimit": 65_536});
+        assert_eq!(listed("gemini-x", &gemini).max_output_tokens, Some(65_536));
+        // A list that says nothing leaves it unknown, never guessed.
+        assert_eq!(
+            listed("house-model-7", &json!({"id": "house-model-7"})).max_output_tokens,
+            None
+        );
+        // A zero is no limit declared, not an answer of no tokens.
+        assert_eq!(
+            listed("m", &json!({"max_output_tokens": 0})).max_output_tokens,
+            None
+        );
+    }
+
+    /// A model that declared its limit is asked for exactly that; one that
+    /// did not is asked for the default, and never for more than its context.
+    #[test]
+    fn the_output_budget_is_the_declared_limit_else_the_default() {
+        let mut model = ModelDescriptor::new("declares");
+        assert_eq!(
+            model.output_tokens(),
+            ModelDescriptor::DEFAULT_OUTPUT_TOKENS
+        );
+        model.max_output_tokens = Some(8_000);
+        assert_eq!(model.output_tokens(), 8_000);
+        model.context_window = Some(4_096);
+        assert_eq!(model.output_tokens(), 4_096, "never more than the context");
+    }
+
+    #[test]
+    fn anthropic_and_mistral_capability_objects_decide() {
+        let anthropic = json!({
+            "id": "claude-x", "max_input_tokens": 200_000,
+            "capabilities": {"image_input": {"supported": false}, "tool_use": {"supported": true}}
+        });
+        let model = listed("claude-x", &anthropic);
+        assert!(!model.vision && model.tool_calling);
+        assert_eq!(model.context_window, Some(200_000));
+        let mistral = json!({
+            "id": "pixtral-large", "max_context_length": 128_000,
+            "capabilities": {"completion_chat": true, "function_calling": true, "vision": true}
+        });
+        let model = listed("pixtral-large", &mistral);
+        assert!(model.vision && model.tool_calling);
+    }
+
+    #[test]
+    fn a_list_that_says_nothing_falls_back_to_the_family_table() {
+        let model = listed("gpt-4o-mini", &json!({"id": "gpt-4o-mini"}));
+        assert!(model.vision && model.tool_calling);
+        assert_eq!(model.capabilities_from, CapabilitySource::Family);
+        let model = listed("text-embedding-3-small", &json!({}));
+        assert!(!model.tool_calling);
+        let model = listed("Qwen/Qwen2.5-VL-72B-Instruct", &json!({}));
+        assert!(model.vision);
+        let model = listed("deepseek-chat", &json!({}));
+        assert!(!model.vision && model.tool_calling);
+        let unknown = listed("house-model-7", &json!({}));
+        assert!(!unknown.vision && unknown.tool_calling);
+        assert_eq!(unknown.capabilities_from, CapabilitySource::Unknown);
+    }
+
+    #[test]
+    fn the_persons_answer_outlasts_every_list() {
+        let mut model = ModelDescriptor::new("claude-x");
+        model.vision = false;
+        model.tool_calling = false;
+        model.capabilities_from = CapabilitySource::Person;
+        let fresh = listed("claude-x", &json!({}));
+        refresh(&mut model, &fresh);
+        apply_family(&mut model);
+        assert!(!model.vision && !model.tool_calling);
+        assert!(model.capabilities_set_by_person());
+    }
+
+    #[test]
+    fn gemini_lists_embedding_models_as_unable_to_plan() {
+        let entry = json!({
+            "name": "models/text-embedding-004",
+            "inputTokenLimit": 2048,
+            "supportedGenerationMethods": ["embedContent"]
+        });
+        let model = listed("models/text-embedding-004", &entry);
+        assert!(!model.tool_calling);
+        assert_eq!(model.context_window, Some(2048));
+    }
+}

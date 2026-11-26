@@ -73,3 +73,51 @@ impl Synced {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(account: &str, uid: u32, validity: u32) -> Message {
+        let raw =
+            format!("From: a@x\r\nSubject: s\r\nMessage-ID: <{uid}.{validity}@x>\r\n\r\nb\r\n");
+        let mut message =
+            crate::transport::parse_eml(raw.as_bytes(), i64::from(uid), Folder::Inbox).unwrap();
+        message.account = account.to_owned();
+        message.server = Some(crate::model::ServerPlace {
+            folder: Folder::Inbox,
+            uid,
+            uid_validity: validity,
+        });
+        message
+    }
+
+    tilo_test_env::scenario! {
+        /// What a sync asks an IMAP server for.
+        fn a_sync_names_its_folders_search_text_and_uid_window;
+
+        phase a_window_spans_the_uids_of_one_account_and_folder;
+        {
+            let mut mailbox = Mailbox::default();
+            assert_eq!(Window::of(&mailbox, "me@x", Folder::Inbox), None);
+            for uid in [7, 3, 12] {
+                mailbox.insert(message("me@x", uid, 9));
+            }
+            mailbox.insert(message("other@x", 40, 9));
+            assert_eq!(
+                Window::of(&mailbox, "me@x", Folder::Inbox),
+                Some(Window {
+                    uid_validity: 9,
+                    newest: 12,
+                    oldest: 3
+                })
+            );
+            mailbox.insert(message("me@x", 13, 10));
+            assert_eq!(
+                Window::of(&mailbox, "me@x", Folder::Inbox),
+                None,
+                "a renumbered folder starts over"
+            );
+        }
+    }
+}

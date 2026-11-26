@@ -515,3 +515,41 @@ async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metrics_file_is_prometheus_text_replaced_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metrics.d").join("bridge.prom");
+        tilo_files::native::atomic::write_creating_parent(
+            &path,
+            metrics_text(3, 1.25, 7).as_bytes(),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let samples: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            samples,
+            [
+                "tilo_workspace_bridge_lag_seconds 1.250",
+                "tilo_workspace_bridge_queue_depth 3",
+                "tilo_workspace_bridge_rate_limited_total 7",
+            ]
+        );
+        assert!(text.contains("# TYPE tilo_workspace_bridge_rate_limited_total counter"));
+        tilo_files::native::atomic::write_creating_parent(
+            &path,
+            metrics_text(0, f64::NAN, 7).as_bytes(),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("tilo_workspace_bridge_lag_seconds 0.000\n"));
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+    }
+}
