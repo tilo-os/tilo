@@ -90,6 +90,7 @@ fn paint_over(
         &theme,
         &PeopleModel {
             host,
+            bar_height: f64::from(tilo_session_core::desktop::overlays::topbar_height(&theme)),
             workspace: "Lounge",
             rows,
             invite: Invite::Offered,

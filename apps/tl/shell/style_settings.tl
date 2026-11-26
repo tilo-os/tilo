@@ -193,15 +193,22 @@ view theme_settings() {
     }
 }
 
-/// The desktop style's settings: whether the top bar shows, where the dock rides, how big it is,
-/// and when it shows. Each is one setting: its words, and the switch or the strip of choices that
-/// sets it, so what a person changes stands beside what it changes.
+/// The desktop style's settings: whether the top bar shows and how big it is, where the dock
+/// rides, how big it is, and when it shows. Each is one setting: its words, and the switch or the
+/// strip of choices that sets it, so what a person changes stands beside what it changes.
 view desktop_style_settings(s: Shell) {
     stack(gap: .related) {
         // A toggle carries its setting's name beside its switch and the whole row turns it, so the
         // row is the toggle alone: a text of the name beside it would say the setting twice, and
         // the two would meet at the panel's width.
         toggle("Show the top bar", bind: s.bar_shown)
+        ui.ToggleGroup(caption: "Bar size", fill: true) {
+            for size in cases(Size) {
+                ui.Segment(size.label(), chosen: s.bar_size == size) {
+                    on press: set_bar_size(s, size)
+                }
+            }
+        }
         toggle("Show the dock", bind: s.dock_shown)
         // Each choice is one strip of the setting's cases, the case it holds filled, and a press
         // runs that setting's own action at the case pressed: one press here and an agent's call

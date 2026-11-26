@@ -1190,6 +1190,7 @@ d-htrvh33d = Stilbereich
 
 d-tcyusdmx = Einstellungen des Desktopstils
     .w-show-the-top-bar = Obere Leiste zeigen
+    .w-bar-size = Größe der Leiste
     .w-show-the-dock = Dock zeigen
     .w-dock-edge = Dock-Kante
     .w-dock-size = Dock-Größe

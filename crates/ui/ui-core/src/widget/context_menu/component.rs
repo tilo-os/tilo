@@ -221,6 +221,9 @@ pub struct MenuButtonProps {
     pub faces: Vec<Person>,
     /// What kind of button it is: `secondary` unless said, `plain` for an icon-only one.
     pub role: Option<ButtonRole>,
+    /// How big the button is: `regular` unless said. A bar's button takes the bar's size, so the
+    /// whole bar grows and shrinks with its setting.
+    pub size: crate::widget::ControlSize,
     /// Actions offered on something (`actions(r)`), each a command after `items`.
     pub actions: Vec<OfferedAction>,
     /// The resource whose published actions this menu lists, which the host fills: a bar that
@@ -239,6 +242,7 @@ fn face(
     icon_only: bool,
     faces: Vec<Person>,
     role: Option<ButtonRole>,
+    size: crate::widget::ControlSize,
 ) -> crate::widget::Button {
     // One person's own menu is their avatar, whole: the menu stands behind their face as it
     // stands behind any button.
@@ -247,6 +251,7 @@ fn face(
             .with_accessible_name(&label)
             .tooltip(label)
             .with_avatar(only.clone())
+            .control_size(size)
             .role(role.unwrap_or(ButtonRole::Plain));
     }
     if !faces.is_empty() {
@@ -254,14 +259,20 @@ fn face(
             .with_accessible_name(&label)
             .tooltip(label)
             .with_faces_of(faces)
+            .control_size(size)
             .role(role.unwrap_or(ButtonRole::Plain));
     }
     match icon {
-        Some(icon) if icon_only => crate::widget::Button::icon_only(key, icon, &label),
+        Some(icon) if icon_only => {
+            crate::widget::Button::icon_only(key, icon, &label).control_size(size)
+        }
         Some(icon) => crate::widget::Button::new(key, &label)
             .with_icon(icon)
+            .control_size(size)
             .role(role.unwrap_or_default()),
-        None => crate::widget::Button::new(key, &label).role(role.unwrap_or_default()),
+        None => crate::widget::Button::new(key, &label)
+            .control_size(size)
+            .role(role.unwrap_or_default()),
     }
 }
 
@@ -284,11 +295,12 @@ impl Described for MenuButton {
             icon_only,
             faces,
             role,
+            size,
             actions,
             target: _,
             items,
         } = props;
-        face(key, label, icon, icon_only, faces, role).with_menu(rows(items, actions))
+        face(key, label, icon, icon_only, faces, role, size).with_menu(rows(items, actions))
     }
 
     /// Take changed props in place: the button says the shell's new words and its menu lists the
@@ -301,11 +313,12 @@ impl Described for MenuButton {
             icon_only,
             faces,
             role,
+            size,
             actions,
             target: _,
             items,
         } = props;
-        let fresh = face("", label, icon, icon_only, faces, role);
+        let fresh = face("", label, icon, icon_only, faces, role, size);
         if !self.button.take_words(&fresh) {
             return false;
         }

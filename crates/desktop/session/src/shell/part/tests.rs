@@ -2065,3 +2065,77 @@ fn a_float_covers_the_windows_under_it_once_its_window_fills_it() {
         cover.rect
     );
 }
+
+/// The person's bar and dock sizes reach the shell they see: a size chosen through the shell's
+/// own settings actions changes the height its bar or its dock is laid out at, and the band the
+/// session measures from that layout follows it, so what the session draws under the bar — a
+/// popover, the roster, a banner — stands where the bar actually ends. Both the bar and the dock
+/// are checked against their own setting, so one choice never moves the other.
+#[test]
+fn the_bar_and_dock_follow_the_sizes_the_settings_choose() {
+    let (mut part, _link) = part();
+    // The tallest node the body names is the body: the chrome's own ground, not the run it holds.
+    let height = |part: &mut ShellPart, name: &str| {
+        let tallest = part
+            .control_bounds_all(name)
+            .into_iter()
+            .map(|(_, _, _, height)| height)
+            .reduce(f64::max);
+        tallest.unwrap_or_else(|| panic!("the shell draws {name}"))
+    };
+    let bar = height(&mut part, "Top bar");
+    let dock = height(&mut part, "Dock");
+    let (bar_band, dock_band) = part.bands().expect("the part measured its chrome");
+    assert!(
+        (f64::from(bar_band) - bar).abs() < 1.0,
+        "the band the session measures is the bar's height: {bar_band} against {bar}"
+    );
+    assert!(
+        (f64::from(dock_band) - dock).abs() < 1.0,
+        "the band the session measures is the dock's height: {dock_band} against {dock}"
+    );
+
+    let choose = |part: &mut ShellPart, bar: &str, dock: &str| {
+        part.run_action("set_bar_size", vec![serde_json::json!(bar)])
+            .unwrap_or_else(|why| panic!("set the bar size: {why}"));
+        part.run_action("set_dock_size", vec![serde_json::json!(dock)])
+            .unwrap_or_else(|why| panic!("set the dock size: {why}"));
+        for _ in 0..4 {
+            part.prepare_frame();
+        }
+    };
+
+    choose(&mut part, "large", "small");
+    let large_bar = height(&mut part, "Top bar");
+    let small_dock = height(&mut part, "Dock");
+    assert!(
+        large_bar > bar + 3.0,
+        "a larger bar is taller: {bar} became {large_bar}"
+    );
+    assert!(
+        small_dock < dock - 3.0,
+        "a smaller dock is shorter: {dock} became {small_dock}"
+    );
+
+    choose(&mut part, "small", "large");
+    let small_bar = height(&mut part, "Top bar");
+    let large_dock = height(&mut part, "Dock");
+    assert!(
+        small_bar < bar - 3.0,
+        "a smaller bar is shorter: {bar} became {small_bar}"
+    );
+    assert!(
+        large_dock > dock + 3.0,
+        "a larger dock is taller: {dock} became {large_dock}"
+    );
+
+    let (bar_band, dock_band) = part.bands().expect("the part measured its chrome again");
+    assert!(
+        (f64::from(bar_band) - small_bar).abs() < 1.0,
+        "the measured band follows the bar: {bar_band} against {small_bar}"
+    );
+    assert!(
+        (f64::from(dock_band) - large_dock).abs() < 1.0,
+        "the measured band follows the dock: {dock_band} against {large_dock}"
+    );
+}

@@ -214,7 +214,15 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
         clock_or_follow(compact)
     } else if part.kind == .menu {
         row(gap: .related, align: .center) {
-            ui.MenuButton("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+            ui.MenuButton(
+                "Tilo",
+                icon: .tilo,
+                icon_only: true,
+                role: .bar,
+                size: if shell.bar_size == .small {
+                    .small
+                } else if shell.bar_size == .large { .large } else { .regular },
+            ) {
                 ui.MenuItem("Overview", icon: .layout_grid) {
                     on choose: session.overview()
                 }
@@ -254,7 +262,15 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
                 // Someone new is one press from the faces, as the Rust bar's invite was: the
                 // launchpad's invite card, which the session's own action opens.
                 if wide {
-                    ui.Button("Invite someone", icon: .user_plus, icon_only: true, role: .bar) {
+                    ui.Button(
+                        "Invite someone",
+                        icon: .user_plus,
+                        icon_only: true,
+                        role: .bar,
+                        size: if shell.bar_size == .small {
+                            .small
+                        } else if shell.bar_size == .large { .large } else { .regular },
+                    ) {
                         on press: session.launchpad(card: "invite")
                     }
                 }
@@ -299,6 +315,9 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
                         ui.Button(
                             item.title,
                             role: .bar,
+                            size: if shell.bar_size == .small {
+                                .small
+                            } else if shell.bar_size == .large { .large } else { .regular },
                             count: item.badge,
                             alert: item.attention,
                         ) {
@@ -340,6 +359,9 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
                 faces: [invoker],
                 dot: device.overlays.ask != "",
                 role: .bar,
+                size: if shell.bar_size == .small {
+                    .small
+                } else if shell.bar_size == .large { .large } else { .regular },
             ) {
                 on press: device.show_person(device.people, person: "self")
             }
@@ -372,7 +394,15 @@ view workspace_menu(narrow: Bool, compact: Bool, wide: Bool) {
         let icon_only = narrow
             or compact and folders_need_person(device.folders.folders)
             or live_on_bar() and not wide
-        ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
+        ui.MenuButton(
+            name,
+            icon: if icon_only { .layers },
+            icon_only: icon_only,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             for w in layout.workspaces {
                 if w.home != "" {
                     // Where the shell is a page, each workspace is a page of its own: the menu
@@ -448,7 +478,14 @@ view strip_part() {
             on cancel: set(renaming, "")
         }
     } else if front_strip_name() != "" {
-        ui.MenuButton(front_strip_name(), icon: .chevron_right, role: .bar) {
+        ui.MenuButton(
+            front_strip_name(),
+            icon: .chevron_right,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             for r in strips {
                 ui.MenuItem(r.name, checked: r.current, icon: .columns_2) {
                     on choose: session.show_strip(workspace: workspace, strip: r.key)
@@ -544,7 +581,14 @@ view person_menu() {
     let v = viewing
     let me = if layout.person != "" { layout.person } else { "You" }
     let face = invoker
-    ui.MenuButton("{me}: style and workspaces", faces: [face], role: .bar) {
+    ui.MenuButton(
+        "{me}: style and workspaces",
+        faces: [face],
+        role: .bar,
+        size: if shell.bar_size == .small {
+            .small
+        } else if shell.bar_size == .large { .large } else { .regular },
+    ) {
         for style in styles.installed.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {
@@ -610,6 +654,9 @@ view capture_status(compact: Bool) {
             icon: if watching { .camera } else { .mic },
             icon_only: compact,
             role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
             alert: listening,
         ) {
             on press: device.show_surface(device.overlays, surface: "quick-settings")
@@ -630,6 +677,9 @@ view volume_status() {
             icon: if sound.muted { .volume_x } else { .volume_2 },
             icon_only: true,
             role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
         ) {
             on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
@@ -653,6 +703,9 @@ view network_status() {
             } else if joined.kind == .wired { .ethernet_port } else { .wifi_off },
             icon_only: true,
             role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
         ) {
             on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
@@ -685,6 +738,9 @@ view sync_status() {
             } else { .cloud },
             icon_only: true,
             role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
         ) {
             for f in folders {
                 ui.MenuItem(
@@ -785,6 +841,9 @@ view battery_status(compact: Bool) {
             icon: if charging { .battery_charging } else { .battery },
             icon_only: compact,
             role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
         ) {
             on press: device.show_surface(device.overlays, surface: "quick-settings")
         }
@@ -816,6 +875,9 @@ view bell() {
         icon: if quiet { .bell_off } else { .bell },
         icon_only: true,
         role: .bar,
+        size: if shell.bar_size == .small {
+            .small
+        } else if shell.bar_size == .large { .large } else { .regular },
         count: waiting + asked,
     ) {
         on press: device.show_surface(device.overlays, surface: "centre")

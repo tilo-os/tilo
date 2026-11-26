@@ -175,6 +175,9 @@ view action_bar(a: Layout, room: BarRoom) {
                     icon: .app_window,
                     icon_only: room == .one,
                     role: .bar,
+                    size: if shell.bar_size == .small {
+                        .small
+                    } else if shell.bar_size == .large { .large } else { .regular },
                     target: r,
                 )
             } else {
@@ -231,7 +234,15 @@ fn placed_resource(id: Text) -> Option<host.Resource> {
 /// name, moving it to another row, and closing it. On the narrowest bar the menu is named by the
 /// window's icon alone, as an app's window's one menu is.
 view window_commands(a: Layout, p: LayoutPlace, room: BarRoom) {
-    ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one, role: .bar) {
+    ui.MenuButton(
+        place_title(p),
+        icon: .app_window,
+        icon_only: room == .one,
+        role: .bar,
+        size: if shell.bar_size == .small {
+            .small
+        } else if shell.bar_size == .large { .large } else { .regular },
+    ) {
         for r in a.rows {
             if r.key != strip_row(a, p.strip) {
                 ui.MenuItem(r.name, icon: .navigation) {
@@ -258,7 +269,15 @@ view traditional_bar() {
         BarRoom.roomy
     } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: .related, align: .center, fill) {
-        ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+        ui.Button(
+            "Tilo",
+            icon: .tilo,
+            icon_only: true,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             on press: session.overview()
         }
         action_bar(layout, room)

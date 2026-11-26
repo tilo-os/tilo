@@ -17,7 +17,15 @@ use tilo.workspace as workspace
 view people_button() {
     let people = layout.people
     if people.is_empty() {
-        ui.Button("People", icon: .users, icon_only: true, role: .bar) {
+        ui.Button(
+            "People",
+            icon: .users,
+            icon_only: true,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             on press: device.show(device.people)
         }
     } else {
@@ -42,11 +50,28 @@ view people_button() {
             // count read off another list would claim people the bar was never given.
             let rest = device.people.rows.filter(p -> not p.agent).len() - shown.len()
             if rest > 0 {
-                ui.Button(label, icon: .users, count: rest, icon_only: true, role: .bar) {
+                ui.Button(
+                    label,
+                    icon: .users,
+                    count: rest,
+                    icon_only: true,
+                    role: .bar,
+                    size: if shell.bar_size == .small {
+                        .small
+                    } else if shell.bar_size == .large { .large } else { .regular },
+                ) {
                     on press: device.show(device.people)
                 }
             } else {
-                ui.Button(label, icon: .users, icon_only: true, role: .bar) {
+                ui.Button(
+                    label,
+                    icon: .users,
+                    icon_only: true,
+                    role: .bar,
+                    size: if shell.bar_size == .small {
+                        .small
+                    } else if shell.bar_size == .large { .large } else { .regular },
+                ) {
                     on press: device.show(device.people)
                 }
             }
@@ -60,11 +85,29 @@ view face_button(p: device.Person) {
     let name = if p.name != "" { p.name } else { std.say("Someone") }
     let label = if is_follower(p) { std.say("{name}, follows you") } else { name }
     if let face = face_of(p) {
-        ui.Button(label, faces: [face], icon_only: true, dot: is_follower(p), role: .bar) {
+        ui.Button(
+            label,
+            faces: [face],
+            icon_only: true,
+            dot: is_follower(p),
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             on press: device.show_person(device.people, person: p.key)
         }
     } else {
-        ui.Button(label, icon: .user, icon_only: true, dot: is_follower(p), role: .bar) {
+        ui.Button(
+            label,
+            icon: .user,
+            icon_only: true,
+            dot: is_follower(p),
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             on press: device.show_person(device.people, person: p.key)
         }
     }
@@ -80,7 +123,14 @@ fn face_of(p: device.Person) -> Option<Actor> {
 /// where to find it, and stopping one ends the connection the person admitted.
 view agent_chip(a: device.Agent) {
     let label = if a.unseen > 0 { "{a.name}, {a.unseen} new" } else { a.name }
-    ui.MenuButton(label, icon: .bot, role: .bar) {
+    ui.MenuButton(
+        label,
+        icon: .bot,
+        role: .bar,
+        size: if shell.bar_size == .small {
+            .small
+        } else if shell.bar_size == .large { .large } else { .regular },
+    ) {
         if a.doing != "" {
             ui.MenuItem(a.doing, disabled: true)
         }
@@ -950,11 +1000,29 @@ view follow_chip(folded: Bool) {
 /// this is, beside it where the bar has room, and alone where it has none.
 view following_face(who: device.Person, label: Text, words: Bool) {
     if let face = face_of(who) {
-        ui.Button(label, faces: [face], icon_only: not words, role: .bar, live: .polite) {
+        ui.Button(
+            label,
+            faces: [face],
+            icon_only: not words,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+            live: .polite,
+        ) {
             on press: device.show_person(device.people, person: who.key)
         }
     } else {
-        ui.Button(label, icon: .eye, icon_only: not words, role: .bar, live: .polite) {
+        ui.Button(
+            label,
+            icon: .eye,
+            icon_only: not words,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+            live: .polite,
+        ) {
             on press: device.show_person(device.people, person: who.key)
         }
     }
@@ -981,7 +1049,14 @@ view sharing_indicator() {
         let label = if windows == 1 {
             std.say("Sharing 1 window")
         } else { std.say("Sharing {windows} windows") }
-        ui.MenuButton(label, icon: .screen_share, role: .bar) {
+        ui.MenuButton(
+            label,
+            icon: .screen_share,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             for x in sharing {
                 // The window as this shell names it, never its app's id.
                 let shown = if let w = device.windows.all.find(w -> w.key == x.tab) {

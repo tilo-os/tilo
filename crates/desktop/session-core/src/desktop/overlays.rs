@@ -517,8 +517,15 @@ pub struct Placement {
 /// whose size and anchor do not settle a rect.
 #[must_use]
 pub fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Placement> {
+    place_under_bar(display, anchor, size, TOPBAR_HEIGHT_PX)
+}
+
+/// [`place_on`], under a bar `bar` logical pixels tall: the height the shell's own chrome was laid
+/// out at, which its bar size setting moves, rather than the reference one.
+#[must_use]
+pub fn place_under_bar(display: Rect, anchor: Anchor, size: Size, bar: f32) -> Option<Placement> {
     // The bar hangs above a surface anchored to the top edge.
-    let top = display.y0 + f64::from(TOPBAR_HEIGHT_PX).ceil();
+    let top = display.y0 + f64::from(bar).ceil();
     let margin = POPOVER_MARGIN;
     let width = size
         .width
@@ -614,6 +621,16 @@ impl Overlays {
     /// and nothing else tells it the press went down.
     pub fn wake_with(&self, wake: std::sync::Arc<std::sync::atomic::AtomicBool>) {
         *self.0.borrow_mut().wake.borrow_mut() = Some(wake);
+    }
+
+    /// Tell the stack how tall the shell's bar is, so a surface anchored to the display's top
+    /// edge hangs under the bar the person sees rather than under the reference height.
+    pub fn set_bar_height(&self, height: f32) {
+        let mut stack = self.0.borrow_mut();
+        if stack.bar_height != Some(height) {
+            stack.bar_height = Some(height);
+            stack.moved();
+        }
     }
 
     /// The stack changed under what draws it: let it take up a pass.
@@ -1063,6 +1080,10 @@ struct Stack {
     scope: SwitcherScope,
     /// When the walk began, which decides when its panel shows ([`REVEAL_DELAY`]).
     opened: Option<Instant>,
+    /// How tall the shell's bar is, in logical pixels: a surface anchored to the top edge hangs
+    /// under the bar the person sees. `None` until the session tells it, when a surface stands
+    /// under the reference height.
+    bar_height: Option<f32>,
 }
 
 impl Stack {
@@ -1105,7 +1126,14 @@ impl Stack {
         let place = self
             .displays
             .display_for(anchor.display_of())
-            .and_then(|display| place_on(display, anchor, size));
+            .and_then(|display| {
+                place_under_bar(
+                    display,
+                    anchor,
+                    size,
+                    self.bar_height.unwrap_or(TOPBAR_HEIGHT_PX),
+                )
+            });
         Some(Entry {
             part,
             role: part.role(),

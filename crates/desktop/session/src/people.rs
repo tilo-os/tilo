@@ -234,6 +234,9 @@ struct Shown {
     area: Rect,
     /// The roster kept on screen at an edge, while the person keeps it there.
     pinned: Option<Pinned>,
+    /// How tall the shell's bar is, as the session last told it: the roster, its cards and the
+    /// banner stand under the bar the person sees. `None` until the session says.
+    bar_height: Option<f64>,
 }
 
 impl Shown {
@@ -341,6 +344,20 @@ impl People {
     fn redraw(&self) {
         if let Some(layer) = self.layer.borrow().as_ref() {
             layer.relayout();
+        }
+    }
+
+    /// How tall the shell's bar is, as the session measured it: what the roster, its cards and the
+    /// banner stand under. A change redraws, as a theme's does.
+    pub fn set_bar_height(&self, height: f64) {
+        let changed = {
+            let mut shown = self.shown.borrow_mut();
+            let changed = shown.bar_height != Some(height);
+            shown.bar_height = Some(height);
+            changed
+        };
+        if changed {
+            self.redraw();
         }
     }
 
@@ -910,11 +927,14 @@ impl Panel {
             return;
         }
         let area = shown.area;
+        let bar = shown.bar_height.unwrap_or_else(|| {
+            f64::from(tilo_session_core::desktop::overlays::topbar_height(theme))
+        });
         let placed = {
             let Some(pin) = shown.pinned.as_mut() else {
                 return;
             };
-            Self::place_pinned(pin, area, theme, now);
+            Self::place_pinned(pin, area, bar, theme, now);
             let anchor = match pin.edge {
                 DockEdge::Left | DockEdge::BottomLeft => {
                     Point::new(pin.panel.x0, pin.panel.center().y)
@@ -993,6 +1013,9 @@ impl Panel {
             .and_then(|(_, at)| at.checked_add(WAVE_SHOWN));
         let model = PeopleModel {
             host: shown.area,
+            bar_height: shown.bar_height.unwrap_or_else(|| {
+                f64::from(tilo_session_core::desktop::overlays::topbar_height(theme))
+            }),
             workspace: &workspace,
             rows: &rows,
             invite: if self.invitable.get() {
@@ -1018,8 +1041,7 @@ impl Panel {
 
     /// Where the pinned roster waits this frame: its slot at its edge, under a drag, or springing
     /// back from a drop.
-    fn place_pinned(pin: &mut Pinned, area: Rect, theme: &Theme, now: ui::time::Instant) {
-        let bar = f64::from(tilo_session_core::desktop::overlays::topbar_height(theme));
+    fn place_pinned(pin: &mut Pinned, area: Rect, bar: f64, theme: &Theme, now: ui::time::Instant) {
         let work = Rect::new(area.x0, area.y0 + bar, area.x1, area.y1);
         pin.work = work;
         // The roster lays itself out in whatever rect it is given: its slot is the one it measured

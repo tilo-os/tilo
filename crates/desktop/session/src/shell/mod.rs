@@ -64,21 +64,6 @@ pub fn shell_packages() -> Result<(Vec<tilolang_tilo::tilolang::Compiled>, bool)
     }
 }
 
-/// The height of the bar's band, logical pixels: what a bar or a dock that shows only at an edge
-/// takes, so the screen's views can tell the pointer is at that edge.
-fn band() -> u32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a bar's height, a few dozen pixels"
-    )]
-    let band = f64::from(tilo_session_core::desktop::overlays::topbar_height(
-        &tilo_ui_base::Theme::dark(),
-    ))
-    .ceil() as u32;
-    band
-}
-
 /// The shell on the session, and what feeds it.
 pub(crate) struct Shell {
     lists: DeviceLists,
@@ -124,9 +109,11 @@ pub(crate) struct Shell {
     packages: Vec<tilolang_tilo::tilolang::Compiled>,
     app: String,
     person: String,
-    /// The height of the bar's band, logical pixels: a window reaching into the top band covers a
-    /// bar there.
-    band: u32,
+    /// How far in from its display's top and bottom edges the chrome the parts laid out stands,
+    /// in logical pixels — the bar's band and the dock's — measured from the frame each part laid
+    /// out, so the bands follow whatever size the person's shell draws them at. `None` until a
+    /// part measured its first frame, when the reference height stands in.
+    bands: std::cell::Cell<Option<(f32, f32)>>,
     /// The wells the screen's views report, which the desktop places the windows at.
     wells: Option<ui::widget::Wells>,
     /// The services' revision the platform readings were last read at: they are read again only
@@ -244,7 +231,7 @@ impl Shell {
             packages,
             app,
             person: String::new(),
-            band: band(),
+            bands: std::cell::Cell::new(None),
             wells,
             services_seen: None,
             record_synced: std::cell::Cell::new(None),
@@ -440,11 +427,7 @@ impl Shell {
         let Some(outputs) = Self::outputs(compositor) else {
             return false;
         };
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a band's height, a few dozen pixels"
-        )]
-        let band = f64::from(self.band);
+        let (bar_band, dock_band) = self.bands();
         let windows: Vec<tilo_session_core::shell::WindowRect> = compositor
             .windows()
             .into_iter()
@@ -457,7 +440,7 @@ impl Shell {
             .collect();
         let edges = tilo_session_core::shell::screen_edges(
             outputs,
-            band,
+            (f64::from(bar_band), f64::from(dock_band)),
             compositor.pointer_location(),
             &windows,
         );
@@ -474,6 +457,26 @@ impl Shell {
         identify: &[tilo_session_core::desktop::host::chrome::Label],
     ) {
         self.follow_outputs(compositor, surfaces, identify);
+        // The bands the parts laid their chrome out at this frame, so a bar or a dock the person
+        // resized is reached for and seen as covered at its own height, and the session's own
+        // surfaces stand under it.
+        if let Some(measured) = self
+            .parts
+            .iter()
+            .find_map(|(_, part)| part.borrow().bands())
+        {
+            self.bands.set(Some(measured));
+        }
+    }
+
+    /// How far in from the display's top and bottom edges the shell's chrome stands, in logical
+    /// pixels: the bar's band and the dock's, as the parts measured them, or the reference height
+    /// of each before a part measured its first frame.
+    pub(crate) fn bands(&self) -> (f32, f32) {
+        self.bands.get().unwrap_or_else(|| {
+            let bar = tilo_session_core::desktop::overlays::topbar_height(&self.theme);
+            (bar, bar)
+        })
     }
 
     /// The outputs' bounding box `(x, y, w, h)` , as a screen-edge reading names them: every output
@@ -2034,6 +2037,15 @@ impl crate::Session {
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
         shell.follow_displays(&mut self.compositor, &mut self.shared.published, &identify);
+        // The bar's band, as the chrome the parts laid out measured it: the shell's own views draw
+        // the bar, and what the session draws under it — the surfaces anchored to the display's
+        // top edge, the roster and its cards, a banner — stands at the same height.
+        let (bar_band, _dock_band) = shell.bands();
+        self.shared.overlays.set_bar_height(bar_band);
+        self.shared
+            .people
+            .borrow()
+            .set_bar_height(f64::from(bar_band));
         // The cards their apps draw themselves stand where the shell's cards hold their place:
         // note the block each card keeps this pass, whether or not the shell asked anything of
         // the session, and one the shell shows none for has its app draw the activity itself.

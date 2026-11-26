@@ -123,7 +123,15 @@ fn style_title(v: Viewing) -> Text {
 /// bar says what a person is looking at; its items list every style by its own doc line. On a
 /// compact bar (`compact`, the bar's room) it is its icon.
 view style_menu(v: Viewing, compact: Bool) {
-    ui.MenuButton("Showing {style_title(v)}", icon: .layout_grid, role: .bar, icon_only: compact) {
+    ui.MenuButton(
+        "Showing {style_title(v)}",
+        icon: .layout_grid,
+        role: .bar,
+        size: if shell.bar_size == .small {
+            .small
+        } else if shell.bar_size == .large { .large } else { .regular },
+        icon_only: compact,
+    ) {
         for style in styles.installed.offered {
             if style_listed(style) {
                 ui.MenuItem(style_label(style), checked: v.style == style.style) {
@@ -696,7 +704,14 @@ view window_bar_parts(w: device.Window, bar: device.Bar) {
         }
     }
     if let v = bar.views {
-        ui.MenuButton(v.name, icon: .chevron_down, role: .bar) {
+        ui.MenuButton(
+            v.name,
+            icon: .chevron_down,
+            role: .bar,
+            size: if shell.bar_size == .small {
+                .small
+            } else if shell.bar_size == .large { .large } else { .regular },
+        ) {
             for c in v.choices {
                 ui.MenuItem(c.label, checked: c.id == v.chosen) {
                     on choose: session.bar_action(tab: w.key, id: c.id)

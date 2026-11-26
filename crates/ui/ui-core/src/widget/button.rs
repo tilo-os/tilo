@@ -1171,10 +1171,13 @@ impl FaceMetrics {
             metrics.icon = f64::from(metrics.label_style.size).round();
         }
         if role == ButtonRole::Bar {
+            // A bar control fills the bar's band inside the chrome's tight inset, so its size is
+            // the band's height less that inset: `Small`, `Regular` and `Large` make the bar 28,
+            // 32 and 40 tall at 1×, which is what the bar's size setting asks for.
             let tokens = &theme.tokens;
-            metrics.height = f64::from(tokens.metrics.bar_control_height - tokens.spacing.s1);
+            metrics.height =
+                (metrics.height - 2.0 * f64::from(tokens.spacing.rhythm.tight)).max(1.0);
             metrics.pad_x = f64::from(tokens.spacing.rhythm.related);
-            metrics.icon = f64::from(tokens.metrics.icon_control);
             metrics.label_style = theme.text(tilo_ui_base::tokens::TextRole::Label);
         }
         metrics

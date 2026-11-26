@@ -30,6 +30,9 @@ view live_pill(phone: Bool, wide: Bool) {
                     icon: if newest.expanded { .minimize_2 } else { .maximize_2 },
                     icon_only: true,
                     role: .bar,
+                    size: if shell.bar_size == .small {
+                        .small
+                    } else if shell.bar_size == .large { .large } else { .regular },
                 ) {
                     on press: if newest.expanded {
                         device.fold_live(device.live, key: newest.key)
@@ -47,6 +50,9 @@ view live_pill(phone: Bool, wide: Bool) {
                 icon: .chevron_down,
                 icon_only: true,
                 role: .bar,
+                size: if shell.bar_size == .small {
+                    .small
+                } else if shell.bar_size == .large { .large } else { .regular },
             ) {
                 on press: device.show_surface(device.overlays, surface: "quick-settings")
             }
@@ -55,7 +61,15 @@ view live_pill(phone: Bool, wide: Bool) {
                 live_row(newest, compact: true)
                 if not newest.card {
                     // Pulled out of the pill, it stands as a card over the windows.
-                    ui.Button("Show as a card", icon: .maximize_2, icon_only: true, role: .bar) {
+                    ui.Button(
+                        "Show as a card",
+                        icon: .maximize_2,
+                        icon_only: true,
+                        role: .bar,
+                        size: if shell.bar_size == .small {
+                            .small
+                        } else if shell.bar_size == .large { .large } else { .regular },
+                    ) {
                         on press: device.expand_live(device.live, key: newest.key)
                     }
                 }
@@ -65,6 +79,9 @@ view live_pill(phone: Bool, wide: Bool) {
                         icon: .chevron_down,
                         icon_only: true,
                         role: .bar,
+                        size: if shell.bar_size == .small {
+                            .small
+                        } else if shell.bar_size == .large { .large } else { .regular },
                     ) {
                         on press: device.show_surface(device.overlays, surface: "quick-settings")
                     }

@@ -2115,6 +2115,20 @@
           }
         },
         {
+          "name": "size",
+          "doc": "How big the button is: `regular` unless said. A bar's button takes the bar's size, so the whole bar grows and shrinks with its setting.",
+          "type": {
+            "choice": {
+              "name": "ControlSize",
+              "cases": [
+                "small",
+                "regular",
+                "large"
+              ]
+            }
+          }
+        },
+        {
           "name": "actions",
           "doc": "Actions offered on something (`actions(r)`), each a command after `items`.",
           "type": {

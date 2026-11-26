@@ -106,13 +106,14 @@ pub struct ScreenEdges {
 }
 
 /// What a screen says of its edges: the pointer at `pointer` and the windows `windows`, over
-/// `outputs` (their bounding box, `(x, y, w, h)`), for a bar and a dock of `band` logical
-/// pixels. The pointer is at an edge when it rests within [`reach_pad`] of the top or bottom
-/// output edge there, or over the band a shown bar or dock would take.
+/// `outputs` (their bounding box, `(x, y, w, h)`), for a bar of `bar_band` and a dock of
+/// `dock_band` logical pixels: each size is the person's own. The pointer is at an edge when it
+/// rests within [`reach_pad`] of the top or bottom output edge there, or over the band a shown
+/// bar or dock would take.
 #[must_use]
 pub fn screen_edges(
     outputs: (i32, i32, u32, u32),
-    band: f64,
+    (bar_band, dock_band): (f64, f64),
     pointer: (f64, f64),
     windows: &[WindowRect],
 ) -> ScreenEdges {
@@ -127,9 +128,9 @@ pub fn screen_edges(
     ScreenEdges {
         // A bar reached for is reached at its own edge, or by the pointer coming to rest on
         // the band it shows in.
-        bar_reached: at_top || (over && y >= top - pad && y <= top + band),
-        dock_reached: at_bottom || (over && y <= bottom + pad && y >= bottom - band),
-        bar_covered: windows.iter().any(|w| w.covers(true, band, outputs)),
-        dock_covered: windows.iter().any(|w| w.covers(false, band, outputs)),
+        bar_reached: at_top || (over && y >= top - pad && y <= top + bar_band),
+        dock_reached: at_bottom || (over && y <= bottom + pad && y >= bottom - dock_band),
+        bar_covered: windows.iter().any(|w| w.covers(true, bar_band, outputs)),
+        dock_covered: windows.iter().any(|w| w.covers(false, dock_band, outputs)),
     }
 }

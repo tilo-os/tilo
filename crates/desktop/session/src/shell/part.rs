@@ -1253,6 +1253,25 @@ impl ShellPart {
         self.origin.borrow_mut().set_room(Some(reading))
     }
 
+    /// How far in from this part's display's top and bottom edges the chrome it laid out stands,
+    /// in logical pixels: the bar's band and the dock's, as the room it measured leaves them.
+    /// `None` until it laid out a frame with chrome on it, and 0 for an edge its style left free.
+    #[must_use]
+    pub fn bands(&self) -> Option<(f32, f32)> {
+        let origin = self.origin.borrow();
+        let room = origin.room.borrow();
+        let reading = room.as_ref()?;
+        let y = reading.get("y")?.as_f64()?;
+        let height = reading.get("height")?.as_f64()?;
+        let (_, display_height) = self.widgets.placement().size;
+        let dock = (f64::from(display_height) - (y + height)).max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a band's height, a few dozen pixels"
+        )]
+        Some((y as f32, dock as f32))
+    }
+
     /// Whether the part shows nothing at all now: its display went, or a fullscreen window
     /// owns it. It has no layers and takes no pointer then.
     fn hidden(&self) -> bool {

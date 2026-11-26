@@ -174,6 +174,9 @@ view dock_tile(s: Shell, item: DockItem) {
         icon: item.icon,
         icon_only: true,
         role: .plain,
+        size: if s.dock_size == .small {
+            .small
+        } else if s.dock_size == .large { .large } else { .regular },
         count: item.badge,
         dot: item.attention,
         alert: item.attention,

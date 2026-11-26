@@ -31,7 +31,6 @@ use tilo_session_core::desktop::i18n::{t, t_args};
 
 mod screen;
 use tilo_session_core::desktop::host::chrome::Invite;
-use tilo_session_core::desktop::overlays::topbar_height;
 pub use tilo_session_core::desktop::people::*;
 
 /// Rows the roster shows before its list scrolls.
@@ -67,6 +66,9 @@ pub enum PeopleHit {
 /// What the roster shows this frame, decided by the host.
 pub struct PeopleModel<'a> {
     pub host: Rect,
+    /// How tall the shell's bar is: the roster and its cards stand under it, as the person's bar
+    /// size makes it.
+    pub bar_height: f64,
     /// The workspace's name, the panel's title.
     pub workspace: &'a str,
     pub rows: &'a [RosterRow],
@@ -436,7 +438,7 @@ impl PeopleOverlay {
         let row_h = f64::from(metrics.row_avatar);
         let heading_h = f64::from(metrics.row_single);
         let control = f64::from(metrics.bar_control_height);
-        let anchor_top = model.host.y0 + f64::from(topbar_height(theme)) + f64::from(spacing.s2);
+        let anchor_top = model.host.y0 + model.bar_height + f64::from(spacing.s2);
         // Never taller than the output under the bar: the list scrolls.
         let chrome_h = face.height_for(1.0, theme) - 1.0;
         let room = (model.host.y1 - f64::from(spacing.s3) - anchor_top - chrome_h).max(row_h);
