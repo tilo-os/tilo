@@ -830,14 +830,14 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not held here.
-    pub async fn held_copy(
+    /// This device keeps no copy of the workspace.
+    pub async fn copy_report(
         &self,
         workspace: &str,
     ) -> Result<tilo_peer_state::HeldCopy, super::CollaborationError> {
         let hosted = self.workspace(workspace).await?;
-        let held = held_copy(hosted.lock().await.holders.links());
-        Ok(held)
+        let report = held_copy(hosted.lock().await.holders.links());
+        Ok(report)
     }
 
     /// Where `workspace`'s copies stand: what it wants, each holder, and

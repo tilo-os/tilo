@@ -354,8 +354,8 @@ async fn a_server_refused_without_a_revocation_stays_in_service() {
     let failed = |after| {
         tilo_test_env::within("the server to fail to reach the laptop again", async move {
             loop {
-                let held = kept.held_copy(admin).await.unwrap();
-                match held.unreachable.get(&device) {
+                let report = kept.copy_report(admin).await.unwrap();
+                match report.unreachable.get(&device) {
                     Some(&since) if since > after => return since,
                     _ => tokio::time::sleep(Duration::from_millis(20)).await,
                 }
