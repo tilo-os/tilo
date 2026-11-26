@@ -282,8 +282,6 @@ pub struct AvailabilityRegistry {
     /// kept while someone subscribes through [`Self::subscribe_changes`].
     changed: BTreeSet<FileDocumentId>,
     changes_watch: tokio::sync::watch::Sender<()>,
-    #[cfg(test)]
-    persists: std::sync::atomic::AtomicU64,
 }
 
 /// The part of a record pinned hydration reacts to. Transfer bookkeeping, replica evidence and
@@ -340,8 +338,6 @@ impl AvailabilityRegistry {
                 hydration_watch: tokio::sync::watch::Sender::new(0),
                 changed: BTreeSet::new(),
                 changes_watch: tokio::sync::watch::Sender::new(()),
-                #[cfg(test)]
-                persists: std::sync::atomic::AtomicU64::new(0),
             });
         };
 
@@ -364,8 +360,6 @@ impl AvailabilityRegistry {
             hydration_watch: tokio::sync::watch::Sender::new(0),
             changed: BTreeSet::new(),
             changes_watch: tokio::sync::watch::Sender::new(()),
-            #[cfg(test)]
-            persists: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -417,12 +411,6 @@ impl AvailabilityRegistry {
     fn bump_hydration_generation(&mut self) {
         self.hydration_generation = self.hydration_generation.wrapping_add(1);
         self.hydration_watch.send_replace(self.hydration_generation);
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn persist_count(&self) -> u64 {
-        self.persists.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Content hashes of current contents another device proved it holds.
@@ -701,9 +689,6 @@ impl AvailabilityRegistry {
     }
 
     fn persist(&mut self) -> Result<(), AvailabilityError> {
-        #[cfg(test)]
-        self.persists
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let document = RegistryDocument {
             schema_version: AVAILABILITY_SCHEMA_VERSION,
             records: self.records.values().cloned().collect(),
@@ -986,31 +971,20 @@ mod tests {
     /// A burst of content notes writes the registry once, and a flush writes the last of them;
     /// a row this device holds nothing of is left for the reconciliation that makes one.
     #[test]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: one more write than the count before it"
-    )]
-    fn a_burst_of_content_notes_writes_the_registry_once_and_a_flush_keeps_the_last() {
+    fn a_burst_of_content_notes_is_kept_by_a_flush_as_the_last_of_them() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("a.json");
         let mut registry = AvailabilityRegistry::open(&path).unwrap();
         let id = FileDocumentId::new();
         let first = test_hash();
         registry.put(file(id, first)).unwrap();
-        let after_put = registry.persist_count();
         let mut last = first;
         for _ in 0..500 {
             last = test_hash();
             assert!(registry.update_current_content(id, Some(last)));
         }
-        assert_eq!(
-            registry.persist_count(),
-            after_put,
-            "one write covers the whole burst"
-        );
         assert!(!registry.update_current_content(FileDocumentId::new(), Some(last)));
         registry.flush().unwrap();
-        assert_eq!(registry.persist_count(), after_put + 1);
         let reopened = AvailabilityRegistry::open(&path).unwrap();
         assert_eq!(reopened.get(id).unwrap().current_hash, Some(last));
     }

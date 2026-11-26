@@ -258,15 +258,6 @@ fn verified_ops() -> &'static VerifiedOps {
     SEEN.get_or_init(VerifiedOps::default)
 }
 
-/// Forget every operation [`SignedMembershipOp::verified_stored`]
-/// remembers, as a process that just started holds none.
-#[cfg(test)]
-pub(crate) fn forget_verified_ops() {
-    if let Ok(mut seen) = verified_ops().lock() {
-        seen.clear();
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;

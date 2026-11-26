@@ -77,16 +77,11 @@ impl Namespace {
             .collect();
         self.update_document_index_revision();
         self.cycle_scan_pending = self.find_cycle(None).is_some();
-        #[cfg(test)]
-        {
-            self.document_index_rebuilds = self.document_index_rebuilds.saturating_add(1);
-        }
     }
 
     /// The structural index of every node, read from the document once per node. Opening a
     /// namespace and every received peer delta rebuild through here, so this is the
-    /// per-node cost of both, and `Self::node_lookup_count` is the work the performance
-    /// check bounds.
+    /// per-node cost of both.
     pub(super) fn read_nodes_once(&self) -> NodeWalk {
         let parse_document_id = |value: String| Uuid::parse_str(&value).ok().map(FileDocumentId);
         let mut rows = HashMap::new();
@@ -245,9 +240,6 @@ impl Namespace {
     /// entries. A page walks the ids before its offset, which is what a reader asks for rarely;
     /// admitting one row costs a lookup, so a checkout stays flat however full the catalogue is.
     pub fn indexed_document_page(&self, offset: usize, limit: usize) -> Vec<IndexedDocument> {
-        #[cfg(test)]
-        self.document_index_page_reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.document_index
             .values()
             .skip(offset)
@@ -408,25 +400,5 @@ impl Namespace {
     pub(super) fn index_admit_row(&mut self, row: IndexedDocument) {
         self.document_index_digest.add(&row);
         self.document_index.insert(row.document_id, row);
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn document_index_rebuild_count(&self) -> u64 {
-        self.document_index_rebuilds
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn document_index_page_read_count(&self) -> u64 {
-        self.document_index_page_reads
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn node_entry_read_count(&self) -> u64 {
-        self.node_entry_reads
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }

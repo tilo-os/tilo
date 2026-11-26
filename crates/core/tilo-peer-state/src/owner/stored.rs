@@ -166,9 +166,6 @@ impl Frames {
     pub(crate) fn push(&mut self, frame: FrameToSend) {
         match self.runs.last_mut() {
             Some(run) if run.len() < Self::RUN => {
-                if std::sync::Arc::get_mut(run).is_none() {
-                    touched(run.len());
-                }
                 std::sync::Arc::make_mut(run).push(frame);
             }
             _ => self.runs.push(std::sync::Arc::new(vec![frame])),
@@ -181,10 +178,8 @@ impl Frames {
     pub(crate) fn remove(&mut self, bytes: &[u8]) -> bool {
         for (at, run) in self.runs.iter_mut().enumerate() {
             let Some(found) = run.iter().position(|frame| *frame.bytes == *bytes) else {
-                touched(run.len());
                 continue;
             };
-            touched(found.saturating_add(1).saturating_add(run.len()));
             std::sync::Arc::make_mut(run).remove(found);
             if run.is_empty() {
                 self.runs.remove(at);
@@ -194,41 +189,6 @@ impl Frames {
         }
         false
     }
-}
-
-// Frames this thread copied or compared to keep them: what a test reads to see that a write's
-// work on its record's frames stays the same however many the record keeps. Built for tests
-// alone.
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static TOUCHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Count `frames` copied or compared.
-#[cfg_attr(
-    not(any(test, feature = "test-support")),
-    allow(
-        clippy::missing_const_for_fn,
-        reason = "counts in a test build, and does nothing in any other"
-    )
-)]
-pub(crate) fn touched(frames: usize) {
-    #[cfg(any(test, feature = "test-support"))]
-    TOUCHED.with(|touched| {
-        touched.set(
-            touched
-                .get()
-                .saturating_add(u64::try_from(frames).unwrap_or(u64::MAX)),
-        );
-    });
-    #[cfg(not(any(test, feature = "test-support")))]
-    let _ = frames;
-}
-
-/// The frames this thread copied or compared to keep them so far ([`touched`]).
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn frames_touched() -> u64 {
-    TOUCHED.with(std::cell::Cell::get)
 }
 
 impl PartialEq for Frames {

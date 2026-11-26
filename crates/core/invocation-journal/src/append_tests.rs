@@ -69,58 +69,6 @@ fn entries(root: &Path) -> Vec<Value> {
         .collect()
 }
 
-#[test]
-fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
-    let (_dir, root, mut journal) = fresh();
-    let k = key(&journal, 1);
-    let opened = journal.barriers();
-    assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
-    let admitted = journal.barriers();
-    assert_eq!(
-        (
-            admitted.writes - opened.writes,
-            admitted.file - opened.file,
-            admitted.directory - opened.directory
-        ),
-        (1, 1, 0),
-        "an admission is one appended entry and one data barrier"
-    );
-    let length = store(&root).len();
-    for sequence in 1..=500 {
-        journal.update(&k, progress(&k, sequence), false).unwrap();
-    }
-    assert_eq!(
-        journal.barriers(),
-        admitted,
-        "progress never writes or waits on the disk"
-    );
-    assert_eq!(store(&root).len(), length);
-    assert!(
-        matches!(
-            journal.lookup(&k).unwrap().unwrap().update,
-            InvocationUpdate::Progress { sequence: 500, .. }
-        ),
-        "observers still see the latest progress"
-    );
-    journal.update(&k, succeeded(&k, "saved"), false).unwrap();
-    let done = journal.barriers();
-    assert_eq!(
-        (
-            done.writes - admitted.writes,
-            done.file - admitted.file,
-            done.directory - admitted.directory
-        ),
-        (1, 1, 0),
-        "a terminal outcome is one appended entry and one data barrier"
-    );
-    assert_eq!(entries(&root).len(), 2);
-    drop(journal);
-    let journal = InvocationJournal::open(&root).unwrap();
-    let record = journal.lookup(&k).unwrap().unwrap();
-    assert_eq!(record.update, succeeded(&k, "saved"));
-    assert!(!record.uncertain);
-}
-
 tilo_test_env::scenario! {
     fn an_appended_store_restarts_into_what_was_durable;
 

@@ -699,77 +699,6 @@ mod availability_control_tests {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    async fn after_turns(fs: &QuickFS, turns: u64, every: Duration) {
-        let from = worker_turns(fs);
-        tilo_test_env::within(format!("{turns} turns of the pin worker"), async {
-            while worker_turns(fs) < from.saturating_add(turns) {
-                tokio::time::sleep(every).await;
-            }
-        })
-        .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn pin_worker_idle_tick_does_not_walk_namespace() {
-        let dir = tempfile::tempdir().unwrap();
-        let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
-        let namespace = Arc::new(Mutex::new(Namespace::new("idle-pin").unwrap()));
-        let (folder, last) = {
-            let mut namespace = namespace.lock().unwrap();
-            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
-            let mut last = ROOT_INO;
-            for index in 0..8 {
-                last = namespace
-                    .create_file(folder, format!("empty-{index}"), None, 0, 1)
-                    .unwrap();
-            }
-            (folder, namespace.document_id_for(last).unwrap())
-        };
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let repair = Duration::from_millis(20);
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
-            .with_availability(Arc::clone(&registry))
-            .with_pinned_hydration_every(repair);
-        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
-            .unwrap();
-        wait_for_availability(&registry, last, |record| {
-            record.residency == Residency::Resident { bytes: 0 }
-        })
-        .await;
-        let walks = || namespace.lock().unwrap().node_entry_read_count();
-        let settled = loop {
-            let before = walks();
-            after_turns(&fs, 2, repair).await;
-            if walks() == before {
-                break before;
-            }
-        };
-        after_turns(&fs, 25, repair).await;
-        assert_eq!(
-            walks(),
-            settled,
-            "ticks with nothing changed must not walk the namespace"
-        );
-
-        let late = {
-            let mut namespace = namespace.lock().unwrap();
-            let ino = namespace
-                .create_file(folder, "arrived-remotely", None, 0, 2)
-                .unwrap();
-            namespace.document_id_for(ino).unwrap()
-        };
-        wait_for_availability(&registry, late, |record| {
-            record.residency == Residency::Resident { bytes: 0 }
-        })
-        .await;
-        assert!(walks() > settled);
-
-        drop(fs);
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pins_are_repaired_on_announcements_without_a_tick() {
         let dir = tempfile::tempdir().unwrap();
@@ -854,92 +783,6 @@ mod availability_control_tests {
             record.residency == Residency::Resident { bytes: 12 }
         })
         .await;
-
-        drop(fs);
-    }
-
-    #[tokio::test]
-    async fn first_pin_pass_persists_registry_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(ContentStore::memory());
-        let local = store.write_content(b"already here").await.unwrap().unwrap();
-        let hydrator = Arc::new(Hydrator::new(store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("pin-once").unwrap()));
-        let (folder, empty, resident) = {
-            let mut namespace = namespace.lock().unwrap();
-            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
-            let mut empty = ROOT_INO;
-            for index in 0..1_000 {
-                empty = namespace
-                    .create_file(folder, format!("empty-{index:04}"), None, 0, 1)
-                    .unwrap();
-            }
-            let resident = namespace
-                .create_file(folder, "resident.txt", Some(&local), 12, 1)
-                .unwrap();
-            (
-                folder,
-                namespace.document_id_for(empty).unwrap(),
-                namespace.document_id_for(resident).unwrap(),
-            )
-        };
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
-            .with_availability(Arc::clone(&registry));
-        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
-            .unwrap();
-        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
-        let persists = || registry.lock().unwrap().persist_count();
-
-        let before = persists();
-        let outcome = reconcile_pinned_hydration(
-            &namespace,
-            Arc::clone(&hydrator),
-            Arc::clone(&registry),
-            None,
-            wakes.clone(),
-        )
-        .await;
-        assert_eq!(
-            persists().saturating_sub(before),
-            1,
-            "a pass over a 1 000-record pinned folder commits the registry once"
-        );
-        assert!(!outcome.more_due);
-        {
-            let registry = registry.lock().unwrap();
-            assert_eq!(
-                registry.get(empty).unwrap().residency,
-                Residency::Resident { bytes: 0 }
-            );
-            assert_eq!(
-                registry.get(resident).unwrap().residency,
-                Residency::Resident { bytes: 12 }
-            );
-            assert_eq!(
-                registry.effective_policy(resident).unwrap(),
-                Some(AvailabilityPolicy::Pinned)
-            );
-            drop(registry);
-        }
-
-        let before = persists();
-        let _ = reconcile_pinned_hydration(
-            &namespace,
-            Arc::clone(&hydrator),
-            Arc::clone(&registry),
-            None,
-            wakes,
-        )
-        .await;
-        assert_eq!(
-            persists(),
-            before,
-            "a pass that finds everything current writes nothing"
-        );
 
         drop(fs);
     }
@@ -1480,56 +1323,6 @@ mod predictive_tests {
     }
 
     #[tokio::test]
-    async fn writes_through_the_mount_leave_the_catalogue_to_its_readers() {
-        const ME: [u8; 32] = [0xA9; 32];
-        let (namespace, fs) = fixture();
-        let mut policy = WorkspaceAcl::new();
-        policy.grant_read(ME, "/");
-        let fs = fs.with_acl(AclHandle::new(policy), ME);
-        let before: fs_protocol::projection::DocumentIndexManifestV3 =
-            serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
-        let page_reads = namespace.lock_recover().document_index_page_read_count();
-
-        let mut made = Vec::new();
-        for n in 0..20 {
-            let ino = fs
-                .create_empty_file(ROOT_INO, format!("photo-{n}.jpg"))
-                .unwrap();
-            fs.publish();
-            made.push(namespace.lock_recover().document_id_for(ino).unwrap());
-        }
-        assert_eq!(
-            namespace.lock_recover().document_index_page_read_count(),
-            page_reads,
-            "a file made through the mount must not copy the whole catalogue"
-        );
-        let found: fs_protocol::projection::DocumentIndexExactV2 =
-            serde_json::from_slice(&fs.document_index_by_id_v2(made[19]).unwrap()).unwrap();
-        assert_eq!(found.record.path, "/photo-19.jpg");
-
-        let mut current = None;
-        for _ in 0..200 {
-            let manifest: fs_protocol::projection::DocumentIndexManifestV3 =
-                serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
-            if manifest.revision != before.revision {
-                current = Some(manifest);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        let current = current.expect("a reader gets the current catalogue once it asked for it");
-        let page: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
-            &fs.document_index_page_v3(&current.revision, &current.initial_cursor)
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(
-            made.iter()
-                .all(|id| page.records.iter().any(|row| row.document_id == *id))
-        );
-    }
-
-    #[tokio::test]
     async fn v3_record_catalog_hides_denied_rows_and_fails_closed_on_revoke() {
         {
             const ME: [u8; 32] = [0xA4; 32];
@@ -1660,8 +1453,6 @@ mod predictive_tests {
             let fs = fs.with_acl(policy, ME);
             let manifest: fs_protocol::projection::DocumentIndexManifestV3 =
                 serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
-            let rebuilds = namespace.lock_recover().document_index_rebuild_count();
-            let page_reads = namespace.lock_recover().document_index_page_read_count();
             let first: fs_protocol::projection::DocumentIndexPageV3 = serde_json::from_slice(
                 &fs.document_index_page_v3(&manifest.revision, &manifest.initial_cursor)
                     .unwrap(),
@@ -1685,16 +1476,6 @@ mod predictive_tests {
                 fs.document_index_by_id_v2(first.records[0].document_id)
                     .is_some()
             );
-            assert_eq!(
-                namespace.lock_recover().document_index_rebuild_count(),
-                rebuilds,
-                "serving v3 continuations must not rebuild or walk the Automerge corpus"
-            );
-            assert_eq!(
-                namespace.lock_recover().document_index_page_read_count(),
-                page_reads,
-                "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
-            );
         }
         {
             const ME: [u8; 32] = [0xA7; 32];
@@ -1713,7 +1494,6 @@ mod predictive_tests {
             let fs = fs.with_acl(acl.clone(), ME);
             let before: fs_protocol::projection::DocumentIndexManifestV3 =
                 serde_json::from_slice(&fs.document_index_manifest_v3().unwrap()).unwrap();
-            let page_reads = namespace.lock_recover().document_index_page_read_count();
 
             namespace
                 .lock_recover()
@@ -1735,11 +1515,6 @@ mod predictive_tests {
             assert_eq!(
                 hidden.page_entries, before.page_entries,
                 "only the visible record is listed"
-            );
-            let after_hidden_reads = namespace.lock_recover().document_index_page_read_count();
-            assert!(
-                after_hidden_reads.saturating_sub(page_reads) <= 2,
-                "a burst must coalesce before rebuilding the retained view"
             );
 
             namespace

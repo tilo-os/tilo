@@ -517,7 +517,6 @@ fn frame_stretches(old: &Frames, new: &Frames) -> Vec<FrameStretch> {
         let mut rest = old.iter_from(next);
         for frame in run.iter() {
             let found = rest.clone().position(|before| {
-                crate::owner::stored::touched(1);
                 Arc::ptr_eq(&before.bytes, &frame.bytes) || before.bytes == frame.bytes
             });
             match found {

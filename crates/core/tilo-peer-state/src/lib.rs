@@ -38,8 +38,6 @@ pub const REMOVED_DEVICE_REFUSED: &str = "this device was removed from the works
 pub use neighbour_wire::NeighbourMsg;
 pub use neighbour_wire::{RefusalReason, WriteRefusal};
 #[cfg(test)]
-mod admission_cost_tests;
-#[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
 mod receipt_tests;

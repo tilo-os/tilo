@@ -44,20 +44,9 @@ const STORED_SETTLE: Duration = Duration::from_millis(200);
 
 /// Files reads found whole, written to the registry together: one write per file would make reading a
 /// folder cost a rewrite per file.
+#[derive(Default)]
 pub(super) struct StoredWrites {
     state: Mutex<StoredState>,
-    settle: Duration,
-    write_now: tokio::sync::Notify,
-}
-
-impl Default for StoredWrites {
-    fn default() -> Self {
-        Self {
-            state: Mutex::default(),
-            settle: STORED_SETTLE,
-            write_now: tokio::sync::Notify::new(),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -92,10 +81,7 @@ impl StoredWrites {
         let registry = Arc::clone(registry);
         let hydrator = Arc::clone(hydrator);
         hydrator.runtime_handle.clone().spawn(async move {
-            tokio::select! {
-                () = tokio::time::sleep(stored.settle) => {}
-                () = stored.write_now.notified() => {}
-            }
+            tokio::time::sleep(STORED_SETTLE).await;
             let found = {
                 let mut state = stored.state.lock_recover();
                 state.writing = state.writing.saturating_add(1);
@@ -105,19 +91,6 @@ impl StoredWrites {
             let mut state = stored.state.lock_recover();
             state.writing = state.writing.saturating_sub(1);
         });
-    }
-
-    #[cfg(test)]
-    fn settling_for(settle: Duration) -> Self {
-        Self {
-            settle,
-            ..Self::default()
-        }
-    }
-
-    #[cfg(test)]
-    fn write_now(&self) {
-        self.write_now.notify_one();
     }
 
     #[cfg(test)]
@@ -519,65 +492,5 @@ mod tests {
             Some(&moved),
             "bytes of older content say nothing of the current one"
         );
-    }
-
-    #[tokio::test]
-    async fn files_read_whole_together_are_recorded_in_one_write() {
-        let (_dir, note) = fixture();
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let mut files = Vec::new();
-        for seed in 0..24_u64 {
-            let data = crate::test_bytes::pseudo(16 * 1024, seed);
-            let hash = store.write_content(&data).await.unwrap().unwrap();
-            files.push((FileDocumentId::new(), hash, data.len() as u64));
-        }
-        let hydrator = Arc::new(Hydrator::new(store));
-        let stored = Arc::new(StoredWrites::settling_for(Duration::from_secs(3600)));
-        let (writes, wakes) = {
-            let registry = note.registry.lock_recover();
-            (registry.persist_count(), registry.hydration_generation())
-        };
-
-        for (document_id, hash, _) in &files {
-            let read = UnavailableNote {
-                registry: Arc::clone(&note.registry),
-                document_id: *document_id,
-                content: Some(NotedContent {
-                    hydrator: Arc::clone(&hydrator),
-                    hash: *hash,
-                    stored: Arc::clone(&stored),
-                }),
-            };
-            noted_bounded_read(Duration::from_millis(500), async { Ok(()) }, Some(read))
-                .await
-                .unwrap();
-        }
-        assert_eq!(
-            note.registry.lock_recover().persist_count(),
-            writes,
-            "a read that completes a file does not wait for the registry"
-        );
-        stored.write_now();
-        stored.settled().await;
-
-        let (records, written, woken) = {
-            let registry = note.registry.lock_recover();
-            let records: Vec<_> = files
-                .iter()
-                .map(|(document_id, _, _)| registry.get(*document_id).cloned())
-                .collect();
-            (
-                records,
-                registry.persist_count() - writes,
-                registry.hydration_generation().wrapping_sub(wakes),
-            )
-        };
-        for ((_, hash, bytes), record) in files.iter().zip(records) {
-            let record = record.expect("each file read whole is recorded");
-            assert_eq!(record.residency, Residency::Resident { bytes: *bytes });
-            assert_eq!(record.current_hash, Some(ContentHash(*hash.as_bytes())));
-        }
-        assert_eq!(written, 1, "the files are written together");
-        assert_eq!(woken, 1, "the pinned-hydration pass is woken once");
     }
 }

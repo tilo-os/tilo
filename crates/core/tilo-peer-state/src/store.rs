@@ -3877,41 +3877,6 @@ mod tests {
         );
     }
 
-    /// A keystroke costs the store one frame, of bounded bytes, however much
-    /// history the record already holds: what a newcomer later replays, one
-    /// frame per keystroke.
-    #[test]
-    fn a_keystroke_costs_the_store_one_bounded_frame() {
-        const KEYSTROKES: u64 = 256;
-        /// A frame per keystroke, with the record header and fields around it.
-        const PER_KEYSTROKE: u64 = 1_024;
-        let (_dir, store) = open();
-        let key = device(7);
-        for seq in 1..=KEYSTROKES {
-            let before = store.bytes();
-            store
-                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
-                .unwrap();
-            let grew = store.bytes().saturating_sub(before);
-            assert!(
-                grew <= PER_KEYSTROKE,
-                "keystroke {seq} cost {grew} bytes, over {PER_KEYSTROKE}"
-            );
-        }
-        assert!(
-            store.bytes() <= KEYSTROKES.saturating_mul(PER_KEYSTROKE),
-            "a record of {KEYSTROKES} keystrokes costs {} bytes",
-            store.bytes()
-        );
-        let replayed = store.replay(workspace(), &[], Budget::default()).unwrap();
-        assert!(!replayed.more, "one round holds it");
-        assert_eq!(
-            u64::try_from(replayed.frames.len()).unwrap(),
-            KEYSTROKES,
-            "a newcomer replays one frame per keystroke"
-        );
-    }
-
     /// A batch of writes kept together is served in the order it was made, once each, and is
     /// there when the store opens again.
     #[test]

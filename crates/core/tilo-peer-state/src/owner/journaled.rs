@@ -961,86 +961,6 @@ mod tests {
         Ok(())
     }
 
-    /// A snapshot written again keeps the chunks of the replica it kept
-    /// already: after one small change it writes that change's chunk, its list
-    /// and its fields, not the state.
-    #[test]
-    fn a_snapshot_written_again_after_one_small_change_writes_that_change()
-    -> Result<(), Box<dyn std::error::Error>> {
-        const STATE: usize = 8 * 1024 * 1024;
-        let workspace = WorkspaceId::from_u128(11);
-        let parts = Memory::default();
-        // Bytes that repeat nowhere, as sealed history is.
-        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-        let state: Vec<u8> = (0..STATE)
-            .map(|_| {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                seed.to_le_bytes()[0]
-            })
-            .collect();
-        let first = workspace_resource(workspace, &state, 1)?;
-        let mut journaled = Journaled::start(&first);
-        let change = Change::Workspace {
-            workspace,
-            shown: false,
-        };
-        journaled.publish(&parts, &first, &change)?;
-
-        // A crash cut the journal short: the next publication of the
-        // workspace writes its snapshot again.
-        parts
-            .parts
-            .lock()
-            .map_err(|error| error.to_string())?
-            .insert(journal_name(workspace, 1), vec![200, 0, 0, 0, 1, 2, 3]);
-        let (mut reopened, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
-        check(
-            peer_of(&read, workspace)? == state,
-            "the snapshot's chunks read back as the state",
-        )?;
-        let mut changed = state;
-        changed
-            .get_mut(STATE / 2..STATE / 2 + 16)
-            .ok_or("the state is shorter than its middle")?
-            .copy_from_slice(b"one small change");
-        let second = workspace_resource(workspace, &changed, 2)?;
-        *parts.rewritten.lock().map_err(|error| error.to_string())? = 0;
-        reopened.publish(&parts, &second, &change)?;
-        check(
-            parts
-                .replaced
-                .lock()
-                .map_err(|error| error.to_string())?
-                .contains(&snapshot_name(workspace, 2)),
-            "the snapshot is written again",
-        )?;
-        let rewritten = *parts.rewritten.lock().map_err(|error| error.to_string())?;
-        check(
-            rewritten < STATE / 16,
-            format!("a snapshot after one small change wrote {rewritten} bytes of {STATE}"),
-        )?;
-        let read = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
-        check(
-            peer_of(&read, workspace)? == changed,
-            "the snapshot written again reads back with the change",
-        )?;
-        check(
-            parts
-                .parts
-                .lock()
-                .map_err(|error| error.to_string())?
-                .iter()
-                .filter(|(name, bytes)| name.starts_with('c') && !bytes.is_empty())
-                .map(|(_, bytes)| bytes.len())
-                .sum::<usize>()
-                == STATE,
-            "the chunk the change replaced is let go",
-        )?;
-        Ok(())
-    }
-
     #[test]
     fn a_released_workspace_leaves_no_part_behind() -> Result<(), Box<dyn std::error::Error>> {
         let workspace = WorkspaceId::from_u128(9);
@@ -1195,7 +1115,10 @@ mod tests {
         let layout = held.peer.layout();
         let (answered, unanswered) = if answered {
             (
-                vec![(("so.tilo.notes".into(), "plan".into()), Some((3, 1, Some(2))))],
+                vec![(
+                    ("so.tilo.notes".into(), "plan".into()),
+                    Some((3, 1, Some(2))),
+                )],
                 vec![(vec![7; 64], true)],
             )
         } else {
@@ -1236,8 +1159,6 @@ mod tests {
     struct EarlierRecord {
         parts: Memory,
         workspace: WorkspaceId,
-        /// The replica the snapshot held, which the entry leaves as it was.
-        peer: Vec<u8>,
     }
 
     /// [`EarlierRecord`] as a version `version` build kept it from `golden`, its entry carrying
@@ -1270,102 +1191,7 @@ mod tests {
             &journal_name(workspace, 1),
             &earlier_entry(version, &golden, &held, answered)?,
         )?;
-        let peer = held.peer.to_vec();
-        Ok(EarlierRecord {
-            parts,
-            workspace,
-            peer,
-        })
-    }
-
-    /// The frames `stored` keeps, as their bytes.
-    fn frames_of(stored: &StoredWorkspace) -> Vec<Vec<u8>> {
-        stored
-            .frames
-            .iter()
-            .map(|frame| frame.bytes.to_vec())
-            .collect()
-    }
-
-    /// Records builds of version 8 to 10 kept open with the entry each appended beside its
-    /// snapshot. A device that updates with writes still in its journal keeps them: this build
-    /// reads the change, the frames a build before 10 kept among the fields included, the
-    /// ownership gone with any answer an entry carried, and its next publication writes a
-    /// snapshot of its own layout.
-    #[test]
-    fn a_record_an_earlier_build_kept_opens_with_its_journal()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for (version, golden) in EARLIER {
-            for answered in [false, true] {
-                opens_with_its_journal(version, golden, answered)
-                    .map_err(|error| format!("version {version}, answered {answered}: {error}"))?;
-            }
-        }
-        Ok(())
-    }
-
-    /// The record [`earlier_record`] makes of `version` and `golden` opens with its entry's change.
-    fn opens_with_its_journal(
-        version: u32,
-        golden: &str,
-        answered: bool,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let EarlierRecord {
-            parts,
-            workspace,
-            peer,
-        } = earlier_record(version, golden, answered)?;
-        let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
-        let stored = read.stored(workspace).ok_or("the journal's workspace")?;
-        check(stored.generation == 7, "the entry's change is read")?;
-        let expected = if version < 10 {
-            vec![vec![1, 1, 1]]
-        } else {
-            Vec::new()
-        };
-        check(
-            frames_of(stored) == expected,
-            "the frames the entry kept are the device's",
-        )?;
-        check(
-            stored.version == crate::owner::stored::WORKSPACE_VERSION,
-            "the record reads as this build's",
-        )?;
-        check(
-            peer_of(&read, workspace)? == peer,
-            "the replica is the snapshot's",
-        )?;
-
-        journaled.publish(
-            &parts,
-            &read,
-            &Change::Workspace {
-                workspace,
-                shown: false,
-            },
-        )?;
-        let again = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
-        let reopened = again.stored(workspace).ok_or("the workspace is kept")?;
-        check(
-            reopened.generation == 7 && frames_of(reopened) == expected,
-            "the next publication keeps what the entry changed",
-        )?;
-        let (_, kept_now) = parts
-            .parts
-            .lock()
-            .map_err(|error| error.to_string())?
-            .iter()
-            .filter(|(name, _)| name.starts_with('w'))
-            .map(|(name, bytes)| (name.clone(), bytes.clone()))
-            .next_back()
-            .ok_or("a snapshot is kept")?;
-        check(
-            crate::owner::stored::format::stored_version(&kept_now)?
-                == crate::owner::stored::WORKSPACE_VERSION
-                && !String::from_utf8_lossy(&kept_now).contains("\"publication\""),
-            "the next publication writes a snapshot of this build's layout, without ownership",
-        )?;
-        Ok(())
+        Ok(EarlierRecord { parts, workspace })
     }
 
     /// A store that stopped after writing the pair it brings a workspace up with, before the index

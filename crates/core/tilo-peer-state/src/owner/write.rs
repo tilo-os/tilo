@@ -267,7 +267,6 @@ pub(crate) struct KeptIndex {
 
 impl KeptIndex {
     fn of(kept: &stored::Frames) -> Self {
-        stored::touched(kept.len());
         let mut index = Self {
             len: 0,
             newest: None,
@@ -701,7 +700,6 @@ impl DeviceWorkspaces {
                 // holds already.
                 FrameChange::Keep(bytes) => {
                     any_kept = true;
-                    stored::touched(1);
                     if index.frames.insert(Arc::clone(bytes)) {
                         record.frames.push(stored::FrameToSend {
                             bytes: Arc::clone(bytes),
@@ -709,7 +707,6 @@ impl DeviceWorkspaces {
                     }
                 }
                 FrameChange::Sent(bytes) => {
-                    stored::touched(1);
                     if index.frames.remove(bytes) {
                         record.frames.remove(bytes);
                         any_kept = true;
@@ -746,7 +743,6 @@ impl DeviceWorkspaces {
     /// The frames of `kept` no link carried: one a link carried leaves the record with its next
     /// publication, and no reader sees it in between.
     fn unsent(&self, workspace: WorkspaceId, kept: &stored::Frames) -> Vec<Arc<[u8]>> {
-        stored::touched(kept.len());
         let sent: std::collections::HashSet<Arc<[u8]>> = {
             let due = self.0.due.lock();
             due.changes

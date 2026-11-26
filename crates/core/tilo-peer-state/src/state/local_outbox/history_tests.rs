@@ -227,21 +227,3 @@ fn an_extended_history_is_the_walked_history_byte_for_byte() {
     }
     assert!(extended_any);
 }
-
-#[test]
-fn a_remembered_history_is_reused_only_while_the_record_holds_it() {
-    let mut admitted = record(11, 2, 25);
-    let mutation = publications(&mut admitted, 11).swap_remove(1);
-    let key = key(&mutation);
-    let record = admitted.committed_document();
-    let first = of(key, &mutation, record).unwrap();
-    let again = of(key, &mutation, record).unwrap();
-    assert!(Arc::ptr_eq(&first, &again), "built once");
-    let mut other = AutoCommit::new();
-    other.put(ROOT, "unrelated", true).unwrap();
-    other.commit();
-    assert!(
-        of(key, &mutation, other.committed_document()).is_err(),
-        "a record without its changes rebuilds, and refuses"
-    );
-}

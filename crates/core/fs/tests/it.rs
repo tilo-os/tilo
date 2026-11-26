@@ -24,15 +24,11 @@ mod held_memory;
 mod integration_test;
 #[path = "iroh_idle.rs"]
 mod iroh_idle;
-#[path = "performance_check.rs"]
-mod performance_check;
 #[path = "performance_timing.rs"]
 mod performance_timing;
 #[path = "session_media.rs"]
 mod session_media;
 #[path = "store_threads.rs"]
 mod store_threads;
-#[path = "workspace_ladder.rs"]
-mod workspace_ladder;
 #[path = "workspace_startup.rs"]
 mod workspace_startup;

@@ -432,19 +432,8 @@ pub struct Namespace {
     /// A document read as saved may carry a cycle no resolution has run on yet, so the
     /// next resolution scans it whole, once.
     cycle_scan_pending: bool,
-    /// While set (to the heads the batch began at, and the changes not yet taken then),
-    /// [`Self::save_incremental`] returns nothing, so a batch of changes becomes one
-    /// delta. Encoding a delta regenerates its changes from the op set, so one per changed
-    /// file is quadratic in a changeset.
-    #[cfg(test)]
-    document_index_rebuilds: u64,
     /// When this namespace was opened, in milliseconds: the time an empty folder reads as changed.
     opened_ms: u64,
-    #[cfg(test)]
-    document_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    #[cfg(test)]
-    node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Cheap fingerprint of a [`Namespace`]: its document heads. Equal tokens mean no node,
@@ -618,14 +607,7 @@ impl Namespace {
             tree: TreeIndex::default(),
             placed_since_resolve: HashSet::new(),
             cycle_scan_pending: true,
-            #[cfg(test)]
-            document_index_rebuilds: 0,
             opened_ms: tilo_clock::unix_now_ns() / 1_000_000,
-            #[cfg(test)]
-            document_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            #[cfg(test)]
-            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            node_lookups: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -697,14 +679,7 @@ impl Namespace {
     }
 
     fn node(&self, id: &str) -> Option<Obj> {
-        self.node_lookups
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.doc.node(id)
-    }
-
-    #[must_use]
-    pub fn node_lookup_count(&self) -> u64 {
-        self.node_lookups.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn parent_of(&self, id: &str) -> Option<String> {
@@ -2042,9 +2017,6 @@ impl Namespace {
     /// Stable entry lookup used by the storage authority; it exposes logical metadata only, never a
     /// host path.
     pub fn entry_for_node(&self, id: &str) -> Option<Entry> {
-        #[cfg(test)]
-        self.node_entry_reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.entry(id).filter(|_| self.reaches_root(id))
     }
 
