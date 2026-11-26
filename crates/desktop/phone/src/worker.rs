@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::person_telling;
+use tilo_person_services::person_telling;
 use tilo_process_services::notify::Notifier;
 use tilo_runtime::in_process::{App, Device, Devices, FileWatch};
 

@@ -16,9 +16,9 @@ use crate::daemon::Running;
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 use tilo_actions::remote::ReceiptStatus;
-use tilo_actions::remote::person_telling;
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::Place;
+use tilo_person_services::person_telling;
 
 /// How long a view waits for the person's services to start in the daemon before their apps read
 /// as none: the daemon starts them on its own thread, and the view asks again.
@@ -291,11 +291,11 @@ impl Device {
         wait_ms: u64,
         device: &str,
     ) -> Result<person_telling::ToldList> {
-        let asking = person_telling::ListAfter {
-            after,
-            wait_ms: Some(wait_ms),
-            device: device.to_owned(),
-        };
+        let asking = serde_json::json!({
+            "after": after,
+            "waitMs": wait_ms,
+            "device": device,
+        });
         let answer = self.person_action(
             workspace,
             person_telling::PROVIDER,
@@ -351,11 +351,11 @@ impl Device {
         device: &str,
         by: &str,
     ) -> Result<person_telling::Told> {
-        let acknowledged = person_telling::Acknowledge {
-            told: told.to_owned(),
-            device: device.to_owned(),
-            by: by.to_owned(),
-        };
+        let acknowledged = serde_json::json!({
+            "told": told,
+            "device": device,
+            "by": by,
+        });
         let answer = self.person_action(
             workspace,
             person_telling::PROVIDER,

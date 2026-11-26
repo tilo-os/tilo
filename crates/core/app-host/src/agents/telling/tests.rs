@@ -14,9 +14,7 @@
     reason = "every test here keeps its host alive to the end"
 )]
 
-use tilo_actions::remote::person_telling::{
-    Cause, Kind, ListAfter, Tell, Teller as ToldBy, WhyCode,
-};
+use tilo_person_services::person_telling::{Cause, Kind, Teller as ToldBy, WhyCode};
 
 use super::*;
 use tilo_person_services::{PersonServices, ToTell};
@@ -106,15 +104,12 @@ fn assistant() -> ToldBy {
 fn reminder(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::Reminder,
-        tell: Tell {
-            words: words.into(),
-            cause: Some(Cause {
-                kind: "reminder".into(),
-                label: words.into(),
-                key: key.into(),
-            }),
-            ..Tell::default()
-        },
+        words: words.into(),
+        cause: Some(Cause {
+            kind: "reminder".into(),
+            label: words.into(),
+            key: key.into(),
+        }),
         from: Some(assistant()),
         ..ToTell::default()
     }
@@ -124,15 +119,12 @@ fn reminder(words: &str, key: &str) -> ToTell {
 fn news(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::News,
-        tell: Tell {
-            words: words.into(),
-            cause: Some(Cause {
-                kind: "event".into(),
-                label: "Mail arrives".into(),
-                key: key.into(),
-            }),
-            ..Tell::default()
-        },
+        words: words.into(),
+        cause: Some(Cause {
+            kind: "event".into(),
+            label: "Mail arrives".into(),
+            key: key.into(),
+        }),
         from: Some(assistant()),
         ..ToTell::default()
     }
@@ -208,10 +200,7 @@ async fn a_person_whose_device_is_looking_is_not_told_outside_until_it_stops() {
 
     // A device of hers reads her log: it shows the reminder itself, and
     // the teller looks again once that device may have stopped looking.
-    let read = host
-        .services()
-        .told_listed(&ADA, &ListAfter::default())
-        .await;
+    let read = host.services().told_listed(&ADA, 0, None).await;
     assert_eq!(read.told, std::slice::from_ref(&reminded));
     let now = reminded.at_ms.saturating_add(SECOND);
     assert_eq!(teller.step(now).await, Some(now.saturating_add(200)));
@@ -308,7 +297,7 @@ async fn one_teller_tells_for_a_host() {
 /// six times at most.
 fn must_not_be_missed(host: &Host) -> Told {
     let mut must = reminder("File the tax return.", "tax-1");
-    must.tell.insists = true;
+    must.insists = true;
     host.services().tell(&ADA, must).unwrap()
 }
 

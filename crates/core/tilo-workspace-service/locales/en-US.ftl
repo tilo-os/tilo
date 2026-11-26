@@ -155,3 +155,10 @@ tilo-servers-floor-set-floor-key = Set the floor key
 tilo-servers-floor-request-floor-advance = Ask to raise the floor
 tilo-servers-floor-approve-floor-advance = Approve raising the floor
 tilo-servers-floor-refuse-floor-advance = Refuse raising the floor
+
+# What a person's assistant tells them: kept by the host that keeps the person's workspace.
+tilo-telling-tell = Tell the person
+tilo-telling-list = What was told
+tilo-telling-acknowledge = Say a thing was seen
+tilo-telling-insist = Mark as not to be missed
+tilo-telling-since-you-left = What happened while they were away

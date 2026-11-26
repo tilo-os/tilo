@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use tilo_actions::MemberId;
-use tilo_actions::remote::person_telling::Kind;
 use {tilo_actions::ActionAddress, tilo_actions::remote::RemoteActionTarget};
 
 /// The provider that answers a workspace's events under.
@@ -77,7 +76,7 @@ pub struct SetUp {
     /// What the person's assistant is told to do when it goes on.
     pub instruction: String,
     /// How its result is told to its person: `reminder`, `brief` or `news`,
-    /// the kinds a thing told has ([`Kind`]) but a question. Left out, a
+    /// the kinds a thing told has but a question. Left out, a
     /// moment is a reminder and everything else is news.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub told_as: Option<String>,
@@ -197,11 +196,12 @@ pub struct EventView {
     pub count: u64,
     /// What the person's assistant is told.
     pub instruction: String,
-    /// How its result is told, where its person or their assistant said.
-    /// Left out, a moment is told as a reminder and everything else as
-    /// news.
+    /// How its result is told, where its person or their assistant said:
+    /// `reminder`, `brief` or `news`, the kinds a thing told has but a
+    /// question. Left out, a moment is told as a reminder and everything
+    /// else as news.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub told_as: Option<Kind>,
+    pub told_as: Option<String>,
     /// Its note, every part present: `instruction`, `style`, `guidance`,
     /// `accepted`, `rejected` and `kept`.
     pub note: Value,

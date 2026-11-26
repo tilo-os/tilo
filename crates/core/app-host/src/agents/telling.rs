@@ -18,8 +18,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_person_services::PersonServices;
+use tilo_person_services::person_telling::Told;
 
-use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
 
 use tilo_workspace_service::workspaces::Workspaces;
@@ -55,7 +55,7 @@ pub trait Outside: Send + Sync {
 /// keeps them on the host, the body says only where to look.
 #[must_use]
 pub fn words_outside(told: &Told) -> (String, String) {
-    tilo_actions::remote::person_telling::words_outside(told)
+    tilo_person_services::person_telling::words_outside(told)
 }
 
 /// When a thing is told outside Tilo.

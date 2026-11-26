@@ -15,9 +15,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::person_telling;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::person_telling;
 use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, ReceiptStatus};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,

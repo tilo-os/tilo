@@ -31,7 +31,7 @@ pub mod model_answers;
 pub mod person_learned;
 mod person_settings;
 /// What the person was told, kept where their workspace runs.
-mod person_telling;
+pub mod person_telling;
 pub mod this_computer;
 pub use person_telling::ToTell;
 /// Where a person's devices are reached while their Tilo is closed.

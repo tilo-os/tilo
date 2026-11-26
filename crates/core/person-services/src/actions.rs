@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tilo_actions::ActionParam;
 use tilo_actions::remote::{
     ActionCallError, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
-    RemoteActionTarget, person_telling,
+    RemoteActionTarget,
 };
 use tilo_workspace_records::models as model_providers;
 use tilo_workspace_service::workspaces::actions::LEARNED;
@@ -40,7 +40,7 @@ const PROVIDED: [&str; 6] = [
     tilo_workspace_records::accounts::PROVIDER,
     model_providers::PROVIDER,
     tilo_workspace_records::vault::PROVIDER,
-    person_telling::PROVIDER,
+    crate::person_telling::PROVIDER,
     tilo_workspace_records::connections::PROVIDER,
     // What the workspace's agents learned about the person.
     LEARNED,
@@ -231,7 +231,7 @@ impl WorkspaceAnswers for Provided {
                 // An agent of a person's finds that person's log of what
                 // they were told here: it tells them, and marks what it
                 // told as not to be missed.
-                person_telling::PROVIDER => {
+                crate::person_telling::PROVIDER => {
                     if !crate::PersonServices::tells_as_agent(caller, certificate, call.workspace) {
                         return Vec::new();
                     }
@@ -353,7 +353,7 @@ impl PersonServices {
                     .await
             }
             // What the person was told: their agents tell them, and only they read it.
-            (person_telling::PROVIDER, _) => {
+            (crate::person_telling::PROVIDER, _) => {
                 self.person_telling_invoke(workspace, caller, certificate, request)
                     .await
             }

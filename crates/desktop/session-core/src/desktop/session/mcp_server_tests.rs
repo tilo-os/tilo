@@ -27,6 +27,14 @@ mod workspace_accounts {
     );
 }
 
+/// What a person's assistant told them, as the service that keeps it publishes its actions.
+mod person_telling {
+    tilo_resource::bindings!(
+        provider = "tilo.telling",
+        surface = "../../core/person-services/telling-surface.json"
+    );
+}
+
 /// The workspace's vault, as the service that keeps it publishes its actions.
 mod vault_actions {
     tilo_resource::bindings!(
@@ -196,12 +204,10 @@ pub fn the_persons_vault_is_asked_by_the_person_alone() {
 /// app on the device reach neither through the session.
 #[test]
 pub fn what_a_person_was_told_is_asked_by_the_person_alone() {
-    use tilo_actions::remote::person_telling;
-
     let (session, _openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");
     let listing = || InvokeRequest {
-        target: person_telling::target(person_telling::TOLD, person_telling::LIST),
+        target: person_telling::told::list(),
         ..ask(mcp_server::STOP)
     };
     let early = answer(session.invoke(&person, listing()));

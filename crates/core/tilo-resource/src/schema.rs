@@ -364,6 +364,16 @@ impl<K, V: JsonSchema> JsonSchema for BTreeMap<K, V> {
     }
 }
 
+impl<V: JsonSchema> JsonSchema for serde_json::Map<String, V> {
+    fn json_schema() -> Value {
+        json!({"type": "object"})
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Map(Box::new(V::field_type(types)))
+    }
+}
+
 /// An array of `items`.
 pub fn array(items: Value) -> Value {
     let mut schema = Map::new();

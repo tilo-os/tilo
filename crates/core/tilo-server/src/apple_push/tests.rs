@@ -26,7 +26,7 @@ use hyper::{Request, Response};
 use ring::agreement;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::{Value, json};
-use tilo_actions::remote::person_telling::{Cause, Kind, Tell, Teller as ToldBy};
+use tilo_person_services::person_telling::{Cause, Kind, Teller as ToldBy};
 
 use super::*;
 use crate::workspaces::fixtures::{hosting_device, test_host};
@@ -233,7 +233,7 @@ impl Device {
     /// The name this device knows the thing `id` by, worked out as an app
     /// works it out: from the id and its own secret.
     fn name_of(&self, id: &str) -> String {
-        tilo_actions::remote::person_telling::known_as(&self.secret, id)
+        tilo_person_services::person_telling::known_as(&self.secret, id)
     }
 
     /// What this device reads in the part of `push` that is for it alone.
@@ -370,15 +370,12 @@ fn assistant() -> ToldBy {
 fn reminder(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::Reminder,
-        tell: Tell {
-            words: words.into(),
-            cause: Some(Cause {
-                kind: "reminder".into(),
-                label: words.into(),
-                key: key.into(),
-            }),
-            ..Tell::default()
-        },
+        words: words.into(),
+        cause: Some(Cause {
+            kind: "reminder".into(),
+            label: words.into(),
+            key: key.into(),
+        }),
         from: Some(assistant()),
         ..ToTell::default()
     }
@@ -388,15 +385,12 @@ fn reminder(words: &str, key: &str) -> ToTell {
 fn news(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::News,
-        tell: Tell {
-            words: words.into(),
-            cause: Some(Cause {
-                kind: "event".into(),
-                label: "Mail arrives".into(),
-                key: key.into(),
-            }),
-            ..Tell::default()
-        },
+        words: words.into(),
+        cause: Some(Cause {
+            kind: "event".into(),
+            label: "Mail arrives".into(),
+            key: key.into(),
+        }),
         from: Some(assistant()),
         ..ToTell::default()
     }
@@ -764,7 +758,7 @@ async fn what_must_not_be_missed_is_pushed_again_in_its_own_place() {
     let phone = Device::new(1);
     reach(workspaces, &ADA, &phone);
     let mut must = reminder("File the tax return.", "tax-1");
-    must.tell.insists = true;
+    must.insists = true;
     let told = PersonServices::of(workspaces).tell(&ADA, must).unwrap();
     let again = told.insists.unwrap().next_at_ms.unwrap();
 

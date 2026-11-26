@@ -155,3 +155,10 @@ tilo-servers-floor-set-floor-key = Grenzschlüssel festlegen
 tilo-servers-floor-request-floor-advance = Anheben der Grenze erbitten
 tilo-servers-floor-approve-floor-advance = Anheben der Grenze erlauben
 tilo-servers-floor-refuse-floor-advance = Anheben der Grenze ablehnen
+
+# What a person's assistant tells them.
+tilo-telling-tell = Der Person etwas mitteilen
+tilo-telling-list = Was mitgeteilt wurde
+tilo-telling-acknowledge = Ein Ding als gesehen vermerken
+tilo-telling-insist = Als nicht zu verpassen markieren
+tilo-telling-since-you-left = Was passiert ist, während sie weg waren

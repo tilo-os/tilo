@@ -59,7 +59,6 @@ mod content_get;
 mod content_link;
 mod content_put;
 mod pending;
-pub mod person_telling;
 mod vault;
 pub use vault::{
     ItemRef, KEEP_SEALED, KEEP_USES, REMOVE_SEALED, VAULT_DEVICE_KEY, VAULT_FIND,
@@ -419,6 +418,11 @@ pub const MODERATED_APP: &str = "so.tilo.chat";
 /// workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`) and what each writes in the
 /// workspace's vault (`tilo_workspace_records::models::MODEL_VAULT_STEPS`).
 pub const MODELS_PROVIDER: &str = "tilo.models";
+
+/// The provider a person's log of what they were told answers under. Its provider declares its
+/// actions (`tilo_person_services::person_telling`); what this crate knows of it is that a
+/// workspace's host keeps it (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`).
+pub const TELLING_PROVIDER: &str = "tilo.telling";
 
 /// The provider a workspace's connected accounts answer under. Their provider declares their
 /// actions (`tilo_workspace_records::accounts`); what this crate knows of them is that

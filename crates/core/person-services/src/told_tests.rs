@@ -15,10 +15,8 @@
 
 use std::time::Duration;
 
+use crate::person_telling::{self, Cause, Kind, Offered, OfferedTarget, Teller, Told, ToldList};
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::person_telling::{
-    self, Cause, Kind, Offered, OfferedTarget, Tell, Teller, Told, ToldList,
-};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
 };
@@ -142,12 +140,9 @@ fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bool) ->
     let cause: Cause = serde_json::from_value(cause).expect("a cause");
     let telling = ToTell {
         kind: Kind::of_cause(Some(&cause)),
-        tell: Tell {
-            words: words.to_owned(),
-            cause: Some(cause),
-            insists,
-            ..Tell::default()
-        },
+        words: words.to_owned(),
+        cause: Some(cause),
+        insists,
         from: Some(Teller {
             agent: ASSISTANT.to_owned(),
             name: ASSISTANT.to_owned(),
@@ -570,10 +565,7 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
             ToTell {
                 id: Some("question:m1".into()),
                 kind: Kind::Question,
-                tell: Tell {
-                    words: "Two versions of the deck exist. Which one?".into(),
-                    ..Tell::default()
-                },
+                words: "Two versions of the deck exist. Which one?".into(),
                 ..ToTell::default()
             },
         )
@@ -869,22 +861,19 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
     let question = ToTell {
         id: Some("question-1".to_owned()),
         kind: Kind::Question,
-        tell: Tell {
-            words: "Send it?".to_owned(),
-            actions: vec![Offered {
-                id: "yes".to_owned(),
-                label: "Yes".to_owned(),
-                main: true,
-                target: OfferedTarget {
-                    app: "so.tilo.chat".to_owned(),
-                    resource: "answers".to_owned(),
-                    action: "answer-question".to_owned(),
-                    ..OfferedTarget::default()
-                },
-                arguments: Map::new(),
-            }],
-            ..Tell::default()
-        },
+        words: "Send it?".to_owned(),
+        actions: vec![Offered {
+            id: "yes".to_owned(),
+            label: "Yes".to_owned(),
+            main: true,
+            target: OfferedTarget {
+                app: "so.tilo.chat".to_owned(),
+                resource: "answers".to_owned(),
+                action: "answer-question".to_owned(),
+                ..OfferedTarget::default()
+            },
+            arguments: Map::new(),
+        }],
         ..ToTell::default()
     };
     let question = setup

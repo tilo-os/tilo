@@ -35,7 +35,6 @@ use tilo_actions::contract::{
     RiskLevel,
 };
 use tilo_actions::params::{ActionParam, ParamType};
-use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome, Pending, pending};
 use tilo_actions::{
     ActionFailure, ActionKey, ActionOutput, ExecutionLocus, MemberId, OperationKind,
@@ -49,6 +48,7 @@ use tilo_automation::{
 
 use crate::services::{ShortcutLibraryRequest, ShortcutLibraryServices};
 use crate::triggers::FIRING_INPUT;
+use tilo_person_services::person_telling::Kind;
 use tilo_workspace_service::service::WorkspacesAt;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
@@ -677,7 +677,7 @@ pub fn view(kept: &Kept, shortcut: &Shortcut, runs: &Runs, now_ms: i64) -> Event
             .every
             .map_or(0, |every| runs.counted.checked_rem(every).unwrap_or(0)),
         instruction: definition.instruction.clone(),
-        told_as: definition.told_as,
+        told_as: definition.told_as.map(|kind| kind.word().to_owned()),
         note: serde_json::to_value(&kept.note).unwrap_or(Value::Null),
         on,
         runs: runs.runs,

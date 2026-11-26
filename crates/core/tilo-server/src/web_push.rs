@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
 #[cfg(feature = "agents")]
-use tilo_actions::remote::person_telling::Told;
+use tilo_person_services::person_telling::Told;
 #[cfg(feature = "agents")]
 use tilo_person_services::push_addresses::PushKind;
 
@@ -480,7 +480,7 @@ struct ToldPush<'a> {
     /// [`TOLD_PUSH_KIND`]: a thing waits.
     kind: &'static str,
     /// The name this device knows the thing by
-    /// ([`tilo_actions::remote::person_telling::known_as`]).
+    /// ([`tilo_person_services::person_telling::known_as`]).
     tag: &'a str,
     title: &'a str,
     body: &'a str,
@@ -533,7 +533,7 @@ impl WebPush {
             let Ok((p256dh, auth)) = address.subscription_key() else {
                 continue;
             };
-            let tag = tilo_actions::remote::person_telling::known_as(&auth, &told.id);
+            let tag = tilo_person_services::person_telling::known_as(&auth, &told.id);
             let said = |actions: Vec<ToldButton<'_>>, body: &str| {
                 serde_json::to_vec(&ToldPush {
                     kind: TOLD_PUSH_KIND,
@@ -602,7 +602,7 @@ impl WebPush {
                 auth: auth.clone(),
             };
             for id in shown {
-                let tag = tilo_actions::remote::person_telling::known_as(&auth, &id);
+                let tag = tilo_person_services::person_telling::known_as(&auth, &id);
                 let Ok(plain) = serde_json::to_vec(&ToldGone {
                     kind: TOLD_PUSH_KIND,
                     tag: &tag,
@@ -635,7 +635,7 @@ impl tilo_app_host::agents::telling::Outside for WebPush {
     fn tell(
         &self,
         person: [u8; 32],
-        told: tilo_actions::remote::person_telling::Told,
+        told: tilo_person_services::person_telling::Told,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = u32> + Send>> {
         let push = self.clone();
         Box::pin(async move {

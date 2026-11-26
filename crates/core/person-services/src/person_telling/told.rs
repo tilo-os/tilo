@@ -17,14 +17,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_telling::{
-    Acknowledged, BY_OPENED, CAUSE_EVENT, INSIST_EVERY_SECS, INSIST_TIMES, Insists, Kind,
-    ListAfter, MAX_ACTIONS, MAX_LIST_WAIT_MS, MAX_TITLE_BYTES, MAX_WORDS_BYTES, Mark, Pushed,
-    Stretch, Tell, Teller, Told, ToldList,
-};
 use tilo_lock::MutexRecover as _;
 
 use super::clipped;
+use super::records::{About, Cause, Offered, TaskRef};
+use super::records::{
+    Acknowledged, BY_OPENED, CAUSE_EVENT, INSIST_EVERY_SECS, INSIST_TIMES, Insists, Kind,
+    MAX_ACTIONS, MAX_LIST_WAIT_MS, MAX_TITLE_BYTES, MAX_WORDS_BYTES, Mark, Pushed, Stretch, Teller,
+    Told, ToldList,
+};
 
 /// How many things a person's log keeps, newest last.
 const TOLD_KEPT: usize = 500;
@@ -193,8 +194,20 @@ pub struct ToTell {
     /// ([`Kind::of_cause`]); news for everything else, and for whatever an
     /// agent tells.
     pub kind: Kind,
-    /// Its words, what caused it, where it is and its buttons.
-    pub tell: Tell,
+    /// What is told, as plain text.
+    pub words: String,
+    /// A few words over it.
+    pub title: String,
+    /// What caused it, in the teller's words.
+    pub cause: Option<Cause>,
+    /// Where it is.
+    pub about: Option<About>,
+    /// The task it belongs to.
+    pub task: Option<TaskRef>,
+    /// Its buttons.
+    pub actions: Vec<Offered>,
+    /// Whether it must not be missed.
+    pub insists: bool,
     /// The agent that told it.
     pub from: Option<Teller>,
     /// Whether its words stay on the host: what asks for a secret is shown
@@ -204,7 +217,7 @@ pub struct ToTell {
 
 /// `tell` as it is kept: its words within what a notification shows, its
 /// buttons complete.
-fn checked(mut tell: Tell) -> Result<Tell, String> {
+fn checked(mut tell: ToTell) -> Result<ToTell, String> {
     tell.words = clipped(tell.words.trim(), MAX_WORDS_BYTES);
     if tell.words.is_empty() {
         return Err("There is nothing to tell".to_owned());
@@ -238,7 +251,7 @@ fn checked(mut tell: Tell) -> Result<Tell, String> {
 
 /// The id `tell` keeps: the one it was handed over under, else the one its
 /// cause names it by, else none, and it is a new thing every time.
-fn id_of(id: Option<String>, tell: &Tell) -> Result<Option<String>, String> {
+fn id_of(id: Option<String>, tell: &ToTell) -> Result<Option<String>, String> {
     let id = id.or_else(|| {
         tell.cause
             .as_ref()
@@ -274,15 +287,21 @@ impl crate::PersonServices {
         telling: ToTell,
         offered_by: Option<Teller>,
     ) -> Result<Told, String> {
+        let telling = checked(telling)?;
+        let id = id_of(telling.id.clone(), &telling)?;
         let ToTell {
-            id,
             kind,
-            tell,
+            words,
+            title,
+            cause,
+            about,
+            task,
+            actions,
+            insists,
             from,
             words_stay,
+            ..
         } = telling;
-        let tell = checked(tell)?;
-        let id = id_of(id, &tell)?;
         let root = self.person_settings_root(person);
         let known = |kept: &Kept| {
             let id = id.as_ref()?;
@@ -304,19 +323,19 @@ impl crate::PersonServices {
                 at_ms: now_ms,
                 kind,
                 from,
-                title: tell.title,
-                words: tell.words,
-                about: tell.about,
-                task: tell.task,
-                cause: tell.cause,
+                title,
+                words,
+                about,
+                task,
+                cause,
                 mark: Mark::of(kind),
                 reaches,
                 outside: !words_stay,
-                actions: tell.actions,
+                actions,
                 offered_by,
                 // Only what reaches its person insists: whoever tells
                 // cannot make a thing loud that reaches nobody.
-                insists: (tell.insists && reaches).then(|| insisting(now_ms)),
+                insists: (insists && reaches).then(|| insisting(now_ms)),
                 acknowledged: None,
                 withdrawn_at_ms: None,
                 pushed: Vec::new(),
@@ -678,8 +697,13 @@ impl crate::PersonServices {
 
     /// [`Self::told_after`] as a person's own device asks it: with a wait,
     /// held until their log holds something newer or the wait is over.
-    pub async fn told_listed(&self, person: &[u8; 32], asking: &ListAfter) -> ToldList {
-        let wait = Duration::from_millis(asking.wait_ms.unwrap_or(0).min(MAX_LIST_WAIT_MS));
+    pub async fn told_listed(
+        &self,
+        person: &[u8; 32],
+        after: u64,
+        wait_ms: Option<u64>,
+    ) -> ToldList {
+        let wait = Duration::from_millis(wait_ms.unwrap_or(0).min(MAX_LIST_WAIT_MS));
         // Asking is looking, for as long as the ask waits.
         self.looked(person, wait);
         // Following before the first look, so a thing told between the
@@ -688,7 +712,7 @@ impl crate::PersonServices {
         let now = tilo_clock::now();
         let until = tokio::time::Instant::from_std(now.checked_add(wait).unwrap_or(now));
         loop {
-            let list = self.told_after(person, asking.after);
+            let list = self.told_after(person, after);
             if !list.told.is_empty() {
                 return list;
             }
@@ -702,7 +726,7 @@ impl crate::PersonServices {
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::remote::person_telling::Cause;
+    use crate::person_telling::Cause;
 
     use super::*;
 

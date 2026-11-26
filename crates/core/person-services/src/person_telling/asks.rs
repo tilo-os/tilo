@@ -7,9 +7,9 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use crate::person_telling::records::{About, Kind, Offered, OfferedTarget, Teller};
 use serde_json::Value;
 use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, AskedRecords, RecordRef};
-use tilo_actions::remote::person_telling::{About, Kind, Offered, OfferedTarget, Tell, Teller};
 use tilo_actions::remote::{Caller, InvokeRequest, Pending};
 use tilo_lock::MutexRecover as _;
 
@@ -77,17 +77,18 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
     ToTell {
         id: Some(told_id(record)),
         kind: Kind::Question,
-        tell: Tell {
-            words: told_words(facts),
-            about: Some(About {
-                workspace: record.workspace.clone(),
-                app: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
-                record: String::new(),
-                resource: record.record.clone(),
-            }),
-            actions,
-            ..Tell::default()
-        },
+        words: told_words(facts),
+        title: String::new(),
+        cause: None,
+        about: Some(About {
+            workspace: record.workspace.clone(),
+            app: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
+            record: String::new(),
+            resource: record.record.clone(),
+        }),
+        task: None,
+        actions,
+        insists: false,
         from,
         words_stay: false,
     }

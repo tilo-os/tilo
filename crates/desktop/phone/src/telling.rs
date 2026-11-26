@@ -1,23 +1,23 @@
 //! What the person is told, shown on the phone while its app runs.
 //!
 //! Everything the person's assistant tells them joins one log on the host of their workspace, and
-//! a device of theirs that runs reads it live ([`tilo_actions::remote::person_telling::LIST`],
+//! a device of theirs that runs reads it live ([`tilo_person_services::person_telling::LIST`],
 //! asked through the device daemon as every one of their own actions is). This is the phone's
 //! reader: each thing that still waits becomes a notification on the phone, under a name its own
-//! device's push key makes ([`tilo_actions::remote::person_telling::known_as`]) — the same name
+//! device's push key makes ([`tilo_person_services::person_telling::known_as`]) — the same name
 //! the host's push to a closed app shows it under, so a push and the log's own reading are one
 //! notification, not two. Its buttons are notification actions, and each opens the phone at what
 //! the thing is about. A thing answered on another device of theirs, or taken back, is withdrawn
 //! from the phone as soon as the log says so, which is why the log is read again on every look.
 //!
 //! The words are the ones the host tells outside Tilo
-//! ([`tilo_actions::remote::person_telling::words_outside`]): where a person keeps a workspace's
+//! ([`tilo_person_services::person_telling::words_outside`]): where a person keeps a workspace's
 //! words on the host, the notification says only where to look, so a phone left on a table never
 //! shows them.
 
 use std::collections::BTreeMap;
 
-use tilo_actions::remote::person_telling::{self, About, Told};
+use tilo_person_services::person_telling::{self, About, Told};
 use tilo_process_services::notify::{Notification, Notifier};
 
 /// How the link a notification opens begins: `tilo-phone://told/<thing>[/<button>]`.

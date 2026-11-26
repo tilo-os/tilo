@@ -11,7 +11,7 @@
 //! `aes128gcm` of RFC 8188), so neither the distributor nor the push service reads a word. The
 //! key and the secret are kept in the app's own files, and are the device's own: they are what
 //! the notification a thing is shown under is named by on this device alone
-//! ([`tilo_actions::remote::person_telling::known_as`]), so one thing has another name on each
+//! ([`tilo_person_services::person_telling::known_as`]), so one thing has another name on each
 //! device and nothing ties one person's pushes together.
 //!
 //! What a push says is the notification itself ([`Push`]): a thing waits, how it is called and

@@ -1,47 +1,23 @@
-//! What a person's assistant tells them.
+//! What a person's assistant tells them, as their log keeps it and as a device reads it, beside
+//! the actions that change it ([`super::declared`]).
 //!
-//! Everything their assistant tells them outside an answer to their own
-//! words joins one log, each thing with a mark and the reason in one line:
-//! so a device can say why something notified and why something else did
-//! not.
+//! Everything their assistant tells them outside an answer to their own words joins one log,
+//! each thing with a mark and the reason in one line: so a device can say why something
+//! notified and why something else did not. What a thing is comes from what caused it and is
+//! asked once: a reminder, a brief, a question that waits, a mention of them, or news. A
+//! question, a reminder, a brief and a mention reach the person by what they are, and news
+//! stays in the thread and in the log.
 //!
-//! What a thing is comes from what caused it and is asked once: a
-//! reminder, a brief, a question that waits, a mention of them, or news. A
-//! question, a reminder, a brief and a mention reach the person by what
-//! they are. News is just news: it stays in the thread and in the log, and
-//! pushes nothing.
-//!
-//! All of it is the person's own: the host answers the person on a device
-//! of theirs and an agent acting for them over such a device, and nobody
-//! else in a workspace they share.
+//! The same words reach a device as a push and as the log's own reading, so [`words_outside`]
+//! words both, and [`known_as`] names one thing on one device alone.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-
-use super::{ActionAddress, RemoteActionTarget};
 
 /// The provider that answers a person's tellings under.
 pub const PROVIDER: &str = "tilo.telling";
 /// The resource the log of what they were told is actions of.
 pub const TOLD: &str = "told";
-
-/// Tell the person something ([`Tell`]), answering it as a [`Told`] with
-/// its mark. An agent of the person's asks this; it never says what kind
-/// of thing it is. What it tells is news whatever cause it names, and a
-/// button it offers is an action it may invoke itself.
-pub const TELL: &str = "tell";
-/// What was told after a place in the log ([`ListAfter`]): a [`ToldList`].
-/// The person's alone, and every ask counts as a device of theirs looking.
-pub const LIST: &str = "list";
-/// The person saw one thing or acted on it ([`Acknowledge`]), answering the
-/// [`Told`]. The person's alone.
-pub const ACKNOWLEDGE: &str = "acknowledge";
-/// Say whether one thing told must not be missed ([`Insist`]), answering
-/// the [`Told`].
-pub const INSIST: &str = "insist";
-/// What happened while the person was away: a [`Stretch`]. The person's
-/// alone.
-pub const SINCE_YOU_LEFT: &str = "since-you-left";
 
 /// The kind a cause names for a reminder its person set.
 pub const CAUSE_REMINDER: &str = "reminder";
@@ -58,17 +34,8 @@ pub const MAX_WORDS_BYTES: usize = 600;
 pub const MAX_TITLE_BYTES: usize = 120;
 /// The most buttons one thing told offers.
 pub const MAX_ACTIONS: usize = 6;
-/// The longest a host holds a [`LIST`] that waits for the log to move.
+/// The longest a host waits on a `list` for the log to move.
 pub const MAX_LIST_WAIT_MS: u64 = 10_000;
-
-/// The target of `action` of `resource` ([`TOLD`]).
-#[must_use]
-pub fn target(resource: &str, action: &str) -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: ActionAddress::new(resource, action),
-    }
-}
 
 /// The time between two raisings of a thing that must not be missed, until
 /// its person acknowledges it, in seconds.
@@ -77,9 +44,27 @@ pub const INSIST_EVERY_SECS: u64 = 10 * 60;
 /// telling included.
 pub const INSIST_TIMES: u32 = 6;
 
+/// The person opened the thing.
+pub const BY_OPENED: &str = "opened";
+/// The person put the notification away.
+pub const BY_DISMISSED: &str = "dismissed";
+/// The question the thing tells was answered.
+pub const BY_ANSWERED: &str = "answered";
+
 /// What kind of thing was told. It comes from what caused it, never from
 /// whoever tells.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
     /// It asks the person something and waits for their answer.
@@ -116,6 +101,19 @@ impl Kind {
         !matches!(self, Self::News)
     }
 
+    /// The word this kind is written as, where a wire names it: an event's
+    /// `toldAs`, or a cause.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Question => "question",
+            Self::Reminder => CAUSE_REMINDER,
+            Self::Brief => CAUSE_BRIEF,
+            Self::News => "news",
+            Self::Mention => "mention",
+        }
+    }
+
     /// Why a thing of this kind carries its mark.
     const fn why(self) -> WhyCode {
         match self {
@@ -130,7 +128,9 @@ impl Kind {
 
 /// What caused a thing to be told: the cause of the turn that told it, as
 /// Chat keeps it on the message that started the turn.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Cause {
     /// What kind of cause: [`CAUSE_REMINDER`], [`CAUSE_BRIEF`],
@@ -145,7 +145,18 @@ pub struct Cause {
 }
 
 /// Why a thing carries its mark: what it is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum WhyCode {
     /// It is a question that waits for its person's answer.
@@ -170,7 +181,9 @@ pub enum WhyCode {
 }
 
 /// The reason for a mark.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Why {
     pub code: WhyCode,
@@ -185,7 +198,9 @@ impl Why {
 }
 
 /// What a thing told is, and why: its kind decides.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Mark {
     pub why: Why,
@@ -203,7 +218,9 @@ impl Mark {
 
 /// Where a thing told is: the route of a Tilo link, which opening it
 /// follows.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct About {
     /// The workspace, by its id spelled out.
@@ -216,7 +233,9 @@ pub struct About {
 }
 
 /// The task a thing told belongs to: an issue of a tracker.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskRef {
     /// The tracker's record.
@@ -225,7 +244,9 @@ pub struct TaskRef {
 }
 
 /// Who told a thing: an agent of the person's.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Teller {
     /// The agent's id in its workspace.
@@ -235,7 +256,9 @@ pub struct Teller {
 }
 
 /// The typed action a button invokes.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OfferedTarget {
     pub app: String,
@@ -247,7 +270,9 @@ pub struct OfferedTarget {
 
 /// One button a thing told offers: a typed action a device invokes as the
 /// person, with exactly these arguments.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Offered {
     /// What the button is called where pressing it is written down.
@@ -264,7 +289,9 @@ pub struct Offered {
 }
 
 /// How a thing that insists stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Insists {
     /// The time between two raisings, in seconds.
@@ -281,7 +308,9 @@ pub struct Insists {
 }
 
 /// The person saw a thing, or acted on it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Acknowledged {
     pub at_ms: u64,
@@ -294,15 +323,10 @@ pub struct Acknowledged {
     pub by: String,
 }
 
-/// The person opened the thing.
-pub const BY_OPENED: &str = "opened";
-/// The person put the notification away.
-pub const BY_DISMISSED: &str = "dismissed";
-/// The question the thing tells was answered.
-pub const BY_ANSWERED: &str = "answered";
-
 /// One time a host told a thing outside Tilo.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Pushed {
     pub at_ms: u64,
@@ -312,9 +336,21 @@ pub struct Pushed {
     pub took: u32,
 }
 
-/// One thing a person's assistant told them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One thing a person's assistant told them: a row of the log, which a view of another language
+/// reads with its actions.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+    tilo_resource::Row,
+)]
 #[serde(rename_all = "camelCase")]
+#[row(kind = "told", label = "Told")]
 pub struct Told {
     /// Its place in the log. A thing that changes takes a new place and
     /// keeps its id.
@@ -374,6 +410,39 @@ impl Told {
     }
 }
 
+/// What was told, oldest first.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ToldList {
+    pub told: Vec<Told>,
+    /// The newest place the log has given out.
+    pub newest: u64,
+}
+
+/// What happened while a person was away, for the one message at the top
+/// of the new stretch.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct Stretch {
+    /// When they left: the last time a device of theirs looked before the
+    /// absence. None when they were never away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_at_ms: Option<u64>,
+    /// When they came back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_at_ms: Option<u64>,
+    /// What came in and was told.
+    pub came_in: Vec<Told>,
+    /// What the assistant did alone, by an event's lasting instruction.
+    pub did_alone: Vec<Told>,
+    /// What waits for them, with its buttons.
+    pub waits: Vec<Told>,
+}
+
 /// What a telling says of `told`, wherever it is shown off the host: its
 /// title and its body. The words are the thing's own where they may leave
 /// the host; where its words stay on the host, the body says only where to
@@ -422,98 +491,6 @@ pub fn known_as(auth: &[u8], id: &str) -> String {
     tag.to_hex().get(..16).unwrap_or_default().to_owned()
 }
 
-/// Something to tell the person.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Tell {
-    /// What is told, as plain text.
-    pub words: String,
-    #[serde(default)]
-    pub title: String,
-    /// What caused it, in the teller's words. With none it is news of the
-    /// teller's own, and with any it is news still: no cause a teller
-    /// names makes a reminder or a brief of what it tells.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cause: Option<Cause>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub about: Option<About>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<TaskRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<Offered>,
-    /// Whether it must not be missed: raised again until they acknowledge
-    /// it.
-    #[serde(default)]
-    pub insists: bool,
-}
-
-/// Ask what was told after a place in the log.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ListAfter {
-    /// The place read up to; everything the log keeps when omitted.
-    #[serde(default)]
-    pub after: u64,
-    /// How long to wait for the log to move when nothing is newer, in
-    /// milliseconds: at most [`MAX_LIST_WAIT_MS`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wait_ms: Option<u64>,
-    /// The device asking, as it names itself.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub device: String,
-}
-
-/// What was told, oldest first.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ToldList {
-    pub told: Vec<Told>,
-    /// The newest place the log has given out.
-    pub newest: u64,
-}
-
-/// The person saw a thing or acted on it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Acknowledge {
-    /// The thing, by its id.
-    pub told: String,
-    #[serde(default)]
-    pub device: String,
-    /// How; [`BY_OPENED`] when omitted.
-    #[serde(default)]
-    pub by: String,
-}
-
-/// Whether one thing told must not be missed.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Insist {
-    /// The thing, by its id.
-    pub told: String,
-    pub insists: bool,
-}
-
-/// What happened while a person was away, for the one message at the top
-/// of the new stretch.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Stretch {
-    /// When they left: the last time a device of theirs looked before the
-    /// absence. None when they were never away.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub left_at_ms: Option<u64>,
-    /// When they came back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub back_at_ms: Option<u64>,
-    /// What came in and was told.
-    pub came_in: Vec<Told>,
-    /// What the assistant did alone, by an event's lasting instruction.
-    pub did_alone: Vec<Told>,
-    /// What waits for them, with its buttons.
-    pub waits: Vec<Told>,
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -523,27 +500,6 @@ mod tests {
     )]
 
     use super::*;
-
-    /// What a thing is comes from its cause, and a question, a reminder, a
-    /// brief and a mention reach a person by what they are while news never
-    /// does.
-    #[test]
-    fn a_cause_says_what_a_thing_is() {
-        let caused = |kind: &str| Cause {
-            kind: kind.to_owned(),
-            ..Cause::default()
-        };
-        assert_eq!(Kind::of_cause(Some(&caused("reminder"))), Kind::Reminder);
-        assert_eq!(Kind::of_cause(Some(&caused("brief"))), Kind::Brief);
-        assert_eq!(Kind::of_cause(Some(&caused("event"))), Kind::News);
-        assert_eq!(Kind::of_cause(Some(&caused("competitors"))), Kind::News);
-        assert_eq!(Kind::of_cause(None), Kind::News);
-        assert!(!Kind::News.reaches());
-        assert!(Kind::Reminder.reaches());
-        assert!(Kind::Question.reaches());
-        assert!(Kind::Brief.reaches());
-        assert!(Kind::Mention.reaches());
-    }
 
     /// A thing's mark says what kind of thing it is.
     #[test]

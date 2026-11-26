@@ -28,6 +28,9 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 runtime-dylib = { path = "../../../crates/sdk/runtime-dylib", optional = true }
+# What a person's assistant told them, as the host that keeps their workspace publishes it: the
+# phone reads their log live and shows each thing that waits as a notification.
+tilo-person-services = { path = "../../../crates/core/person-services" }
 ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
 # The device daemon, started on the app's own threads: Android runs no daemon process of its own.
 tilo-runtime = { path = "../../../crates/core/tilo-runtime" }

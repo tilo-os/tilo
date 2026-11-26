@@ -93,15 +93,15 @@ pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 pub use test_provider::TestProvider;
 
 /// The providers whose actions a workspace's host answers for a person in it: what the host
-/// keeps for them rather than for the workspace ([`tilo_actions::remote::person_telling`], the vault, their accounts
-/// and models, the connections made in their name, and the formats they read). A device of
-/// theirs reaches them over the device action service, as the person the transport certified,
-/// and its own dispatch answers nothing of them locally.
+/// keeps for them rather than for the workspace (a person's log of what they were told, the
+/// vault, their accounts and models, the connections made in their name, and the formats they
+/// read). A device of theirs reaches them over the device action service, as the person the
+/// transport certified, and its own dispatch answers nothing of them locally.
 pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
     tilo_actions::remote::ACCOUNTS_PROVIDER,
     tilo_actions::remote::MODELS_PROVIDER,
     tilo_actions::remote::VAULT_PROVIDER,
-    tilo_actions::remote::person_telling::PROVIDER,
+    tilo_actions::remote::TELLING_PROVIDER,
     tilo_actions::remote::CONNECTIONS_PROVIDER,
     crate::formats::PROVIDER,
 ];

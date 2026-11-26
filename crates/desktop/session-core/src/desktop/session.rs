@@ -47,13 +47,12 @@ use tilo_action_services::{
     mcp_server, server_account, session_actions,
 };
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_telling;
 use tilo_actions::remote::{
     ACCOUNTS_PROVIDER, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError,
     ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, MODELS_PROVIDER, Pending, ReceiptStatus,
-    application_provider, application_provider_resource, pending, provider_workspace,
-    workspace_activity as wire,
+    TELLING_PROVIDER, application_provider, application_provider_resource, pending,
+    provider_workspace, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -230,7 +229,7 @@ pub const WORKSPACE_SERVER_PROVIDERS: [&str; 6] = [
     ACCOUNTS_PROVIDER,
     MODELS_PROVIDER,
     tilo_actions::remote::VAULT_PROVIDER,
-    person_telling::PROVIDER,
+    TELLING_PROVIDER,
     server_account::PROVIDER,
     formats::PROVIDER,
 ];

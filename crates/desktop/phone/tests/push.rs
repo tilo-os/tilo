@@ -29,9 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use server::Server;
-use tilo_actions::remote::person_telling::{self, Kind, Tell};
 use tilo_app_host::agents::telling::{Pace, Teller};
 use tilo_person_services::ToTell;
+use tilo_person_services::person_telling::{self, Kind};
 use tilo_phone::telling::Watching;
 use tilo_phone::unified_push::{Key, Push};
 
@@ -142,11 +142,8 @@ impl PushService {
 fn to_tell(words: &str, title: &str) -> ToTell {
     ToTell {
         kind: Kind::Question,
-        tell: Tell {
-            words: words.to_owned(),
-            title: title.to_owned(),
-            ..Tell::default()
-        },
+        words: words.to_owned(),
+        title: title.to_owned(),
         ..ToTell::default()
     }
 }

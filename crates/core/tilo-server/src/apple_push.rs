@@ -38,8 +38,8 @@ use http_body_util::{BodyExt as _, Full, Limited};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_telling::Told;
 use tilo_lock::MutexRecover as _;
+use tilo_person_services::person_telling::Told;
 
 use crate::workspaces::Workspaces;
 use tilo_person_services::push_addresses::{PushAddress, PushEnvironment, PushKind};
@@ -230,11 +230,11 @@ fn clip(text: &str, most: usize) -> &str {
 
 /// What the thing `id` is called in a push to the device at `address`: a
 /// name only that device can tie to the thing, made with the device's own
-/// secret ([`tilo_actions::remote::person_telling::known_as`], which the
+/// secret ([`tilo_person_services::person_telling::known_as`], which the
 /// device computes the same name with for what it shows itself).
 fn name_for(address: &PushAddress, id: &str) -> Option<String> {
     let secret = hex::decode(&address.auth).ok()?;
-    Some(tilo_actions::remote::person_telling::known_as(&secret, id))
+    Some(tilo_person_services::person_telling::known_as(&secret, id))
 }
 
 /// What a push of `told` says to the device at `address` alone, encrypted

@@ -18,19 +18,22 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use serde_json::Value;
-use tilo_actions::remote::person_telling::{
-    self, Acknowledge, Insist, Kind, ListAfter, Offered, Tell, Teller,
-};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
 };
+use tilo_resource::Effect as _;
 use tilo_user_identity::DeviceCert;
 
 use crate::person_settings::{answer, argument};
 
 pub mod addresses;
 mod asks;
+pub mod declared;
+pub mod records;
 mod told;
+
+pub use declared::{ACKNOWLEDGE, INSIST, LIST, SINCE_YOU_LEFT, TELL, ToldAction, target};
+pub use records::*;
 
 pub use told::ToTell;
 
@@ -109,6 +112,26 @@ impl Asking {
     }
 }
 
+/// Whether an agent of a person's is offered the action `action` of the log.
+pub(super) fn offered_to_agent(action: &str) -> bool {
+    matches!(action, TELL | INSIST)
+}
+
+/// The call `request` makes, read as its action declares it.
+fn asked_of(request: &InvokeRequest) -> Result<ToldAction, ActionCallError> {
+    let arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => serde_json::Map::new(),
+    };
+    ToldAction::decode(&request.target.address.action, &arguments).map_err(|error| match error {
+        tilo_resource::EffectDecodeError::Unknown(_) => ActionCallError::UnknownAction,
+        tilo_resource::EffectDecodeError::Argument { name, .. } => {
+            ActionCallError::invalid_request(format!("The `{name}` argument is not readable"))
+        }
+        other => ActionCallError::invalid_request(other.to_string()),
+    })
+}
+
 /// The arguments of a request that may name none.
 fn argument_or_default<T: serde::de::DeserializeOwned + Default>(
     request: &InvokeRequest,
@@ -180,7 +203,7 @@ impl crate::PersonServices {
         )
     }
 
-    /// Answer a [`person_telling::PROVIDER`] request.
+    /// Answer a [`PROVIDER`] request.
     pub(super) async fn person_telling_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -190,7 +213,7 @@ impl crate::PersonServices {
     ) -> Result<Value, ActionCallError> {
         let asking = Self::asking_about_telling(caller, certificate, workspace_id)?;
         match request.target.address.resource.as_str() {
-            person_telling::TOLD => {
+            records::TOLD => {
                 self.told_invoke(&asking, (workspace_id, caller, certificate), request)
                     .await
             }
@@ -214,17 +237,28 @@ impl crate::PersonServices {
         asked: Asked<'_>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        match (request.target.address.action.as_str(), asking) {
-            (person_telling::TELL, Asking::Agent { person, id, name }) => {
-                let tell: Tell = argument(request, "what to tell")?;
-                if let Err(refused) = self.offers_its_own(asked, &tell.actions).await {
+        match (asked_of(request)?, asking) {
+            (
+                ToldAction::Tell {
+                    words,
+                    title,
+                    cause,
+                    about,
+                    task,
+                    actions,
+                    insists,
+                },
+                Asking::Agent { person, id, name },
+            ) => {
+                let actions = actions.unwrap_or_default();
+                if let Err(refused) = self.offers_its_own(asked, &actions).await {
                     return answer(&Err::<Value, String>(refused));
                 }
                 let teller = Teller {
                     agent: id.clone(),
                     name: name.clone(),
                 };
-                let offered_by = (!tell.actions.is_empty()).then(|| teller.clone());
+                let offered_by = (!actions.is_empty()).then(|| teller.clone());
                 let telling = ToTell {
                     id: None,
                     // What an agent tells is news, whatever cause it
@@ -233,27 +267,37 @@ impl crate::PersonServices {
                     // told by what carries out that event of theirs, never
                     // by whoever says it is one.
                     kind: Kind::News,
-                    tell,
+                    words,
+                    title: title.unwrap_or_default(),
+                    cause,
+                    about,
+                    task,
+                    actions,
+                    insists: insists.unwrap_or(false),
                     from: Some(teller),
                     words_stay: false,
                 };
                 answer(&self.tell_offered(person, telling, offered_by))
             }
-            (person_telling::LIST, Asking::Person(person)) => {
-                let after: ListAfter = argument_or_default(request, "a place in the log")?;
-                answer(&Ok::<_, String>(self.told_listed(person, &after).await))
+            (ToldAction::List { after, wait_ms, .. }, Asking::Person(person)) => {
+                answer(&Ok::<_, String>(
+                    self.told_listed(person, after.unwrap_or(0), wait_ms).await,
+                ))
             }
-            (person_telling::ACKNOWLEDGE, Asking::Person(person)) => {
-                let seen: Acknowledge = argument(request, "the thing by its id")?;
-                answer(&self.acknowledge_told(person, &seen.told, &seen.device, &seen.by))
+            (ToldAction::Acknowledge { told, device, by }, Asking::Person(person)) => {
+                answer(&self.acknowledge_told(
+                    person,
+                    &told,
+                    &device.unwrap_or_default(),
+                    &by.unwrap_or_default(),
+                ))
             }
-            (person_telling::SINCE_YOU_LEFT, Asking::Person(person)) => {
+            (ToldAction::SinceYouLeft, Asking::Person(person)) => {
                 answer(&Ok::<_, String>(self.since_left_for_device(person)))
             }
-            (person_telling::INSIST, asking) => {
-                let insist: Insist = argument(request, "the thing by its id, and whether")?;
+            (ToldAction::Insist { told, insists }, asking) => {
                 let theirs = matches!(asking, Asking::Person(_));
-                answer(&self.insist_told(asking.person(), &insist.told, insist.insists, theirs))
+                answer(&self.insist_told(asking.person(), &told, insists, theirs))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -271,11 +315,8 @@ impl crate::PersonServices {
         actions: &[Offered],
     ) -> Result<(), String> {
         // Bounded before anything is looked up for them.
-        if actions.len() > person_telling::MAX_ACTIONS {
-            return Err(format!(
-                "A thing told offers at most {} buttons",
-                person_telling::MAX_ACTIONS
-            ));
+        if actions.len() > MAX_ACTIONS {
+            return Err(format!("A thing told offers at most {MAX_ACTIONS} buttons"));
         }
         for action in actions {
             let target = &action.target;
