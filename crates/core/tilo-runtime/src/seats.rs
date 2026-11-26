@@ -178,7 +178,7 @@ impl Peer {
     /// # Errors
     /// The kernel does not say.
     pub(crate) fn of(stream: &Stream) -> io::Result<Self> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
         {
             let facts = peer_facts::facts(stream)?;
             Ok(Self {

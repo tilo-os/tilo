@@ -95,7 +95,7 @@ pub fn has_session(users: &Path, uid: u32) -> bool {
 ///
 /// # Errors
 /// The kernel does not say who the peer is.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
     use std::io;
     use std::os::fd::{AsRawFd as _, FromRawFd, OwnedFd};
@@ -125,7 +125,7 @@ pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
         libc::getsockopt(
             fd,
             libc::SOL_SOCKET,
-            libc::SO_PEERPIDFD,
+            SO_PEERPIDFD,
             (&raw mut pidfd).cast(),
             &raw mut size,
         )
@@ -169,8 +169,16 @@ pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
     })
 }
 
-/// Which of this process's namespaces the process at `proc_dir` shares.
+/// The socket option that hands over the peer's pidfd. Android's libc bindings do not name it;
+/// its value is the kernel's on every architecture, and a kernel without it refuses the option, so
+/// the peer is then not pinned and its executable and namespaces are not shown.
 #[cfg(target_os = "linux")]
+const SO_PEERPIDFD: libc::c_int = libc::SO_PEERPIDFD;
+#[cfg(target_os = "android")]
+const SO_PEERPIDFD: libc::c_int = 77;
+
+/// Which of this process's namespaces the process at `proc_dir` shares.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn namespaces_at(proc_dir: &Path) -> Namespaces {
     use std::os::unix::fs::MetadataExt as _;
 
