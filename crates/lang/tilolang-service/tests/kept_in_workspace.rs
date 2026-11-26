@@ -231,6 +231,10 @@ fn a_seed_step_as_someone_outside_the_workspace_is_refused_and_ones_own_steps_la
     );
     let refused = refused.expect_err("the seed's step taken as someone else is refused");
     assert!(
+        refused.starts_with("the scenario stopped at a step it may not take here: "),
+        "the seed answers that it stopped there, apart from a failure: {refused}"
+    );
+    assert!(
         refused.contains("can't write as Mia: Mia is not in this workspace"),
         "the refusal names the step, who it was to run as, and why: {refused}"
     );
@@ -250,6 +254,10 @@ fn a_seed_step_as_another_member_is_refused_as_not_being_them() {
         .insert("bo".to_owned(), tilo_action_policy::Role::Editor);
     let (refused, said) = seed_as_ada("bo", policy);
     let refused = refused.expect_err("the seed's step taken as someone else is refused");
+    assert!(
+        refused.starts_with("the scenario stopped at a step it may not take here: "),
+        "the seed answers that it stopped there, apart from a failure: {refused}"
+    );
     assert!(
         refused.contains("can't write as ")
             && refused.contains("is not you, so this can't be done as them"),

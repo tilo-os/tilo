@@ -1749,8 +1749,7 @@ impl Core {
                     // A run waiting on another app's answer is still one action: what it wrote
                     // stays apart until it ends, and a failure after the answer takes it all back.
                     Ok(RunOutcome::Waits { .. }) => Ok(()),
-                    Ok(_) => store.end_run(&invocation),
-                    Err(RuntimeError::Stopped(_)) => store.end_run(&invocation),
+                    Ok(_) | Err(RuntimeError::Stopped(_)) => store.end_run(&invocation),
                     Err(_) => {
                         store.abort_run(&invocation);
                         Ok(())
