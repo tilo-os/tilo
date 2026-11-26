@@ -94,28 +94,28 @@ impl Served {
     }
 
     /// Answer the read `read`, asked under `correlation`, from what serves its workspace: at once,
-    /// or once the record moved past the revision a followed read names. `None` when nothing
-    /// serves that workspace.
+    /// or, as `None`, held until the record moves past the revision a followed read names or
+    /// until something serves that workspace.
     pub(super) fn read(
         &mut self,
         correlation: u64,
         read: &ResourceReadRequest,
-    ) -> Option<Option<RemoteActionMessage>> {
+    ) -> Option<RemoteActionMessage> {
         let Some(serve) = self.reads.get(&read.workspace) else {
             // Nothing serves that workspace yet: the host may still be told of it, as a test
             // host's is once its window is built, so the read waits for it rather than being
             // refused.
             self.held.push((correlation, read.clone()));
-            return Some(None);
+            return None;
         };
         let result = serve(read);
         if let (Ok(readings), Some(after)) = (&result, &read.after)
             && readings["revision"].as_str() == Some(after.as_str())
         {
             self.held.push((correlation, read.clone()));
-            return Some(None);
+            return None;
         }
-        Some(Some(reading(correlation, result)))
+        Some(reading(correlation, result))
     }
 
     /// The followed reads whose record moved since they were held, answered.

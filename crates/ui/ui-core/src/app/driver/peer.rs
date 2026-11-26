@@ -913,15 +913,8 @@ impl Driver {
                         },
                     ..
                 } => {
-                    match peer.served_by_caller.read(correlation, &read) {
-                        Some(answer) => peer.answer(answer),
-                        None => peer.answer(Some(RemoteActionMessage::ResourceReading {
-                            correlation,
-                            result: Err(ActionCallError::Unavailable {
-                                reason: "nothing here keeps that workspace's records".into(),
-                            }),
-                        })),
-                    }
+                    let answer = peer.served_by_caller.read(correlation, &read);
+                    peer.answer(answer);
                     continue;
                 }
                 asked => {
