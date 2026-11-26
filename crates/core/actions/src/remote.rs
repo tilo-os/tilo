@@ -103,7 +103,6 @@ pub mod window_follow;
 mod within;
 pub mod workspace_activity;
 pub mod workspace_events;
-pub mod workspace_initiative;
 pub mod workspace_invocations;
 
 pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;

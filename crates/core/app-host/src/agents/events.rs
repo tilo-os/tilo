@@ -129,10 +129,6 @@ pub struct Definition {
     pub told_as: Option<Kind>,
     /// When it was set up, ms since the epoch.
     pub set_up_at_ms: i64,
-    /// Whether its look-round looks first ([`crate::agents::initiative`]): it hands the
-    /// instruction over only with what the look found new.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub looks: bool,
 }
 
 impl Definition {
@@ -444,8 +440,7 @@ fn when(id: &str, value: Binding, then: Vec<Step>) -> Step {
     )
 }
 
-/// The shortcut that is the event `kept`: its trigger; the look-round's look, where it looks;
-/// the question, where it asks one; the count, advanced only on a yes; and the instruction
+/// The shortcut that is the event `kept`: its trigger; the question, where it asks one; the count, advanced only on a yes; and the instruction
 /// written to its person's assistant through Chat's `write_to`, keyed by the firing.
 ///
 /// # Errors
@@ -474,11 +469,9 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
             "The firing this run is: the key its instruction is handed over under",
         ),
     ]);
-    // A moment says nothing but its time. What happened in the workspace, or what the look
-    // found, goes with the instruction as what it is: data.
-    let text = if definition.looks {
-        format!("{{{{input.{INSTRUCTION_INPUT}}}}}\n\n{{{{step.look/found}}}}")
-    } else if on_a_clock {
+    // A moment says nothing but its time. What happened in the workspace goes with the
+    // instruction as what it is: data.
+    let text = if on_a_clock {
         format!("{{{{input.{INSTRUCTION_INPUT}}}}}")
     } else {
         format!(
@@ -513,7 +506,7 @@ pub fn event_shortcut(kept: &Kept) -> Result<Shortcut, String> {
 }
 
 /// The steps the event `kept` runs, `text` being the instruction its person's assistant is told:
-/// the count when it runs every so often, the question when it asks one, the look when it looks,
+/// the count when it runs every so often, the question when it asks one,
 /// each wrapping the one before it.
 fn event_steps(definition: &Definition, kept: &Kept, text: &str) -> Vec<Step> {
     let mut steps = vec![Step::new(
@@ -569,29 +562,6 @@ fn event_steps(definition: &Definition, kept: &Kept, text: &str) -> Vec<Step> {
                 },
             ),
             when("judged", Binding::step("judge", ""), steps),
-        ];
-    }
-    if definition.looks {
-        steps = vec![
-            Step::new(
-                "look",
-                StepKind::Invoke {
-                    action: ActionKey::new(
-                        tilo_actions::remote::workspace_initiative::PROVIDER,
-                        tilo_actions::remote::workspace_initiative::LOOK_ROUND_KIND,
-                        tilo_actions::remote::workspace_initiative::LOOK,
-                    ),
-                    resource: Selector::Fixed(
-                        tilo_actions::remote::workspace_initiative::LOOK_ROUND.to_owned(),
-                    ),
-                    args: BTreeMap::from([
-                        ("event".to_owned(), Binding::Literal(json!(definition.id))),
-                        ("firing".to_owned(), Binding::Input(FIRING_INPUT.to_owned())),
-                    ]),
-                    appearance: None,
-                },
-            ),
-            when("found", Binding::step("look", "/found"), steps),
         ];
     }
     steps
@@ -896,7 +866,6 @@ impl WorkspaceEvents {
                     told_as: told_as_of(setup.told_as.as_deref().unwrap_or_default())
                         .map_err(refused)?,
                     set_up_at_ms: tilo_clock::unix_now_ms_i64(),
-                    looks: false,
                 };
                 let note = Note {
                     purpose: setup.purpose.unwrap_or_default().trim().to_owned(),

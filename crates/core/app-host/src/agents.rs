@@ -65,7 +65,6 @@ use turn_provider::TurnProvider;
 pub mod agent_keys;
 pub mod assistant;
 pub mod events;
-pub mod initiative;
 pub mod task_work;
 pub mod telling;
 pub mod ticketed_keys;
@@ -443,13 +442,11 @@ impl ChangeFeed for WorkspaceActionProvider {
 /// their agents that is this device's to take ([`ServerAgents::run`],
 /// [`tilo_workspace_service::work::takes_turn`]). Where the device serves tickets (`tickets`), it asks with one to
 /// run the agents of other people it may take turns of, and runs each once its person redeemed
-/// the ticket. What the assistants' look-round (`initiative`) proposes is filed through the same
-/// calls, each signed by its agent's key.
+/// the ticket.
 pub async fn run_on_device(
     workspaces: Workspaces,
     actions: Arc<dyn ActionProvider + Send + Sync>,
     tickets: Option<Arc<dyn ticketed_keys::AgentKeyTickets>>,
-    initiative: Option<initiative::Initiative>,
 ) {
     // The person's own device calls the model their workspace linked where it is, one on their
     // own network or on this machine included: a local model answers with no network at all.
@@ -488,12 +485,6 @@ pub async fn run_on_device(
     // Every key an agent is given here from a root is kept among its person's keys in their own
     // workspace.
     keys.keep_in(&workspaces);
-    if let Some(initiative) = initiative {
-        initiative.act_through(EngineActions::new(
-            Arc::clone(&actions),
-            Arc::clone(&keys) as Arc<dyn agent_keys::AgentKeys>,
-        ));
-    }
     tracing::info!(
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
@@ -1595,8 +1586,7 @@ impl ServerAgents {
                     .then_some(sub.kind.as_str())
                 })
             });
-            let theirs = self
-                .workspaces
+            self.workspaces
                 .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
                 // The model the agent itself names answers where the workspace linked it on
                 // this server: a sub-agent's is its skill's, or the one its starter named.
@@ -1607,20 +1597,7 @@ impl ServerAgents {
                     name: sub_agents::payer(turn).name.clone(),
                     day: day.to_owned(),
                     limit_micros: sub_agents::payer(turn).spend_limit_micros,
-                });
-            // A turn a look of its person's look-round started counts on the
-            // look-round's own day as well, and stops where that day's limit is reached.
-            let look_round = initiative::day_of_turn(
-                &self.workspaces,
-                &workspace_id.to_string(),
-                &turn.person,
-                &turn.cause,
-                day,
-            );
-            match look_round {
-                Some(look_round) => theirs.spending_as(look_round),
-                None => theirs,
-            }
+                })
         };
         let asked = theirs.clone();
         let language = self.language();

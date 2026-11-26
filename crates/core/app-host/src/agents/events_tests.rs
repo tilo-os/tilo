@@ -20,7 +20,6 @@ fn reminder() -> Definition {
         instruction: " Say that it is time to call home. ".into(),
         told_as: None,
         set_up_at_ms: 1,
-        looks: false,
     }
 }
 
@@ -163,30 +162,6 @@ fn what_happened_in_the_workspace_goes_with_the_instruction_as_data() {
 }
 
 #[test]
-fn a_look_round_looks_first_and_hands_on_only_what_it_found() {
-    let kept = kept(Definition {
-        when: "every 3600 seconds".into(),
-        looks: true,
-        ..reminder()
-    });
-    let shortcut = event_shortcut(&kept).unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(ids(&shortcut.steps), ["look", "found"]);
-    let StepKind::Invoke { action, args, .. } = &shortcut.steps[0].kind else {
-        panic!("the look is the initiative's");
-    };
-    assert_eq!(
-        action.action,
-        tilo_actions::remote::workspace_initiative::LOOK
-    );
-    assert_eq!(
-        args.get("firing"),
-        Some(&Binding::Input(FIRING_INPUT.into()))
-    );
-    let (text, _) = told_by(&then_of(&shortcut.steps[1])[0]);
-    assert_eq!(text, "{{input.instruction}}\n\n{{step.look/found}}");
-}
-
-#[test]
 fn a_feed_or_a_page_on_the_web_or_mail_starts_an_event_within_its_bounds() {
     let watching = |when: &str| {
         Definition {
@@ -250,7 +225,7 @@ fn an_event_says_how_its_result_is_told_and_keeps_the_word_both_ways() {
     assert_eq!(daily.starts_as(), EVENT);
     let kept = serde_json::to_value(&daily).unwrap_or_default();
     assert!(
-        kept.get("toldAs").is_none() && kept.get("looks").is_none(),
+        kept.get("toldAs").is_none(),
         "nothing said is nothing kept: {kept}"
     );
 

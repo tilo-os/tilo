@@ -623,8 +623,7 @@ pub fn with_place(request: &str, work: &Work, place: &Place) -> String {
     request
 }
 
-/// A task of the workspace as the store's index holds it, for what the engine reads of tasks
-/// beside a turn: the look round, the proposals filed as tasks, the waits an automation ends.
+/// A task of the workspace as the store's index holds it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Held {
     pub id: String,
@@ -664,92 +663,6 @@ impl Held {
     pub fn address(&self) -> String {
         triggered::published(TASKS, &self.id)
     }
-
-    /// Whether it is closed: done or cancelled.
-    pub(super) fn closed(&self) -> bool {
-        matches!(self.status.as_str(), "done" | "cancelled")
-    }
-
-    /// Whether `member` is doing it.
-    pub(super) fn assigned_to(&self, member: &tilo_action_policy::MemberId) -> bool {
-        !self.assignee.is_empty()
-            && self
-                .assignee
-                .contains(&tilo_workspace_service::agent_shortcuts::names(member))
-    }
-
-    /// The agent doing it, when an agent is.
-    pub(super) fn agent(&self) -> Option<tilo_action_policy::MemberId> {
-        /// The agent under `agent` anywhere in `value`.
-        fn agent_in(value: &Value) -> Option<tilo_action_policy::MemberId> {
-            match value {
-                Value::Object(fields) => fields
-                    .get("agent")
-                    .and_then(|agent| {
-                        Some(tilo_action_policy::MemberId::agent(
-                            agent.get("id")?.as_str()?,
-                            agent.get("person")?.as_str()?,
-                        ))
-                    })
-                    .or_else(|| fields.values().find_map(agent_in)),
-                _ => None,
-            }
-        }
-        agent_in(&serde_json::from_str(&self.assignee).ok()?)
-    }
-
-    /// Whether a person gave it to the agent doing it.
-    pub(super) fn given_by_a_person(&self) -> bool {
-        self.assigned_by.contains("\"person\"")
-    }
-
-    /// When it is due, in milliseconds since the epoch: its moment, or the start of its day.
-    pub(super) fn due_ms(&self) -> Option<i64> {
-        if let Some(at) = self.at.as_deref().and_then(|at| {
-            tilo_failure::ignored!(
-                "a due moment that does not parse names none",
-                at.parse::<jiff::Timestamp>().ok()
-            )
-        }) {
-            return Some(at.as_millisecond());
-        }
-        let day = tilo_failure::ignored!(
-            "a due day that does not parse names none",
-            self.due.as_deref()?.parse::<jiff::civil::Date>().ok()?
-        );
-        day.to_zoned(jiff::tz::TimeZone::UTC)
-            .ok()
-            .map(|start| start.timestamp().as_millisecond())
-    }
-}
-
-/// Every task of `workspace` this device holds that holds to `filters`.
-///
-/// # Errors
-/// The workspace is not kept here.
-pub(super) async fn tasks(
-    workspaces: &Workspaces,
-    workspace: &str,
-    filters: Vec<collab_types::store::Filter>,
-) -> Result<Vec<Held>, String> {
-    let mut query =
-        collab_types::store::Query::of(tilo_workspace_service::agent_shortcuts::TASK, 500);
-    query.filters = filters;
-    Ok(workspaces
-        .store_found(workspace, query)
-        .await?
-        .into_iter()
-        .map(|(id, held)| Held::of(id, &held))
-        .collect())
-}
-
-/// The id of the task at `address` (`tl:so.tilo.tasks:<id>`), when it names one.
-pub fn task_id(address: &str) -> Option<&str> {
-    address
-        .strip_prefix("tl:")?
-        .strip_prefix(TASKS)?
-        .strip_prefix(':')
-        .filter(|id| !id.is_empty())
 }
 
 /// The id of the record of `app` that `answer` (an action's value) says its call made, by the

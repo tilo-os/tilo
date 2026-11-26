@@ -15,7 +15,7 @@
     )
 )]
 
-/// The agents a device runs for the workspaces it holds, and the events and look-rounds
+/// The agents a device runs for the workspaces it holds, and the events
 /// their turns reach.
 #[cfg(feature = "agents")]
 pub mod agents;

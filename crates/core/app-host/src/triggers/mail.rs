@@ -241,19 +241,6 @@ async fn messages_in(
         .collect())
 }
 
-/// The mail that arrived in `workspace` since `heard` last took it in, each put into it: how
-/// many messages are new. The first look (`looked` false) notes where the mail stands and
-/// counts nothing, and a message a later sync rereads is not new again.
-pub(crate) async fn arrived(
-    workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    workspace: &str,
-    heard: &mut BTreeMap<String, i64>,
-    looked: bool,
-) -> Result<usize, String> {
-    let messages = messages_in(workspaces, workspace).await?;
-    Ok(take_in(messages, heard, i64::MIN, looked).len())
-}
-
 /// Take `messages` into `heard`, each by its key with when it arrived, and answer the ones that
 /// are new since it last took them in: none on the first look, which notes where the mail
 /// stands. A message that arrived before `since_ms` is not taken in at all, and past

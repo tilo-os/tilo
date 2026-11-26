@@ -1,7 +1,6 @@
 //! What a workspace keeps on the host that serves it beside its records: its
 //! mail and calendar accounts, its model providers, the services it connected,
-//! what its agents learned, and the events and initiative its assistant works
-//! with. Each account and provider names its sign-in or key, an entry of the
+//! what its agents learned, and the events its assistant works with. Each account and provider names its sign-in or key, an entry of the
 //! workspace's one vault ([`super::vault`]); no secret is kept here. One set
 //! per workspace, for all its members, kept under `workspaces/<workspace>/` in
 //! the host's state, beside the workspace's asks and grants.
@@ -9,8 +8,8 @@
 //! The workspace's policy decides who reaches them, as it decides every app's
 //! records ([`tilo_action_policy::decide`]). Each store stands at its app's
 //! node ([`Store`]): the mail accounts at Mail's, the calendars at
-//! Calendar's, the vault's items at Passwords' vault, the events at
-//! Shortcuts' and the initiative at Chat's. A member reaches them
+//! Calendar's, the vault's items at Passwords' vault, and the events at
+//! Shortcuts'. A member reaches them
 //! through their role (an Editor uses the mail accounts and the vault's
 //! items, a Viewer reads them), an agent or an API key through its grants,
 //! and an owner who wants one closed says so with a grant like any other. A
@@ -75,12 +74,6 @@ impl Store {
     pub const EVENTS: Self = Self {
         app: tilo_app_id::apps::SHORTCUTS,
         kind: tilo_actions::remote::workspace_events::KIND,
-    };
-    /// What the workspace's assistant finds to do on its own: its
-    /// look-round and proposals, in Chat with the workspace's agents.
-    pub const INITIATIVE: Self = Self {
-        app: tilo_app_id::apps::CHAT,
-        kind: tilo_actions::remote::workspace_initiative::LOOK_ROUND_KIND,
     };
 
     /// The node `action` of this store stands at in `workspace`.
