@@ -336,8 +336,12 @@ fn every_item_says_who_made_it_when_and_from_what() {
     // The reply names its ask; the ask says what it was made from, and who asked.
     let reply = read(&chain.ada.host, "ada", &published(&chain.reply), json!({})).unwrap();
     assert_eq!(
-        reply["created"]["who"]["actor"]["member"]["agent"], "scout",
+        reply["created"]["who"]["actor"]["member"]["agent"]["id"], "scout",
         "{reply}"
+    );
+    assert_eq!(
+        reply["created"]["who"]["actor"]["member"]["agent"]["person"], "cy",
+        "the agent is named as its id and the person it acts for: {reply}"
     );
     let ask_id = reply["fields"]["ask"]["item"].as_str().unwrap().to_owned();
     assert_eq!(ask_id, published(&chain.ask));

@@ -18,7 +18,11 @@ use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
-const SOURCE: &str = include_str!("../../../../apps/tl/files/app.tl");
+const SOURCE: &str = concat!(
+    include_str!("../../../../apps/tl/files/app.tl"),
+    "\n",
+    include_str!("../../../../apps/tl/files/access.tl")
+);
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))

@@ -178,7 +178,7 @@ fn typing_a_name_in_the_to_field_offers_the_contact_with_their_address() {
         [(
             "Anna Kowalski <anna@northwind.example>, ".to_owned(),
             "Anna Kowalski".to_owned(),
-            "anna@northwind.example".to_owned(),
+            "anna@northwind.example · no account to send from".to_owned(),
         )],
         "the contact whose name the words start, written as a header names them"
     );
@@ -191,7 +191,7 @@ fn typing_part_of_an_address_offers_that_contact() {
         [(
             "Bo Diaz <bo@boats.example>, ".to_owned(),
             "Bo Diaz".to_owned(),
-            "bo@boats.example".to_owned(),
+            "bo@boats.example · no account to send from".to_owned(),
         )]
     );
 }
@@ -203,7 +203,7 @@ fn a_chosen_contact_stands_after_the_recipients_already_typed() {
         [(
             "bo@boats.example, Anna Kowalski <anna@northwind.example>, ".to_owned(),
             "Anna Kowalski".to_owned(),
-            "anna@northwind.example".to_owned(),
+            "anna@northwind.example · no account to send from".to_owned(),
         )],
         "taking the row keeps the recipient before it, and ends this one so the next may follow"
     );
@@ -277,12 +277,12 @@ fn a_sent_to_person_is_offered_above_one_who_wrote_and_the_books_name_names_them
             (
                 "Robin Book <robin@one.example>, ".to_owned(),
                 "Robin Book".to_owned(),
-                "robin@one.example".to_owned(),
+                "robin@one.example · no account to send from".to_owned(),
             ),
             (
                 "Robin Received <robin@two.example>, ".to_owned(),
                 "Robin Received".to_owned(),
-                "robin@two.example".to_owned(),
+                "robin@two.example · no account to send from".to_owned(),
             ),
         ],
         "the person the mail was written to stands above the one who wrote, under the name the \

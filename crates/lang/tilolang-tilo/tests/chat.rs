@@ -746,23 +746,24 @@ tilo_test_env::scenario! {
         ada.sync_with(&ben);
 
         // Ada's sidebar says two are new in design, one in random, and the places stand out.
+        // A place is keyed by its conversation, so it is found by the name it reads under.
         let sidebar = ada.view(APP);
-        let place = |key: &str| {
+        let place = |name: &str| {
             let all = sidebar.tree().of_kind("ui.NavItem");
             all.into_iter()
-                .find(|item| item.props.get("key") == Some(&Value::text(key)))
-                .unwrap_or_else(|| panic!("no place {key}"))
+                .find(|item| item.props.get("label") == Some(&Value::text(name)))
+                .unwrap_or_else(|| panic!("no place {name}"))
         };
         assert_eq!(
-            place("/design").props.get("live"),
+            place("design").props.get("live"),
             Some(&Value::Int(2)),
             "two new in design"
         );
         assert_eq!(
-            place("/design").props.get("unread"),
+            place("design").props.get("unread"),
             Some(&Value::Bool(true))
         );
-        assert_eq!(place("/random").props.get("live"), Some(&Value::Int(1)));
+        assert_eq!(place("random").props.get("live"), Some(&Value::Int(1)));
 
         // Ben's messages are new, and the transcript says so once, with its divider where their
         // part starts: a row of that part carries no mark of its own.

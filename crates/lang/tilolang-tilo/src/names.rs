@@ -219,7 +219,9 @@ mod host_names_tests {
         let host: Rc<RefCell<Option<crate::host::Host>>> = Rc::default();
         let names = HostNames::new(Rc::new(Installed), Rc::clone(&host));
         assert_eq!(
-            names.name(&person("ben-id")),
+            names.name(&person(
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )),
             "Unknown member",
             "before the members are read, nobody is named by their key"
         );

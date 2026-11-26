@@ -63,7 +63,7 @@ fn access(kind: &str, open: &ResourceRef, secret: &ResourceRef, scout_reads: boo
     if scout_reads {
         policy.grants.push(Grant::new(
             "agent-member:scout",
-            Grantee::agent("scout", "ada"),
+            Grantee::agent("scout", "cy"),
             node_of(kind, open),
             KindSet::READ,
             Answer::Allow,
