@@ -55,12 +55,11 @@ pub fn next_fire_time(schedule: &Schedule, now: Timestamp, zone: &TimeZone) -> O
     }
 }
 
-/// The zone the time-zone database names `name`, from the copy of the
-/// database built in.
+/// The zone the device's time-zone database names `name`: the runtime every app maps carries
+/// no copy of its own, so the zone is read from the one the system ships.
 #[must_use]
 pub fn zone_named(name: &str) -> Option<TimeZone> {
-    let (name, data) = jiff_tzdb::get(name)?;
-    TimeZone::tzif(name, data).ok()
+    jiff::tz::db().get(name).ok()
 }
 
 /// Where `trigger` keeps the zone it is still to be given: a time of day on

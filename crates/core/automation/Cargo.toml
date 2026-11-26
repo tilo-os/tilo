@@ -22,9 +22,6 @@ tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 blake3.workspace = true
 jiff.workspace = true
-# A daily schedule fires in the zone its person lives in, read the same on every
-# device whatever zoneinfo the machine running it ships.
-jiff-tzdb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
