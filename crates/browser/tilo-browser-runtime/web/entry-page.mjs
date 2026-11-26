@@ -1378,7 +1378,7 @@ function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
   const makeCode = async () => {
     const own = workspace ? {id: workspace, name: null} : await setupPersonWorkspace();
-    const made = await tickets.create({workspace: own.id, name: own.name});
+    const made = await tickets.create(own.id, own.name);
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host}};
   };
   const resume = saved => (ours(saved) ? tickets.resume(saved) : null);
