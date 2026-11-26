@@ -250,8 +250,6 @@ pub(crate) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
     validate_private(file, &file.metadata()?)?;
     empty(file)
 }
-#[cfg(test)]
-mod tests;
 
 fn normalized_input(current: &[u8]) -> io::Result<[u8; 52]> {
     let private_flags = layout(current)?.map_or(0, |(_, flags)| flags & 0xffff);

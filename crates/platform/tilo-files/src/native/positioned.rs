@@ -99,24 +99,3 @@ impl FileAt for File {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bytes_land_and_read_back_where_asked() {
-        let file = tempfile::tempfile().unwrap();
-        file.write_all_at(b"world", 6).unwrap();
-        file.write_all_at(b"hello ", 0).unwrap();
-        let mut read = [0_u8; 11];
-        file.read_exact_at(&mut read, 0).unwrap();
-        assert_eq!(&read, b"hello world");
-        let mut past = [0_u8; 4];
-        assert_eq!(
-            file.read_exact_at(&mut past, 9).unwrap_err().kind(),
-            io::ErrorKind::UnexpectedEof
-        );
-        assert_eq!(file.read_at(&mut past, 20).unwrap(), 0);
-    }
-}

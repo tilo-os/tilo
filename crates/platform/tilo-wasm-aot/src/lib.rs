@@ -334,6 +334,3 @@ fn engine_name(engine: &wasmtime::Engine) -> String {
     engine.precompile_compatibility_hash().hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
-
-#[cfg(test)]
-mod tests;

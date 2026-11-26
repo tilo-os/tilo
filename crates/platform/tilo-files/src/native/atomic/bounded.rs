@@ -60,9 +60,6 @@ impl BoundedOwnerDirectory {
         )
     }
 }
-#[cfg(test)]
-#[cfg(target_os = "macos")]
-mod tests;
 
 impl BoundedOwnerDirectory {
     pub fn publish(

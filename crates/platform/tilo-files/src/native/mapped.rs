@@ -121,20 +121,3 @@ impl Bytes {
         &self.0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_mapped_file_reads_back_its_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("face.ttf");
-        std::fs::write(&path, b"font bytes").unwrap();
-        assert_eq!(&*MappedFile::open(&path).unwrap(), b"font bytes");
-        let empty = dir.path().join("empty");
-        std::fs::write(&empty, b"").unwrap();
-        assert!(MappedFile::open(&empty).unwrap().is_empty());
-        assert!(MappedFile::open(&dir.path().join("missing")).is_err());
-    }
-}

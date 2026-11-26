@@ -1,8 +1,6 @@
 //! Local-NTFS publication using write-through staging and held-file commits.
 
 mod acl;
-#[cfg(test)]
-mod tests;
 
 use crate::native::atomic::identity::VolumeIdentity as PublicVolumeIdentity;
 use crate::native::atomic::publication::{

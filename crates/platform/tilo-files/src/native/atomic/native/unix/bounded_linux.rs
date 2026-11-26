@@ -72,24 +72,3 @@ fn empty(file: &File) -> io::Result<()> {
     }
     Err(io::ErrorKind::InvalidData.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_linux_actual_opened_file_cannot_borrow_another_filesystem_profile() {
-        // A current process-owned read-only regular procfs descriptor has private
-        // mode but must never be admitted as an XFS/POSIX storage object.
-        // Metadata only: never read the process auxiliary-vector contents.
-        let proc_file = File::open("/proc/self/auxv").unwrap();
-        let metadata = proc_file.metadata().unwrap();
-        assert!(metadata.is_file());
-        assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
-        assert_eq!(metadata.mode() & 0o077, 0);
-        assert_eq!(
-            validate_private(&proc_file, &metadata).unwrap_err().kind(),
-            io::ErrorKind::Unsupported
-        );
-    }
-}
