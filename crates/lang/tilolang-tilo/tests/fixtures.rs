@@ -1030,8 +1030,7 @@ impl Pane {
             .views
             .iter()
             .find(|(view, _)| view == name)
-            .map(|(_, id)| id.clone())
-            .unwrap_or_else(|| panic!("the {name} view"));
+            .map_or_else(|| panic!("the {name} view"), |(_, id)| id.clone());
         self
     }
 
@@ -1057,8 +1056,7 @@ impl Pane {
         self.actions
             .iter()
             .find(|(asked, _)| asked == name)
-            .map(|(_, id)| id.as_str())
-            .unwrap_or_else(|| panic!("no action {name}"))
+            .map_or_else(|| panic!("no action {name}"), |(_, id)| id.as_str())
     }
 
     /// How the action `name` presents itself (`destructive`, `primary`, ...), where it says.

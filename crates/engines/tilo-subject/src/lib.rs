@@ -116,27 +116,3 @@ fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, EncodeError
         Encoding::Jpeg { quality },
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fixed_rgba_image() -> DynamicImage {
-        let rgba = RgbaImage::from_fn(17, 13, |x, y| {
-            let r = u8::try_from(x.wrapping_mul(15).wrapping_add(y.wrapping_mul(3)) & 0xff)
-                .unwrap_or(0);
-            let g = u8::try_from(y.wrapping_mul(19).wrapping_add(x.wrapping_mul(7)) & 0xff)
-                .unwrap_or(0);
-            let b = u8::try_from(
-                x.wrapping_mul(11)
-                    .wrapping_add(y.wrapping_mul(13))
-                    .wrapping_add(29)
-                    & 0xff,
-            )
-            .unwrap_or(0);
-            let a = u8::try_from(x.wrapping_add(y).wrapping_mul(17) & 0xff).unwrap_or(0);
-            image::Rgba([r, g, b, a])
-        });
-        DynamicImage::ImageRgba8(rgba)
-    }
-}

@@ -2227,6 +2227,19 @@ mod event_value_tests {
 mod orphan_tests {
     use super::*;
 
+    /// An authority that allows every action these tests run.
+    struct Allow;
+    impl crate::Authority for Allow {
+        fn decide(
+            &self,
+            _: &crate::Actor,
+            _: &[crate::ModuleHash],
+            _: &crate::ActionInfo,
+        ) -> crate::Decision {
+            crate::Decision::Allow
+        }
+    }
+
     /// A boundary whose `fragment` the tree does not hold writes nowhere.
     ///
     /// This is the state a swapped branch of a view leaves behind: the boundary made for a view
@@ -2238,17 +2251,6 @@ mod orphan_tests {
     fn a_boundary_the_tree_does_not_hold_writes_nowhere() {
         let app = tilolang::compile_package(SOURCE, &tilolang::IdsLock::new(), &[])
             .unwrap_or_else(|d| panic!("{d:#?}"));
-        struct Allow;
-        impl crate::Authority for Allow {
-            fn decide(
-                &self,
-                _: &crate::Actor,
-                _: &[crate::ModuleHash],
-                _: &crate::ActionInfo,
-            ) -> crate::Decision {
-                crate::Decision::Allow
-            }
-        }
         let rt = crate::Runtime::new(crate::AmStore::new(), Allow).expect("a runtime");
         rt.load_compiled(&app).expect("the app loads");
         let board = rt.create("Board").expect("a board");

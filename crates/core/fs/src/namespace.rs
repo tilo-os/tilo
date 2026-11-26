@@ -362,9 +362,9 @@ impl MountAuthor {
         }
     }
 
-    /// The document that founds `chunk` of this mount's tree: the change every copy of the
+    /// The document that founds `chunk` of a mount's tree: the change every copy of the
     /// record derives, so two mounts of one tree found it as one document.
-    pub(super) fn founding(&self, chunk: TreeChunk) -> Option<AutoCommit> {
+    pub(super) fn founding(chunk: TreeChunk) -> Option<AutoCommit> {
         founding_document(chunk)
     }
 }
@@ -598,7 +598,7 @@ impl Namespace {
 
     pub fn new(author: impl Into<MountAuthor>) -> Result<Self, automerge::AutomergeError> {
         let mount: MountAuthor = author.into();
-        let index = started_from(mount.founding(0));
+        let index = started_from(MountAuthor::founding(0));
         let mut ns = Self::over(Chunks::new(index, mount.person.clone()), mount, 0);
         let root_document_id = FileDocumentId::new();
         ns.doc.put(

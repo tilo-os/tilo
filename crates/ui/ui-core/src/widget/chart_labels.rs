@@ -152,7 +152,7 @@ pub(crate) fn shortened_labels(
     }
     // The richest reading first: the one that keeps the most of the label. Ties keep the
     // order they were found in, word cuts before middle ones.
-    cuts.sort_by(|a, b| b.0.cmp(&a.0));
+    cuts.sort_by_key(|(letters, _)| std::cmp::Reverse(*letters));
     let mut seen = std::collections::HashSet::new();
     cuts.retain(|(_, text)| seen.insert(text.clone()));
     cuts.into_iter()

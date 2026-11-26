@@ -189,7 +189,7 @@ fn seed_as_ada(
             .map_err(|error| error.to_string())
     });
     let held = std::rc::Rc::new(Store::governed(policy));
-    let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = held.clone();
+    let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = held;
     let refused = service.keep_in_workspace(&store);
     // The workspace as Ada's next session opens it: the app's service moved into the same store,
     // which holds the app's resources now, so it seeds nothing.

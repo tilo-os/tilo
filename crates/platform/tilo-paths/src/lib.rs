@@ -592,14 +592,14 @@ mod platform {
 }
 
 /// The macOS per-user locations as functions of the environment and home
-/// directory, so the Linux test run checks them too.
+/// directory, so the Linux test run checks the base directories too.
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod macos {
     use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
+    use super::absolute;
     use super::xdg::Base;
-    use super::{UserDir, absolute};
 
     /// Data, configuration and state share `~/Library/Application Support`,
     /// which is where macOS keeps an app's durable files; caches go to
@@ -621,9 +621,10 @@ mod macos {
         }
     }
 
-    pub(crate) fn user_dir(dir: UserDir, home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn user_dir(dir: super::UserDir, home: &std::path::Path) -> PathBuf {
         home.join(match dir {
-            UserDir::Videos => "Movies",
+            super::UserDir::Videos => "Movies",
             other => other.conventional_name(),
         })
     }

@@ -764,6 +764,39 @@ pub fn key_of_agent(agent: &str) -> Option<[u8; 32]> {
 /// What [`key_agent_id`] starts with.
 const KEY_AGENT_PREFIX: &str = "grant-";
 
+/// An agent, a bot or a person wears the hue its member derives.
+impl tilo_presence::WearsHue for MemberId {
+    fn wearer(&self) -> tilo_presence::Wearer<'_> {
+        match self {
+            Self::Agent { id, .. } | Self::Bot(id) => tilo_presence::Wearer::Software(id),
+            Self::Person(person) => tilo_presence::Wearer::Person(person.as_str()),
+        }
+    }
+}
+
+/// An automation or an app wears the hue its id derives.
+impl tilo_presence::WearsHue for Actor {
+    fn wearer(&self) -> tilo_presence::Wearer<'_> {
+        match self.member_id() {
+            Some(member) => tilo_presence::WearsHue::wearer(member),
+            None => tilo_presence::Wearer::Person(self.id()),
+        }
+    }
+}
+
+/// The colour the identity `identity` (an actor's bytes as text) wears with no choice of its
+/// own: the member it spells ([`tilo_presence::member_color`]), or else the palette slot the
+/// string hashes to ([`tilo_presence::user_color`]). A person's key and an actor nobody named
+/// keep their slot; an agent's change wears what the agent is, never the slot its `agent:<id>`
+/// spelling would hash to.
+#[must_use]
+pub fn identity_color(identity: &str) -> (u8, u8, u8) {
+    match MemberId::of_actor_bytes(identity.as_bytes()) {
+        Some(member) => tilo_presence::member_color(&member),
+        None => tilo_presence::user_color(identity),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -852,37 +885,5 @@ mod tests {
             assert_eq!(serde_json::from_str::<Acting>(&json).unwrap(), acting);
             assert!(json.contains("\"for\""), "{json}");
         }
-    }
-}
-
-impl tilo_presence::WearsHue for MemberId {
-    fn wearer(&self) -> tilo_presence::Wearer<'_> {
-        match self {
-            Self::Agent { id, .. } | Self::Bot(id) => tilo_presence::Wearer::Software(id),
-            Self::Person(person) => tilo_presence::Wearer::Person(person.as_str()),
-        }
-    }
-}
-
-/// An automation or an app wears the hue its id derives.
-impl tilo_presence::WearsHue for Actor {
-    fn wearer(&self) -> tilo_presence::Wearer<'_> {
-        match self.member_id() {
-            Some(member) => tilo_presence::WearsHue::wearer(member),
-            None => tilo_presence::Wearer::Person(self.id()),
-        }
-    }
-}
-
-/// The colour the identity `identity` (an actor's bytes as text) wears with no choice of its
-/// own: the member it spells ([`tilo_presence::member_color`]), or else the palette slot the
-/// string hashes to ([`tilo_presence::user_color`]). A person's key and an actor nobody named
-/// keep their slot; an agent's change wears what the agent is, never the slot its `agent:<id>`
-/// spelling would hash to.
-#[must_use]
-pub fn identity_color(identity: &str) -> (u8, u8, u8) {
-    match MemberId::of_actor_bytes(identity.as_bytes()) {
-        Some(member) => tilo_presence::member_color(&member),
-        None => tilo_presence::user_color(identity),
     }
 }

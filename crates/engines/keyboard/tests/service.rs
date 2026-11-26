@@ -1,12 +1,18 @@
 //! The keyboard's engine, as its view asks it: each op of `engine.call` answered for the app the
 //! keys are drawn on, and refused for any other.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a failed unwrap or a panic in a test is its assertion"
+)]
 
 use serde_json::Value;
 
 /// The app the keyboard asks as.
 const APP: &str = "so.tilo.osk";
 
-fn ask(op: &str, input: Value) -> Value {
+fn ask(op: &str, input: &Value) -> Value {
     tilo_keyboard_engine::register();
     let answer = tilolang_tilo::engine::answer(APP, op, &input.to_string())
         .unwrap_or_else(|why| panic!("`{op}` is answered: {why}"));
@@ -30,7 +36,7 @@ fn the_keyboard_asks_its_own_engine_and_no_other() {
 /// action and a width.
 #[test]
 fn the_layouts_are_answers_with_keys_and_the_purpose_each_purpose_starts() {
-    let answer = ask("layouts", serde_json::json!({}));
+    let answer = ask("layouts", &serde_json::json!({}));
     let layouts = answer["layouts"].as_array().expect("layouts");
     let qwerty = layouts
         .iter()
@@ -70,8 +76,7 @@ fn a_swipe_over_the_drawn_letters_decodes_words() {
                 .key(*id)
                 .is_some_and(|key| key.label == letter.to_string())
         })
-        .map(|(_, rect)| rect.center())
-        .unwrap_or_else(|| panic!("{letter} is a key"))
+        .map_or_else(|| panic!("{letter} is a key"), |(_, rect)| rect.center())
     };
     let mut path: Vec<(f64, f64)> = Vec::new();
     for letter in "quick".chars() {
@@ -90,7 +95,7 @@ fn a_swipe_over_the_drawn_letters_decodes_words() {
     }
     let answer = ask(
         "swipe",
-        serde_json::json!({
+        &serde_json::json!({
             "path": path.iter().flat_map(|(x, y)| [*x, *y]).collect::<Vec<f64>>(),
             "area": area,
             "rows": rows,
@@ -125,7 +130,7 @@ fn a_tap_answers_the_key_meant_and_only_a_field_that_may_learn_teaches() {
         "language": "en",
         "personalization": true,
     });
-    let answer = ask("touch", at.clone());
+    let answer = ask("touch", &at);
     assert_eq!(
         answer["key"],
         serde_json::json!([0, 0]),
@@ -137,7 +142,7 @@ fn a_tap_answers_the_key_meant_and_only_a_field_that_may_learn_teaches() {
     );
     let secret = ask(
         "touch",
-        serde_json::json!({
+        &serde_json::json!({
             "point": [0.05, 0.125],
             "area": [0.0, 0.0, 1.0, 1.0],
             "rows": rows,
@@ -153,7 +158,7 @@ fn a_tap_answers_the_key_meant_and_only_a_field_that_may_learn_teaches() {
 fn a_word_is_corrected_by_the_keys_it_was_typed_on_and_what_it_teaches_is_answered() {
     let answer = ask(
         "correct",
-        serde_json::json!({ "word": "quikc", "language": "en", "layout": "qwerty" }),
+        &serde_json::json!({ "word": "quikc", "language": "en", "layout": "qwerty" }),
     );
     assert_eq!(
         answer["correction"], "quick",
@@ -161,7 +166,7 @@ fn a_word_is_corrected_by_the_keys_it_was_typed_on_and_what_it_teaches_is_answer
     );
     let kept = ask(
         "correct",
-        serde_json::json!({
+        &serde_json::json!({
             "word": "quikc",
             "language": "en",
             "layout": "qwerty",
@@ -174,7 +179,7 @@ fn a_word_is_corrected_by_the_keys_it_was_typed_on_and_what_it_teaches_is_answer
     );
     let learned = ask(
         "learn",
-        serde_json::json!({ "word": "you", "previous": "hi" }),
+        &serde_json::json!({ "word": "you", "previous": "hi" }),
     );
     assert_eq!(
         learned["transition"],
@@ -189,7 +194,7 @@ fn a_word_is_corrected_by_the_keys_it_was_typed_on_and_what_it_teaches_is_answer
 fn a_long_press_offers_the_letters_forms_cased_for_the_shift() {
     let answer = ask(
         "accents",
-        serde_json::json!({ "keys": ["a", "e", "q"], "language": "en" }),
+        &serde_json::json!({ "keys": ["a", "e", "q"], "language": "en" }),
     );
     let a = answer["forms"]["a"].as_array().expect("a's forms");
     assert_eq!(a[0], "a", "the letter itself comes first");
@@ -203,7 +208,7 @@ fn a_long_press_offers_the_letters_forms_cased_for_the_shift() {
     );
     let upper = ask(
         "accents",
-        serde_json::json!({ "keys": ["a"], "language": "en", "shift": "shift" }),
+        &serde_json::json!({ "keys": ["a"], "language": "en", "shift": "shift" }),
     );
     assert_eq!(upper["forms"]["a"][0], "A");
     assert!(
@@ -219,7 +224,7 @@ fn a_long_press_offers_the_letters_forms_cased_for_the_shift() {
 /// A word that names an emoji offers it.
 #[test]
 fn a_word_that_names_an_emoji_offers_it() {
-    let answer = ask("emoji", serde_json::json!({ "word": "pizza", "limit": 2 }));
+    let answer = ask("emoji", &serde_json::json!({ "word": "pizza", "limit": 2 }));
     let emoji = answer["emoji"].as_array().expect("emoji");
     assert!(!emoji.is_empty(), "pizza names one: {answer}");
 }

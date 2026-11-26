@@ -1298,7 +1298,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // listed as each one runs, and a record here would make one call into two. A watch only
         // reads what moved, the invocations record among it: no call of its own.
         let records_it = self.records_tools
-            && !matches!(tool.as_str(), "tilo_do" | "tilo" | "tilo_ask" | "tilo_watch");
+            && !matches!(
+                tool.as_str(),
+                "tilo_do" | "tilo" | "tilo_ask" | "tilo_watch"
+            );
         let started = records_it
             .then(|| {
                 self.host
@@ -1757,7 +1760,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             path.as_deref().and_then(|path| self.open_files.peer(path)),
         ) && self.peers_of(app_id).await?.contains(&peer)
         {
-            return Ok(self.already_open(peer).await);
+            return Ok(self.already_open(peer));
         }
         let invocation = a
             .invocation_id
@@ -1872,9 +1875,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Some(peer) if file_open => self.directory_page(&peer.to_string()).await.ok(),
             _ => None,
         };
-        let reader = page
-            .as_ref()
-            .and_then(document_reader);
+        let reader = page.as_ref().and_then(document_reader);
         let content = match (peer, reader) {
             (Some(peer), Some((reader, untrusted))) => {
                 let mut content = self.document_content(peer, reader, wait).await;
@@ -2127,7 +2128,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The answer to opening a file instance `peer` already holds: that
     /// instance, as an `open` that started it would have answered. The file
     /// is not opened again, which could drop edits not yet saved.
-    async fn already_open(&self, peer: u64) -> Value {
+    fn already_open(&self, peer: u64) -> Value {
         let mut value = serde_json::Map::new();
         value.insert("update".into(), json!({"state": "succeeded"}));
         value.insert("peer_id".into(), peer.into());
