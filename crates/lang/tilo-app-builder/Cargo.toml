@@ -38,7 +38,6 @@ tilo-caps = { version = "0.1.0", path = "../../sdk/tilo-caps" }
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # The form a surface is kept by, whose hash `install-app` names.
-collab-types = { version = "0.1.0", package = "tilo-collab-types", path = "../../core/collab-types" }
 # Compiles the `surface.toml` an author writes into the one form the system ships and addresses.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 sha2.workspace = true

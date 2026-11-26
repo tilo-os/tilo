@@ -13,8 +13,6 @@ tilolang-tilo = { path = "../tilolang-tilo" }
 tilo-service = { path = "../../desktop/service" }
 tilolang = { path = "../tilolang" }
 tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
-# The history verbs a published root answers.
-collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 serde_json.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
@@ -31,7 +29,6 @@ tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 [dev-dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
-collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 # The one link grammar a resource's `share-link` renders, which the page reads back.
 tilo-reference = { version = "0.1.0", path = "../../core/reference" }
 tilo-test-env = { path = "../../../tools/test-env" }

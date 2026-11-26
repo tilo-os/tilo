@@ -32,7 +32,6 @@ agent-provider-config = { package = "tilo-agent-provider-config", path = "../../
 # on it.
 tilo-session-client = { path = "../session-client", features = ["toolkit"] }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
-collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same
 # frames a browser and a native shell say theirs in.
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
