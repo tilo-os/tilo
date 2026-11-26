@@ -437,7 +437,7 @@ impl Workspaces {
 
     /// Keep `writes`, a record's content and the placement that founds it, as `device`'s writes
     /// for `app` under `hosted`'s lock: as the parts of `action` when the changes came as one,
-    /// or else with the placement kept first.
+    /// or else in one batch, a placement and its content together.
     async fn keep_record_writes(
         &self,
         hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
@@ -455,29 +455,18 @@ impl Workspaces {
         }
     }
 
-    /// Keep `writes`, a record's placement (when they found it) and then its content, as
-    /// `device`'s writes for `app`: the placement first, so the content is kept on a record the
-    /// store holds.
+    /// Keep `writes`, a record's placement (when they found it) and its content, as `device`'s
+    /// writes for `app`, in one batch under one hold of the workspace's copy: the placement is
+    /// the batch's first write, and every write of its content follows it in the same hold. A
+    /// write of the record that comes after the founding never meets the record placed without
+    /// its content, which it would found again from the heads before the content was carried.
     async fn keep_founded(
         &self,
         hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
         (device, app): (std::sync::Arc<super::super::MemberDevice>, &str),
-        mut writes: Vec<tilo_resource_store::Written>,
+        writes: Vec<tilo_resource_store::Written>,
     ) -> Result<(), String> {
-        let placed = writes
-            .iter()
-            .take_while(|write| tilo_resource_store::content_resource(&write.doc).is_none())
-            .count();
-        let content = writes.split_off(placed);
-        let state = std::sync::Arc::clone(tokio::sync::OwnedMutexGuard::mutex(&hosted));
-        let hosted = if writes.is_empty() {
-            hosted
-        } else {
-            self.keep_writes(hosted, std::sync::Arc::clone(&device), app, writes, None)
-                .await?;
-            state.lock_owned().await
-        };
-        self.keep_writes(hosted, device, app, content, None)
+        self.keep_writes(hosted, device, app, writes, None)
             .await
             .map(drop)
     }

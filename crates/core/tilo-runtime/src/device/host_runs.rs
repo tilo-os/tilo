@@ -84,13 +84,14 @@ pub(super) fn settling(
         );
         Box::pin(async move {
             let (Some(workspaces), Some(asked)) = (workspaces, asked) else {
-                return;
+                return Ok(());
             };
             // Their workspaces, listed now that theirs is held: what this device offers their
             // keys, and what their own tilo reads.
             drop(workspaces.workspaces());
-            super::first_workspace::hold_person(workspaces.copies(), &cert).await;
+            super::first_workspace::hold_person(workspaces.copies(), &cert).await?;
             asked.serve_at_root((*tickets).clone());
+            Ok(())
         })
     })
 }

@@ -275,7 +275,9 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
             .expect_err("a confined device makes no workspace"),
         tilo_workspace_service::workspaces::CONFINED_HOLDS_NONE
     );
-    crate::device::first_workspace::hold_person(vm.copies(), &vm_cert).await;
+    crate::device::first_workspace::hold_person(vm.copies(), &vm_cert)
+        .await
+        .expect("a confined device writes nothing of its person's, and is refused nothing");
     assert!(vm.held().is_empty(), "the VM holds no workspace");
     assert!(!vm.keeps(workspace_id).await);
 

@@ -770,3 +770,45 @@ async fn a_devices_record_says_where_its_endpoint_answers() {
     })
     .await;
 }
+
+/// Two of the person's devices write the record of their devices before either write is kept, as
+/// a session's own write and the founding of their workspace reach it together: the record is
+/// founded once, whole, so the write that comes after the founding finds it and both land.
+#[tokio::test]
+async fn two_writes_of_a_fresh_devices_record_both_land() {
+    let one = tempfile::tempdir().unwrap();
+    let (key, desk) = hosting_device();
+    let host = test_host_holding(one.path(), &key, &desk, group_keys()).await;
+    let own = person_workspace::found(host.workspaces())
+        .await
+        .expect("the person's own workspace is founded here");
+    let (_, laptop) = device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    );
+    let keeping = |cert: &DeviceCert| {
+        apply_on(
+            host.workspaces(),
+            &own,
+            DEVICES,
+            Devices::keeping(cert).unwrap(),
+        )
+    };
+    let (theirs, ours) = futures::join!(keeping(&desk), keeping(&laptop));
+    theirs.expect("the desktop is listed in the record the founding places");
+    ours.expect("the laptop is listed in the same record");
+    let read = read_on::<Devices>(host.workspaces(), &own, DEVICES)
+        .await
+        .expect("the record of the person's devices reads");
+    let listed = read.listed(&desk.user_public_key);
+    for cert in [&desk, &laptop] {
+        assert!(
+            listed
+                .iter()
+                .any(|listed| listed.cert.device_public_key == cert.device_public_key),
+            "the record lists {}",
+            cert.device_label
+        );
+    }
+}

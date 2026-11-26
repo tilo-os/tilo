@@ -1004,3 +1004,59 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
         process.wait().unwrap();
     }
 }
+
+const DEVICES_TEST: &str =
+    "device::local::tests::a_daemon_founds_its_person_workspace_and_lists_itself_in_their_devices";
+
+/// A computer whose person has no workspace yet founds theirs when its daemon first needs one,
+/// and lists itself in the record of their devices in the same breath: the entry that lists this
+/// device and, where it keeps their root, the mark that says so. Both are kept, the record is
+/// placed, and a write of it after the founding finds it.
+#[test]
+fn a_daemon_founds_its_person_workspace_and_lists_itself_in_their_devices() {
+    use tilo_workspace_service::workspaces::person_workspace::devices;
+
+    let Some(root) = isolated_root(DEVICES_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let own = daemon
+        .workspace()
+        .expect("the device founds its person's workspace");
+    let serving = Arc::clone(daemon.serving());
+    let cert = serving.device_cert();
+    let person = cert.user_public_key;
+    let copies = serving.copies().clone();
+    let keeps_root = crate::device::services::root()
+        .expect("the root this device keeps reads")
+        .is_some();
+    let read = tilo_rt::app()
+        .block_on({
+            let copies = copies.clone();
+            async move { devices::of(&copies, &person).await }
+        })
+        .expect("the runtime runs the read");
+    assert!(
+        read.listed(&person)
+            .iter()
+            .any(|listed| listed.cert.device_public_key == cert.device_public_key),
+        "the device that founded {own} is listed in the record of its person's devices: {read:?}"
+    );
+    if keeps_root {
+        assert!(
+            read.root_holders(&person).contains(&cert.device_public_key),
+            "the device that founded {own} and keeps its person's root marks it there: {read:?}"
+        );
+    }
+    // The record is placed: this device's own write of it after the founding finds it.
+    let kept = tilo_rt::app()
+        .block_on(async move {
+            devices::keep_own_fact(&copies, &cert, devices::SEEN_FACT, "0000000000000000").await
+        })
+        .expect("the runtime runs the write");
+    assert_eq!(
+        kept,
+        Ok(()),
+        "a later write of the record of the person's devices finds the record its founding placed"
+    );
+}

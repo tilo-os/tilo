@@ -22,8 +22,11 @@ pub(crate) const FOUNDED_NAME: &str = "Home";
 
 /// What the daemon does for its person once their workspace is here: what its start does for a
 /// person whose workspace it already holds.
-pub(crate) type Settling =
-    Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+pub(crate) type Settling = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// The person's workspace on this computer, once there is one.
 pub(crate) struct FirstWorkspace {
@@ -124,20 +127,29 @@ impl FirstWorkspace {
     /// Do once what the daemon does for its person once their workspace is here
     /// ([`Self::when_here`]): this device listed with their others before anything signs as it,
     /// their root marked, and their root-only asks served. Nothing while there is no workspace.
-    pub(crate) async fn settle(&self) {
+    ///
+    /// # Errors
+    /// What settling does failed: the device is not listed with its person's, or their root is
+    /// not marked, and a device that goes on unlisted would be refused where it is asked to act.
+    pub(crate) async fn settle(&self) -> Result<(), String> {
         let (Some(_), Some(settling)) = (self.get(), self.settling.get().cloned()) else {
-            return;
+            return Ok(());
         };
-        self.settled.get_or_init(|| settling()).await;
+        // A settling that failed is not kept as done: the next caller tries it again, and hears
+        // the same refusal until one of them lists this device.
+        self.settled.get_or_try_init(|| settling()).await.cloned()
     }
 
     /// [`Self::settle`], from a caller that does not run on the runtime.
-    pub(crate) fn settle_blocking(self: &Arc<Self>) {
+    ///
+    /// # Errors
+    /// As [`Self::settle`].
+    pub(crate) fn settle_blocking(self: &Arc<Self>) -> Result<(), String> {
         if self.settled.initialized() {
-            return;
+            return Ok(());
         }
         let first = Arc::clone(self);
-        super::workspaces::block_on_owned(async move { first.settle().await });
+        super::workspaces::block_on_owned(async move { first.settle().await })
     }
 
     /// Whether this computer founds its person's workspace itself: it has no login.
@@ -153,7 +165,8 @@ impl FirstWorkspace {
     /// The person's workspace, founded now when there is none yet.
     ///
     /// # Errors
-    /// The service did not found it, or its name cannot be kept.
+    /// The service did not found it, its name cannot be kept, or this device could not be listed
+    /// with its person's.
     pub(crate) async fn found(&self) -> Result<String, String> {
         let founded = self
             .id
@@ -171,7 +184,7 @@ impl FirstWorkspace {
             .cloned()?;
         // Founded now or before: this device is listed with its person's, and their root marked,
         // once it holds the workspace — one write, from [`Self::settle`].
-        self.settle().await;
+        self.settle().await?;
         Ok(founded)
     }
 
@@ -182,7 +195,7 @@ impl FirstWorkspace {
     pub(crate) fn found_blocking(self: &Arc<Self>) -> Result<String, String> {
         if let Some(id) = self.get() {
             // One that came in from the person's desktop is settled by the first that reaches it.
-            self.settle_blocking();
+            self.settle_blocking()?;
             return Ok(id.to_owned());
         }
         let first = Arc::clone(self);
@@ -276,15 +289,20 @@ pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
 /// What the daemon's start does for a person whose workspace it holds, done where their workspace
 /// comes to be held later: `cert`, this device, listed with their others in the devices record
 /// of their workspace, and the root this account keeps marked there.
+///
+/// # Errors
+/// The record refused this device. The device goes on unlisted, and every host it is not listed
+/// with refuses what it signs: the caller hears the refusal instead of a daemon that serves as
+/// nobody.
 pub(super) async fn hold_person(
     copies: &tilo_workspace_service::workspaces::Workspaces,
     cert: &tilo_user_identity::DeviceCert,
-) {
+) -> Result<(), String> {
     use tilo_workspace_service::workspaces::person_workspace::devices;
     // A device confined to one workspace is listed by the root that certified it, in the same
     // step, and keeps no root to mark: it writes nothing of its person's.
     if super::confined::workspace_of(cert).is_some() {
-        return;
+        return Ok(());
     }
     // One write lists this device. The root is this account's own, read by the account it runs
     // as and not looked up through a sign-in record; the mark that it keeps the root is kept in
@@ -294,19 +312,20 @@ pub(super) async fn hold_person(
         Ok(record) => tilo_identity::store::load_from_path(record).ok(),
         Err(_) => None,
     };
-    let listed = match &marking {
-        Some(root) => devices::mark_root_holder(copies, root, cert).await,
-        None => devices::keep(copies, cert).await,
-    };
-    if let Err(error) = listed {
-        if marking.is_some() {
-            tracing::warn!(%error, "this device's root is not marked in its person's devices");
-        } else {
-            tracing::warn!(%error, "this device is not listed with its person's");
-        }
-    } else if marking.is_some() {
+    match &marking {
+        Some(root) => devices::mark_root_holder(copies, root, cert)
+            .await
+            .map_err(|error| {
+                format!("this device's root is not marked in its person's devices: {error}")
+            })?,
+        None => devices::keep(copies, cert)
+            .await
+            .map_err(|error| format!("this device is not listed with its person's: {error}"))?,
+    }
+    if marking.is_some() {
         // The device keeping the person's root also writes their list, from what this host knows
         // of the workspaces they are in.
         copies.list_known_for(&cert.user_public_key).await;
     }
+    Ok(())
 }
