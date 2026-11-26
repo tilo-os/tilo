@@ -273,6 +273,7 @@ pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     beside: tilo_network_actor::own_service::Protocols,
+    live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -313,6 +314,7 @@ pub(crate) fn start_collaboration(
                 .relays
                 .clone()
                 .unwrap_or_else(tilo_endpoint_reachability::relays),
+            live: Some(live),
         },
         options.asks.as_ref().map(|(asks, _)| asks.clone()),
         beside,

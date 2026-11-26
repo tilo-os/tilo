@@ -254,7 +254,7 @@ pub(crate) struct Local {
     /// session takes off the shell and out of this device's record ([`Self::take_deleted`]).
     deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
     /// This device's workspaces as its daemon says them: `None` until the session reaches the
-    /// daemon ([`Client::live_through`]), and on a session that keeps none.
+    /// daemon ([`Client::attach_view`]), and on a session that keeps none.
     view: RefCell<Option<Arc<crate::workspace_view::WorkspaceView>>>,
     /// The member's devices the peer network heard at another peer protocol version since the last
     /// call: what the person is answered.
@@ -275,8 +275,9 @@ pub(crate) struct Local {
     /// This device's relays, held back until a workspace this session takes part in has someone
     /// else in it.
     reachability: RefCell<Reachability>,
-    /// The workspaces' live session: their relays and this device's sessions in them.
-    live: RefCell<Option<crate::live::Live>>,
+    /// The workspaces' live session: their relays and this device's sessions in them, shared with
+    /// the session that runs them through the daemon.
+    live: Rc<RefCell<Option<crate::live::Live>>>,
     /// Live sessions a test joined this session to, by workspace, in place of the live session's, and the
     /// runtime they run on.
     #[cfg(test)]
@@ -1096,6 +1097,11 @@ pub struct Entry {
     /// ([`tilo_endpoint_reachability::Nearby`]): `None` discovers on the networks the endpoint is
     /// on, and a caller that knows which one its person's devices share says so.
     pub lan: Option<tilo_endpoint_reachability::Nearby>,
+    /// The workspaces' live sessions, this device's one place in each ([`crate::live::Live`]):
+    /// what this session hears and says there, and the one that says the person's word. `None`
+    /// for a client that runs its own on this process's endpoint (a test's), rather than through
+    /// a device daemon's.
+    pub live: Option<Rc<std::cell::RefCell<Option<crate::live::Live>>>>,
 }
 
 impl Client {
@@ -1142,10 +1148,13 @@ impl Client {
         let versions = crate::network::install(fabric.as_ref(), record, questions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
-        // The workspaces' live sessions run through this device's daemon, which holds the relay
-        // and the device's endpoint ([`Self::live_through`]).
-        let live = identity.as_ref().map(|identity| {
-            crate::live::Live::new(identity.device_cert.clone(), Arc::clone(&wake))
+        // The workspaces' live sessions are the session's, run through this device's daemon: the
+        // daemon holds the relay and the device's endpoint, and this client hears what they carry.
+        // A client given none is the device's own endpoint and runs them itself.
+        let live = entry.live.unwrap_or_else(|| {
+            Rc::new(RefCell::new(identity.as_ref().map(|identity| {
+                crate::live::Live::new(identity.device_cert.clone(), Arc::clone(&wake))
+            })))
         });
         let served = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
         let thread = std::thread::Builder::new()
@@ -1164,8 +1173,9 @@ impl Client {
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        // This device's presence is its daemon's to say: the session tells it the person's word.
-        let saying = live.as_ref().map(|live| {
+        // This device's presence is its daemon's to say: the session tells it the person's word
+        // over the live session's telling, which reaches the daemon's shell link.
+        let saying = live.borrow().as_ref().map(|live| {
             tilo_session_client::Saying::Word(
                 Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
             )
@@ -1484,43 +1494,11 @@ impl Client {
         }
     }
 
-    /// Run the workspaces' live sessions through this device's daemon from now on: each link opens
-    /// on `daemon`, the shell link the daemon handed this session, as a stream of the daemon's
-    /// socket the daemon carries into its relay or on to another device's. Nothing to run on a
-    /// session that keeps no workspaces.
+    /// The workspaces the device's daemon keeps, as this client reads them: what the live rows
+    /// follow and what tells whether a workspace here has someone else in it.
     #[cfg(target_os = "linux")]
-    pub(crate) fn live_through(
-        &self,
-        daemon: runtime_collab::ShellClient,
-        view: Option<Arc<crate::workspace_view::WorkspaceView>>,
-        turned: crate::followed_resource::FollowedReading<crate::live::TurnedAwayLists>,
-        sessions: crate::followed_resource::FollowedReading<crate::live::SessionRows>,
-    ) {
-        self.hosting.local.view.replace(view.clone());
-        let mut held = self.hosting.local.live.borrow_mut();
-        let Some(live) = held.as_mut() else {
-            return;
-        };
-        if let Some(view) = view {
-            live.follow_workspaces(view);
-        }
-        live.follow_turned_away(turned);
-        live.follow_sessions(sessions);
-        live.tell_through(daemon.clone());
-        live.open_links(Arc::new(move || {
-            let daemon = daemon.clone();
-            Box::pin(async move {
-                let stream = daemon
-                    .live()
-                    .await
-                    .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
-                let (reader, writer) = stream.into_split();
-                Ok((
-                    Box::new(reader) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-                    Box::new(writer) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
-                ))
-            })
-        }));
+    pub(crate) fn attach_view(&self, view: Option<Arc<crate::workspace_view::WorkspaceView>>) {
+        self.hosting.local.view.replace(view);
     }
 
     /// Dial the person's other devices as this session's siblings, and wake the session when
@@ -1735,7 +1713,7 @@ struct Hosted {
     person: crate::PersonResources,
     live_rows: tilo_workspace_service::live::LiveRows,
     reachability: Reachability,
-    live: Option<crate::live::Live>,
+    live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1771,7 +1749,7 @@ impl Local {
                 person,
                 live_rows,
                 reachability: RefCell::new(reachability),
-                live: RefCell::new(live),
+                live,
                 #[cfg(test)]
                 test_live_sessions: RefCell::default(),
                 #[cfg(test)]
@@ -1805,7 +1783,7 @@ impl Local {
             person: crate::PersonResources::default(),
             live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
-            live: RefCell::new(None),
+            live: Rc::default(),
             #[cfg(test)]
             test_live_sessions: RefCell::default(),
             #[cfg(test)]

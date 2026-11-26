@@ -98,6 +98,7 @@ fn device_with(
             wake: Arc::new(|| {}),
             relays,
             lan,
+            live: None,
         },
         None,
         Vec::new(),

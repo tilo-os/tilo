@@ -371,6 +371,40 @@ impl Live {
         let _ = self.shared.shell.set(shell);
         self.shared.telling.notify_one();
     }
+
+    /// Take part in the workspaces' live sessions through `daemon`, the shell link it handed this
+    /// session, from now on: each workspace's link opens on its socket, which the daemon carries
+    /// into its relay or on to another device's, and the person's word is told over it. What the
+    /// daemon publishes of how far each session came and whom its relay turned away is shown
+    /// beside them.
+    pub(crate) fn through(
+        &mut self,
+        daemon: runtime_collab::ShellClient,
+        view: Option<Arc<crate::workspace_view::WorkspaceView>>,
+        turned: FollowedReading<TurnedAwayLists>,
+        sessions: FollowedReading<SessionRows>,
+    ) {
+        if let Some(view) = view {
+            self.follow_workspaces(view);
+        }
+        self.follow_turned_away(turned);
+        self.follow_sessions(sessions);
+        self.tell_through(daemon.clone());
+        self.open_links(Arc::new(move || {
+            let daemon = daemon.clone();
+            Box::pin(async move {
+                let stream = daemon
+                    .live()
+                    .await
+                    .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+                let (reader, writer) = stream.into_split();
+                Ok((
+                    Box::new(reader) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+                    Box::new(writer) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+                ))
+            })
+        }));
+    }
 }
 
 impl Drop for Live {

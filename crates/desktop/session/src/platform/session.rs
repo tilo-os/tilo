@@ -720,7 +720,38 @@ impl Session {
                 crate::platform::records::Changes::clone(&changes),
             )
         });
-        let sync = start_collaboration(&options, continuity.clone(), beside);
+        // The workspaces' live sessions: this device's one place in each, run through the
+        // device's daemon, which holds the endpoint and relays them. Whom its relay turned away,
+        // and why, is the daemon's own reading: shown beside them.
+        let live_sessions: Rc<RefCell<Option<crate::live::Live>>> = Rc::new(RefCell::new(
+            crate::sync::device_identity().map(|identity| {
+                crate::live::Live::new(identity.device_cert.clone(), options.wake.handle())
+            }),
+        ));
+        if let Ok(link) = &daemon_link {
+            let turned = crate::followed_resource::FollowedReading::follow(
+                &daemon,
+                (&own_workspace, tilo_live::link::TURNED_AWAY),
+                options.wake.handle(),
+            );
+            let sessions = crate::followed_resource::FollowedReading::follow(
+                &daemon,
+                (&own_workspace, tilo_live::link::SESSIONS),
+                options.wake.handle(),
+            );
+            if let Some(live) = live_sessions.borrow_mut().as_mut() {
+                live.through(link.clone(), view.clone(), turned, sessions);
+            }
+        }
+        let sync = start_collaboration(
+            &options,
+            continuity.clone(),
+            beside,
+            Rc::clone(&live_sessions),
+        );
+        if let Some(sync) = &sync {
+            sync.attach_view(view.clone());
+        }
         // What is live in the workspaces the device's daemon keeps, on this device or on one the
         // peer network reaches: what the shell shows in the bar, quick settings and on the lock
         // screen, followed at the daemon.
@@ -763,21 +794,6 @@ impl Session {
         // shelf its records' content lives on, beside their records, and serves it on its
         // document-media socket, where this session reads and keeps it.
         let record_content = crate::record_content::open(options.content_socket.clone());
-        // The workspaces' live sessions run through the device's daemon, which relays them.
-        // Whom its relay turned away, and why, is the daemon's own reading: shown beside them.
-        if let (Some(sync), Ok(link)) = (&sync, &daemon_link) {
-            let turned = crate::followed_resource::FollowedReading::follow(
-                &daemon,
-                (&own_workspace, tilo_live::link::TURNED_AWAY),
-                options.wake.handle(),
-            );
-            let sessions = crate::followed_resource::FollowedReading::follow(
-                &daemon,
-                (&own_workspace, tilo_live::link::SESSIONS),
-                options.wake.handle(),
-            );
-            sync.live_through(link.clone(), view.clone(), turned, sessions);
-        }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.
         if let Some(sync) = &sync {
