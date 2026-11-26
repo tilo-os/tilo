@@ -493,7 +493,11 @@ async fn serve_device(
     // Agents' connections reach the native endpoint, which hands them here from now on.
     daemon.agents().serve(taking(Arc::clone(&socket)));
     super::serving(Some(Arc::clone(&socket.presence)));
-    tokio::spawn(keep_peer(Arc::clone(daemon), home, place.device_dir()));
+    // A server keeps the workspaces placed on it and shows none of them at a folder: nobody
+    // works in its home, and its service may not mount anything.
+    if super::keep::config().is_none() {
+        tokio::spawn(keep_peer(Arc::clone(daemon), home, place.device_dir()));
+    }
     // A computer that logs in with a ticket while its daemon runs is another device now, perhaps
     // of another person: the person's part ends, and starts again as that device.
     let mut logged_in = daemon.logged_in();
