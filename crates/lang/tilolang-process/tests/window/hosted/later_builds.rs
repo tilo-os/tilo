@@ -78,10 +78,41 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
                 |source, signature| tag_takes_int(&source, signature),
             );
         source
+            // A note's tags are numbers now: what its actions write and compare is one, while
+            // the notebook still lists each tag by the name a person reads.
+            .replace("    require tag.trim() != \"\" \"A tag needs a name\"\n", "")
+            .replace(
+                "nb.tags.find(t -> t.name.lower() == tag.trim().lower())",
+                "nb.tags.find(t -> t.name == \"0\")",
+            )
+            .replace(
+                "let listed = known?.name ?? tag.trim()",
+                "let listed = known?.name ?? \"0\"",
+            )
+            .replace("n.tags.add(listed)", "n.tags.add(0)")
+            .replace("made.tags.add(listed)", "made.tags.add(0)")
+            .replace("n.tags.remove(tag.trim())", "n.tags.remove(0)")
+            .replace(
+                "if n.tags.any(t -> t == before) {",
+                "if n.tags.any(t -> t == 0) {",
+            )
+            .replace("n.tags.remove(before)", "n.tags.remove(0)")
+            .replace("n.tags.add(wanted.trim())", "n.tags.add(0)")
+            .replace(
+                "if n.tags.any(t -> t == tag.name) { n.tags.remove(tag.name) }",
+                "if n.tags.any(t -> t == 0) { n.tags.remove(0) }",
+            )
+            .replace(
+                "if nb.tags.find(t -> t.name == name) == .none { nb.tags.insert(Tag(name: name)) }",
+                "if nb.tags.find(t -> t.name == \"{name}\") == .none { nb.tags.insert(Tag(name: \"{name}\")) }",
+            )
+            .replace("n.tags.any(x -> x == t.name)", "n.tags.any(x -> x == 0)")
+            .replace(
+                "nb.tags.any(x -> x.name == t)",
+                "nb.tags.any(x -> x.name == \"{t}\")",
+            )
             .replace("ui.Chip(t)", "ui.Chip(\"{t}\")")
-            .replace("tags.add(\"planning\")", "tags.add(0)")
-            // The carrying of a native notebook names its tags by their words.
-            .replace("made.tags.add(name)", "made.tags.add(0)")
+            .replace("invoke(tag(plan, \"planning\"))", "invoke(tag(plan, 0))")
     }));
     session.settle();
 
