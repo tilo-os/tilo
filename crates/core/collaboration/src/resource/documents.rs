@@ -542,6 +542,11 @@ impl ResourceSet {
                 .insert(want.id.clone(), WorkspaceAnswer::HoldsNone);
             return Ok(None);
         };
+        // Its document, checked to be `want`'s: a record that names an identity is that record
+        // or none. A content-only record names none, and is the one its route binds it to.
+        if super::identity(&doc).is_some() {
+            super::validate_identity(&doc, want, &self.workspace())?;
+        }
         doc.set_actor(self.writer.clone());
         self.answered.borrow_mut().remove(&want.id);
         Ok(Some(doc))

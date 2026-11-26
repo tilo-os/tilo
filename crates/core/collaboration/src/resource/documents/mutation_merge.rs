@@ -60,6 +60,7 @@ impl ResourceStore {
         held: Option<AutoCommit>,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
         let app = self.kept_app().map_err(|error| error.to_string())?;
+        let workspace = self.workspace();
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();
             actions.commit_for_save(&mut local, &app);
@@ -82,6 +83,13 @@ impl ResourceStore {
                     // creating carries nothing to merge, and no identity.
                     if incoming.get_heads().is_empty() {
                         return Ok((false, Vec::new()));
+                    }
+                    // A document that names an identity is that record or none: a snapshot of
+                    // another record must not merge into this one. A content-only record names
+                    // none, and is the one its route binds it to.
+                    if super::super::identity(&incoming).is_some() {
+                        super::super::validate_identity(&incoming, checkout, &workspace)
+                            .map_err(|error| error.to_string())?;
                     }
                     let heads = incoming.get_heads();
                     // Merging copies every change the receiving side lacks, so
