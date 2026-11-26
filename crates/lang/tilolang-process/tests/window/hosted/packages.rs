@@ -77,6 +77,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         TASKS => "../../../apps/tl/tasks",
         CHAT => "../../../apps/tl/chat",
         TODAY => "../../../apps/tl/today",
+        "so.tilo.lang.discussion" => "../../../apps/tl/discussion",
         "so.tilo.lang.counter" => "../../../apps/tl/counter",
         "so.tilo.terminal" => "../../../apps/tl/terminal",
         "so.tilo.lang.board" => "../../../apps/tl/board",
