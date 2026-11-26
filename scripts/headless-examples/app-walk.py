@@ -1710,28 +1710,6 @@ class Walk:
         hover(self.session, selector)
         return {"rested_on": selector}
 
-    def op_drag(self, value) -> dict:
-        """A press, a move with the button held, and a release, as a person dragging does:
-        `{"window": [[fx, fy], [fx, fy]]}` names the points as fractions of the app window's
-        rect, so a drag on a grid lands where the person means whatever the window's size."""
-        window = self.window_of()
-        if window is None or window.get("rect") is None:
-            raise Failed("the app has no window to drag in")
-        x, y, w, h = window["rect"]
-        (fx0, fy0), (fx1, fy1) = value["window"]
-        x0, y0 = x + fx0 * w, y + fy0 * h
-        x1, y1 = x + fx1 * w, y + fy1 * h
-        self.session.control({"op": "pointer_move", "x": x0, "y": y0})
-        self.session.control({"op": "pointer_button", "pressed": True, "button": "left"})
-        steps = 10
-        for step in range(1, steps + 1):
-            self.session.control({
-                "op": "pointer_move",
-                "x": x0 + (x1 - x0) * step / steps,
-                "y": y0 + (y1 - y0) * step / steps,
-            })
-        self.session.control({"op": "pointer_button", "pressed": False, "button": "left"})
-        return {"dragged": value["window"], "rect": window["rect"]}
     def op_point(self, value) -> dict:
         """Rest the pointer at a place of the window, `[x, y]`: what a person
         does to bring out the controls a surface hides until the pointer is over
@@ -1800,8 +1778,20 @@ class Walk:
     def op_drag(self, value) -> dict:
         """Drag from one point of the window to another, as a person marks a passage: a press,
         moves along the way, and the release. `{"reading": n}` drags across line `n` of the
-        window's reading page instead, where its text is drawn."""
-        if "reading" in value:
+        window's reading page instead, where its text is drawn, and `{"window": [[fx, fy],
+        [fx, fy]]}` names the points as fractions of the window's rect, so a drag on a grid
+        lands where the person means whatever the window's size. A list of points is a stroke
+        through each of them."""
+        if isinstance(value, dict) and "window" in value:
+            window = self.window_of() or {}
+            rect = window.get("rect")
+            if not rect:
+                raise Failed("the app has no window to drag in")
+            x, y, w, h = rect
+            (fx0, fy0), (fx1, fy1) = value["window"]
+            start = [x + fx0 * w, y + fy0 * h]
+            end = [x + fx1 * w, y + fy1 * h]
+        elif isinstance(value, dict) and "reading" in value:
             window = self.window_of() or {}
             rect = window.get("rect")
             if not rect:
@@ -1814,16 +1804,21 @@ class Walk:
             left = x + side + 24.0
             start = [left, y + 132.0 + float(first) * 26.0]
             end = [left + min(360.0, w - side - 80.0), y + 132.0 + float(last) * 26.0]
+        elif isinstance(value, list):
+            # A stroke through the window's points, `[[x, y], [x, y], ...]`, as a brush moves.
+            start, end = value[0], value[-1]
         else:
             start, end = value["from"], value["to"]
+        path = value if isinstance(value, list) else [start, end]
         self.session.control({"op": "pointer_move", "x": float(start[0]), "y": float(start[1])})
         self.session.control({"op": "pointer_button", "pressed": True, "button": "left"})
-        for step in range(1, 7):
-            x = start[0] + (end[0] - start[0]) * step / 6
-            y = start[1] + (end[1] - start[1]) * step / 6
-            self.session.control({"op": "pointer_move", "x": float(x), "y": float(y)})
+        for a, b in zip(path, path[1:]):
+            for step in range(1, 7):
+                x = a[0] + (b[0] - a[0]) * step / 6
+                y = a[1] + (b[1] - a[1]) * step / 6
+                self.session.control({"op": "pointer_move", "x": float(x), "y": float(y)})
         self.session.control({"op": "pointer_button", "pressed": False, "button": "left"})
-        return {"dragged": [start, end]}
+        return {"dragged": path}
 
     def op_reading(self, _value) -> dict:
         """The rectangle the window's reading page is drawn in, so a step can mark a passage
