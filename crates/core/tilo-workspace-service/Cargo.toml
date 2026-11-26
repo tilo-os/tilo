@@ -46,6 +46,8 @@ tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
+# Signs the evidence of the calls this host admits, as this device.
+tilo-invocation-journal = { path = "../invocation-journal" }
 # The device's search index, which `search#find` is answered from.
 tilo-workspace-search = { path = "../workspace-search", optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
