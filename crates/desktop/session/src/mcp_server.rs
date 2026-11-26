@@ -1151,6 +1151,9 @@ pub(crate) struct SessionServices {
     founding: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// The asks held for a workspace this session is founding, until the loop delivers them.
     held: std::sync::Mutex<Vec<HeldFounding>>,
+    /// The catalogues held for a workspace this session is founding, until the loop delivers
+    /// them: a catalogue is asked as a workspace, and one this device is making answers none yet.
+    held_catalogues: std::sync::Mutex<Vec<HeldCatalogue>>,
     /// The device's tilolang processes, which start a task's host as they start every app's
     /// process: unset until the session reaches them, and on a session that reaches none.
     processes: std::sync::OnceLock<runtime_portal::device_processes::Device>,
@@ -1191,6 +1194,19 @@ struct HeldFounding {
     /// The dispatch that would have taken it: the same one, once the workspace is the service's.
     state: Option<Arc<Dispatch>>,
     done: Completer<Result<InvocationReceipt, ActionCallError>>,
+}
+
+/// A catalogue asked as a workspace this session is founding, held until the founding lands: what
+/// it lists is decided by the workspace, so this device answers it once the workspace is its.
+struct HeldCatalogue {
+    /// The workspace the ask names, by its id.
+    workspace: String,
+    caller: Caller,
+    query: CatalogueQuery,
+    /// The dispatch that would have answered it: the same one, once the workspace is the
+    /// service's.
+    state: Option<Arc<Dispatch>>,
+    done: Completer<Result<CataloguePage, ActionCallError>>,
 }
 
 /// How often the loop reads again which workspaces wait for their host to admit this device: the
@@ -1298,6 +1314,7 @@ impl SessionServices {
             changes: Arc::default(),
             founding: std::sync::Mutex::default(),
             held: std::sync::Mutex::default(),
+            held_catalogues: std::sync::Mutex::default(),
             processes: std::sync::OnceLock::new(),
             agent_keys: std::sync::OnceLock::new(),
             view: std::sync::OnceLock::new(),
@@ -1472,6 +1489,29 @@ impl SessionServices {
         answer
     }
 
+    /// Hold a catalogue asked as `workspace`, a workspace this session is founding, until the
+    /// founding lands, and answer the asker then: what it lists is decided by the workspace, so
+    /// asking before it exists is asking nobody. As an ask of an action, it is never refused for a
+    /// workspace this device is making, and never dropped.
+    pub(crate) fn hold_founding_catalogue(
+        &self,
+        workspace: String,
+        caller: Caller,
+        query: CatalogueQuery,
+        state: Option<Arc<Dispatch>>,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let (done, answer) = tilo_actions::remote::pending();
+        self.held_catalogues.lock_recover().push(HeldCatalogue {
+            workspace,
+            caller,
+            query,
+            state,
+            done,
+        });
+        (self.wake)();
+        answer
+    }
+
     /// Deliver every ask held for a workspace this session is no longer founding: as of the loop's
     /// last pass it is this device's now, or the founding was given up, and the asker hears what
     /// the broker says either way.
@@ -1485,6 +1525,19 @@ impl SessionServices {
                     kept.push(ask);
                 } else {
                     ready.push(ask);
+                }
+            }
+            *held = kept;
+        }
+        let mut catalogues = Vec::new();
+        {
+            let mut held = self.held_catalogues.lock_recover();
+            let mut kept = Vec::with_capacity(held.len());
+            for ask in std::mem::take(&mut *held) {
+                if self.founding_here(&ask.workspace) {
+                    kept.push(ask);
+                } else {
+                    catalogues.push(ask);
                 }
             }
             *held = kept;
@@ -1514,6 +1567,32 @@ impl SessionServices {
                 Err(error) => tracing::warn!(
                     %error,
                     "no task delivers an ask held for a workspace this session was founding"
+                ),
+            }
+        }
+        for ask in catalogues {
+            // The catalogue is answered off the loop for the same reason an ask's answer is.
+            let deliver = async move {
+                let delivered = match &ask.state {
+                    Some(dispatch) => dispatch.query(&ask.caller, ask.query),
+                    None => Pending::ready(Err(ActionCallError::Unavailable {
+                        reason: "this desktop's apps are not running here".to_owned(),
+                    })),
+                };
+                let done = ask.done;
+                delivered.then(move |answer| {
+                    if let Some(answer) = answer {
+                        done.complete(answer);
+                    }
+                });
+            };
+            match tilo_rt::try_app() {
+                Ok(runtime) => {
+                    runtime.spawn(deliver);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "no task delivers a catalogue held for a workspace this session was founding"
                 ),
             }
         }
@@ -2095,6 +2174,20 @@ impl ActionProvider for Host {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        // A catalogue is asked as a workspace: what it lists is decided by that workspace's
+        // grants. One this session is founding on its own service answers nothing yet, so the ask
+        // waits for the founding and is delivered then, as an ask of an action does — never
+        // refused for a workspace this device is making.
+        if let Some(workspace) = caller.workspace()
+            && self.session.founding_here(workspace)
+        {
+            return self.session.hold_founding_catalogue(
+                workspace.to_owned(),
+                caller.clone(),
+                query,
+                self.state.clone(),
+            );
+        }
         // An agent works in one workspace: the shell's windows of another (each listed by the title
         // of what it shows) are not its to read or act on. The person's own catalogue is theirs.
         let confined = if caller.acting().is_person() {

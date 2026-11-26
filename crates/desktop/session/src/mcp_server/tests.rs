@@ -584,3 +584,59 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
         "the session's copy is never asked for an agent"
     );
 }
+
+/// A catalogue is asked as a workspace: what it lists is decided by that workspace's grants. A
+/// workspace this session is founding on its own service answers nothing yet, so the ask waits for
+/// the founding and is delivered once it lands — never refused for a workspace this device is
+/// making. A person's very first session asks for it while their first workspace is still being
+/// founded, and a refusal there leaves them with no actions at all.
+#[test]
+fn a_catalogue_asked_as_a_workspace_being_founded_waits_for_it() {
+    let session = Arc::new(SessionServices::new(Arc::new(|| {}), "person"));
+    let host = Host::new(None, Arc::clone(&session));
+    let workspace = "6e86cad3-c941-404a-9a19-8ac0ffbe908d";
+    session.keep_founding(std::collections::BTreeSet::from([workspace.to_owned()]));
+    let caller = Caller::local_person("person").in_workspace(workspace);
+    let mut page = host.query(&caller, CatalogueQuery::default());
+    assert!(
+        matches!(
+            page.poll_ready(),
+            tilo_actions::remote::PendingPoll::Waiting
+        ),
+        "an ask of a workspace this session is founding waits"
+    );
+    assert_eq!(
+        session.held_catalogues.lock_recover().len(),
+        1,
+        "the catalogue is held, not refused"
+    );
+    // The founding landed: the ask is delivered, and answered by what this session reaches.
+    session.keep_founding(std::collections::BTreeSet::new());
+    session.release_founding();
+    assert!(
+        session.held_catalogues.lock_recover().is_empty(),
+        "the held catalogue is delivered once the workspace is the service's"
+    );
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        match page.poll_ready() {
+            tilo_actions::remote::PendingPoll::Waiting => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the delivered catalogue was never answered"
+                );
+                std::thread::yield_now();
+            }
+            tilo_actions::remote::PendingPoll::Ready(answer) => {
+                assert!(
+                    matches!(answer, Err(ActionCallError::Unavailable { .. })),
+                    "a session reaching no dispatch answers no apps' catalogue: {answer:?}"
+                );
+                return;
+            }
+            tilo_actions::remote::PendingPoll::Abandoned => {
+                panic!("the held catalogue was dropped, not answered")
+            }
+        }
+    }
+}
