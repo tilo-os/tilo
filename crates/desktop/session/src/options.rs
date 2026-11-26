@@ -57,6 +57,11 @@ pub struct Options {
     /// The apps this session starts: what the desktop asks for, by name, and what a search row or a
     /// file opens.
     pub launch: Option<Rc<crate::apps::Apps>>,
+    /// The session program a workspace's render service runs as: this process's own when none is
+    /// named, which is a render service in its own mode (`tilo-session __render-service`). A
+    /// session a test runs inside its own process names the session binary it was built from, so
+    /// the apps it starts draw their frames there.
+    pub render_service: Option<std::path::PathBuf>,
     /// The apps this session started, which its broker admits a connection for: the app, workspace
     /// and process it launched itself. The apps it starts record their launch here; a session whose
     /// apps run in its own process (a test) records one itself.
@@ -356,6 +361,7 @@ impl Default for Options {
             content_socket: None,
             apps: None,
             launch: None,
+            render_service: None,
             setup: None,
             #[cfg(target_os = "linux")]
             identity_backup: crate::startup::portable_backup,

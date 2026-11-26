@@ -30,6 +30,7 @@ pub mod window;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use tilo_session_core::layout;
@@ -947,6 +948,75 @@ impl Device {
         )
         .expect("a session")
     }
+
+    /// [`Self::session_with`] whose apps open as processes of their own, the way a development
+    /// session opens them: through the launcher the run built, on the runtimes it built, with the
+    /// session program it built drawing their frames. The session serves its display to those
+    /// processes, so a window a test opens on this session is the app's own, mapped on it.
+    ///
+    /// # Panics
+    /// This run built no launcher, runtimes or session program, or the session binds no display:
+    /// the message names what to run.
+    #[track_caller]
+    pub fn session_with_real_apps(&self, options: Options) -> Session {
+        let mut session = self.session_with(real_apps(self, options));
+        session
+            .bind_display(session_bus())
+            .expect("the session serves the display its apps' windows map on");
+        session
+    }
+}
+
+/// The session bus the person's apps reach, as a session started in a window reads it: what this
+/// process was given, unless it names none.
+fn session_bus() -> Option<String> {
+    std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .ok()
+        .filter(|address| !address.is_empty())
+}
+
+/// Give `options` the apps a session starts as processes of their own, as a development session
+/// has them: the launcher a package is started through, the runtimes its code runs on, the store
+/// this run installed the packages in ([`app_store`]), and the session program whose own mode
+/// draws the apps' frames.
+///
+/// The session a test runs is its test binary, which is no session program: it names the run's
+/// own, as [`Options::render_service`] is for.
+///
+/// # Panics
+/// This run built no launcher, runtimes or session program: the message names what to run.
+#[track_caller]
+fn real_apps(device: &Device, mut options: Options) -> Options {
+    let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    let runtimes = device.home.data().join("tilo-runtime");
+    // A device of the test's own that started a session before keeps what it installed: the run's
+    // runtimes are the same files, linked in once.
+    if !runtimes.exists() {
+        dev_apps::install_runtimes(&runtimes);
+    }
+    tilo_test_env::pin(
+        "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+        &dev_apps::runtimes().trusted,
+    );
+    // A tilolang host the device's daemon starts for an app's instance is started through the
+    // launcher too, which a daemon inside a test process finds only where this names it.
+    tilo_test_env::pin("TILO_LAUNCHER_BIN", &launcher);
+    let program = tilo_test_env::package_binary!("tilo-session");
+    assert!(
+        program.is_file(),
+        "the run built no session program at {}: a session in a test's own process names the \
+         run's own for the render service its apps draw through. The test build makes it with the \
+         package, and t hands it over as NEXTEST_BIN_EXE_tilo-session",
+        program.display()
+    );
+    options.render_service = Some(program);
+    options.app_socket = AppSocket::Launcher;
+    options.launch = Some(Rc::new(tilo_session::apps::Apps::with_launcher(
+        tilo_app_launch::SessionEnvironment::from_process(),
+        Some(options.wake.handle()),
+        Some(launcher),
+    )));
+    options
 }
 
 /// Who made the last step of the workspace's layout, once the workspace has the change that made

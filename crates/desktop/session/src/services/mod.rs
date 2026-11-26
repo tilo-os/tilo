@@ -255,6 +255,9 @@ pub(crate) struct Serving {
     /// The render node the compositor composites on: what a render service draws on, and opens for
     /// its buffers.
     pub render_node: Option<std::path::PathBuf>,
+    /// The session program a render service runs as ([`crate::Options::render_service`]): this
+    /// process's own when none is named.
+    pub render_service: Option<std::path::PathBuf>,
     /// What a capability is asked through, when there is anyone to ask.
     pub questions: Option<AskSender>,
     /// The person's answers, which the portal keeps: an answer given to one question stands for the
@@ -313,6 +316,7 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                     &serving.handle,
                     serving.person.clone(),
                     serving.render_node.take(),
+                    serving.render_service.take(),
                 ) {
                     Ok(broker) => served.render = Some(broker),
                     Err(error) => tracing::warn!(%error, "the apps' render broker is unavailable"),

@@ -75,15 +75,15 @@ fn session() -> Session {
         services,
         ..Options::default()
     };
-    DEVICE.with(|device| device.session_with(options))
+    DEVICE.with(|device| device.session_with_real_apps(options))
 }
 
 fn step(session: &mut Session) {
     session.step(REFRESH).expect("a turn of the session");
 }
 
-/// Open `app` on the shell, the way the launcher opens one, and answer its tab's id once the shell
-/// has it.
+/// Open `app` on the shell, the way the launcher opens one, and answer its tab's id once the
+/// shell has placed the app's own window in it.
 fn open(session: &mut Session, app: &str) -> u64 {
     let arguments = json!({ "app": app });
     session
@@ -94,7 +94,7 @@ fn open(session: &mut Session, app: &str) -> u64 {
         )
         .unwrap_or_else(|error| panic!("{app} opens on the shell: {error:?}"));
     until(session, &format!("{app}'s window"), |session| {
-        tab_of(session, app).is_some()
+        tab_of(session, app).is_some_and(|tab| session.handle().window_of_tab(tab).is_some())
     });
     step(session);
     tab_of(session, app).expect("the app's window is on the shell")
@@ -644,6 +644,12 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
         &mut session,
         (f64::midpoint(letter.x1, note.x0), letter.y0 + 22.0),
     );
+    assert_eq!(
+        session.handle().carried_tab(),
+        Some(chat),
+        "the press on the floating window's bar took the window: the compositor shows {:?}",
+        shown_windows(&session)
+    );
     until(&mut session, "the float is drawn carried", |session| {
         rect(session, chat) != over
     });
@@ -653,6 +659,17 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
         !held(session, chat).floating
     });
     capture(&mut session, "snapped-light");
+}
+
+/// The app windows the compositor shows, each by its id, its app and where it stands: what a wait
+/// that finds none says.
+fn shown_windows(session: &Session) -> Vec<(u64, Option<String>, (i32, i32, i32, i32))> {
+    session
+        .compositor()
+        .windows()
+        .into_iter()
+        .map(|(info, at)| (info.id, info.app_id, at))
+        .collect()
 }
 
 /// The app window the compositor shows topmost at `(x, y)` , by its window id, and the newest press
@@ -710,12 +727,7 @@ fn bar_over_a_window(session: &mut Session, over: ui::kurbo::Rect) -> (f64, f64)
     assert!(
         stands,
         "an app window stands under the bar at {over:?}; the compositor shows {:?}",
-        session
-            .compositor()
-            .windows()
-            .iter()
-            .map(|(info, at)| (info.id, *at))
-            .collect::<Vec<_>>()
+        shown_windows(session)
     );
     found.expect("the point it stands under")
 }
@@ -787,6 +799,12 @@ fn a_click_where_a_float_bar_stood_reaches_the_window_there() {
     pointer_at(&mut session, bar);
     button(&mut session, true);
     pointer_at(&mut session, to);
+    assert_eq!(
+        session.handle().carried_tab(),
+        Some(chat),
+        "the press on the floating window's bar took the window: the compositor shows {:?}",
+        shown_windows(&session)
+    );
     button(&mut session, false);
     until(
         &mut session,

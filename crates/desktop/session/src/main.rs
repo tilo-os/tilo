@@ -850,7 +850,6 @@ fn start(
         session,
         ours,
         command,
-        Some(&launch),
         session_bus.as_deref(),
         reach.export_displays,
         &Sockets {
@@ -969,14 +968,13 @@ fn run(
     mut session: tilo_session::Session,
     ours: &[String],
     command: &[String],
-    launch: Option<&std::rc::Rc<tilo_session::apps::Apps>>,
     session_bus: Option<&str>,
     export_displays: bool,
     sockets: &Sockets<'_>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
 
-    let socket = match session.compositor().listen() {
+    let socket = match session.bind_display(session_bus.map(str::to_owned)) {
         Ok(socket) => socket,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -1013,16 +1011,6 @@ fn run(
         Some(displays) if ours.iter().any(|arg| arg == "--no-x11") => displays.disable(),
         Some(_) => {}
         None => tracing::warn!("the compositor serves no X11 display: no X11 apps"),
-    }
-    // The apps opened from now on connect where the person's windows are, and each is told the
-    // display of the workspace it is launched into.
-    if let Some(launch) = launch {
-        launch.set_displays(
-            tilo_paths::xdg::runtime_dir_or_default().join(&socket),
-            x11,
-            session_bus.map(str::to_owned),
-        );
-        launch.set_render_node(session.compositor().render_node());
     }
     let environment = SessionEnvironment {
         wayland_display: socket,

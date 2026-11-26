@@ -1322,6 +1322,7 @@ impl Session {
             serves_apps: app_wire.is_some(),
             person: options.person.clone(),
             render_node: compositor.render_node(),
+            render_service: options.render_service.clone(),
             questions: questions.clone(),
             consents: options
                 .desktop
@@ -2238,6 +2239,31 @@ impl Session {
             server.wake_on(&mut self.compositor)?;
         }
         Ok(())
+    }
+
+    /// Bind the Wayland display this session serves the device's programs on, and tell the apps it
+    /// starts where they connect: the display's socket, the X11 displays of its workspaces, the
+    /// session bus `session_bus` names, and the GPU the compositor draws on. A session its own
+    /// program starts binds its display once, as `tilo-session` does; a session a test runs in its
+    /// own process binds here too, so the apps it opens are the apps' own windows.
+    ///
+    /// Answers the display's name, as a program connecting to it names it.
+    ///
+    /// # Errors
+    /// The compositor did not bind its socket.
+    pub fn bind_display(&mut self, session_bus: Option<String>) -> Result<String, crate::Error> {
+        let socket = self.compositor.listen()?;
+        let x11 = self.compositor.x11_displays();
+        let node = self.compositor.render_node();
+        if let Some(apps) = &self.shared.launch {
+            apps.set_displays(
+                tilo_paths::xdg::runtime_dir_or_default().join(&socket),
+                x11,
+                session_bus,
+            );
+            apps.set_render_node(node);
+        }
+        Ok(socket)
     }
 
     /// A session whose outputs have no display: for tests and screenshots.

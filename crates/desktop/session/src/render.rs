@@ -109,6 +109,8 @@ struct Inner {
     /// The render node of the GPU the compositor composites on, as the session reads it once the
     /// backend is up: what every service opens.
     node: Option<PathBuf>,
+    /// The program a service runs as: this session's own binary, which is a render service in its
+    /// own mode, or the session program a test's session names.
     exe: PathBuf,
     services: Mutex<HashMap<String, Service>>,
     crashes: Mutex<HashMap<String, Crashes>>,
@@ -129,7 +131,9 @@ impl Broker {
     ///
     /// `node` is the render node the compositor composites on
     /// ([`tilo_compositor::Compositor::render_node`]); a session with no GPU
-    /// draws in software, in a service of the same shape.
+    /// draws in software, in a service of the same shape. `program` is the session program a
+    /// service runs as ([`crate::Options::render_service`]): this process's own when none is
+    /// named.
     ///
     /// # Errors
     ///
@@ -142,6 +146,7 @@ impl Broker {
         handle: &DesktopHandle,
         person: String,
         node: Option<PathBuf>,
+        program: Option<PathBuf>,
     ) -> Result<Self, String> {
         launcher::services::ensure_services_root()
             .map_err(|error| format!("create render broker directory: {error}"))?;
@@ -152,8 +157,11 @@ impl Broker {
         }
         let listener = tilo_files::native::socket::bind(&path)
             .map_err(|error| format!("bind render broker {}: {error}", path.display()))?;
-        let exe = std::env::current_exe()
-            .map_err(|error| format!("render broker: the session's own binary: {error}"))?;
+        let exe = match program {
+            Some(program) => program,
+            None => std::env::current_exe()
+                .map_err(|error| format!("render broker: the session's own binary: {error}"))?,
+        };
         let private = handle.read(|tree| private_workspaces(tree, &person));
         let inner = Arc::new(Inner {
             private: Mutex::new(private),
