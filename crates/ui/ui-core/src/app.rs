@@ -2566,7 +2566,7 @@ impl App {
         self.layout.node_map.clear();
         self.layout.adopted.clear();
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("rebuild.build");
+        let probe = crate::frame_probe::span("rebuild.build");
         self.build_history_presentation();
         self.root_widget
             .set_interaction_environment(self.input.interaction);
@@ -2591,7 +2591,7 @@ impl App {
             })
             .flatten();
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("rebuild.focus");
+        let probe = crate::frame_probe::span("rebuild.focus");
         self.update_focusable_order();
         #[cfg(test)]
         drop(probe);
@@ -2686,7 +2686,7 @@ impl App {
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("rebuild.sync");
+        let probe = crate::frame_probe::span("rebuild.sync");
         self.root_widget.sync(&self.state.doc, &self.state.root);
         #[cfg(test)]
         drop(probe);

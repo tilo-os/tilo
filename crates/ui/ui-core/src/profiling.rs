@@ -2,8 +2,6 @@
 //! toolkit's five frame passes (`sync`, `build_layout`, `apply_layout`, `draw`, `handle_event` — see
 //! [`crate::widget::Widget`]) so frame cost can be **read off, not guessed**.
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod frame_probe;
 pub(crate) mod resource_trace;
 
 use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};
@@ -96,7 +94,7 @@ pub enum InputPhase {
 impl InputPhaseClock {
     pub fn new(enabled: bool) -> Self {
         #[cfg(test)]
-        let enabled = enabled || frame_probe::enabled();
+        let enabled = enabled || crate::frame_probe::enabled();
         Self {
             enabled,
             phases: InputPhases::default(),
@@ -116,7 +114,7 @@ impl InputPhaseClock {
         };
         let elapsed = start.elapsed();
         #[cfg(test)]
-        frame_probe::record(
+        crate::frame_probe::record(
             match phase {
                 InputPhase::Dispatch => "input.dispatch",
                 InputPhase::HitTest => "input.hit_test",

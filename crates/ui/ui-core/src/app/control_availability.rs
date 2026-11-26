@@ -39,7 +39,7 @@ impl App {
             return;
         }
         #[cfg(test)]
-        let _walk = crate::profiling::frame_probe::span("walk.availability");
+        let _walk = crate::frame_probe::span("walk.availability");
         let history_api = inputs.history_api.clone();
         let bound = self.refresh_bound_control_availability(&history_api);
         self.refresh_emitter_availability(history_api);

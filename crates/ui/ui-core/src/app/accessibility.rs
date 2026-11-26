@@ -580,13 +580,13 @@ impl App {
         // the map was admitted first. Survivors keep what they queued for the
         // sweep after the next layout.
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("history.forget");
+        let probe = crate::frame_probe::span("history.forget");
         self.forget_replaced_widgets();
         #[cfg(test)]
         drop(probe);
         let sweep = self.history_sweep_nodes();
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("history.record");
+        let probe = crate::frame_probe::span("history.record");
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
@@ -604,7 +604,7 @@ impl App {
         #[cfg(test)]
         drop(probe);
         #[cfg(test)]
-        let _probe = crate::profiling::frame_probe::span("history.nodes");
+        let _probe = crate::frame_probe::span("history.nodes");
         let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
         let mut local_status =
             crate::widget::undo_access::local_undo_status(self.root_widget.as_ref());

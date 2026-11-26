@@ -109,7 +109,7 @@ impl TextInput {
             };
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
                 #[cfg(test)]
-                let _phase = crate::profiling::frame_probe::span("single_line_shape");
+                let _phase = crate::frame_probe::span("single_line_shape");
                 let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
                     RichTextLayout::shape_styled_browser(
@@ -169,7 +169,7 @@ impl TextInput {
                 })
                 .collect();
             #[cfg(test)]
-            let _phase = crate::profiling::frame_probe::span("single_line_caret_batch");
+            let _phase = crate::frame_probe::span("single_line_caret_batch");
             let geometries = layout.caret_geometries(&positions);
             let width = layout.width();
             for (byte, geometry) in bytes.into_iter().zip(geometries) {

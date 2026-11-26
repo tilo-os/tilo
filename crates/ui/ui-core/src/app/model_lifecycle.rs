@@ -141,7 +141,7 @@ impl super::App {
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("pump.inputs");
+        let probe = crate::frame_probe::span("pump.inputs");
         #[cfg(feature = "model")]
         let (inbound, directory) = self.pump_collab_presence_inner(true);
         // Without the model no peer or broker sends the window anything.
@@ -179,7 +179,7 @@ impl super::App {
             || wakes.is_some_and(|(pending, _)| pending);
         {
             #[cfg(test)]
-            let _probe = crate::profiling::frame_probe::span("pump.update");
+            let _probe = crate::frame_probe::span("pump.update");
             // Every frame advances what moves in the widgets' update, as a window's frame does
             // (`update_native_model`): a pan, a fade that ends and leaves something to prune.
             // A widget that changed asks for the sync; one that moved nothing leaves the frame
@@ -195,12 +195,12 @@ impl super::App {
         // A host pump is the worker's model frame and must drain asynchronous
         // notifications even when no native Wake/redraw event exists.
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("pump.sync");
+        let probe = crate::frame_probe::span("pump.sync");
         report.synced = self.sync_model(force_sync);
         #[cfg(test)]
         drop(probe);
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("pump.idle");
+        let probe = crate::frame_probe::span("pump.idle");
         let progress = self.service_idle_model();
         #[cfg(test)]
         drop(probe);
@@ -210,7 +210,7 @@ impl super::App {
             self.invalidate_widget_resource_cache();
         }
         #[cfg(test)]
-        let _publish_probe = crate::profiling::frame_probe::span("pump.publish");
+        let _publish_probe = crate::frame_probe::span("pump.publish");
         // What this pass's drain invalidated is published here, after the sync its work went
         // through: building it before the sync published a tree this pass then changed, and the
         // pass built it again.
@@ -559,7 +559,7 @@ impl super::App {
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("idle.discovery");
+        let probe = crate::frame_probe::span("idle.discovery");
         #[cfg(feature = "model")]
         let changed = {
             let history_changed = self.refresh_local_undo_discovery();

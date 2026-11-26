@@ -234,7 +234,7 @@ impl App {
         };
         if self.layout.walks.routes.as_ref() != Some(&routes) {
             #[cfg(test)]
-            let _walk = crate::profiling::frame_probe::span("walk.routes");
+            let _walk = crate::frame_probe::span("walk.routes");
             self.reconcile_document_routes();
             self.layout.walks.routes = Some(routes);
         }
@@ -256,7 +256,7 @@ impl App {
         // A status that only changes the text where it already shows repaints
         // that text; it is no reason to rebuild History or the app.
         #[cfg(test)]
-        let walk = embedded.then(|| crate::profiling::frame_probe::span("walk.history"));
+        let walk = embedded.then(|| crate::frame_probe::span("walk.history"));
         if embedded {
             crate::history_mode::embedded::set_sync_status_in_place(
                 self.root_widget.as_mut(),

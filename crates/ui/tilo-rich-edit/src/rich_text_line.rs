@@ -1293,13 +1293,13 @@ impl RichTextLine {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         #[cfg(test)]
-        let attributes_probe = ui::profiling::frame_probe::span("line_attributes");
+        let attributes_probe = ui::frame_probe::span("line_attributes");
         self.prepare_attributes(theme);
         self.sync_wrapped_spans(theme);
         #[cfg(test)]
         drop(attributes_probe);
         #[cfg(test)]
-        let input_probe = ui::profiling::frame_probe::span("text_input_draw");
+        let input_probe = ui::frame_probe::span("text_input_draw");
         self.inner
             .draw_child(scene, transform, text_renderer, theme, &env);
         #[cfg(test)]

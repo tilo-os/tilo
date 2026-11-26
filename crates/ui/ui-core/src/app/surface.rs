@@ -173,7 +173,7 @@ impl App {
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
         #[cfg(test)]
-        let replay_probe = crate::profiling::frame_probe::span("input.replay");
+        let replay_probe = crate::frame_probe::span("input.replay");
         if let Some(moved) = self.input.pointer_replay.before(&event) {
             self.dispatch_surface_input(window, moved, synthesized_touch);
         }
@@ -207,7 +207,7 @@ impl App {
         let marks = self.accessibility.semantic_tree_marks;
         let pointer_move = matches!(event, WindowEvent::CursorMoved { .. });
         #[cfg(test)]
-        let route_probe = crate::profiling::frame_probe::span("input.route");
+        let route_probe = crate::frame_probe::span("input.route");
         let handled = self.route_surface_input(window, event, synthesized_touch);
         #[cfg(test)]
         drop(route_probe);
@@ -1268,7 +1268,7 @@ impl App {
         let started = self.profiler.as_ref().map(|_| crate::time::now());
         let commands_before = scene.encoding().draw_tags.len();
         #[cfg(test)]
-        let pump_probe = crate::profiling::frame_probe::span("frame.pump");
+        let pump_probe = crate::frame_probe::span("frame.pump");
         let pump = self.pump_hosted_model_report();
         #[cfg(test)]
         drop(pump_probe);
@@ -1298,7 +1298,7 @@ impl App {
         // widgets' own, and every widget box that came, went or moved. Any
         // other reason to rebuild this frame disarms it.
         #[cfg(test)]
-        let structure_probe = crate::profiling::frame_probe::span("frame.structure");
+        let structure_probe = crate::frame_probe::span("frame.structure");
         let changed = self.take_root_structure_dirty();
         #[cfg(test)]
         drop(structure_probe);
@@ -1310,7 +1310,7 @@ impl App {
         // Every widget and its box as the last frame left them, before
         // anything is rebuilt: compared by identity only, never reached.
         #[cfg(test)]
-        let boxes_probe = crate::profiling::frame_probe::span("frame.boxes");
+        let boxes_probe = crate::frame_probe::span("frame.boxes");
         let boxes_before = widget_boxes(self.root_widget.as_ref());
         #[cfg(test)]
         drop(boxes_probe);
@@ -1326,7 +1326,7 @@ impl App {
         // sync's) is painted new where no widget's damage reaches.
         let rebuilt_since_frame = self.rebuilt_since_frame();
         #[cfg(test)]
-        let layout_probe = crate::profiling::frame_probe::span("frame.layout");
+        let layout_probe = crate::frame_probe::span("frame.layout");
         let laid_out = run_layout_pass(
             self,
             root_node,
@@ -1400,7 +1400,7 @@ impl App {
         let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
         let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
         #[cfg(test)]
-        let boxes_probe = crate::profiling::frame_probe::span("frame.boxes");
+        let boxes_probe = crate::frame_probe::span("frame.boxes");
         let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));
         #[cfg(test)]
         drop(boxes_probe);
@@ -1436,7 +1436,7 @@ impl App {
         let mut culling = culls.then(|| std::mem::take(&mut self.layout.cull));
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         #[cfg(test)]
-        let draw_probe = crate::profiling::frame_probe::span("frame.draw");
+        let draw_probe = crate::frame_probe::span("frame.draw");
         let drawn = draw_frame_content_with(
             self,
             scene,
@@ -1453,7 +1453,7 @@ impl App {
         #[cfg(feature = "model")]
         {
             #[cfg(test)]
-            let publish_probe = crate::profiling::frame_probe::span("frame.publish");
+            let publish_probe = crate::frame_probe::span("frame.publish");
             self.publish_owed_action_surface();
             #[cfg(test)]
             drop(publish_probe);
@@ -1536,7 +1536,7 @@ impl App {
             device_extent(size.height, damage.copy_scale),
         );
         #[cfg(test)]
-        let damage_probe = crate::profiling::frame_probe::span("frame.damage");
+        let damage_probe = crate::frame_probe::span("frame.damage");
         let copies_before = damage.copies.len();
         damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
             let root = self.root_widget.as_ref();
@@ -1586,7 +1586,7 @@ impl App {
             drop(cull_frame);
             if !holds {
                 #[cfg(test)]
-                let _redraw_probe = crate::profiling::frame_probe::span("frame.redraw");
+                let _redraw_probe = crate::frame_probe::span("frame.redraw");
                 redraw_culled_widgets(self, &mut culling.scenes, &drawn);
             }
             culling.tally(left_out, !holds);
@@ -1608,7 +1608,7 @@ impl App {
             damage.peers = Some(peers);
         }
         #[cfg(test)]
-        let complete_probe = crate::profiling::frame_probe::span("frame.complete");
+        let complete_probe = crate::frame_probe::span("frame.complete");
         complete_native_frame_content(self, |_| {});
         #[cfg(test)]
         drop(complete_probe);

@@ -9932,7 +9932,7 @@ impl Widget for BlockEditor {
         let fallback_presence = ui::presence::PresenceCtx::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
         #[cfg(test)]
-        let setup_probe = ui::profiling::frame_probe::span("block_setup");
+        let setup_probe = ui::frame_probe::span("block_setup");
         self.paint_references(theme);
         self.popovers_painted = false;
         if self.is_focused && !self.read_only {
@@ -10229,7 +10229,7 @@ impl Widget for BlockEditor {
         #[cfg(test)]
         drop(setup_probe);
         #[cfg(test)]
-        let blocks_probe = ui::profiling::frame_probe::span("block_paint");
+        let blocks_probe = ui::frame_probe::span("block_paint");
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             if !painted[idx] {
                 continue;
@@ -10611,7 +10611,7 @@ impl Widget for BlockEditor {
         #[cfg(test)]
         drop(blocks_probe);
         #[cfg(test)]
-        let suffix_probe = ui::profiling::frame_probe::span("block_suffix");
+        let suffix_probe = ui::frame_probe::span("block_suffix");
         if let (Some(_), Some((preview, bounds))) = (active_drag, dragged_scene) {
             // Clamp against the actual preview, not the full-width text row:
             // short paragraphs must still follow horizontal pointer movement.
@@ -10776,7 +10776,7 @@ impl Widget for BlockEditor {
             );
         }
         #[cfg(test)]
-        let links_probe = ui::profiling::frame_probe::span("block_link_hits");
+        let links_probe = ui::frame_probe::span("block_link_hits");
         // Where the comments' markers stand, for a press to open one.
         self.references.comment_markers = comment_markers;
         self.refresh_live_link_hits(theme, &painted);

@@ -2707,7 +2707,7 @@ impl TextInput {
         )]
         let available_width = (self.rect.width() - left - self.ml_pad_x()).max(1.0) as f32;
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("text.shape");
+        let probe = crate::frame_probe::span("text.shape");
         self.ensure_shaped_layout(tr, theme, &style, available_width);
         #[cfg(test)]
         drop(probe);
@@ -2787,7 +2787,7 @@ impl TextInput {
             let syntax = &theme.tokens.syntax;
             let paint = |byte: usize| self.highlight_color_at(byte, syntax);
             #[cfg(test)]
-            let _probe = crate::profiling::frame_probe::span("text.rows");
+            let _probe = crate::frame_probe::span("text.rows");
             tr.draw_rich_in_clip_painted_leaving_out(
                 scene,
                 layout,
@@ -2801,7 +2801,7 @@ impl TextInput {
         }
 
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("text.gutter");
+        let probe = crate::frame_probe::span("text.gutter");
         self.draw_gutter_line_numbers(
             scene,
             transform,
@@ -5148,7 +5148,7 @@ impl Widget for TextInput {
                 env.clone(),
             ));
             #[cfg(test)]
-            let _probe = crate::profiling::frame_probe::span("text.note");
+            let _probe = crate::frame_probe::span("text.note");
             self.note_shown(transform, theme, text_renderer);
             return;
         }
@@ -5167,7 +5167,7 @@ impl Widget for TextInput {
         self.apply_span_highlighter(theme);
         let display = self.layout_display_text();
         #[cfg(test)]
-        let metrics_probe = crate::profiling::frame_probe::span("single_line_metrics");
+        let metrics_probe = crate::frame_probe::span("single_line_metrics");
         let total_w = self.build_single_line_metrics(
             text_renderer,
             &display,
@@ -5214,7 +5214,7 @@ impl Widget for TextInput {
         }
 
         #[cfg(test)]
-        let glyph_probe = crate::profiling::frame_probe::span("single_line_glyphs");
+        let glyph_probe = crate::frame_probe::span("single_line_glyphs");
         self.draw_single_line_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &display,
@@ -5237,7 +5237,7 @@ impl Widget for TextInput {
         }
         if own_text {
             #[cfg(test)]
-            let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");
+            let spelling_probe = crate::frame_probe::span("single_line_spelling");
             self.draw_spelling(scene, transform, theme);
             #[cfg(test)]
             drop(spelling_probe);

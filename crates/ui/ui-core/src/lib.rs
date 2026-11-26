@@ -228,6 +228,8 @@ pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
 pub mod emoji_catalogue;
+#[cfg(any(test, feature = "test-support"))]
+pub mod frame_probe;
 pub mod held_images;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]

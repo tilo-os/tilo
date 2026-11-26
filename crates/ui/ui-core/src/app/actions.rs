@@ -2086,7 +2086,7 @@ impl App {
     #[cfg(feature = "model")]
     fn service_local_control_history(&mut self) -> bool {
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("idle.controls");
+        let probe = crate::frame_probe::span("idle.controls");
         // Input framework chrome took (a press on the window's own History) runs no control a
         // widget queued, here or in the model pass: the entry it asks for seals what was queued
         // before it instead, and the frame after it finds the queue empty. Neither does a window
@@ -2099,7 +2099,7 @@ impl App {
         #[cfg(test)]
         drop(probe);
         #[cfg(test)]
-        let probe = crate::profiling::frame_probe::span("idle.history");
+        let probe = crate::frame_probe::span("idle.history");
         let history = self.service_history();
         #[cfg(test)]
         drop(probe);

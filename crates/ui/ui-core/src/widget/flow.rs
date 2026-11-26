@@ -245,7 +245,7 @@ impl Flow {
 
     pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         #[cfg(test)]
-        let _probe = crate::profiling::frame_probe::span("flow.apply");
+        let _probe = crate::frame_probe::span("flow.apply");
         (self.rect, self.paint_rect) = super::layout::flow_rects(taffy, node, origin);
         if self.place_again(taffy) {
             return;

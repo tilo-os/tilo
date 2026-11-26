@@ -93,7 +93,7 @@ fn draw_frame_content_owning(
     app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     #[cfg(test)]
-    let availability_probe = crate::profiling::frame_probe::span("draw.availability");
+    let availability_probe = crate::frame_probe::span("draw.availability");
     app.refresh_control_action_availability();
     #[cfg(test)]
     drop(availability_probe);
@@ -737,7 +737,7 @@ fn lay_out_window(
     #[cfg(feature = "model")]
     {
         #[cfg(test)]
-        let history_probe = crate::profiling::frame_probe::span("layout.history");
+        let history_probe = crate::frame_probe::span("layout.history");
         app.refresh_framework_history(logical.0);
         #[cfg(test)]
         drop(history_probe);
@@ -815,7 +815,7 @@ fn lay_out_window(
         let in_place =
             app.layout.remount && !app.layout.structure_dirty && (!rebuild || remount_only);
         #[cfg(test)]
-        let remount_probe = crate::profiling::frame_probe::span("layout.remount");
+        let remount_probe = crate::frame_probe::span("layout.remount");
         let remounted_now = in_place && {
             let _phase = tilo_actions::profiling::Phase::start("ui.remount");
             let _entry = app.enter_wake_scope();
@@ -903,7 +903,7 @@ fn lay_out_window(
         }
         if must_compute || rebuild || remounted_now {
             #[cfg(test)]
-            let _compute = crate::profiling::frame_probe::span("layout.compute");
+            let _compute = crate::frame_probe::span("layout.compute");
             let _phase = tilo_actions::profiling::Phase::start("ui.solve");
             let start = crate::time::now();
             // The app's root is laid out in a host node the window's size, as a window gives its
@@ -988,7 +988,7 @@ fn lay_out_window(
         }
         let start = crate::time::now();
         #[cfg(test)]
-        let place_probe = crate::profiling::frame_probe::span("layout.place");
+        let place_probe = crate::frame_probe::span("layout.place");
         // Nothing was solved, built or remounted since the widgets were
         // last placed, and focus stayed where it was: only views moved, and
         // long collections place only what they show.
