@@ -25,8 +25,7 @@ use tilo_model_gateway::host_backend::protocol::{
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
-use super::agent_keys::AgentKeys;
-use super::{Model, ServerAgents};
+use super::{FixedKeys, Model, ServerAgents};
 use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE};
 
 const CHANNEL: &str = "tl.so.tilo.chat.TextChannel";
@@ -83,37 +82,6 @@ impl PlanTurns for Scripted {
 
     fn model(&self) -> &'static str {
         "scripted"
-    }
-}
-
-/// The key a person's device makes for its agents: one fixed key here.
-struct Keys;
-
-impl AgentKeys for Keys {
-    fn grant(
-        &self,
-        _workspace: WorkspaceId,
-        _agent: &str,
-        _name: &str,
-        _person: [u8; 32],
-    ) -> Result<[u8; 32], String> {
-        Ok([7; 32])
-    }
-
-    fn sign(
-        &self,
-        _workspace: WorkspaceId,
-        _key: &[u8; 32],
-        _request: &mut tilo_actions::remote::InvokeRequest,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn made(
-        &self,
-        _key: &[u8; 32],
-    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
-        None
     }
 }
 
@@ -206,7 +174,7 @@ async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
             }) as Box<dyn PlanTurns>)
         })
     };
-    let agents = ServerAgents::on_device(workspaces.clone(), provider.clone(), Arc::new(Keys))
+    let agents = ServerAgents::on_device(workspaces.clone(), provider.clone(), Arc::new(FixedKeys))
         .scripted(model);
     let started = tokio::time::timeout(
         Duration::from_secs(30),

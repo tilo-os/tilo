@@ -25,11 +25,9 @@ use tilo_model_gateway::host_backend::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
     StreamEvent, Usage,
 };
-use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
-use super::agent_keys::AgentKeys;
-use super::{Model, ServerAgents};
+use super::{FixedKeys, Model, ServerAgents};
 use tilo_workspace_service::workspaces::fixtures::TestHost;
 
 const CHAT: &str = "so.tilo.chat";
@@ -240,38 +238,6 @@ impl PlanTurns for Breaking {
     }
 }
 
-/// The keys a person's device makes for its agents: one fixed key here, which the test's provider
-/// takes as the agent's own.
-struct Keys;
-
-impl AgentKeys for Keys {
-    fn grant(
-        &self,
-        _workspace: WorkspaceId,
-        _agent: &str,
-        _name: &str,
-        _person: [u8; 32],
-    ) -> Result<[u8; 32], String> {
-        Ok([7; 32])
-    }
-
-    fn sign(
-        &self,
-        _workspace: WorkspaceId,
-        _key: &[u8; 32],
-        _request: &mut InvokeRequest,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn made(
-        &self,
-        _key: &[u8; 32],
-    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
-        None
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let scratch = tempfile::tempdir().unwrap();
@@ -293,7 +259,7 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let agents = ServerAgents::on_device(
         server.workspaces().clone(),
         provider.clone(),
-        Arc::new(Keys),
+        Arc::new(FixedKeys),
     )
     .scripted(model);
     let invocation = tilo_actions::InvocationId::new();
@@ -387,7 +353,7 @@ async fn a_stopped_reply_keeps_what_came_and_says_it_was_stopped() {
     let agents = ServerAgents::on_device(
         server.workspaces().clone(),
         provider.clone(),
-        Arc::new(Keys),
+        Arc::new(FixedKeys),
     )
     .scripted(model);
     let invocation = tilo_actions::InvocationId::new();
@@ -431,7 +397,7 @@ async fn a_reply_that_breaks_off_keeps_what_came_and_says_why() {
     let agents = ServerAgents::on_device(
         server.workspaces().clone(),
         provider.clone(),
-        Arc::new(Keys),
+        Arc::new(FixedKeys),
     )
     .scripted(model);
     let invocation = tilo_actions::InvocationId::new();

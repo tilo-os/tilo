@@ -407,14 +407,6 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
         .collect()
 }
 
-/// Whether a published resource kind is this agent's transforms. The agent's
-/// own planner leaves them out: invoking itself while it waits on the
-/// invocation would only time out.
-#[must_use]
-pub fn is_transform_kind(kind: &str) -> bool {
-    tilo_automation::kind_matches(AGENT_TRANSFORM_KIND, kind)
-}
-
 // ---------------------------------------------------------------------------
 // One call
 // ---------------------------------------------------------------------------

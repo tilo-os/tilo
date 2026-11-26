@@ -102,6 +102,40 @@ pub mod windows;
 
 pub use engine_actions::EngineActions;
 pub use sub_agents::Line;
+
+/// The keys a person's device makes for its agents in a test: one fixed key, which the test's
+/// provider takes as the agent's own.
+#[cfg(test)]
+pub(crate) struct FixedKeys;
+
+#[cfg(test)]
+impl agent_keys::AgentKeys for FixedKeys {
+    fn grant(
+        &self,
+        _workspace: WorkspaceId,
+        _agent: &str,
+        _name: &str,
+        _person: [u8; 32],
+    ) -> Result<[u8; 32], String> {
+        Ok([7; 32])
+    }
+
+    fn sign(
+        &self,
+        _workspace: WorkspaceId,
+        _key: &[u8; 32],
+        _request: &mut InvokeRequest,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn made(
+        &self,
+        _key: &[u8; 32],
+    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+        None
+    }
+}
 /// The engines, and a server on this machine that answers as they and the pages do, for a
 /// test's web tools.
 #[cfg(any(test, feature = "fixture-servers"))]
