@@ -219,9 +219,8 @@ struct Inner {
     /// work is filed in the workspace's tracker through it.
     actions: Option<WorkspaceActions>,
     kept: Mutex<BTreeMap<Owner, Kept>>,
-    /// Changing the schedule or its limit takes the event action and the
-    /// corresponding state write together, in order for each person.
-    settings: Mutex<BTreeMap<Owner, Arc<tokio::sync::Mutex<()>>>>,
+    /// Native effects and their receipts are completed in order for each person.
+    edits: Mutex<BTreeMap<Owner, Arc<tokio::sync::Mutex<()>>>>,
     /// The workspaces whose mail the server watches because their
     /// assistant looks round.
     listening: Mutex<BTreeMap<Owner, crate::workspaces::MailListening>>,
@@ -296,7 +295,7 @@ impl Initiative {
                 looking: Mutex::default(),
                 actions,
                 kept: Mutex::default(),
-                settings: Mutex::default(),
+                edits: Mutex::default(),
                 listening: Mutex::default(),
             }),
         }
@@ -631,6 +630,17 @@ impl Initiative {
         })
     }
 
+    async fn edit(&self, owner: &Owner) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .inner
+            .edits
+            .lock_recover()
+            .entry(owner.clone())
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
     async fn answer(
         &self,
         workspace_id: WorkspaceId,
@@ -654,16 +664,7 @@ impl Initiative {
         let _settings = match address.action.as_str() {
             workspace_initiative::TURN_ON
             | workspace_initiative::TURN_OFF
-            | workspace_initiative::CHANGE => {
-                let lock = self
-                    .inner
-                    .settings
-                    .lock_recover()
-                    .entry(asked.owner.clone())
-                    .or_default()
-                    .clone();
-                Some(lock.lock_owned().await)
-            }
+            | workspace_initiative::CHANGE => Some(self.edit(&asked.owner).await),
             _ => None,
         };
         match address.action.as_str() {
@@ -774,11 +775,11 @@ impl Initiative {
             event.id
         } else {
             self.events()?
-                .set_up_look_round(
+                .set_up_once(
                     asked.workspace_id,
                     asked.read_as(),
                     asked.authority,
-                    &kept.next_event(&asked.owner),
+                    super::events::Installation::LookRound(&kept.next_event(&asked.owner)),
                     workspace_events::SetUp {
                         name: NAME.to_owned(),
                         when: when.unwrap_or_else(|| workspace_initiative::DEFAULT_WHEN.to_owned()),
@@ -788,7 +789,6 @@ impl Initiative {
                     },
                 )
                 .await?
-                .id
         };
         self.change(&asked.owner, |kept| {
             if kept.event.as_deref() != Some(event.as_str()) {
@@ -1160,7 +1160,7 @@ impl Initiative {
     ) -> Result<&'a Proposal, String> {
         let proposal = book.get(id)?;
         if self.inner.actions.is_some()
-            && proposal.state.waits()
+            && matches!(proposal.state, State::Proposed | State::Started)
             && proposal.event.is_none()
             && proposal.task.is_none()
         {
@@ -1171,105 +1171,84 @@ impl Initiative {
         Ok(proposal)
     }
 
-    /// The person's nod: a task is given to the assistant, which starts
-    /// the work, and an event is set up from exactly what the server kept
-    /// when it was proposed. Only the nod that found it waiting carries it
-    /// out, so one given twice, or on two devices at once, starts nothing
-    /// twice; where it could not be carried out, the proposal waits again.
+    /// Keep the person's original consent until its native effect is acknowledged. An
+    /// interrupted attempt resumes the same task or event with the same standing approval.
     async fn accept(&self, asked: &Asked<'_>, nod: &Accept) -> Result<Proposal, ActionCallError> {
+        let _edit = self.edit(&asked.owner).await;
         self.reconcile(&asked.owner).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
-        let (accepted, first, approval) = self
+        let (accepted, applying, needs_task_receipt) = self
             .change(&asked.owner, |kept| {
-                let proposal = self.ready_for_decision(&kept.book, &nod.proposal)?;
-                if nod.always && proposal.event.is_some() {
-                    return Err("a recurring event requires its own acceptance".to_owned());
-                }
-                let waited = proposal.state.waits();
-                if nod.always && !waited && !kept.book.may_start(&proposal.kind) {
-                    return Err(
-                        "only a waiting proposal can grant a standing instruction".to_owned()
-                    );
-                }
-                let accepted = kept.book.accept(&nod.proposal, now_ms)?;
-                let approval =
-                    (nod.always && waited).then(|| kept.book.approval_revision(&accepted.kind));
-                Ok::<_, String>((accepted, waited, approval))
+                self.ready_for_decision(&kept.book, &nod.proposal)?;
+                let (proposal, applying) =
+                    kept.book.accepting(&nod.proposal, nod.always, now_ms)?;
+                let needs_task_receipt = kept.book.needs_task_receipt(&proposal);
+                Ok::<_, String>((proposal, applying, needs_task_receipt))
             })
             .map_err(unavailable)?
             .map_err(refused)?;
-        if !first {
+        if !applying {
+            if needs_task_receipt && let Some(task) = &accepted.task {
+                let tracker = self.tracker(asked).ok_or_else(|| {
+                    unavailable("Tasks is unavailable to verify this earlier approval".into())
+                })?;
+                tracker
+                    .verify_earlier_assignment(&task.issue)
+                    .await
+                    .map_err(unavailable)?;
+                self.change(&asked.owner, |kept| kept.book.applied(&accepted.id, None))
+                    .map_err(unavailable)?
+                    .map_err(refused)?;
+            }
             return Ok(accepted);
         }
-        match self.carry_out(asked, &accepted).await {
-            Ok(carried) => {
-                if let Some(revision) = approval {
-                    self.change(&asked.owner, |kept| {
-                        kept.book.allow_tasks(&carried.kind, revision)
-                    })
-                    .map_err(unavailable)?;
-                }
-                self.learn(asked, &carried, None).await;
-                Ok(carried)
+        let event = if let Some(definition) = &accepted.event {
+            let installed = self
+                .events()?
+                .set_up_once(
+                    asked.workspace_id,
+                    asked.read_as(),
+                    asked.authority,
+                    super::events::Installation::Proposal(&accepted.id),
+                    definition.clone(),
+                )
+                .await?;
+            Some(installed)
+        } else {
+            if let (Some(task), Some(tracker)) = (&accepted.task, self.tracker(asked)) {
+                tracker.give(&task.issue).await.map_err(unavailable)?;
             }
-            Err(error) => {
-                let _ = self.change(&asked.owner, |kept| {
-                    kept.book.waits_again(&nod.proposal);
-                });
-                Err(error)
-            }
-        }
+            None
+        };
+        let done = self
+            .change(&asked.owner, |kept| kept.book.applied(&accepted.id, event))
+            .map_err(unavailable)?
+            .map_err(refused)?;
+        self.learn(asked, &done, None).await;
+        Ok(done)
     }
 
-    /// What an accepted proposal stands for, done as its person: its event
-    /// set up, or its task given to the assistant.
-    async fn carry_out(
-        &self,
-        asked: &Asked<'_>,
-        accepted: &Proposal,
-    ) -> Result<Proposal, ActionCallError> {
-        if let Some(event) = &accepted.event {
-            let made: EventView = heard(
-                self.of_events(asked, workspace_events::SET_UP, &said(event)?)
-                    .await?,
-            )?;
-            return self
-                .change(&asked.owner, |kept| {
-                    kept.book.set_up_as(&accepted.id, made.id);
-                    kept.book.get(&accepted.id).cloned()
-                })
-                .map_err(unavailable)?
-                .map_err(refused);
-        }
-        if let (Some(task), Some(tracker)) = (&accepted.task, self.tracker(asked)) {
-            tracker.give(&task.issue).await.map_err(unavailable)?;
-        }
-        Ok(accepted.clone())
-    }
-
-    /// A proposal turned down: its kind counts one more, and its task is
-    /// cancelled. Turned down again, or by two at once, it counts once.
+    /// A declined task is cancelled once; an interrupted native write retains its receipt
+    /// to retry without counting a second decline.
     async fn decline(&self, asked: &Asked<'_>, no: &Decline) -> Result<Proposal, ActionCallError> {
+        let _edit = self.edit(&asked.owner).await;
         self.reconcile(&asked.owner).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
-        let (declined, first) = self
+        let (declined, applying) = self
             .change(&asked.owner, |kept| {
-                let waited = self
-                    .ready_for_decision(&kept.book, &no.proposal)?
-                    .state
-                    .waits();
+                self.ready_for_decision(&kept.book, &no.proposal)?;
                 kept.book
-                    .decline(&no.proposal, now_ms, asked.asker == Asker::Person)
-                    .map(|declined| (declined, waited))
+                    .declining(&no.proposal, now_ms, asked.asker == Asker::Person)
             })
             .map_err(unavailable)?
             .map_err(refused)?;
-        if first {
-            if let (Some(task), Some(tracker)) = (&declined.task, self.tracker(asked))
-                && let Err(error) = tracker.cancel(&task.issue).await
-            {
-                tracing::warn!(workspace = %asked.owner.workspace, %error, "a declined proposal's task is not cancelled in the tracker");
+        if applying {
+            if let (Some(task), Some(tracker)) = (&declined.task, self.tracker(asked)) {
+                tracker.cancel(&task.issue).await.map_err(unavailable)?;
             }
+            self.change(&asked.owner, |kept| kept.book.applied(&declined.id, None))
+                .map_err(unavailable)?
+                .map_err(refused)?;
             self.learn(asked, &declined, no.why.as_deref()).await;
         }
         Ok(declined)

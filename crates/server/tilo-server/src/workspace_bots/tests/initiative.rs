@@ -1362,6 +1362,110 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn retrying_a_saved_event_approval_after_restart_installs_it_exactly_once() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let (workspace, _) = chat_workspace(workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(workspaces, &assistant);
+    let me = as_person(&cert, &workspace);
+    let card = proposal(on_proposals(
+        &initiative,
+        &workspace,
+        &as_their_agent(&cert, &workspace),
+        workspace_initiative::PROPOSE,
+        json!({
+            "kind": "weekly-orders", "title": "Review the orders", "why": "Orders arrive weekly.",
+            "event": {"name": "Review orders", "when": "every Monday at 09:00", "instruction": "Review this week's orders."}
+        }),
+    ));
+    let file = workspaces
+        .workspace_root(&workspace)
+        .join("initiative")
+        .join(hex::encode(cert.user_public_key))
+        .join("initiative.json");
+    drop((initiative, events));
+    server.shutdown().await;
+
+    // The approval reached disk, but the host did not record a receipt from Events.
+    let mut pending: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let row = &mut pending["book"]["proposals"][0];
+    assert_eq!(row["id"], card.id);
+    row["state"] = json!(State::Accepted);
+    row["decidedAtMs"] = json!(card.proposed_at_ms);
+    pending["book"]["applying"][&card.id] = json!({});
+    let pending = serde_json::to_vec(&pending).unwrap();
+    let retry = |initiative: &Initiative| {
+        on_proposals(
+            initiative,
+            &workspace,
+            &me,
+            workspace_initiative::ACCEPT,
+            json!({"proposal": card.id}),
+        )
+    };
+    let mut installed = None;
+    for before in [0, 1] {
+        // On the second restart the same approval is pending, but Events already committed it.
+        std::fs::write(&file, &pending).unwrap();
+        let server = bot_server(scratch.path(), &key, &cert).await;
+        let (initiative, events) = started(server.workspaces(), &assistant);
+        assert_eq!(their_events(&events, &workspace, &me).len(), before);
+        let accepted = proposal(retry(&initiative));
+        let running = their_events(&events, &workspace, &me);
+        assert_eq!(
+            running.len(),
+            1,
+            "the retry recovers exactly one installation"
+        );
+        assert_eq!(accepted.set_up.as_deref(), Some(running[0].id.as_str()));
+        if let Some(first_id) = &installed {
+            assert_eq!(&running[0].id, first_id);
+            assert_eq!(running[0].name, "My updated order review");
+            of_events(
+                &events,
+                &workspace,
+                &me,
+                workspace_events::REMOVE,
+                json!({"event": first_id}),
+            )
+            .unwrap();
+            proposal(retry(&initiative));
+            assert!(
+                their_events(&events, &workspace, &me).is_empty(),
+                "a completed approval cannot reinstall an event its person removed"
+            );
+        } else {
+            of_events(
+                &events,
+                &workspace,
+                &me,
+                workspace_events::CHANGE,
+                json!({"event": running[0].id, "name": "My updated order review"}),
+            )
+            .unwrap();
+        }
+        installed = accepted.set_up;
+        drop((initiative, events));
+        server.shutdown().await;
+    }
+
+    // The person removed the native event while the approval was still missing its receipt.
+    std::fs::write(&file, pending).unwrap();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let (initiative, events) = started(server.workspaces(), &assistant);
+    let recovered = proposal(retry(&initiative));
+    assert_eq!(recovered.state, State::Accepted);
+    assert_eq!(recovered.set_up, installed);
+    assert_eq!(proposal(retry(&initiative)), recovered);
+    assert!(their_events(&events, &workspace, &me).is_empty());
+    drop((initiative, events));
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn each_member_governs_their_own_look_round_and_proposals() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

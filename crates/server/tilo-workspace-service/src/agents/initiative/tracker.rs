@@ -174,15 +174,32 @@ impl Tracker {
 
     /// The issue at `address`, as the tracker keeps it now.
     async fn filed(&self, address: &str) -> Result<Filed, String> {
-        issues(
+        self.find(address)
+            .await?
+            .ok_or_else(|| "the task is no longer in the tracker".to_owned())
+    }
+
+    async fn find(&self, address: &str) -> Result<Option<Filed>, String> {
+        Ok(issues(
             &self.workspaces,
             &self.workspace,
             (&self.person, Some(&self.caller)),
         )
         .await?
         .into_iter()
-        .find(|filed| filed.address == address)
-        .ok_or_else(|| "the task is no longer in the tracker".to_owned())
+        .find(|filed| filed.address == address))
+    }
+
+    /// Old acceptances had no assignment receipt. Verify what Tasks still records
+    /// without restoring an assignment that someone might have removed or changed.
+    pub(super) async fn verify_earlier_assignment(&self, address: &str) -> Result<(), String> {
+        let person = hex::encode(self.person);
+        if self.find(address).await?.is_some_and(|issue| {
+            issue.proposing_agent.is_some() && issue.given_by.as_deref() == Some(person.as_str())
+        }) {
+            return Ok(());
+        }
+        Err("this earlier approval has no assignment receipt and Tasks cannot confirm it; check the task before assigning it again".into())
     }
 
     /// One action on the issue `filed`, as the caller.
@@ -313,7 +330,12 @@ impl Tracker {
     /// # Errors
     /// The task is gone, or the tracker refused.
     pub(super) async fn cancel(&self, address: &str) -> Result<(), String> {
-        let filed = self.filed(address).await?;
+        let Some(filed) = self.find(address).await? else {
+            return Ok(());
+        };
+        if filed.stands == InTracker::Dropped {
+            return Ok(());
+        }
         let mut cancelled = Map::new();
         cancelled.insert("status".to_owned(), json!("cancelled"));
         self.on(&filed, "place", cancelled).await

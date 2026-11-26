@@ -335,6 +335,8 @@ async fn furnished(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on_their_nod() {
+    use serde_json::json;
+
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -448,12 +450,17 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         "its person gave it: {:?}",
         given.assigned_by
     );
+    let assigned_turns = |queue: &[tilo_workspace_service::agents::Turn], id: &str| {
+        queue
+            .iter()
+            .filter(|turn| {
+                turn.person == person
+                    && matches!(&turn.ask, Ask::Issue { issue, .. } if issue == id)
+            })
+            .count()
+    };
     let owed = agents.turns(&workspace).await.unwrap();
-    assert!(
-        owed.iter().any(|turn| turn.person == person
-            && matches!(&turn.ask, Ask::Issue { issue, .. } if issue == first_issue.as_str())),
-        "the nod starts the work: {owed:?}"
-    );
+    assert_eq!(assigned_turns(&owed, first_issue.as_str()), 1);
 
     // Tasks runs an already authorized kind on the person's behalf using the agent's
     // existing delegation. Replaying its proposal queues one issue turn.
@@ -477,7 +484,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     let automatic = proposal(one);
     assert_eq!(automatic, proposal(two));
     assert_eq!(automatic.state, State::Started);
-    let address = automatic.task.unwrap().issue;
+    let address = automatic.task.as_ref().unwrap().issue.as_str();
     let part = tracker(&workspaces, &workspace, &issues).await;
     let (queued_id, given) = part
         .issues
@@ -489,14 +496,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         Some(person.as_str())
     );
     let queue = agents.turns(&workspace).await.unwrap();
-    assert_eq!(
-        queue
-            .iter()
-            .filter(|turn| turn.person == person
-                && matches!(&turn.ask, Ask::Issue { issue, .. } if issue == queued_id.as_str()))
-            .count(),
-        1
-    );
+    assert_eq!(assigned_turns(&queue, queued_id.as_str()), 1);
     take(
         &initiative,
         &workspace,
@@ -573,8 +573,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         .join("initiative")
         .join(&person)
         .join("initiative.json");
-    let before = std::fs::read(&proposal_file).unwrap();
-    let reports = |kind| serde_json::json!({"kind":kind, "title":"Prepare the report", "why":kind});
+    let reports = |kind| json!({"kind":kind, "title":"Prepare the report", "why":kind});
     let proposing = (
         workspace_initiative::PROPOSALS,
         workspace_initiative::PROPOSE,
@@ -594,11 +593,12 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         submit("quotes", InvocationId::new())
     );
     let (invoices, quotes) = (proposal(invoices), proposal(quotes));
-    let invoices_task = invoices.task.clone();
+    let receipts = proposal(submit("receipts", InvocationId::new()).await);
+    let archive = proposal(submit("archive", InvocationId::new()).await);
     assert_ne!(invoices.task, quotes.task);
     let part = tracker(&workspaces, &workspace, &issues).await;
-    for proposal in [invoices, quotes] {
-        let task = proposal.task.unwrap();
+    for proposal in [&invoices, &quotes, &receipts, &archive] {
+        let task = proposal.task.as_ref().unwrap();
         let (id, issue) = part
             .issues
             .iter()
@@ -606,16 +606,41 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
             .unwrap();
         assert_eq!(tasks_model::issue_resource(id), task.issue);
         assert_eq!(issue.body.text(), proposal.why);
+        assert_eq!(issue.assigned_by, None);
     }
 
-    // Lose the Assistant's last write while the native Tasks document survives, and restart
-    // the host with no invocation cache. The same proposal recovers the original issue.
+    // Stop between the Assistant and Tasks commits. Quotes has the person's standing
+    // instruction but no assignment yet. The first task was given before its one-time
+    // acceptance could finish. Invoices was filed under standing permission but has no link.
+    // The person declined Receipts, but its native task has not been cancelled.
     let count = part.issues.len();
     drop((page, initiative, _events, agents, actions, workspaces));
     server.agents.shutdown();
     drop((server.web, server.roster));
     server.server.shutdown().await;
-    std::fs::write(proposal_file, before).unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&proposal_file).unwrap()).unwrap();
+    let book = &mut saved["book"];
+    // Older accepted rows carry no proof that Tasks acknowledged the person's decision.
+    book.as_object_mut().unwrap().remove("givenTasks");
+    book["applying"] = json!({(&quotes.id): {"approval": 0}, (&first.id): {}, (&receipts.id): {}});
+    book["kinds"]["quotes"] = json!({"revision": 0});
+    book["kinds"]["invoices"] = json!({"always": true});
+    book["kinds"]["receipts"] = json!({"declined": 1});
+    for row in book["proposals"].as_array_mut().unwrap() {
+        if row["id"] == quotes.id || row["id"] == archive.id || row["id"] == automatic.id {
+            row["state"] = json!(State::Accepted);
+            row["decidedAtMs"] = row["proposedAtMs"].clone();
+        } else if row["id"] == invoices.id {
+            row["state"] = json!(State::Started);
+            row["decidedAtMs"] = json!(invoices.proposed_at_ms);
+            row.as_object_mut().unwrap().remove("task");
+        } else if row["id"] == receipts.id {
+            row["state"] = json!(State::Declined);
+            row["decidedAtMs"] = json!(receipts.proposed_at_ms);
+        }
+    }
+    std::fs::write(proposal_file, serde_json::to_vec(&saved).unwrap()).unwrap();
     let server = crate::harness::hosted::start(
         &root,
         &server_device,
@@ -624,6 +649,71 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     )
     .await;
     let restarted = server.roster.initiative.as_ref().unwrap();
+    let standing = |list: &Proposals, kind: &str| {
+        list.kinds
+            .iter()
+            .any(|pref| pref.kind == kind && pref.always)
+    };
+    assert!(!standing(
+        &proposed(restarted, &workspace, &me).await,
+        "quotes"
+    ));
+    let accept = |id: &str, always: bool| {
+        take(
+            restarted,
+            &workspace,
+            &me,
+            workspace_initiative::ACCEPT,
+            json!({"proposal": id, "always": always}),
+        )
+    };
+    // Old approvals are verified against Tasks. Only the issue already given by the owner qualifies.
+    assert_eq!(
+        proposal(accept(&automatic.id, false).await).state,
+        State::Accepted
+    );
+    assert!(matches!(
+        accept(&archive.id, false).await,
+        Err(ActionCallError::Unavailable { .. })
+    ));
+    let accepted = proposal(accept(&quotes.id, true).await);
+    assert_eq!(accepted, proposal(accept(&quotes.id, true).await));
+    assert_eq!(accepted.state, State::Accepted);
+    assert_eq!(accepted.task, quotes.task);
+    // Changing the retry's payload cannot expand the original one-time approval.
+    assert!(matches!(
+        accept(&first.id, true).await,
+        Err(ActionCallError::Refused { .. })
+    ));
+    assert_eq!(
+        proposal(accept(&first.id, false).await).state,
+        State::Accepted
+    );
+    let choices = proposed(restarted, &workspace, &me).await;
+    assert!(standing(&choices, "quotes"));
+    assert!(!standing(&choices, "tidy-notes"));
+    let decline = || {
+        take(
+            restarted,
+            &workspace,
+            &me,
+            workspace_initiative::DECLINE,
+            json!({"proposal": receipts.id}),
+        )
+    };
+    let declined = proposal(decline().await);
+    assert_eq!(declined.state, State::Declined);
+    assert_eq!(declined, proposal(decline().await));
+    let choices = proposed(restarted, &workspace, &me).await;
+    assert_eq!(
+        choices
+            .kinds
+            .iter()
+            .find(|pref| pref.kind == "receipts")
+            .unwrap()
+            .declined,
+        1
+    );
     let recovered = proposal(
         take_with_id(
             restarted,
@@ -634,13 +724,66 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         )
         .await,
     );
-    assert_eq!(recovered.task, invoices_task);
-    assert_eq!(
-        tracker(server.workspaces().unwrap(), &workspace, &issues)
+    assert_eq!(recovered.state, State::Started);
+    assert_eq!(recovered.task, invoices.task);
+    let part = tracker(server.workspaces().unwrap(), &workspace, &issues).await;
+    assert_eq!(part.issues.len(), count);
+    let filed = |proposal: &Proposal| {
+        let task = proposal.task.as_ref().unwrap();
+        part.issues
+            .iter()
+            .find(|(id, _)| tasks_model::issue_resource(id) == task.issue)
+            .unwrap()
+    };
+    assert_eq!(filed(&receipts).1.status, tasks_model::Status::Cancelled);
+    assert_eq!(filed(&archive).1.assigned_by, None);
+    let queue = server
+        .approving(&workspace, &[SCOUT])
+        .await
+        .turns(&workspace)
+        .await
+        .unwrap();
+    for proposal in [&invoices, &quotes, &first] {
+        let (id, issue) = filed(proposal);
+        assert_eq!(
+            issue.assigned_by.as_ref().and_then(MemberId::person_id),
+            Some(person.as_str())
+        );
+        assert_eq!(assigned_turns(&queue, id.as_str()), 1);
+    }
+    // Once confirmed, a later retry preserves the receipt even after the person deletes the task.
+    let (quote_id, _) = filed(&quotes);
+    let mut page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
+    let route = DocumentRoute {
+        app_id: TASKS.into(),
+        cluster_id: workspace.clone(),
+        document: issues.clone(),
+    };
+    let deleted = page
+        .invoke_settled(InvokeRequest {
+            confirmation: Some(Confirmation::Confirmed),
+            ..request(
+                &tilo_agent_session::resource_provider(&route),
+                ActionAddress::new(&quotes.task.as_ref().unwrap().issue, "delete"),
+                InvokeArgument::Json(
+                    json!({"issue":quote_id.as_str()})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+        })
+        .await;
+    assert!(
+        matches!(deleted.status, ReceiptStatus::Completed { .. }),
+        "{deleted:?}"
+    );
+    assert_eq!(accepted, proposal(accept(&quotes.id, true).await));
+    assert!(
+        !tracker(server.workspaces().unwrap(), &workspace, &issues)
             .await
             .issues
-            .len(),
-        count
+            .contains(quote_id)
     );
 
     // The person still reads their proposals when their own agent loses that permission.

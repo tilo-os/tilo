@@ -9,7 +9,7 @@
 //! nod. Both are the person's to take back. The rule is kept here, in what
 //! the server answers, and not in what a model was told.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::workspace_events::SetUp;
@@ -43,6 +43,15 @@ struct Preference {
     revision: u64,
 }
 
+/// The person's original decision, until its native Tasks or Events effect is acknowledged.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+struct Applying {
+    /// Only an explicit standing approval carries the revision at which it was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval: Option<u64>,
+}
+
 impl Preference {
     fn require_approval(&mut self) {
         self.always = false;
@@ -60,6 +69,11 @@ impl Preference {
 pub(super) struct Book {
     proposals: Vec<Proposal>,
     kinds: BTreeMap<String, Preference>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    applying: BTreeMap<String, Applying>,
+    /// Unlike an event's set_up ID, the task link already existed before the person gave it.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    given_tasks: BTreeSet<String>,
 }
 
 /// `text` on one line: its words, a single blank between them.
@@ -128,11 +142,16 @@ fn event_checked(event: SetUp) -> Result<SetUp, String> {
 }
 
 impl Book {
+    fn awaiting_effect(&self, proposal: &Proposal) -> bool {
+        self.applying.contains_key(&proposal.id)
+            || (proposal.state == State::Started && proposal.task.is_none())
+    }
+
     /// How many proposals wait for their person.
     fn waiting(&self) -> usize {
         self.proposals
             .iter()
-            .filter(|proposal| proposal.state.waits())
+            .filter(|proposal| proposal.state.waits() || self.awaiting_effect(proposal))
             .count()
     }
 
@@ -238,6 +257,69 @@ impl Book {
         Ok(proposal.clone())
     }
 
+    /// Keep the original consent across retries, including the revision before a withdrawal.
+    pub(super) fn accepting(
+        &mut self,
+        id: &str,
+        always: bool,
+        now_ms: i64,
+    ) -> Result<(Proposal, bool), String> {
+        let proposal = self.get(id)?;
+        if always && proposal.event.is_some() {
+            return Err("a recurring event requires its own acceptance".into());
+        }
+        let waited = proposal.state.waits();
+        let pending = self.applying.get(id);
+        if !waited
+            && pending.is_none()
+            && proposal.state == State::Accepted
+            && proposal.event.is_some()
+            && proposal.set_up.is_none()
+        {
+            return Err("this earlier event approval has no installation receipt; check Events before proposing it again".into());
+        }
+        if always
+            && !waited
+            && !self.may_start(&proposal.kind)
+            && pending.is_none_or(|p| p.approval.is_none())
+        {
+            return Err("only a waiting proposal can grant a standing instruction".into());
+        }
+        let was_applying = pending.is_some();
+        let accepted = self.accept(id, now_ms)?;
+        if waited && !was_applying {
+            let approval = always.then(|| self.approval_revision(&accepted.kind));
+            self.applying.insert(id.to_owned(), Applying { approval });
+        }
+        Ok((accepted, waited || was_applying))
+    }
+
+    /// A completed native receipt and its originally authorised preference are one record write.
+    pub(super) fn applied(&mut self, id: &str, event: Option<String>) -> Result<Proposal, String> {
+        let proposal = self.get_mut(id)?;
+        if let Some(event) = event {
+            proposal.set_up = Some(event);
+        }
+        let proposal = proposal.clone();
+        if proposal.state == State::Accepted && proposal.task.is_some() {
+            self.given_tasks.insert(id.to_owned());
+        }
+        if let Some(Applying {
+            approval: Some(revision),
+        }) = self.applying.remove(id)
+        {
+            self.allow_tasks(&proposal.kind, revision);
+        }
+        Ok(proposal)
+    }
+
+    /// A pre-receipt acceptance recorded intent but might never have given the task.
+    pub(super) fn needs_task_receipt(&self, proposal: &Proposal) -> bool {
+        proposal.state == State::Accepted
+            && proposal.task.is_some()
+            && !self.given_tasks.contains(&proposal.id)
+    }
+
     /// `id` turned down.
     ///
     /// # Errors
@@ -270,6 +352,21 @@ impl Book {
             preference.require_approval();
         }
         Ok(declined)
+    }
+
+    /// Keep a pending native cancellation until Tasks answers, without counting a retry twice.
+    pub(super) fn declining(
+        &mut self,
+        id: &str,
+        now_ms: i64,
+        by_person: bool,
+    ) -> Result<(Proposal, bool), String> {
+        let waited = self.get(id)?.state.waits();
+        let declined = self.decline(id, now_ms, by_person)?;
+        if waited {
+            self.applying.entry(id.to_owned()).or_default();
+        }
+        Ok((declined, self.applying.contains_key(id)))
     }
 
     /// Have `id` wait again: its person's nod could not be carried out.
@@ -323,12 +420,6 @@ impl Book {
     }
 
     /// The event that was set up when `id` was accepted.
-    pub(super) fn set_up_as(&mut self, id: &str, event: String) {
-        if let Ok(proposal) = self.get_mut(id) {
-            proposal.set_up = Some(event);
-        }
-    }
-
     /// Take `id` back as if it was never proposed: what it should have
     /// stood as could not be written.
     pub(super) fn withdraw(&mut self, id: &str) {
@@ -366,7 +457,10 @@ impl Book {
         for (id, stands) in &decided {
             // Each was waiting a moment ago, so neither is refused.
             let _ = match stands {
-                InTracker::Given => self.accept(id, now_ms),
+                InTracker::Given => {
+                    self.given_tasks.insert(id.clone());
+                    self.accept(id, now_ms)
+                }
                 InTracker::Dropped => self.decline(id, now_ms, false),
                 InTracker::Waits => continue,
             };
@@ -377,7 +471,20 @@ impl Book {
     /// Everything, as its person reads it: the proposals newest first.
     pub(super) fn listed(&self) -> Proposals {
         Proposals {
-            proposals: self.proposals.iter().rev().cloned().collect(),
+            proposals: self
+                .proposals
+                .iter()
+                .rev()
+                .map(|kept| {
+                    let mut proposal = kept.clone();
+                    if self.awaiting_effect(kept) {
+                        // Leave the decision available to retry until its native effect is confirmed.
+                        proposal.state = State::Proposed;
+                        proposal.decided_at_ms = None;
+                    }
+                    proposal
+                })
+                .collect(),
             kinds: self
                 .kinds
                 .iter()
@@ -398,11 +505,11 @@ impl Book {
             let Some(oldest) = self
                 .proposals
                 .iter()
-                .position(|proposal| !proposal.state.waits())
+                .position(|proposal| !proposal.state.waits() && !self.awaiting_effect(proposal))
             else {
                 return;
             };
-            self.proposals.remove(oldest);
+            self.given_tasks.remove(&self.proposals.remove(oldest).id);
         }
     }
 }
@@ -428,11 +535,20 @@ mod tests {
     #[test]
     fn withdrawing_permission_during_a_tracker_write_keeps_it_withdrawn() {
         let mut book = Book::default();
-        let revision = book.approval_revision("reports");
+        proposed(&mut book, "reports", "Review invoices", "invoice").unwrap();
+        assert!(book.accepting("invoice", true, 9).unwrap().1);
+        assert_eq!(book.listed().proposals[0].state, State::Proposed);
         book.reset("reports", workspace_initiative::ASK_FIRST);
-        book.allow_tasks("reports", revision);
-        assert!(!book.may_start("reports"));
-        assert!(book.listed().kinds.is_empty());
+        let mut restored: Book =
+            serde_json::from_slice(&serde_json::to_vec(&book).unwrap()).unwrap();
+        assert!(restored.accepting("invoice", true, 10).unwrap().1);
+        assert_eq!(
+            restored.applied("invoice", None).unwrap().state,
+            State::Accepted
+        );
+        assert!(restored.accepting("invoice", true, 11).is_err());
+        assert!(!restored.may_start("reports"));
+        assert!(restored.listed().kinds.is_empty());
     }
 
     #[test]
@@ -575,7 +691,7 @@ mod tests {
         let mut book = Book::default();
         proposed(&mut book, "tidy", "Tidy the notes", "a").unwrap();
         book.accept("a", 2).unwrap();
-        book.set_up_as("a", "an-event".into());
+        book.applied("a", Some("an-event".into())).unwrap();
         book.waits_again("a");
         let waits = book.get("a").unwrap();
         assert_eq!(

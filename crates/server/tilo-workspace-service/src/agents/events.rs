@@ -186,6 +186,9 @@ struct Stored {
     /// The person's look-round. Earlier event files did not record their scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     personal: Option<bool>,
+    /// The accepted proposal that installed this shared event, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposal: Option<String>,
 }
 
 impl Stored {
@@ -205,6 +208,12 @@ pub(super) struct Theirs {
     pub asker: Asker,
     /// Who makes a change now, as authorship keeps it.
     pub by: MemberId,
+}
+
+/// A native instruction whose retries must all name the same event.
+pub(super) enum Installation<'a> {
+    LookRound(&'a str),
+    Proposal(&'a str),
 }
 
 struct Inner {
@@ -335,10 +344,14 @@ impl WorkspaceEvents {
                             _ => {}
                         }
                     }
-                    self.run(&workspace, stored, &dir)
+                    if stored.proposal.is_some() && removed(&dir, &stored.person)? {
+                        return Ok(None);
+                    }
+                    self.run(&workspace, stored, &dir).map(Some)
                 });
                 match started {
-                    Ok(event) => kept.push((workspace.clone(), id, event)),
+                    Ok(Some(event)) => kept.push((workspace.clone(), id, event)),
+                    Ok(None) => {}
                     Err(error) => {
                         tracing::warn!(%workspace, event = %id, %error, "a kept event does not run");
                     }
@@ -656,7 +669,13 @@ impl WorkspaceEvents {
                     request,
                     "an event to set up names itself, what starts it and what to do then",
                 )?;
-                said(&self.set_up(&theirs, kept, wanted, None)?)
+                said(&self.set_up(
+                    &theirs,
+                    kept,
+                    wanted,
+                    uuid::Uuid::new_v4().to_string(),
+                    None,
+                )?)
             }
             workspace_events::CHANGE => {
                 let changes: Change = argument(request, "a change names the event it changes")?;
@@ -673,10 +692,18 @@ impl WorkspaceEvents {
             }
             workspace_events::REMOVE => {
                 let named: Named = argument(request, "an event is named by its id")?;
-                // Dropped, its runner stops; then what it kept goes.
-                visible_event(kept, &named.event, &theirs.person)?;
-                drop(kept.remove(&named.event));
+                let event = visible_event(kept, &named.event, &theirs.person)?;
                 let dir = self.dir(&theirs.workspace, &named.event);
+                if event.stored.proposal.is_some() {
+                    // Its acceptance may still be waiting for our installation receipt.
+                    // Keep the owner and stable ID before stopping the native runner.
+                    tilo_files::native::atomic::write_private(
+                        &dir.with_extension("removed"),
+                        event.stored.person.as_bytes(),
+                    )
+                    .map_err(|error| unavailable(error.to_string()))?;
+                }
+                drop(kept.remove(&named.event));
                 if let Err(error) = std::fs::remove_dir_all(&dir) {
                     tracing::warn!(event = %named.event, %error, "a removed event's directory stays");
                 }
@@ -686,16 +713,16 @@ impl WorkspaceEvents {
         }
     }
 
-    /// Set up the person's own scheduled look once, applying the ordinary event
-    /// policy to the actual caller. Only the initiative service supplies its id.
-    pub(super) async fn set_up_look_round(
+    /// Install an initiative event under the ordinary event policy. A retry returns
+    /// the original ID even if someone has since changed or removed the event.
+    pub(super) async fn set_up_once(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         authority: &Authority,
-        id: &str,
+        installation: Installation<'_>,
         wanted: SetUp,
-    ) -> Result<EventView, ActionCallError> {
+    ) -> Result<String, ActionCallError> {
         let action = workspace_events::SET_UP;
         let theirs = self
             .reach(
@@ -707,9 +734,46 @@ impl WorkspaceEvents {
                 effect_of(action),
             )
             .await?;
+        let person = hex::encode(theirs.person);
+        let (id, proposal) = match installation {
+            Installation::LookRound(id) => (
+                uuid::Uuid::parse_str(id).map_err(|_| no_such_event())?,
+                None,
+            ),
+            Installation::Proposal(proposal) => (
+                uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_URL,
+                    format!(
+                        "tilo.initiative/{}/{person}/proposals/{proposal}/event",
+                        theirs.workspace
+                    )
+                    .as_bytes(),
+                ),
+                Some(proposal),
+            ),
+        };
+        let id = id.to_string();
         let mut all = self.inner.running.lock_recover();
         let kept = all.entry(theirs.workspace.clone()).or_default();
-        self.set_up(&theirs, kept, wanted, Some(id))
+        if let Some(event) = kept.get(&id) {
+            return (event.stored.personal == Some(proposal.is_none())
+                && event.stored.proposal.as_deref() == proposal
+                && event.stored.person.eq_ignore_ascii_case(&person))
+            .then_some(id)
+            .ok_or_else(no_such_event);
+        }
+        let dir = self.dir(&theirs.workspace, &id);
+        if proposal.is_some() && removed(&dir, &person).map_err(unavailable)? {
+            return Ok(id);
+        }
+        if dir
+            .try_exists()
+            .map_err(|error| unavailable(error.to_string()))?
+        {
+            return Err(unavailable("the saved event could not be resumed".into()));
+        }
+        self.set_up(&theirs, kept, wanted, id, Some(installation))
+            .map(|event| event.id)
     }
 
     fn set_up(
@@ -717,27 +781,9 @@ impl WorkspaceEvents {
         theirs: &Theirs,
         kept: &mut BTreeMap<String, Running>,
         asked: SetUp,
-        personal_id: Option<&str>,
+        id: String,
+        installation: Option<Installation<'_>>,
     ) -> Result<EventView, ActionCallError> {
-        let id = if let Some(id) = personal_id {
-            let id = uuid::Uuid::parse_str(id)
-                .map_err(|_| no_such_event())?
-                .to_string();
-            if let Some(event) = kept.get(&id) {
-                return (event.stored.personal == Some(true)
-                    && event.stored.visible_to(&theirs.person))
-                .then(|| view(event))
-                .ok_or_else(no_such_event);
-            }
-            if self.dir(&theirs.workspace, &id).exists() {
-                return Err(unavailable(
-                    "the saved look-round could not be resumed".into(),
-                ));
-            }
-            id
-        } else {
-            uuid::Uuid::new_v4().to_string()
-        };
         if kept.len() >= MAX_EVENTS {
             return Err(refused(format!(
                 "a workspace keeps at most {MAX_EVENTS} events"
@@ -760,7 +806,11 @@ impl WorkspaceEvents {
             definition,
             by: theirs.by.clone(),
             person: hex::encode(theirs.person),
-            personal: Some(personal_id.is_some()),
+            personal: Some(matches!(installation, Some(Installation::LookRound(_)))),
+            proposal: match installation {
+                Some(Installation::Proposal(proposal)) => Some(proposal.to_owned()),
+                _ => None,
+            },
         };
         let event = self.begin(&theirs.workspace, stored).map_err(unavailable)?;
         let note = NoteChange {
@@ -901,6 +951,17 @@ fn workspace_of(hexed: &str) -> Option<String> {
         "a store folder whose name is not text is not a workspace's",
         String::from_utf8(bytes).ok()
     )
+}
+
+/// Whether the creator's proposal event was removed after it was installed. The receipt
+/// lives beside the event directory, so deleting its instructions and progress keeps it.
+fn removed(dir: &Path, person: &str) -> Result<bool, String> {
+    match std::fs::read_to_string(dir.with_extension("removed")) {
+        Ok(owner) if owner.eq_ignore_ascii_case(person) => Ok(true),
+        Ok(_) => Err("the event removal receipt could not be verified".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// What `dir` keeps of an event: none where it does not read.
