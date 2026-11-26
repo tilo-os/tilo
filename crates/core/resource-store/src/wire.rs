@@ -323,7 +323,17 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         }
         Command::MadeFrom { ids } => made_from_reply(store, ids, may_read),
         Command::Newest { within, limit } => {
-            let (versions, more) = store.newest(within, *limit, may_read);
+            let (mut versions, more) = store.newest(within, *limit, may_read);
+            // A page of the newest versions of many resources says who changed each, and how,
+            // never with what: one call stamps every resource it made with its argument, of up to
+            // `MAX_RECORDED_ARGUMENT_BYTES`, so the page would carry it once for each of them, and
+            // a window reads the page whenever it draws. The call's signature stays; a reader
+            // after the argument reads the resource's own versions.
+            for (_, _, version) in &mut versions {
+                if let Some(call) = version.stamp.as_mut().and_then(|stamp| stamp.signed.as_mut()) {
+                    call.argument = None;
+                }
+            }
             Reply::Newest { versions, more }
         }
         Command::Positions { query, ids } => Reply::Positions(

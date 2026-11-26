@@ -1599,6 +1599,74 @@ mod store {
         );
     }
 
+    /// A call that made many resources stamps each with its argument: the page of the newest
+    /// versions says who made them, by the call they signed, and not again with what for each,
+    /// while each resource's own versions keep it.
+    #[test]
+    fn the_newest_versions_name_the_signed_call_without_its_argument() {
+        use collab_types::store::wire::{Command, Reply};
+        use tilo_resource_store::wire::read;
+        let mut store = issues();
+        let statement = tilo_actions::remote::signed_invocation::InvocationStatement {
+            workspace: "w".to_owned(),
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: "so.tilo.issues".to_owned(),
+                address: tilo_actions::ActionAddress::new("board", "new_issues"),
+            },
+            arguments: [0; 32],
+            on_behalf_of: None,
+            issued_at_ns: 1,
+            signer: [0; 32],
+        };
+        let signed = tilo_actions::remote::SignedInvocation::new(statement, [0; 64], Vec::new());
+        let titles =
+            tilo_actions::remote::InvokeArgument::Text("a long list of titles".repeat(1000));
+        let called = Stamp {
+            invocation: "new issues".to_owned(),
+            moment: 7,
+            signed: Some(Box::new(tilo_actions::remote::SignedCall {
+                signed: signed.clone(),
+                argument: Some(titles.clone()),
+                allowed: None,
+            })),
+            ..Stamp::default()
+        };
+        for id in ["board/d", "board/e"] {
+            store
+                .put(ISSUE, id, resource("board", id, id, "open"), &called)
+                .unwrap();
+        }
+        let Some(Reply::Newest { versions, .. }) = read(
+            &store,
+            &Command::Newest {
+                within: "board".to_owned(),
+                limit: 2,
+            },
+            &anyone,
+        ) else {
+            panic!("the newest versions are read");
+        };
+        for (_, id, version) in versions {
+            let call = version.stamp.and_then(|stamp| stamp.signed).unwrap();
+            assert_eq!(call.signed, signed, "{id} keeps the call its caller signed");
+            assert_eq!(
+                call.argument, None,
+                "{id} is read without the call's argument"
+            );
+        }
+        assert_eq!(
+            store
+                .version_end(ISSUE, "board/d", true)
+                .unwrap()
+                .stamp
+                .and_then(|stamp| stamp.signed)
+                .and_then(|call| call.argument),
+            Some(titles),
+            "the resource's own versions keep it"
+        );
+    }
+
     #[test]
     fn a_write_is_queried_at_once_and_reaches_a_peer() {
         let mut here = issues();
