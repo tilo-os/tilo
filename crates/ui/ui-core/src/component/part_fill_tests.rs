@@ -8,69 +8,12 @@
     reason = "in a test these are the assertion"
 )]
 
-use std::collections::BTreeMap;
-
-use super::*;
-use crate::component::{Component, Described, Source};
+use crate::component::testing::given;
+use crate::component::{Component, Described};
 use crate::headless::Driver;
 use crate::theme::Theme;
 use crate::widget::arrange::{Fit, Sizing};
 use crate::widget::{Card, CardProps, Element, Fitted};
-
-struct Node {
-    key: String,
-    props: BTreeMap<String, Value>,
-    parts: Vec<(&'static str, Element)>,
-}
-
-impl Node {
-    fn new(key: &str) -> Self {
-        Self {
-            key: key.to_owned(),
-            props: BTreeMap::new(),
-            parts: Vec::new(),
-        }
-    }
-
-    fn holding(mut self, part: &'static str, view: Element) -> Self {
-        self.parts.push((part, view));
-        self
-    }
-}
-
-impl Source for Node {
-    fn key(&self) -> &str {
-        &self.key
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
-    }
-
-    fn event(&mut self, _name: &str) -> Event {
-        Event::None
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, part: &str) -> Vec<Element> {
-        self.parts
-            .iter_mut()
-            .filter(|(name, _)| *name == part)
-            .map(|(_, view)| std::mem::replace(view, Box::new(crate::widget::Absent::new())))
-            .collect()
-    }
-
-    fn components(
-        &mut self,
-        _part: &str,
-        _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        Ok(0)
-    }
-}
 
 const SUBJECT: &str = "subject";
 
@@ -101,7 +44,7 @@ tilo_test_env::scenario! {
 
     phase a_body_part_child_that_fills_gets_the_parts_size;
     {
-        let mut node = Node::new("card").holding("body", filling_view());
+        let mut node = given("card", &[]).view("body", filling_view());
         let props = CardProps::from_source(&mut node).expect("the card reads its body");
         let card = Card::from_props("card", props);
         let height = body_height(card, 500);
@@ -114,7 +57,7 @@ tilo_test_env::scenario! {
     phase the_fill_is_the_parts_and_scales_with_it;
     {
         for (height, least) in [(300u32, 200.0), (500u32, 400.0)] {
-            let mut node = Node::new("card").holding("body", filling_view());
+            let mut node = given("card", &[]).view("body", filling_view());
             let props = CardProps::from_source(&mut node).expect("the card reads its body");
             let card = Card::from_props("card", props);
             let got = body_height(card, height);
@@ -124,7 +67,7 @@ tilo_test_env::scenario! {
 
     phase a_view_that_asks_for_nothing_hugs_its_content;
     {
-        let mut node = Node::new("card").holding("body", subject());
+        let mut node = given("card", &[]).view("body", subject());
         let props = CardProps::from_source(&mut node).expect("the card reads its body");
         let card = Card::from_props("card", props);
         let height = body_height(card, 500);
@@ -140,7 +83,7 @@ tilo_test_env::scenario! {
     phase a_body_part_child_that_fills_at_an_aspect_keeps_its_ratio;
     {
         let view = Box::new(Fitted::new(subject(), Fit::fill(1.0).aspect(16.0 / 9.0))) as Element;
-        let mut node = Node::new("card").holding("body", view);
+        let mut node = given("card", &[]).view("body", view);
         let props = CardProps::from_source(&mut node).expect("the card reads its body");
         let card = Card::from_props("card", props);
         let harness = Driver::for_root(crate::State::new(), card, (600, 800), Theme::light());

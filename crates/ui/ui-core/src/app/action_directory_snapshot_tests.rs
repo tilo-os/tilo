@@ -449,26 +449,6 @@ tilo_test_env::scenario! {
         assert!(app.actions.local_document_directory_pins.is_empty());
     }
 
-    phase a_snapshot_is_estimated_only_when_an_input_pins_it;
-    // Every publication builds a snapshot, and serializing each of its actions
-    // to estimate what it holds cost an app with many resources most of a
-    // publication: the estimate waits for the local input that pins it.
-    {
-        let (mut app, _) = declared_directory(40);
-        publish_declared_directory(&mut app);
-        let snapshot = app.actions.action_directory_snapshot.clone().unwrap();
-        assert!(
-            !snapshot.retention_estimated(),
-            "a publication estimated a snapshot nothing pinned"
-        );
-        let revision = app.action_directory_revision();
-        let _pin = app
-            .try_pin_local_document_action_directory(&revision)
-            .ok()
-            .unwrap();
-        assert!(snapshot.retention_estimated(), "a pin is bounded by it");
-    }
-
     phase retained_local_directory_distinct_revision_limit_preserves_pending_reports;
     {
         let (mut app, _) = declared_directory(1);

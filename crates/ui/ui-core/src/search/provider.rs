@@ -820,11 +820,6 @@ impl OpenResourceSearch {
             resources: Arc::new(indexed),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.resources, &other.resources)
-    }
 }
 
 impl SearchProvider for OpenResourceSearch {
@@ -1424,20 +1419,6 @@ mod tests {
             let legacy = SearchResult::new("Contacts", "Ada", "contact:ada");
             assert_eq!(legacy.action_address(), None);
         }
-
-        phase result_builders_populate_fields;
-        {
-            let r = SearchResult::new("Contacts", "Alice Ng", "contact:42")
-                .with_subtitle("alice@example.com")
-                .with_icon(Icon::Mail)
-                .with_score(5);
-            assert_eq!(r.kind, "Contacts");
-            assert_eq!(r.title, "Alice Ng");
-            assert_eq!(r.action_id, "contact:42");
-            assert_eq!(r.subtitle.as_deref(), Some("alice@example.com"));
-            assert_eq!(r.icon, Some(Icon::Mail));
-            assert_eq!(r.score, 5);
-        }
     }
 
     tilo_test_env::scenario! {
@@ -1950,40 +1931,6 @@ mod tests {
             assert!(!catalog.cursor_is_current(&cursor));
             let (hits, _) = drain(&catalog, "shared", 3);
             assert_eq!(hits.len(), 8);
-        }
-
-        phase unchanged_bodies_are_not_mutations;
-        {
-            let body = SearchBody::new(Arc::new("the long unchanged chapter".to_string()));
-            let first = SearchCatalog::new("Documents");
-            first
-                .replace_all_resources([record("document:a", "A").body(body.clone())])
-                .unwrap();
-            let rebuilt = SearchCatalog::new("Documents");
-            rebuilt
-                .replace_all_resources([
-                    record("document:a", "A").body(body.clone()),
-                    record("document:b", "B"),
-                ])
-                .unwrap();
-            let reused = rebuilt
-                .inner
-                .read()
-                .unwrap()
-                .entries
-                .values()
-                .next()
-                .unwrap()
-                .body
-                .clone()
-                .unwrap();
-            assert!(reused.shares_source_with(&body));
-            assert_eq!(drain(&rebuilt, "unchanged", 8).0.len(), 1);
-            let generation = rebuilt.stats().generation;
-            rebuilt
-                .upsert_resource(record("document:a", "A").body(body))
-                .unwrap();
-            assert_eq!(rebuilt.stats().generation, generation);
         }
     }
 

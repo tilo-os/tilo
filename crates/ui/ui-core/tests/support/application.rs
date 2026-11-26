@@ -391,17 +391,6 @@ impl ProbeHarness {
         stored_record_where(&self.workspace, APP, WORKSPACE, checkout)
     }
 
-    /// The body of the record `checkout` names as the workspace holds it now, read back by a
-    /// process that did not write it.
-    pub fn stored_body(&self, checkout: &DocumentCheckout) -> Option<String> {
-        // A store reads only the records it opened; the workspace's own bytes are what another
-        // process would open.
-        let doc = AutoCommit::load(&self.stored_record(checkout)?).unwrap();
-        doc.get(ROOT, "body")
-            .unwrap()
-            .and_then(|(body, _)| body.into_scalar().ok())
-            .and_then(|body| body.into_string().ok())
-    }
     pub fn prepare(
         &self,
         definition: &ApplicationDefinition,

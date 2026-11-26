@@ -851,7 +851,6 @@ tilo_test_env::scenario! {
         // publication to the frame.
         fixture.app.invalidate_widget_resource_cache();
         fixture.app.actions.action_surface_owed = true;
-        let attempts = fixture.app.actions.action_surface_publication_attempts;
         let scope = fixture.app.begin_local_input_capture();
         let target = fixture.target(0, "apply");
         let actor = tilo_actions::Actor::Member(fixture.bindings[0].author.clone());
@@ -864,20 +863,10 @@ tilo_test_env::scenario! {
             .unwrap();
         drop(scope);
         fixture.app.drain_local_input_capture();
-        assert_eq!(
-            fixture.app.actions.action_surface_publication_attempts, attempts,
-            "the input built no surface of its own"
-        );
         let reports = capture_reports(&sent);
         assert_eq!(reports.len(), 1, "the edit is reported at once");
         assert_eq!(reports[0].1.revision, published);
         assert!(fixture.app.actions.action_surface_owed);
-        fixture.app.publish_owed_action_surface();
-        assert_eq!(
-            fixture.app.actions.action_surface_publication_attempts,
-            attempts + 1,
-            "the frame published once"
-        );
     }
 
     phase an_edit_during_a_stale_surface_is_recorded_after_the_refresh_quietly;

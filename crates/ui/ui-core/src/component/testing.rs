@@ -10,18 +10,39 @@
 
 use std::collections::BTreeMap;
 
-use super::{Bound, BoundValue, Element, Event, Fired, Intent, LocalState, Source, Value};
+use super::{
+    Bound, BoundValue, Element, Event, Fired, Intent, LocalState, SharedRows, Source, Value,
+};
 
-/// An instance as a test gives it: values by prop, the events it handles queued on `queue`, and the
-/// components in its parts.
+/// An instance as a test gives it: values by prop, the events it handles queued on `queue`, the
+/// components and views in its parts, and the rows it hands out.
 pub struct Node {
-    kind: &'static str,
-    key: String,
-    props: BTreeMap<String, Value>,
-    events: Vec<&'static str>,
-    parts: Vec<(&'static str, Node)>,
-    bound: Option<BoundValue>,
-    queue: crate::Intents<Fired>,
+    pub kind: &'static str,
+    pub key: String,
+    pub props: BTreeMap<String, Value>,
+    pub events: Vec<&'static str>,
+    pub parts: Vec<(&'static str, Node)>,
+    pub bound: Option<BoundValue>,
+    pub queue: crate::Intents<Fired>,
+    /// Views in a part, handed out once.
+    pub views: Vec<(&'static str, Element)>,
+    /// A plain text view this many times in every part, handed out each time it is asked.
+    pub fillers: usize,
+    pub rows: Option<SharedRows>,
+    /// Every event is handled, not only those named with [`Node::on`].
+    pub every_event: bool,
+    /// The props are also the widget state to restore.
+    pub restores: bool,
+}
+
+/// An instance keyed `key` with `props`, that restores no state and handles no event.
+pub fn given(key: &str, props: &[(&str, Value)]) -> Node {
+    let mut node = Node::new("", key, &crate::Intents::default());
+    node.restores = false;
+    for (name, value) in props {
+        node.props.insert((*name).to_owned(), value.clone());
+    }
+    node
 }
 
 impl Node {
@@ -35,7 +56,26 @@ impl Node {
             parts: Vec::new(),
             bound: None,
             queue: queue.clone(),
+            views: Vec::new(),
+            fillers: 0,
+            rows: None,
+            every_event: false,
+            restores: true,
         }
+    }
+
+    /// Put the view `view` in the part `part`.
+    #[must_use]
+    pub fn view(mut self, part: &'static str, view: Element) -> Self {
+        self.views.push((part, view));
+        self
+    }
+
+    /// Hand out `rows` for every part that asks for them.
+    #[must_use]
+    pub fn rows(mut self, rows: SharedRows) -> Self {
+        self.rows = Some(rows);
+        self
     }
 
     /// Give the prop `name` the value `value`.
@@ -77,11 +117,11 @@ impl Source for Node {
     }
 
     fn state(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
+        self.props.get(name).filter(|_| self.restores).cloned()
     }
 
     fn event(&mut self, name: &str) -> Event {
-        if self.events.contains(&name) {
+        if self.every_event || self.events.contains(&name) {
             Event::View(Intent::new(&self.queue, &self.key, name))
         } else {
             Event::None
@@ -92,8 +132,21 @@ impl Source for Node {
         self.bound.clone()
     }
 
-    fn children(&mut self, _part: &str) -> Vec<Element> {
-        Vec::new()
+    fn children(&mut self, part: &str) -> Vec<Element> {
+        let mut children: Vec<Element> = self
+            .views
+            .iter_mut()
+            .filter(|(name, _)| *name == part)
+            .map(|(_, view)| std::mem::replace(view, Box::new(crate::widget::Absent::new())))
+            .collect();
+        children.extend(
+            (0..self.fillers).map(|_| Box::new(crate::widget::Text::new("view")) as Element),
+        );
+        children
+    }
+
+    fn rows(&mut self, _part: &str) -> Option<SharedRows> {
+        self.rows.clone()
     }
 
     fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {

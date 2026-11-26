@@ -1057,7 +1057,7 @@ mod tests {
             assert_eq!(state.doc.get_heads(), heads_before_commit);
         }
 
-        phase task4_bound_history_revision_limit_refuses_undo_redo_and_restore;
+        phase a_bound_history_revision_limit_refuses_undo_redo_and_restore;
         {
             let mut doc = AutoCommit::new();
             let mut history = UndoLog::new(&mut doc);

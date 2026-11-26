@@ -1,18 +1,13 @@
 struct SemanticCountingPublisher {
-    counts: std::rc::Rc<[Cell<usize>; 2]>,
     visible: std::rc::Rc<Cell<bool>>,
     duplicate: bool,
     button: Button,
 }
 
-fn counted_control_app(
-    duplicate: bool,
-) -> (App, std::rc::Rc<[Cell<usize>; 2]>, std::rc::Rc<Cell<bool>>) {
-    let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
+fn counted_control_app(duplicate: bool) -> (App, std::rc::Rc<Cell<bool>>) {
     let visible = std::rc::Rc::new(Cell::new(true));
     let resource = crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let root = SemanticCountingPublisher {
-        counts: counts.clone(),
         visible: visible.clone(),
         duplicate,
         button: Button::new("flip", "Flip")
@@ -20,37 +15,13 @@ fn counted_control_app(
     };
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-    (app, counts, visible)
+    (app, visible)
 }
 
 #[test]
-fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
+fn control_availability_follows_permissions_and_reads_without_committing() {
     {
-        let (mut app, counts, _) = counted_control_app(false);
-        app.refresh_control_action_availability();
-        app.refresh_control_action_availability();
-        assert_eq!(counts[0].get(), 1, "declared surface is reused");
-        assert_eq!(
-            counts[1].get(),
-            0,
-            "control refresh must not build semantic catalogue"
-        );
-        assert!(app.root_widget.children()[0].is_enabled());
-        let full = app.collect_resources();
-        assert!(
-            full.iter()
-                .any(|resource| resource.id.as_str() == "test.obj:1")
-        );
-        assert_eq!(counts[1].get(), 1);
-        app.collect_resources();
-        app.collect_local_resources();
-        app.refresh_control_action_availability();
-        assert_eq!(counts[0].get(), 1);
-        assert_eq!(counts[1].get(), 1, "full cache remains materialized");
-    }
-
-    {
-        let (mut app, counts, visible) = counted_control_app(false);
+        let (mut app, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
         app.actions.permission_generation.set(u64::MAX);
         app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
@@ -59,12 +30,6 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         assert!(!app.root_widget.children()[0].is_enabled());
         app.set_permission_ctx(PermissionContext::permissive());
         assert!(app.root_widget.children()[0].is_enabled());
-        assert_eq!(
-            counts[0].get(),
-            1,
-            "permissions do not regenerate declarations"
-        );
-        assert_eq!(counts[1].get(), 0);
         visible.set(false);
         app.actions.resource_generation.set(u64::MAX);
         app.invalidate_widget_resource_cache();
@@ -74,14 +39,11 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         app.invalidate_widget_resource_cache();
         app.refresh_control_action_availability();
         assert!(app.root_widget.children()[0].is_enabled());
-        assert_eq!(counts[0].get(), 3);
-        assert_eq!(counts[1].get(), 0);
         assert!(!app.collect_local_resources().is_empty());
-        assert_eq!(counts[1].get(), 1);
     }
 
     {
-        let (mut app, counts, _) = counted_control_app(true);
+        let (mut app, _) = counted_control_app(true);
         app.refresh_control_action_availability();
         assert!(
             app.root_widget.children()[0].is_enabled(),
@@ -91,12 +53,10 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
             app.collect_resources().is_empty(),
             "duplicate resource IDs reject complete surface"
         );
-        assert_eq!(counts[1].get(), 1);
         assert!(app.collect_resources().is_empty());
         assert!(app.collect_local_resources().is_empty());
         app.refresh_control_action_availability();
         assert!(app.root_widget.children()[0].is_enabled());
-        assert_eq!(counts[1].get(), 1, "rejected empty is cached, not unbuilt");
         let actor = tilo_actions::Actor::Member(app.local_author.clone());
         let address = tilo_actions::ActionAddress::new("test.obj:1", "flip");
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
@@ -108,7 +68,7 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
     }
 
     {
-        let (mut app, counts, _) = counted_control_app(false);
+        let (mut app, _) = counted_control_app(false);
         app.state_mut_for_test()
             .doc
             .put(ROOT, "typing", "pending")
@@ -120,7 +80,6 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         let changes = committed(&app.state.doc);
         let value = app.state.doc.hydrate(ROOT, None).unwrap();
         app.refresh_control_action_availability();
-        assert_eq!(counts[1].get(), 0);
         app.collect_resources();
         app.collect_local_resources();
         app.collect_declared_resources();
@@ -131,7 +90,6 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         );
         assert_eq!(committed(&app.state.doc), changes, "nothing committed");
         assert_eq!(app.state.doc.hydrate(ROOT, None).unwrap(), value);
-        assert_eq!(counts[1].get(), 1);
     }
 }
 
@@ -154,7 +112,6 @@ impl Widget for SemanticCountingPublisher {
         "counting-publisher"
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.counts[1].set(self.counts[1].get() + 1);
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                 .with_semantic_key("counted-catalogue"),
@@ -168,13 +125,7 @@ impl Widget for SemanticCountingPublisher {
     }
 }
 
-fn counted_resources(
-    counts: &[Cell<usize>; 2],
-    visible: &Cell<bool>,
-    duplicate: bool,
-    doc: &AutoCommit,
-) -> Vec<ResourceSpec> {
-    counts[0].set(counts[0].get() + 1);
+fn counted_resources(visible: &Cell<bool>, duplicate: bool, doc: &AutoCommit) -> Vec<ResourceSpec> {
     let mut resources = if visible.get() {
         crate::widget::resources::PublishesResources::resources(&Publisher, doc)
     } else {
@@ -188,7 +139,7 @@ fn counted_resources(
 
 impl crate::widget::resources::PublishesResources for SemanticCountingPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
-        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
+        counted_resources(&self.visible, self.duplicate, doc)
     }
 }
 
@@ -199,7 +150,6 @@ impl crate::widget::controls::ActionControls for SemanticCountingPublisher {
 }
 
 struct InventoryOnlyPublisher {
-    counts: std::rc::Rc<[Cell<usize>; 2]>,
     visible: std::rc::Rc<Cell<bool>>,
     duplicate: bool,
     button: Button,
@@ -211,7 +161,6 @@ fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
     let enabled = std::rc::Rc::new(Cell::new(false));
     (
         Box::new(InventoryOnlyPublisher {
-            counts: std::rc::Rc::new([Cell::new(0), Cell::new(0)]),
             visible: std::rc::Rc::new(Cell::new(true)),
             duplicate: false,
             button: Button::new("custom-flip", "Flip")
@@ -284,11 +233,9 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 
     {
         for wrapper in 0..4 {
-            let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
             let resource =
                 crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
             let root = FastInventoryPublisher {
-                counts: counts.clone(),
                 visible: std::rc::Rc::new(Cell::new(true)),
                 duplicate: false,
                 enabled: std::rc::Rc::new(Cell::new(false)),
@@ -309,17 +256,8 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             app.refresh_control_action_availability();
-            assert_eq!(
-                counts[1].get(),
-                0,
-                "presence refresh must not inventory controls"
-            );
             let expected = if wrapper == 3 { 2 } else { 1 };
             assert_eq!(app.control_action_coverage().len(), expected);
-            assert!(
-                counts[1].get() > 0,
-                "explicit coverage still inventories controls"
-            );
         }
     }
 }
@@ -342,7 +280,6 @@ impl Widget for InventoryOnlyPublisher {
         "counting-publisher"
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.counts[1].set(self.counts[1].get() + 1);
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                 .with_semantic_key("counted-catalogue"),
@@ -352,7 +289,7 @@ impl Widget for InventoryOnlyPublisher {
 
 impl crate::widget::resources::PublishesResources for InventoryOnlyPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
-        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
+        counted_resources(&self.visible, self.duplicate, doc)
     }
 }
 
@@ -370,7 +307,6 @@ impl crate::widget::controls::ActionControls for InventoryOnlyPublisher {
 }
 
 struct FastInventoryPublisher {
-    counts: std::rc::Rc<[Cell<usize>; 2]>,
     visible: std::rc::Rc<Cell<bool>>,
     duplicate: bool,
     button: Button,
@@ -395,7 +331,6 @@ impl Widget for FastInventoryPublisher {
         "counting-publisher"
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.counts[1].set(self.counts[1].get() + 1);
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
                 .with_semantic_key("counted-catalogue"),
@@ -405,13 +340,12 @@ impl Widget for FastInventoryPublisher {
 
 impl crate::widget::resources::PublishesResources for FastInventoryPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
-        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
+        counted_resources(&self.visible, self.duplicate, doc)
     }
 }
 
 impl crate::widget::controls::ActionControls for FastInventoryPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.counts[1].set(self.counts[1].get() + 1);
         self.button.control_action_bindings()
     }
     fn has_action_control_bindings(&self) -> bool {

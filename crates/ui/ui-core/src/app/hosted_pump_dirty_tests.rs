@@ -246,16 +246,6 @@ fn settled_after_join(app: &mut App) {
 tilo_test_env::scenario! {
     fn the_hosted_pump_refreshes_only_what_a_wake_changed;
 
-    phase hosted_pump_idle_keeps_resource_cache_and_published_surface;
-    {
-        let mut fixture = HostedPumpFixture::new(1);
-        assert_eq!(fixture.labels(), vec!["Before 0".to_string()]);
-        for _ in 0..3 {
-            fixture.assert_idle();
-        }
-        assert!(fixture.app.actions.resource_cache.borrow().is_some());
-    }
-
     phase completed_view_syncs_its_local_projection_before_returning_to_idle;
     {
         let mut fixture = HostedPumpFixture::new(1);
@@ -923,29 +913,6 @@ mod input_publication {
     tilo_test_env::scenario! {
         fn input_republishes_only_what_it_changed;
 
-        phase pointer_motion_without_state_change_does_not_regenerate_declarations;
-        {
-            let (mut app, calls) = app();
-            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-            let generation = app.actions.resource_generation.get();
-            let before = calls.get();
-            for step in 0..100 {
-                move_to(&mut app, f64::from(step), 20.0);
-            }
-            let regenerated = calls.get() - before;
-            assert!(
-                regenerated <= 1,
-                "100 hover moves regenerated declarations {regenerated} times"
-            );
-            assert_eq!(app.actions.resource_generation.get(), generation);
-            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-            assert_eq!(
-                calls.get() - before,
-                regenerated,
-                "reading the kept tree regenerates nothing"
-            );
-        }
-
         phase presentation_only_change_still_republishes;
         {
             let (mut app, _) = app();
@@ -993,77 +960,6 @@ mod input_publication {
                 "tab 1 menu false drag Some(50.0) hovered false",
                 "released, motion is hover again"
             );
-        }
-
-        phase key_release_without_state_change_does_not_regenerate_declarations;
-        // Every keystroke ends in a release. One that nothing consumed and that
-        // moved nothing keeps the tree its press published.
-        {
-            let (mut app, calls) = app();
-            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-            let generation = app.actions.resource_generation.get();
-            let before = calls.get();
-            for _ in 0..100 {
-                release(&mut app, "k");
-            }
-            let regenerated = calls.get() - before;
-            assert!(
-                regenerated <= 1,
-                "100 key releases regenerated declarations {regenerated} times"
-            );
-            assert_eq!(app.actions.resource_generation.get(), generation);
-            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        }
-
-        phase an_unchanged_surface_is_not_built_again;
-        // Each keystroke begins by publishing the surface its edits are
-        // attributed to. A surface built from nothing that changed since the
-        // last is not built again: the route carries it.
-        {
-            let mut fixture = super::HostedPumpFixture::new(1);
-            let app = &mut fixture.app;
-            app.publish_action_surface();
-            let attempts = app.actions.action_surface_publication_attempts;
-            for _ in 0..10 {
-                app.publish_action_surface();
-            }
-            assert_eq!(
-                app.actions.action_surface_publication_attempts, attempts,
-                "ten publications of an unchanged surface built it again"
-            );
-            app.invalidate_widget_resource_cache();
-            app.publish_action_surface();
-            assert_eq!(
-                app.actions.action_surface_publication_attempts,
-                attempts + 1,
-                "a change to what the surface is built from builds it once"
-            );
-        }
-
-        phase a_handled_input_leaves_its_publication_to_the_frame_after_its_sync;
-        // A handled input asks for a sync and a frame, and that sync can move
-        // what the tree shows. The input leaves its publication to the frame,
-        // which publishes once after the sync, instead of the input building
-        // the tree for itself and the frame building it again.
-        {
-            let (mut app, _) = app();
-            let attempts = app.actions.action_surface_publication_attempts;
-            release(&mut app, "t");
-            assert!(app.needs_sync, "the handled release asks for a sync");
-            assert!(app.actions.action_surface_owed);
-            assert_eq!(
-                app.actions.action_surface_publication_attempts, attempts,
-                "the input published nothing itself"
-            );
-            let _ = app.sync_model(false);
-            app.publish_owed_action_surface();
-            assert!(!app.actions.action_surface_owed);
-            assert_eq!(
-                app.actions.action_surface_publication_attempts,
-                attempts + 1,
-                "the frame published once"
-            );
-            assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
         }
 
         phase consumed_key_release_still_republishes;

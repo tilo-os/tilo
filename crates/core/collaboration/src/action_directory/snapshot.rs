@@ -250,12 +250,6 @@ impl ActionDirectorySnapshot {
             .get_or_init(|| self.estimate_retained_bytes())
     }
 
-    /// Whether what the snapshot holds has been estimated yet.
-    #[must_use]
-    pub fn retention_estimated(&self) -> bool {
-        self.retained_bytes.get().is_some()
-    }
-
     fn estimate_retained_bytes(&self) -> usize {
         // An action's row is held twice (by its resource's node and by the
         // action index), each a clone of the same descriptor: its wire

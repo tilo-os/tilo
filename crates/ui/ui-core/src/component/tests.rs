@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-
+use super::testing::{Node, given};
 use super::*;
 use crate::component_catalogue::TOOLKIT;
 use crate::widget::ListRowProps;
@@ -162,7 +161,7 @@ tilo_test_env::scenario! {
         assert!(
             !holding.is_empty(),
             "no described widget held a child, so this check proves nothing: give the harness views \
-             in the parts the widgets ask for (`Given::views`)"
+             in the parts the widgets ask for (`given_with_views`)"
         );
         assert!(
             disagreeing.is_empty(),
@@ -228,66 +227,9 @@ tilo_test_env::scenario! {
     }
 }
 
-pub(super) struct Given {
-    key: String,
-    props: BTreeMap<String, Value>,
-    queue: crate::Intents<Fired>,
-    events: Vec<&'static str>,
-    views: usize,
-}
-
-impl Source for Given {
-    fn key(&self) -> &str {
-        &self.key
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
-    }
-
-    fn event(&mut self, name: &str) -> Event {
-        if self.events.contains(&name) {
-            Event::View(Intent::new(&self.queue, &self.key, name))
-        } else {
-            Event::None
-        }
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, _part: &str) -> Vec<Element> {
-        (0..self.views)
-            .map(|_| Box::new(crate::widget::Text::new("view")) as Element)
-            .collect()
-    }
-
-    fn components(
-        &mut self,
-        _part: &str,
-        _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        Ok(0)
-    }
-}
-
-pub(super) fn given(key: &str, props: &[(&str, Value)]) -> Given {
-    Given {
-        key: key.to_owned(),
-        props: props
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), value.clone()))
-            .collect(),
-        queue: crate::Intents::default(),
-        events: Vec::new(),
-        views: 0,
-    }
-}
-
-pub(super) fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Given {
-    Given {
-        views,
+pub(super) fn given_with_views(key: &str, props: &[(&str, Value)], views: usize) -> Node {
+    Node {
+        fillers: views,
         ..given(key, props)
     }
 }
@@ -578,112 +520,29 @@ struct Item {
     avatar: bool,
 }
 
-struct ItemSource<'a> {
-    item: &'a Item,
-    queue: crate::Intents<Fired>,
-}
-
-impl Source for ItemSource<'_> {
-    fn key(&self) -> &str {
-        &self.item.key
+/// A rendered row: the item it shows, its row and the menu that deletes it.
+fn row_node(item: &Item, queue: &crate::Intents<Fired>) -> Node {
+    let mut row = Node {
+        kind: "ListRow",
+        ..given(&item.key, &[("title", Value::Text(item.title.clone()))])
+    };
+    if item.avatar {
+        row = row.holding(
+            "avatar",
+            given("who", &[("name", Value::Text("Ada".into()))]),
+        );
     }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        match name {
-            "item" => Some(Value::Resource(self.item.resource.clone())),
-            _ => None,
-        }
+    let delete = Node::new("MenuItem", "delete", queue)
+        .prop("label", Value::Text("Delete".into()))
+        .prop("destructive", Value::Bool(true))
+        .on("choose");
+    Node {
+        restores: false,
+        ..Node::new("", &item.key, queue)
     }
-
-    fn event(&mut self, _name: &str) -> Event {
-        Event::None
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, _part: &str) -> Vec<Element> {
-        Vec::new()
-    }
-
-    fn part_kinds(&mut self, part: &str) -> Vec<Option<String>> {
-        match part {
-            "row" => vec![Some("ListRow".to_owned())],
-            "menu" => vec![Some("MenuItem".to_owned())],
-            _ => Vec::new(),
-        }
-    }
-
-    fn components(
-        &mut self,
-        part: &str,
-        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        match part {
-            "row" => {
-                let row = given(
-                    &self.item.key,
-                    &[("title", Value::Text(self.item.title.clone()))],
-                );
-                read(&mut AvatarRow {
-                    row,
-                    avatar: self.item.avatar,
-                })?;
-                Ok(1)
-            }
-            "menu" => {
-                let mut command = given("delete", &[("label", Value::Text("Delete".into()))]);
-                command
-                    .props
-                    .insert("destructive".into(), Value::Bool(true));
-                command.queue = self.queue.clone();
-                command.events.push("choose");
-                read(&mut command)?;
-                Ok(1)
-            }
-            _ => Ok(0),
-        }
-    }
-}
-
-struct AvatarRow {
-    row: Given,
-    avatar: bool,
-}
-
-impl Source for AvatarRow {
-    fn key(&self) -> &str {
-        self.row.key()
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        self.row.prop(name)
-    }
-
-    fn event(&mut self, name: &str) -> Event {
-        self.row.event(name)
-    }
-
-    fn binding(&mut self, name: &str) -> Option<BoundValue> {
-        self.row.binding(name)
-    }
-
-    fn children(&mut self, part: &str) -> Vec<Element> {
-        self.row.children(part)
-    }
-
-    fn components(
-        &mut self,
-        part: &str,
-        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        if part == "avatar" && self.avatar {
-            read(&mut given("who", &[("name", Value::Text("Ada".into()))]))?;
-            return Ok(1);
-        }
-        Ok(0)
-    }
+    .prop("item", Value::Resource(item.resource.clone()))
+    .holding("row", row)
+    .holding("menu", delete)
 }
 
 /// Rows a test renders: every one at hand, none rendered until asked.
@@ -719,10 +578,7 @@ impl RowSource for Rendered {
         let Some(item) = self.items.iter().find(|item| item.key == key) else {
             return Ok(false);
         };
-        read(&mut ItemSource {
-            item,
-            queue: self.queue.clone(),
-        })?;
+        read(&mut row_node(item, &self.queue))?;
         Ok(true)
     }
 
@@ -751,100 +607,23 @@ impl RowSource for Rendered {
     }
 }
 
-struct ListSource {
-    rows: SharedRows,
-    queue: crate::Intents<Fired>,
-}
-
-impl Source for ListSource {
-    fn key(&self) -> &str {
-        "list"
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        match name {
-            "selection_follows_focus" | "in_column" => Some(Value::Bool(true)),
-            _ => None,
-        }
-    }
-
-    fn event(&mut self, name: &str) -> Event {
-        Event::View(Intent::new(&self.queue, "list", name))
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, _part: &str) -> Vec<Element> {
-        Vec::new()
-    }
-
-    fn components(
-        &mut self,
-        _part: &str,
-        _read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        Ok(0)
-    }
-
-    fn rows(&mut self, _part: &str) -> Option<SharedRows> {
-        Some(std::rc::Rc::clone(&self.rows))
-    }
-}
-
-struct WholeList {
-    props: BTreeMap<String, Value>,
-    items: Vec<Given>,
-}
-
-impl Source for WholeList {
-    fn key(&self) -> &str {
-        "list"
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
-    }
-
-    fn event(&mut self, _name: &str) -> Event {
-        Event::None
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, _part: &str) -> Vec<Element> {
-        Vec::new()
-    }
-
-    fn components(
-        &mut self,
-        part: &str,
-        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        if part != "rows" {
-            return Ok(0);
-        }
-        for item in &mut self.items {
-            read(item)?;
-        }
-        Ok(self.items.len())
-    }
+/// A list holding `items` in its rows part.
+fn whole_list(props: &[(&str, Value)], items: Vec<Node>) -> Node {
+    items.into_iter().fold(given("list", props), |list, item| {
+        list.holding("rows", item)
+    })
 }
 
 fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> crate::widget::DescribedList {
-    let mut props = BTreeMap::new();
-    props.insert("in_column".to_owned(), Value::Bool(true));
+    let mut props = vec![("in_column", Value::Bool(true))];
     if let Some(title) = title {
-        props.insert("ungrouped_title".to_owned(), Value::Text(title.into()));
+        props.push(("ungrouped_title", Value::Text(title.into())));
     }
     let items = items
         .iter()
         .map(|(key, group)| given(key, &[("group", Value::Text((*group).into()))]))
         .collect();
-    let mut source = WholeList { props, items };
+    let mut source = whole_list(&props, items);
     let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
     <crate::widget::DescribedList as Described>::from_props("list", props)
 }
@@ -869,10 +648,18 @@ fn rendered_list_and_rows(
         changed: Vec::new(),
     }));
     let rows: SharedRows = rendered.clone();
-    let mut source = ListSource {
-        rows,
+    let mut source = Node {
         queue: queue.clone(),
-    };
+        every_event: true,
+        ..given(
+            "list",
+            &[
+                ("selection_follows_focus", Value::Bool(true)),
+                ("in_column", Value::Bool(true)),
+            ],
+        )
+    }
+    .rows(rows);
     let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
     (
         <crate::widget::DescribedList as Described>::from_props("list", props),
@@ -996,16 +783,16 @@ tilo_test_env::scenario! {
             }
         }
 
-        let mut source = WholeList {
-            props: BTreeMap::from([
-                ("page_column".to_owned(), Value::Bool(true)),
-                ("at_measure".to_owned(), Value::Bool(true)),
-            ]),
-            items: ["a", "b", "c"]
+        let mut source = whole_list(
+            &[
+                ("page_column", Value::Bool(true)),
+                ("at_measure", Value::Bool(true)),
+            ],
+            ["a", "b", "c"]
                 .iter()
                 .map(|key| given(key, &[("title", Value::Text((*key).into()))]))
                 .collect(),
-        };
+        );
         let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
         let list = <crate::widget::DescribedList as Described>::from_props("list", props);
         let mut harness = crate::headless::Driver::for_root(
@@ -1058,18 +845,16 @@ tilo_test_env::scenario! {
         let list = grouped_list(None, &[("a", "Jul 1"), ("b", "")]);
         let model = list.list().expect("the list").model();
         assert_eq!(crate::widget::ListModel::group_at(model, 1), None);
-        let mut props = BTreeMap::new();
-        props.insert("ungrouped_title".to_owned(), Value::Text("No date".into()));
-        let mut source = WholeList {
-            props,
-            items: vec![given(
+        let mut source = whole_list(
+            &[("ungrouped_title", Value::Text("No date".into()))],
+            vec![given(
                 "a",
                 &[
                     ("group", Value::Text("Jul 1".into())),
                     ("removed", Value::Bool(true)),
                 ],
             )],
-        };
+        );
         let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
         let list = <crate::widget::DescribedList as Described>::from_props("list", props);
         assert_eq!(
