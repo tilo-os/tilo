@@ -61,6 +61,9 @@ struct Writer {
     flatpaks: Arc<Mutex<()>>,
     /// One change to the record of the apps the follower installed at a time.
     followed: Arc<Mutex<()>>,
+    /// Where a development build this device installs is installed too: the workspace its
+    /// person's services serve, once they run ([`PackageCache::install_dev_builds_in`]).
+    dev_builds: Arc<Mutex<Option<Arc<super::dev_builds::DevBuilds>>>>,
 }
 
 /// The cache's rows: what its catalog has installed, and the packages on their way.
@@ -338,9 +341,10 @@ pub enum PackageChanges {
     FlatpakFlathub,
     /// Install the app whose built directory is handed over as this device's development build
     /// of it: it marks it, packs it, signs it with its own key, and it runs under its own id.
-    /// It is this device's own, touching nothing shared: typing `tilo app install --dev`, or
-    /// `tilolang dev` building it here, is the person's decision, and no one else's connection
-    /// installs one ([`tilo_actions::OWN_DEVICE_SCOPE`]).
+    /// It is this device's own: typing `tilo app install --dev`, or `tilolang dev` building it
+    /// here, is the person's decision, and no one else's connection installs one
+    /// ([`tilo_actions::OWN_DEVICE_SCOPE`]). It is installed in the workspace the device serves
+    /// too, as the person, where the workspace lets them install apps.
     #[effect(kind = "outside", own_device)]
     InstallDev {
         #[param("The app's authored manifest: `{\"source\": \"tilo.content:<hash>\"}`.")]
@@ -422,6 +426,7 @@ impl PackageCache {
                 #[cfg(target_os = "linux")]
                 flatpaks: Arc::default(),
                 followed: Arc::default(),
+                dev_builds: Arc::default(),
             },
             log: Mutex::default(),
         }
@@ -442,6 +447,12 @@ impl PackageCache {
         Ok(Arc::clone(CACHE.get_or_init(|| {
             Arc::new(Self::new(device, personal, &root, content))
         })))
+    }
+
+    /// Install each development build this device installs from now on in the workspace
+    /// `builds` names too, as its person: the person's services hand it over once they serve it.
+    pub(crate) fn install_dev_builds_in(&self, builds: super::dev_builds::DevBuilds) {
+        *self.writer.dev_builds.lock_recover() = Some(Arc::new(builds));
     }
 
     /// Record that `app` was opened, as the cache's `opened` change does: what was used last is
@@ -580,6 +591,23 @@ impl Writer {
         )
     }
 
+    /// `report` of a development build, the build installed in the workspace this device serves
+    /// too ([`super::dev_builds::DevBuilds`]): a build it runs there keeps its records there, as
+    /// any app the workspace installed does, and only when its person may install apps there.
+    fn in_workspace(
+        &self,
+        mut report: package_actions::Report,
+    ) -> Result<package_actions::Report, String> {
+        let Some(package) = report.package.take() else {
+            return Ok(report);
+        };
+        let builds = self.dev_builds.lock_recover().clone();
+        if let Some(builds) = builds {
+            report.lines.push(builds.install(&package)?);
+        }
+        Ok(report)
+    }
+
     /// Whether `change` leaves a package installed, and so brings modules this device runs.
     fn installs(change: &package_actions::Change) -> bool {
         use package_actions::Change;
@@ -698,7 +726,10 @@ impl Writer {
             Ok(change) => change,
             Err(error) => return failed(error),
         };
-        match self.apply(change) {
+        match self
+            .apply(change)
+            .and_then(|report| self.in_workspace(report))
+        {
             Ok(report) => InvocationUpdate::Succeeded {
                 invocation,
                 output: ActionOutput {

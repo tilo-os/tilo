@@ -266,6 +266,11 @@ pub struct Report {
     /// it can name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed: Option<String>,
+    /// The signed package a development build was packed into: what installing it in a
+    /// workspace names, so the device that packed it records it there. It never leaves the
+    /// daemon: the caller reads the lines and the id.
+    #[serde(skip)]
+    pub package: Option<Vec<u8>>,
 }
 
 /// An image's package id, written `tapp:<hex>` or as the bare hex.
@@ -779,11 +784,16 @@ fn dev_build(
             return Err(error);
         }
     };
-    let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed))
-        .map_err(|error| Error::Parse(format!("writing the development build: {error}")));
-    let installed = bytes.and_then(|bytes| {
-        installer::install_dev(target.store, target.catalog, &bytes, device, source)
-    });
+    let bytes = match tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            cleanup();
+            return Err(Error::Parse(format!(
+                "writing the development build: {error}"
+            )));
+        }
+    };
+    let installed = installer::install_dev(target.store, target.catalog, &bytes, device, source);
     cleanup();
     let report = installed?;
     let id = report
@@ -792,6 +802,7 @@ fn dev_build(
         .map_or_else(String::new, |selected| selected.id.clone());
     said.line(format!("installed development build: {id}"));
     said.0.installed = Some(id);
+    said.0.package = Some(bytes);
     Ok(())
 }
 

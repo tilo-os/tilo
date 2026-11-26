@@ -86,6 +86,14 @@ no grants, asks for what it needs like any new app, and never takes the
 installed app's id or grants. Only the person on this computer's own daemon
 connection can install one; a key, a visitor or another account is refused.
 
+The daemon also installs the build in the workspace it serves, through the
+workspace's own install action, as its person: there the build keeps its own
+records, apart from the app it is a build of. Members see it among the
+workspace's apps, marked as a development build and published by the device
+that signed it, and uninstalling it there is the ordinary uninstall. A person
+the workspace does not let install apps is told so, and the build runs on
+their device without records in the workspace.
+
 A new app is a Cargo project: `src/` holds the app, `tilo-app.toml` is the
 package manifest (id, entrypoint, sandbox), `surface.toml` records the public
 surface and `surface.json` is its canonical compiled form (what the package

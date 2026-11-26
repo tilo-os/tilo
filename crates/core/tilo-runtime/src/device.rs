@@ -46,6 +46,7 @@ pub mod clipboard;
 mod commits;
 mod compiled;
 mod content;
+mod dev_builds;
 mod dispatch;
 /// The workspace's environments, reached by any app as an ordinary action call and answered by
 /// the shell runtime this device runs.

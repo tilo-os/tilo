@@ -117,6 +117,7 @@ impl Connection {
             lines: vec![answer.to_string()],
             warnings: Vec::new(),
             installed: None,
+            package: None,
         }))
     }
 
@@ -166,6 +167,7 @@ pub fn make(asked: Change) -> Result<Report, String> {
         lines: vec![answer.to_string()],
         warnings: Vec::new(),
         installed: None,
+        package: None,
     };
     let not_offline = |what: &str| {
         Err(format!(

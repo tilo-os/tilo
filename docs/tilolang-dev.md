@@ -143,8 +143,9 @@ There, on every save `tilolang dev`:
 3. stages the build as the app's manifest and payload, and the session's daemon installs
    it as this device's development build (`packages#install-dev`): the daemon marks it,
    packs it and signs it with the device's key, under the id its marking derives
-   (`<app>.dev.<device key>`), which is the one the module was compiled as. The tool reads
-   no publisher key and signs nothing;
+   (`<app>.dev.<device key>`), which is the one the module was compiled as, and installs it
+   in the workspace it serves as its person, so the build keeps its records there. The tool
+   reads no publisher key and signs nothing;
 4. says in one line what the running app does with it.
 
 ## The gallery
