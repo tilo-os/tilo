@@ -142,12 +142,6 @@ pub struct ProvisionedHome {
     _key: tilo_device_identity::persist::DeviceKeyLock,
 }
 
-impl Default for ProvisionedHome {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ProvisionedHome {
     /// Provision this process a daemon's home and take its device key.
     #[allow(
@@ -180,6 +174,12 @@ impl ProvisionedHome {
     #[must_use]
     pub fn root(&self) -> &std::path::Path {
         self.home.root()
+    }
+}
+
+impl Default for ProvisionedHome {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
