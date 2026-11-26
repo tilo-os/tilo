@@ -889,6 +889,31 @@ impl Seats {
             .map_err(|error| format!("the seat's link cannot be kept: {error}"))
     }
 
+    /// Forget every seat of the account `uid`, which left: the links its processes were admitted
+    /// for, here and kept for the next daemon, so none of them acts for a person any more.
+    fn forget_seats(&self, uid: u32) {
+        self.links
+            .lock_recover()
+            .retain(|(held, _), _| *held != uid);
+        let Some(dir) = self
+            .seat_record(uid, 0)
+            .and_then(|path| path.parent().map(std::path::Path::to_owned))
+        else {
+            return;
+        };
+        let prefix = format!("{uid}-");
+        let Ok(records) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for record in records.flatten() {
+            if record.file_name().to_string_lossy().starts_with(&prefix)
+                && let Err(error) = std::fs::remove_file(record.path())
+            {
+                tracing::warn!(%error, "a seat of an account that left is still kept");
+            }
+        }
+    }
+
     /// The person a shell link was admitted for on the seat `(uid, pid)`, when this daemon (or the
     /// one before it) admitted one and that process is still the same one.
     fn recorded_seat(&self, uid: u32, pid: u32) -> Option<[u8; 32]> {
@@ -956,6 +981,7 @@ impl Seats {
             LEFT => uid_in(args).and_then(|uid| {
                 let was = self.admission.left(seat.uid, uid)?;
                 self.keys.lock_recover().remove(&uid);
+                self.forget_seats(uid);
                 Ok(json!({"left": was}))
             }),
             other => Err(format!("seats has no action {other}")),
