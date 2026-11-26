@@ -41,6 +41,11 @@ pub struct RemoteRows {
     index: RefCell<Option<HashMap<Rc<str>, usize>>>,
     /// The rows the app rendered for the range the list shows, by key.
     rows: HashMap<String, UiNode>,
+    /// Each rendered row as it stands, by number ([`RowSource::revision`]): what reading it gives
+    /// moves only with its node, the controls bound in it, or the heading over the list.
+    revisions: HashMap<String, u64>,
+    /// The number the next change of a row takes.
+    revised: u64,
     changes: Vec<ListModelChange<String>>,
     asked: Option<Asked>,
     /// `asked` is the range the app sent before it was asked: the first rows, with the patch that
@@ -89,6 +94,8 @@ impl RemoteRows {
             keys: Vec::new(),
             index: RefCell::default(),
             rows: HashMap::new(),
+            revisions: HashMap::new(),
+            revised: 0,
             changes: Vec::new(),
             asked: None,
             sent: false,
@@ -100,7 +107,20 @@ impl RemoteRows {
     }
 
     pub fn under(&mut self, heading: Option<String>) {
-        self.under = heading;
+        if self.under != heading {
+            self.under = heading;
+            // A row's day fact reads against the heading: every row reads anew.
+            let keys: Vec<String> = self.rows.keys().cloned().collect();
+            for key in keys {
+                self.revise(&key);
+            }
+        }
+    }
+
+    /// What reading the row `key` gives may have changed.
+    fn revise(&mut self, key: &str) {
+        self.revised = self.revised.wrapping_add(1);
+        self.revisions.insert(key.to_owned(), self.revised);
     }
 
     /// Whether the list shows a range the app is still to be asked for
@@ -134,6 +154,8 @@ impl RemoteRows {
                 .cloned()
                 .collect();
             self.rows.retain(|key, _| keep.contains(key.as_str()));
+            let rows = &self.rows;
+            self.revisions.retain(|key, _| rows.contains_key(key));
         }
         let mut arrived = Vec::new();
         let sent_keys = keys.len();
@@ -154,6 +176,7 @@ impl RemoteRows {
         }
         for row in rows {
             arrived.push(row.key.clone());
+            self.revise(&row.key);
             self.rows
                 .insert(row.key.clone(), crate::attach::hoist(&row));
         }
@@ -192,6 +215,7 @@ impl RemoteRows {
                     }
                     if let Some(key) = self.keys.remove(index) {
                         self.rows.remove(&*key);
+                        self.revisions.remove(&*key);
                     }
                     *self.index.get_mut() = None;
                     ListModelChange::RowsRemoved { index, count: 1 }
@@ -209,12 +233,14 @@ impl RemoteRows {
                 }
                 RowChange::Changed { row } => {
                     let key = row.key.clone();
+                    self.revise(&key);
                     self.rows.insert(key.clone(), crate::attach::hoist(&row));
                     ListModelChange::RowsChanged { keys: vec![key] }
                 }
                 RowChange::Reset => {
                     self.keys.clear();
                     self.rows.clear();
+                    self.revisions.clear();
                     *self.index.get_mut() = None;
                     self.asked = None;
                     self.sent = false;
@@ -326,6 +352,9 @@ impl RemoteRows {
         if changed.is_empty() {
             return false;
         }
+        for key in &changed {
+            self.revise(key);
+        }
         self.changes
             .push(ListModelChange::RowsChanged { keys: changed });
         true
@@ -349,8 +378,25 @@ impl RemoteRows {
         drop(reconciler);
         if !changed.is_empty() {
             changed.sort();
+            for key in &changed {
+                self.revise(key);
+            }
             self.changes
                 .push(ListModelChange::RowsChanged { keys: changed });
+        }
+    }
+
+    /// Show what the row `key`'s bound controls hold: a control given another value than it
+    /// showed makes the row read anew.
+    fn show_bound(&mut self, key: &str) {
+        let shown = match (self.rows.get(key), self.reconciler.try_borrow()) {
+            (Some(row), Ok(reconciler)) => {
+                crate::window::show_bound(row, &self.prefix, &self.bound.borrow(), &reconciler)
+            }
+            _ => false,
+        };
+        if shown {
+            self.revise(key);
         }
     }
 
@@ -486,9 +532,7 @@ impl RowSource for RemoteRows {
                 NodeSource::under_heading(&row, description, &mut reconciler, self.under.clone());
             read(&mut source)?;
         }
-        if let (Some(shown), Ok(reconciler)) = (self.rows.get(key), self.reconciler.try_borrow()) {
-            crate::window::show_bound(shown, &self.prefix, &self.bound.borrow(), &reconciler);
-        }
+        self.show_bound(key);
         Ok(true)
     }
 
@@ -519,10 +563,12 @@ impl RowSource for RemoteRows {
             self.under.clone(),
         ))?;
         drop(reconciler);
-        if let (Some(shown), Ok(reconciler)) = (self.rows.get(key), self.reconciler.try_borrow()) {
-            crate::window::show_bound(shown, &self.prefix, &self.bound.borrow(), &reconciler);
-        }
+        self.show_bound(key);
         Ok(true)
+    }
+
+    fn revision(&self, key: &str) -> Option<u64> {
+        self.revisions.get(key).copied()
     }
 
     /// A row of a loop over resources is keyed by the loop and the resource's id (`<loop>/<id>`):

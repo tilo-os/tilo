@@ -1,11 +1,13 @@
 //! What a [`super::DescribedList`] reads of an item beside building its row.
 
+use std::collections::HashMap;
+
 use crate::component::{Component as _, Event, Moment, Person, ResourceId, Source};
 use crate::widget::{ListRowProps, Tone};
 
 use super::{DescribedRows, Held, ItemRow, ListItemProps};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ItemFacts {
     pub(super) item: Option<ResourceId>,
     pub(super) value: Option<String>,
@@ -18,6 +20,7 @@ pub(super) struct ItemFacts {
     pub(super) group: Option<String>,
     pub(super) group_tone: Option<Tone>,
     pub(super) tail: bool,
+    pub(super) done: bool,
     pub(super) removed: bool,
     pub(super) parent: Option<ResourceId>,
     pub(super) opens: bool,
@@ -57,6 +60,7 @@ impl ItemFacts {
             group: prop_of(source, "group")?,
             group_tone: prop_of(source, "group_tone")?,
             tail: prop_of(source, "tail")?,
+            done: prop_of(source, "done")?,
             removed: prop_of(source, "removed")?,
             parent: prop_of(source, "parent")?,
             opens: prop_of(source, "opens")?,
@@ -77,6 +81,7 @@ impl ItemFacts {
             group: item.group.clone(),
             group_tone: item.group_tone,
             tail: item.tail,
+            done: item.done,
             removed: item.removed,
             parent: item.parent.clone(),
             opens: item.opens,
@@ -93,7 +98,67 @@ impl ItemFacts {
     }
 }
 
+/// What a list read of its rendered rows, each kept while its source says the row stands as it
+/// was read ([`crate::component::RowSource::revision`]): the list asks it of every row it holds
+/// on every pass, and a row's item is decoded again only when the row changed.
+#[derive(Default)]
+pub(super) struct KeptReads {
+    facts: HashMap<String, (u64, ItemFacts)>,
+    menus: HashMap<String, (u64, bool)>,
+}
+
+impl KeptReads {
+    /// Forget what was read of rows that changed since, or are no longer rendered.
+    pub(super) fn retain(&mut self, revision: impl Fn(&str) -> Option<u64>) {
+        self.facts.retain(|key, (at, _)| revision(key) == Some(*at));
+        self.menus.retain(|key, (at, _)| revision(key) == Some(*at));
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.facts.clear();
+        self.menus.clear();
+    }
+}
+
 impl DescribedRows {
+    /// The rendered row `key` as it stands, when its source numbers it: `None` for a row the
+    /// list builds itself or is given whole, which costs nothing to read again.
+    fn revision(&self, key: &str) -> Option<u64> {
+        if self.is_removed(key) {
+            return None;
+        }
+        match &self.held {
+            Held::Rendered(rows) => rows.try_borrow().ok()?.revision(key),
+            Held::Nothing | Held::Given(_) => None,
+        }
+    }
+
+    /// Whether the row of `key` offers a menu: what its item offers on one, or the view put on
+    /// it. Read from the row's built item once per change of the row.
+    pub(super) fn offers_menu(&self, key: &str) -> bool {
+        let revision = self.revision(key);
+        if let Some(revision) = revision {
+            let kept = self.kept.borrow().menus.get(key).copied();
+            if let Some((at, offers)) = kept
+                && at == revision
+            {
+                return offers;
+            }
+        }
+        let offers = self
+            .with_item(key, |item| {
+                item.offers_menu || !item.menu.is_empty() || !item.attached.menu.is_empty()
+            })
+            .unwrap_or(false);
+        if let Some(revision) = revision {
+            self.kept
+                .borrow_mut()
+                .menus
+                .insert(key.to_owned(), (revision, offers));
+        }
+        offers
+    }
+
     /// Read what the list knows of the item `key` beside its row with `read`: `None` when there
     /// is no such item, or it is not rendered. Nothing of its row is built: the list asks this of
     /// every row it holds whenever it places them.
@@ -108,6 +173,17 @@ impl DescribedRows {
                 Some(read(ItemFacts::of(item)))
             }
             Held::Rendered(rows) => {
+                // Numbered before it is read: a read that changes the row (a bound control shown
+                // anew) leaves what it read kept under the number before, read again next time.
+                let revision = rows.try_borrow().ok()?.revision(key);
+                if let Some(revision) = revision {
+                    let kept = self.kept.borrow().facts.get(key).cloned();
+                    if let Some((at, facts)) = kept
+                        && at == revision
+                    {
+                        return Some(read(facts));
+                    }
+                }
                 let mut found = None;
                 let read_one = &mut |source: &mut dyn Source| {
                     found = Some(ItemFacts::read(source)?);
@@ -115,7 +191,16 @@ impl DescribedRows {
                 };
                 let shown = rows.try_borrow_mut().ok()?.read_props(key, read_one);
                 match shown {
-                    Ok(true) => found.map(read),
+                    Ok(true) => {
+                        let facts = found?;
+                        if let Some(revision) = revision {
+                            self.kept
+                                .borrow_mut()
+                                .facts
+                                .insert(key.to_owned(), (revision, facts.clone()));
+                        }
+                        Some(read(facts))
+                    }
                     Ok(false) => None,
                     Err(error) => {
                         tracing::warn!(%error, key, "an item of the list did not read");

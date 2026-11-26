@@ -1169,6 +1169,15 @@ pub trait RowSource {
         self.read(key, read)
     }
 
+    /// The rendered row `key` as it stands, by number: the same number for as long as what
+    /// [`Self::read`] and [`Self::read_props`] give for the row stays the same, so a list keeps
+    /// what it read of a row (its group, its menu) across frames until the number moves. `None`
+    /// for a row not rendered, or from a source that makes no such promise: the list reads it
+    /// again each time.
+    fn revision(&self, _key: &str) -> Option<u64> {
+        None
+    }
+
     /// The key of the row showing the resource `id`, rendered or not.
     fn key_presenting(&self, id: &str) -> Option<String>;
 

@@ -357,6 +357,8 @@ pub struct DescribedRows {
     /// The heading over the rows whose item names no group
     /// ([`VirtualListProps::ungrouped_title`]).
     ungrouped: Option<String>,
+    /// What the list read of the rows it holds, until they change.
+    kept: Rc<RefCell<facts::KeptReads>>,
 }
 
 /// The rows of a list that stand in for items removed unseen: [`ListItemProps`] marked
@@ -418,6 +420,7 @@ impl PartType for DescribedRows {
     }
 
     fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+        self.kept.borrow_mut().clear();
         if let Some(rows) = source.rows(part) {
             self.held = Held::Rendered(rows);
             return Ok(());
@@ -479,6 +482,7 @@ impl DescribedRows {
             held: self.held.clone(),
             removed: Rc::clone(&self.removed),
             ungrouped: self.ungrouped.clone(),
+            kept: Rc::clone(&self.kept),
         }
     }
 
@@ -709,10 +713,16 @@ impl ListModel for DescribedRows {
 
     fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
         match &self.held {
-            Held::Rendered(rows) => rows
-                .try_borrow_mut()
-                .map(|mut rows| rows.take_changes())
-                .unwrap_or_default(),
+            Held::Rendered(rows) => {
+                let Ok(mut rows) = rows.try_borrow_mut() else {
+                    return Vec::new();
+                };
+                let changes = rows.take_changes();
+                if !changes.is_empty() {
+                    self.kept.borrow_mut().retain(|key| rows.revision(key));
+                }
+                changes
+            }
             _ => Vec::new(),
         }
     }
@@ -768,7 +778,7 @@ impl ListModel for DescribedRows {
         let Some(key) = self.key_at(index) else {
             return false;
         };
-        self.with_item(&key, |item| item.done || item.removed)
+        self.with_facts(&key, |item| item.done || item.removed)
             .unwrap_or(false)
     }
 
@@ -1592,10 +1602,7 @@ fn page_row(content: Element, gap: Rhythm, measure: Option<Length>) -> Element {
 
 /// Whether the row of `key` offers a menu: what its item offers on one, or the view put on it.
 fn offers_menu(rows: &DescribedRows, key: &str) -> bool {
-    rows.with_item(key, |item| {
-        item.offers_menu || !item.menu.is_empty() || !item.attached.menu.is_empty()
-    })
-    .unwrap_or(false)
+    rows.offers_menu(key)
 }
 
 /// The list of rows a menu over `list` opens on, and the key of the row under `at` (its
