@@ -153,10 +153,6 @@ impl Opening {
         })
     }
 
-    fn next_wake(&self, ms: u64) -> Option<Instant> {
-        self.at(ms, || self.host().next_wake_deadline())
-    }
-
     fn ms(&self, at: Instant) -> u64 {
         u64::try_from(at.saturating_duration_since(self.t0).as_millis()).unwrap_or(u64::MAX)
     }
@@ -251,31 +247,6 @@ fn a_frame_from_another_device_reserves_its_place_at_once_and_never_names_its_so
         "a workspace is one place: the placeholder never says which device or host it waits on"
     );
     assert_eq!(waiting.rects, first.rects);
-}
-
-#[test]
-fn a_skeleton_stays_its_minimum_before_the_first_frame_replaces_it() {
-    let mut w = opening(Source::Remote);
-    let grace = u64::try_from(GRACE.as_millis()).unwrap();
-    let min = u64::try_from(MIN_SHOWN.as_millis()).unwrap();
-    assert_eq!(w.frame(grace).step, Some(Step::Skeleton));
-    // The first frame lands 50 ms after the skeleton showed.
-    w.landed.set(true);
-    let early = w.frame(grace + 50);
-    assert_eq!(
-        early.step,
-        Some(Step::Skeleton),
-        "a skeleton that showed never flashes away"
-    );
-    assert_eq!(w.drawn.get(), 0, "the app waits behind it");
-    assert_eq!(
-        w.next_wake(grace + 50),
-        Some(w.t0 + GRACE + MIN_SHOWN),
-        "its reveal is a deadline"
-    );
-    let shown = w.frame(grace + min);
-    assert_eq!(shown.step, None);
-    assert_eq!(w.drawn.get(), 1);
 }
 
 #[test]

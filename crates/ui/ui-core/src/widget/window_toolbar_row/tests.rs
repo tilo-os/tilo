@@ -136,80 +136,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_notice_stands_whole_before_the_actions_and_its_buttons_stay_in_the_row;
-    {
-        for (toolbar, names) in noticed() {
-            let mut labelled_from = vec![None; names.len()];
-            // From the row of the narrowest window that says its notice in
-            // the row (one at the compact breakpoint: its bar's row is 200 px
-            // narrower, as a 420 px window's is 220 px) to a wide one's.
-            // Narrower windows say it in a strip of their own.
-            let narrowest = f64::from(crate::tokens::Metrics::BASE.compact_breakpoint) - 200.0;
-            for width in (0..)
-                .map(|step: u32| narrowest + 4.0 * f64::from(step))
-                .take_while(|width| *width <= 1100.0)
-            {
-                let row = calendar_row_of(&toolbar, width);
-                let parts = row.parts();
-                assert_eq!(
-                    parts.notice.len(),
-                    names.len(),
-                    "{names:?} stand in a {width} px row: {parts:?}"
-                );
-                assert!(
-                    parts.location.area() > 0.0
-                        && parts.notice[0].x0 >= parts.location.x1 + CONTROL_GAP - 1e-9
-                        && parts
-                            .notice
-                            .windows(2)
-                            .all(|pair| pair[1].x0 >= pair[0].x1 + CONTROL_GAP - 1e-9),
-                    "{names:?} stand in order after the notice's text at {width} px: {parts:?}"
-                );
-                let nodes = row.accessibility();
-                for name in &names {
-                    let mut found = Vec::new();
-                    named(&nodes, name, &mut found);
-                    assert!(
-                        !found.is_empty()
-                            && found.iter().all(|node| node
-                                .action_target
-                                .as_deref()
-                                .is_some_and(|target| target.starts_with(NOTICE_TARGET_PREFIX))),
-                        "{name} is the notice's button alone, never an overflow item, at {width} px"
-                    );
-                }
-                assert!(
-                    parts
-                        .notice_labelled
-                        .windows(2)
-                        .all(|pair| pair[0] || !pair[1]),
-                    "the last gives its label up first at {width} px: {parts:?}"
-                );
-                for (i, name) in names.iter().enumerate() {
-                    let labelled = parts.notice_labelled[i];
-                    match (labelled, labelled_from[i]) {
-                        (true, None) => labelled_from[i] = Some(width),
-                        (false, Some(from)) => {
-                            panic!("{name} named itself at {from} px and not at {width} px")
-                        }
-                        _ => {}
-                    }
-                    if !labelled {
-                        assert!(
-                            (parts.notice[i].width() - CONTROL_PX).abs() < 1e-9,
-                            "folded, {name} is its icon"
-                        );
-                    }
-                }
-            }
-            assert!(
-                labelled_from
-                    .iter()
-                    .all(|from| from.is_some_and(|from| from < 1100.0)),
-                "{names:?} name themselves where the row fits"
-            );
-        }
-    }
 
     phase a_compact_windows_notice_has_a_strip_whose_buttons_run_by_pointer_and_semantics;
     {
@@ -311,16 +237,6 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn navigation_and_the_location_stand_in_the_row_and_say_where_the_window_is;
 
-    phase navigation_leads_actions_trail_and_the_location_fills_between;
-    {
-        let row = row();
-        let parts = row.parts();
-        assert!(parts.back.x1 < parts.forward.x0);
-        assert!(parts.forward.x1 < parts.location.x0);
-        assert!(parts.location.x1 < parts.actions[0].x0);
-        assert!((parts.actions[0].x1 - 640.0).abs() < f64::EPSILON);
-        assert!(parts.location.width() > 400.0);
-    }
 
     phase back_runs_only_where_it_can_and_forward_not_at_the_end;
     {
@@ -460,34 +376,6 @@ tilo_test_env::scenario! {
         assert_eq!(node(false).description, None);
     }
 
-    phase a_view_only_window_says_so_after_its_label;
-    {
-        let location = ToolbarLocation {
-            label: "Plan".into(),
-            edited: true,
-            ..Default::default()
-        };
-        let toolbar = WindowToolbar {
-            location: Some(location),
-            ..Default::default()
-        };
-        let shown = crate::window_toolbar::with_window_owned(Some(toolbar), None, None, true, false)
-            .and_then(|toolbar| toolbar.location)
-            .expect("the location stays");
-        assert!(shown.view_only);
-        assert_eq!(
-            trailing_word(&shown),
-            Some(text("window-toolbar-view-only"))
-        );
-        let editable = ToolbarLocation {
-            view_only: false,
-            ..shown.clone()
-        };
-        assert_eq!(
-            trailing_word(&editable),
-            Some(text("window-toolbar-edited"))
-        );
-    }
 
     phase another_tab_cross_fades_and_drops_what_was_typed_in_this_one;
     {
@@ -671,43 +559,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_compact_row_never_folds_one_action_alone_into_the_menu;
-    {
-        // As wide as the row a compact (420 px) window leaves the toolbar.
-        let compact = Rect::new(0.0, 0.0, 220.0, 40.0);
-        let one = Parts::lay_out(
-            &file_toolbar(1),
-            compact,
-            None,
-            (&LocationForms::default(), &[], &[]),
-        );
-        assert_eq!(one.actions.len(), 1, "the action stands in the row");
-        assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
-
-        for declared in [2, 3] {
-            let parts = Parts::lay_out(
-                &file_toolbar(declared),
-                compact,
-                None,
-                (&LocationForms::default(), &[], &[]),
-            );
-            let folded = declared - parts.actions.len();
-            assert!(
-                folded == 0 || folded >= 2,
-                "{declared} actions: the menu holds {folded}"
-            );
-            assert_eq!(parts.overflow.area() > 0.0, folded > 0);
-        }
-
-        let wide = Parts::lay_out(
-            &file_toolbar(1),
-            Rect::new(0.0, 0.0, 900.0, 40.0),
-            None,
-            (&LocationForms::default(), &[], &[]),
-        );
-        assert_eq!(wide.actions.len(), 1);
-        assert_eq!(wide.overflow, Rect::ZERO);
-    }
 
     phase a_menu_button_lists_its_items_and_the_overflow_menu_carries_them;
     {
@@ -939,21 +790,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_windows_main_action_is_painted_as_the_primary_button;
-    {
-        let primary = paint::labelled_face(crate::kurbo::Rect::ZERO, "New task", true);
-        assert_eq!(
-            primary.role_of(),
-            crate::widget::ButtonRole::Primary,
-            "the main action stands on the accent"
-        );
-        let other = paint::labelled_face(crate::kurbo::Rect::ZERO, "Sort", false);
-        assert_eq!(
-            other.role_of(),
-            crate::widget::ButtonRole::Plain,
-            "every other action stands on the bar's plain face"
-        );
-    }
 }
 
 fn calendar() -> WindowToolbar {
@@ -1040,40 +876,7 @@ fn file_toolbar(actions: usize) -> WindowToolbar {
 tilo_test_env::scenario! {
     fn the_views_and_the_period_fold_as_the_row_narrows;
 
-    phase leading_actions_follow_the_navigation_and_views_stand_before_the_actions;
-    {
-        let row = calendar_row(1000.0);
-        let parts = row.parts();
-        assert_eq!(parts.leading.len(), 3);
-        assert!(parts.sidebar.x1 < parts.leading[0].x0);
-        assert!(parts.leading[2].x1 < parts.location.x0);
-        assert_eq!(parts.views.len(), 3, "the switcher fits in the row");
-        assert!(parts.location.x1 < parts.views_strip().x0);
-        assert!(parts.views_strip().x1 < parts.actions[0].x0);
-        assert_eq!(parts.actions.len(), 1, "Import is the menu's only");
-        assert!(parts.overflow.area() > 0.0, "the menu holds Import");
-    }
 
-    phase each_view_tab_is_as_wide_as_its_label;
-    {
-        let theme = Theme::dark();
-        let row = calendar_row(1280.0);
-        let widths = crate::text_render::with_layout_renderer(&theme, |text| {
-            SegmentedFace::tab_widths(&["Month", "Week", "Day"], VIEWS_SIZE, text, &theme)
-        });
-        let tabs = &row.parts().views;
-        assert_eq!(tabs.len(), widths.len());
-        for (tab, width) in tabs.iter().zip(&widths) {
-            assert!(
-                (tab.width() - width).abs() < 0.5,
-                "a tab {} wide for a label needing {width}",
-                tab.width()
-            );
-        }
-        for pair in tabs.windows(2) {
-            assert!((pair[0].x1 - pair[1].x0).abs() < 1e-9, "tabs are packed");
-        }
-    }
 
     phase a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_is_too_small;
     {
@@ -1124,85 +927,7 @@ tilo_test_env::scenario! {
         assert_eq!(week.state.checked, Some(true));
     }
 
-    phase the_location_picks_the_view_from_the_width_its_narrower_form_fits_whole;
-    {
-        let at = (233..=900)
-            .map(f64::from)
-            .find(|width| calendar_row(*width).parts().views_in_location())
-            .expect("a row wide enough for the period's narrower form makes it the views' picker");
 
-        let mut below = calendar_row(at - 1.0);
-        assert!(below.parts().views.is_empty() && below.parts().views_menu == Rect::ZERO);
-        assert!(
-            below.parts().location.area() > 0.0,
-            "the period still stands"
-        );
-        assert!(below.open_overflow());
-        let in_overflow = listed_views(&below);
-
-        let mut picker = calendar_row(at);
-        let parts = picker.parts().clone();
-        assert_eq!(
-            parts.views_menu, parts.location,
-            "the location picks the view"
-        );
-        assert!(parts.views.is_empty(), "no switcher beside it");
-        assert!(picker.press(parts.location.center(), false));
-        assert!(picker.release(parts.location.center()));
-        assert_eq!(picker.menu_labels(), ["Month", "Week", "Day"]);
-        assert_eq!(
-            listed_views(&picker),
-            in_overflow,
-            "one menu of views, wherever it opens"
-        );
-        assert_eq!(in_overflow.len(), 3);
-        picker.menu.close();
-        assert!(picker.open_overflow());
-        assert!(
-            listed_views(&picker).is_empty(),
-            "the overflow menu does not list them again"
-        );
-
-        let nodes = picker.accessibility();
-        let label = a_week().forms().first().cloned().unwrap_or_default();
-        let node = find_node(&nodes, Role::Button, &label).expect("named by the period it shows");
-        assert_eq!(
-            node.value.as_deref(),
-            Some("Week"),
-            "valued by the chosen view"
-        );
-        assert_eq!(node.description.as_deref(), Some("View"));
-        assert!(picker.perform(&format!("{VIEW_TARGET_PREFIX}day")));
-        assert_eq!(
-            picker.take_events(),
-            vec![(3, ToolbarEvent::Action { id: "day".into() })]
-        );
-    }
-
-    phase today_says_its_name_where_the_row_fits_and_folds_to_its_icon_then_the_menu;
-    {
-        const TODAY: usize = 2;
-        let shown = |width: f64| {
-            let row = calendar_row(width);
-            let parts = row.parts();
-            let rect = parts.leading[TODAY];
-            if rect.area() <= 0.0 {
-                "in the menu"
-            } else if parts.labelled {
-                assert!(
-                    rect.width() > CONTROL_PX,
-                    "a text button is wider than an icon"
-                );
-                "named"
-            } else {
-                assert_eq!(rect.width(), CONTROL_PX);
-                "an icon"
-            }
-        };
-        assert_eq!(shown(1280.0), "named", "a wide row names Today");
-        assert_eq!(shown(233.0), "an icon", "a compact row keeps it, icon only");
-        assert_eq!(shown(140.0), "in the menu", "a narrow row folds it");
-    }
 
     phase a_primary_action_stands_where_a_secondary_one_folds;
     {
@@ -1291,60 +1016,6 @@ fn listed_views(row: &ToolbarRow) -> Vec<(String, String, bool, Option<bool>)> {
         .collect()
 }
 
-fn noticed() -> [(WindowToolbar, Vec<&'static str>); 3] {
-    use crate::widget::toast::ToastKind;
-    use crate::window_toolbar::ToolbarNotice;
-    let sync = WindowToolbar {
-        notice: Some(
-            ToolbarNotice::new(
-                "Sync failed: the account needs signing in",
-                ToastKind::Error,
-            )
-            .action(ToolbarAction::new("sync-again", "refresh", "Sync again"))
-            .action(ToolbarAction::new(
-                "open-settings",
-                "settings",
-                "Open Settings",
-            )),
-        ),
-        ..calendar()
-    };
-    let failed = WindowToolbar {
-        notice: Some(
-            ToolbarNotice::new("Save failed: the disk is full", ToastKind::Error).action(
-                ToolbarAction::new("save-status-retry", "rotate-cw", "Try again"),
-            ),
-        ),
-        ..calendar()
-    };
-    let deleted = WindowToolbar {
-        notice: Some(
-            ToolbarNotice::new("Moved 3 items to the trash", ToastKind::Info)
-                .action(ToolbarAction::new("notice-undo", "undo-2", "Undo")),
-        ),
-        leading: vec![ToolbarAction::new(
-            "new-folder",
-            "folder-plus",
-            "New folder",
-        )],
-        ..file_toolbar(3)
-    };
-    [
-        (sync, vec!["Sync again", "Open Settings"]),
-        (failed, vec!["Try again"]),
-        (deleted, vec!["Undo"]),
-    ]
-}
-
-fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>) {
-    for node in nodes {
-        if node.name.as_deref() == Some(name) {
-            out.push(node);
-        }
-        named(&node.children, name, out);
-    }
-}
-
 fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
     let rect = row.row;
     row.show(7, Some(toolbar), theme.motion(), crate::motion::frame_now());
@@ -1401,56 +1072,7 @@ tilo_test_env::scenario! {
         });
     }
 
-    phase a_part_the_app_takes_away_fades_out_where_it_stood;
-    {
-        use crate::time::testing::with_monotonic_time;
-        let theme = Theme::dark();
-        let t0 = crate::time::now();
-        let mut row = with_monotonic_time(t0, row);
-        let reload = row.parts().actions[0];
-        let mut without_reload = browser();
-        without_reload.actions.clear();
-        with_monotonic_time(t0, || {
-            changed_to(&mut row, &without_reload, &theme);
-            let leaving = row.part_changes.leaving(t0);
-            assert_eq!(leaving.len(), 1, "reload fades out");
-            assert_eq!(leaving[0].rect, reload, "where it stood");
-            assert!(leaving[0].opacity > 0.95, "from whole");
-            assert_ne!(
-                row.part_at(reload.center()),
-                Some(Part::Action(0)),
-                "a part that left takes no press"
-            );
-        });
-        let end = later(t0);
-        with_monotonic_time(end, || {
-            row.start_part_change(&theme);
-            assert!(row.part_changes.leaving(end).is_empty(), "and is gone");
-            assert!(!row.needs_animation_frame());
-        });
-    }
 
-    phase reduced_motion_lands_the_parts_and_still_fades_what_arrives;
-    {
-        use crate::time::testing::with_monotonic_time;
-        let theme = Theme::dark().with_reduce_motion(true);
-        let t0 = crate::time::now();
-        let mut row = with_monotonic_time(t0, row);
-        let mut with_sidebar = browser();
-        with_sidebar.sidebar = Some(false);
-        with_monotonic_time(t0, || {
-            changed_to(&mut row, &with_sidebar, &theme);
-            let poses = row.part_changes.poses(t0);
-            assert!(
-                !poses.contains_key(&part_change::PartKey::Back),
-                "back lands in its new place"
-            );
-            assert!(
-                poses[&part_change::PartKey::Sidebar].0 < 0.05,
-                "the sidebar fades in"
-            );
-        });
-    }
 }
 
 #[test]

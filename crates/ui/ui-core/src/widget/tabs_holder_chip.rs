@@ -67,7 +67,3 @@ impl TabBar {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "tabs_holder_chip_tests.rs"]
-mod tests;

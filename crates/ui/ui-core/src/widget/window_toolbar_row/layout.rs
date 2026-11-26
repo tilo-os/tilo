@@ -842,14 +842,6 @@ impl Parts {
             .map(|(index, _)| index)
     }
 
-    #[cfg(test)]
-    pub(crate) fn views_strip(&self) -> Rect {
-        match (self.views.first(), self.views.last()) {
-            (Some(first), Some(last)) => first.union(*last),
-            _ => Rect::ZERO,
-        }
-    }
-
     pub(super) fn hit(&self, p: Point) -> Option<Part> {
         self.hit_where(p, |_| Some(Vec2::ZERO))
     }

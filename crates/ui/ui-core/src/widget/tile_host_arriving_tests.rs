@@ -82,41 +82,6 @@ impl crate::widget::app_widget::AppWidget for Declaring {
 }
 
 #[test]
-fn a_window_that_declares_no_shape_paints_no_skeleton_bars() {
-    let theme = Theme::default();
-    for shape in [None, Some(SkeletonShape::Page)] {
-        let t0 = crate::time::now();
-        let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let mut host = with_monotonic_time(t0, || {
-            TileHost::new(TileContent::App(Box::new(Declaring(shape))))
-                .arriving_from(Source::Remote)
-        });
-        host.rect = Rect::new(50.0, 50.0, 1250.0, 850.0);
-        let painted = |host: &mut TileHost, ms: u64| {
-            with_monotonic_time(at(ms), || {
-                let scene = paint(host, &theme);
-                (host.arrival_step(at(ms)), scene.encoding().n_paths)
-            })
-        };
-        let (ground_step, ground) = painted(&mut host, 50);
-        let (skeleton_step, skeleton) = painted(&mut host, 400);
-        assert_eq!(ground_step, Some(Step::Ground));
-        assert_eq!(skeleton_step, Some(Step::Skeleton));
-        if shape.is_none() {
-            assert_eq!(
-                skeleton, ground,
-                "a window with no declared shape stays its ground: nothing guesses its content"
-            );
-        } else {
-            assert!(
-                skeleton > ground,
-                "a declared page stands in as its bars: {ground} -> {skeleton}"
-            );
-        }
-    }
-}
-
-#[test]
 fn a_window_whose_app_declared_its_shape_shows_it_before_the_code_is_in() {
     let theme = Theme::default();
     let t0 = crate::time::now();

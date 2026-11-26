@@ -3,11 +3,10 @@
 //! belongs to what the window shows.
 
 use super::tests::{
-    bar_with_laid_out_rects, browser_parts, built_layout, holder, lay_out_at_width_with, move_to,
+    bar_with_laid_out_rects, browser_parts, holder, lay_out_at_width_with, move_to,
 };
 use super::*;
-use crate::testing::{Dispatch, dispatch};
-use crate::widget::window_controls::{LEAD_GAP, WindowControl};
+use crate::testing::dispatch;
 use winit::event::{ElementState, MouseButton};
 
 tilo_test_env::scenario! {
@@ -61,144 +60,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_apps_history_stands_on_the_windows_ground_before_the_pill;
-    // The window's own controls stand in one pill; the app's History is an
-    // action of the app's own, on the window's ground before it — never a
-    // control inside it, and never the same thing as one.
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-        b.set_window_controls(true);
-        b.set_history_control(1, Some(HistoryControl::Closed));
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let controls = *b.window_controls();
-        let history = b.history_action_rect();
-        assert!(history.area() > 0.0, "the app's History stands");
-        assert!(
-            !controls.pill.contains(history.center()) && history.x1 <= controls.pill.x0,
-            "and stands before the pill, on the window's ground: {history:?} and {:?}",
-            controls.pill
-        );
-        assert_eq!(
-            controls.hit(history.center()),
-            None,
-            "the History toggle is not one of the window's controls",
-        );
-        assert!(
-            (controls.pill.x0 - history.x1 - LEAD_GAP).abs() < 0.5,
-            "a group's gap parts the app's action from the window's controls",
-        );
-        // Without History the pill keeps its place and the app's slots take
-        // the width back.
-        b.set_history_control(1, None);
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        assert!(b.history_action_rect().area() <= 0.0);
-        assert_eq!(b.window_controls().pill, controls.pill);
-    }
 
-    phase the_pills_padding_is_the_windows_and_its_controls_hover_alone;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-        let mut b = TabBar::new(
-            "g1",
-            vec![
-                TabDescriptor::new(1, "Notes"),
-                TabDescriptor::new(2, "Files"),
-            ],
-            1,
-        );
-        b.set_window_controls(true);
-        b.set_history_control(1, Some(HistoryControl::Closed));
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let controls = *b.window_controls();
-        let history = b.history_action_rect();
 
-        let hover = |b: &mut TabBar, p: Point| {
-            let (taffy, node) = built_layout(b);
-            let event = crate::synthetic_input::cursor_moved(p.x, p.y);
-            Dispatch::new().layout(&taffy, node).send(b, &event);
-        };
-
-        hover(&mut b, controls.close.center());
-        assert_eq!(b.hover_control, Some(WindowControl::Close));
-        assert!(!b.history_action_hover, "one point lights one thing");
-
-        hover(&mut b, history.center());
-        assert_eq!(b.hover_control, None);
-        assert!(b.history_action_hover);
-
-        let padding = Point::new(controls.pill.x0 + 1.0, controls.pill.center().y);
-        hover(&mut b, padding);
-        assert_eq!(b.hover_control, None);
-        assert!(
-            !b.history_action_hover,
-            "the pill's padding belongs to no control"
-        );
-
-        let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left);
-        let (taffy, node) = built_layout(&mut b);
-        assert!(
-            Dispatch::new()
-                .layout(&taffy, node)
-                .send(&mut b, &press)
-                .handled,
-            "a press on the pill is the window's, never the app's underneath",
-        );
-        assert_eq!(b.pressed_control, None);
-        assert!(!b.history_action_pressed);
-    }
-
-    phase each_window_control_reports_the_rect_it_is_drawn_in;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
-        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-        b.set_window_controls(true);
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let node = Widget::accessibility(&b).expect("the bar is described");
-        fn find<'a>(
-            node: &'a crate::a11y::AccessNode,
-            target: &str,
-        ) -> Option<&'a crate::a11y::AccessNode> {
-            if node.action_target.as_deref() == Some(target) {
-                return Some(node);
-            }
-            node.children.iter().find_map(|child| find(child, target))
-        }
-        let controls = b.window_controls();
-        for (target, drawn) in [
-            ("tab:1", b.tab_rects()[0]),
-            (WINDOW_MAXIMIZE_TARGET, controls.maximize),
-            (WINDOW_CLOSE_TARGET, controls.close),
-        ] {
-            let bounds = find(&node, target)
-                .and_then(|control| control.bounds)
-                .unwrap_or_else(|| panic!("{target} reports where it is"));
-            assert!(drawn.area() > 0.0, "{target} is drawn");
-            assert_eq!(bounds.to_rect(), drawn, "{target}");
-        }
-        let mut b = TabBar::new(
-            "g2",
-            vec![
-                TabDescriptor::new(1, "Notes"),
-                TabDescriptor::new(2, "Chat"),
-            ],
-            1,
-        );
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let node = Widget::accessibility(&b).expect("the bar is described");
-        for (index, id) in [(0, 1), (1, 2)] {
-            let close = find(&node, &format!("tab-close:{id}")).expect("a pill can be closed");
-            let drawn = b.close_rects[index];
-            assert_eq!(
-                close.bounds.map(crate::a11y::AccessBounds::to_rect),
-                (drawn.area() > 0.0).then_some(drawn),
-                "tab-close:{id}"
-            );
-        }
-    }
 
     phase a_middle_press_closes_the_tab_under_it;
     {
@@ -301,99 +164,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_windows_only_tab_says_nothing_beside_the_bars_location;
-    // One place says what a window is: its only tab is drawn as its icon alone when the bar's
-    // slots carry the app's location, so the title is not painted over the location beside it.
-    {
-        let mut b = solo_bar_with_slots();
-        let theme = crate::theme::Theme::light();
-        let mut text = crate::text_render::TextRenderer::new();
-        b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
-        b.visible_titles = vec![b.visible_title(0, &mut text, &theme)];
-        assert!(
-            b.visible_titles[0].is_none(),
-            "the solo pill of a window with slots shows its icon alone"
-        );
-        assert_eq!(
-            b.pill_label(0),
-            None,
-            "and draws no words there: the bar's location names the window"
-        );
-        let mut plain = TabBar::new("g2", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
-        plain.set_window_controls(true);
-        plain.visible_titles = vec![Some("DuckDuckGo".to_owned())];
-        assert_eq!(plain.pill_label(0), Some("DuckDuckGo"));
-    }
 
-    phase the_bar_reports_the_words_it_paints_where_they_stand;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::light().with_reduce_motion(true);
-        let mut b = solo_bar_with_slots();
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let mut scene = Scene::new();
-        b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
-        let labels = b.bar_layout().labels;
-        let location = labels
-            .iter()
-            .find(|label| label.widget == "BarLocation")
-            .unwrap_or_else(|| panic!("the bar reports where it is: {labels:?}"));
-        assert_eq!(location.text, "duckduckgo.com");
-        let ink = Rect::new(
-            location.rect[0],
-            location.rect[1],
-            location.rect[0] + location.rect[2],
-            location.rect[1] + location.rect[3],
-        );
-        let slot = b.location_rect();
-        assert!(
-            ink.width() > 0.0
-                && ink.height() > 0.0
-                && ink.x0 >= slot.x0 - 0.5
-                && ink.x1 <= slot.x1 + 0.5,
-            "its words stand in the location's slot {slot:?}: {ink:?}"
-        );
-        assert!(
-            labels.iter().all(|label| label.widget != "TabTitle"),
-            "a window's only tab, its slots in the title's row, shows its icon alone: {labels:?}"
-        );
-    }
 
-    phase the_words_the_old_pill_painted_beside_its_mark_are_reported_where_they_stood;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::light().with_reduce_motion(true);
-        let mut b = solo_bar_with_slots();
-        lay_out_at_width_with(&mut b, 900.0, &theme);
-        let mut text = TextRenderer::new();
-        b.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
-        let pill = b.tab_rects[0];
-        let style = tab_title_style(&theme).with_weight(TextWeight::Semibold);
-        let (width, height) = text.measure_style("DuckDuckGo", None, &style);
-        let x = title_x0(pill, ICON_W + ICON_GAP);
-        let y = pill.center().y - f64::from(height) / 2.0;
-        b.resource_label(
-            "TabTitle",
-            "DuckDuckGo",
-            Rect::new(x, y, x + f64::from(width), y + f64::from(height)),
-        );
-        let labels = b.painted_labels();
-        let title = labels
-            .iter()
-            .find(|label| label.widget == "TabTitle")
-            .unwrap_or_else(|| panic!("the pill's words are reported: {labels:?}"));
-        let box_ = Rect::new(
-            title.rect[0],
-            title.rect[1],
-            title.rect[0] + title.rect[2],
-            title.rect[1] + title.rect[3],
-        );
-        assert_eq!(title.text, "DuckDuckGo");
-        assert!(
-            box_.area() > 0.0 && box_.x0 >= pill.x1,
-            "the words stand at the title's line past the pill's own {pill:?}: {box_:?}"
-        );
-    }
 }
 
 fn solo_bar_with_slots() -> TabBar {

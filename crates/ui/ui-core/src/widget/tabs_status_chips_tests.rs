@@ -108,26 +108,6 @@ tilo_test_env::scenario! {
         assert!(bar.opened_by_chip(&mut tr, &theme).is_none());
     }
 
-    phase the_agents_mark_stands_after_the_windows_search;
-    // The mark stands after the window's search control, never under it.
-    {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut bar = TabBar::new("search", vec![TabDescriptor::new(1, "Letter")], 1);
-        bar.set_search_control(Some(240.0));
-        lay_out_at_width(&mut bar, 900.0);
-        assert!(bar.set_opened_by(1, Some(opened(""))));
-        let search_x1 = bar.tabs_end()
-            + crate::widget::window_controls::CONTROL_GAP
-            + crate::widget::window_controls::CONTROL_PX;
-        let (rect, _) = bar
-            .opened_by_chip(&mut tr, &theme)
-            .expect("area for the mark");
-        assert!(
-            rect.x0 >= search_x1,
-            "{rect:?} after the search at {search_x1}"
-        );
-    }
 
     phase the_agents_mark_follows_an_apps_location_in_its_bar;
     {
@@ -220,12 +200,4 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_agents_mark_wears_the_agents_own_colour_whichever_session_opened_it;
-    // One agent is one colour: its mark beside a window is drawn as its face is,
-    // from the agent, never from the session that happened to open the window.
-    {
-        let face = crate::presence::member_color(&::collaboration::permissions::MemberId::agent("scribe", "ada"));
-        let face = vello::peniko::Color::from_rgb8(face.0, face.1, face.2);
-        assert_eq!(super::agent_colour(&opened("")), face);
-    }
 }

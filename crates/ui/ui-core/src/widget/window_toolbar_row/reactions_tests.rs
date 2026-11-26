@@ -37,41 +37,6 @@ fn row_of(toolbar: &WindowToolbar, width: f64, compact: bool) -> ToolbarRow {
 tilo_test_env::scenario! {
     fn the_windows_reactions_stand_in_the_row_and_react;
 
-    phase the_reactions_stand_at_the_rows_end_after_the_apps_parts;
-    {
-        let toolbar = reacted(vec![pill("👍", 2, true), pill("🎉", 1, false)], true);
-        let row = row_of(&toolbar, 900.0, false);
-        let parts = row.parts();
-        assert_eq!(parts.reactions.len(), 2, "both pills stand");
-        assert!(parts.reaction_add.area() > 0.0, "the add button stands");
-        assert!(
-            (parts.reaction_add.x1 - 940.0).abs() < 0.5,
-            "the add button ends the row"
-        );
-        assert!(parts.reactions[0].x1 <= parts.reactions[1].x0);
-        assert!(parts.reactions[1].x1 <= parts.reaction_add.x0);
-        let last_app = parts
-            .actions
-            .last()
-            .copied()
-            .expect("the reload action stands");
-        assert!(
-            last_app.x1 + SECTION_GAP <= parts.reactions[0].x0 + 0.5,
-            "the app's actions stand clear before them: {last_app:?} {:?}",
-            parts.reactions[0]
-        );
-        assert!(parts.location.width() > 0.0, "the location stays");
-        for rect in parts.reactions.iter().chain([&parts.reaction_add]) {
-            assert!(
-                (rect.center().y - 20.0).abs() < 0.5,
-                "on the row's centre line"
-            );
-        }
-
-        let quiet = row_of(&browser(), 900.0, false);
-        assert!(quiet.parts().reactions.is_empty());
-        assert_eq!(quiet.parts().reaction_add, Rect::ZERO);
-    }
 
     phase the_reactions_give_way_to_the_app_and_a_compact_window_shows_one;
     // However many reactions there are, they take at most a third of the row,

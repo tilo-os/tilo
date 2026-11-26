@@ -98,11 +98,6 @@ use held_controls::HeldControl;
 use opened_by::OpenedByStop;
 
 impl WindowGroup {
-    #[cfg(test)]
-    pub(crate) fn has_width_spring_for_tests(&self) -> bool {
-        self.width_spring.is_some()
-    }
-
     pub(crate) fn offset_layout(&mut self, dx: f64) {
         if dx == 0.0 {
             return;
@@ -121,11 +116,6 @@ impl WindowGroup {
         self.rect_spring
             .as_ref()
             .map_or(self.rect, FrameSpring::value)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn step_rect_spring_for_tests(&mut self) {
-        self.step_rect_spring();
     }
 }
 
@@ -708,11 +698,6 @@ impl WindowGroup {
             self.style_dirty = true;
             self.grip_dirty = true;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn top_overlay_inset(&self) -> f64 {
-        self.top_overlay_inset
     }
 
     fn draw_bar(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
