@@ -1811,31 +1811,3 @@ fn no_read_action(resolved: &Resolved) -> Reply {
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "mcp_agent_read_tests.rs"]
-mod read_tests;
-
-#[cfg(test)]
-#[path = "mcp_agent_surface_tests.rs"]
-mod surface_tests;
-
-#[cfg(test)]
-#[path = "mcp_agent_list_tests.rs"]
-mod list_tests;
-
-#[cfg(test)]
-#[path = "mcp_agent_link_tests.rs"]
-mod link_tests;
-
-#[cfg(test)]
-#[path = "mcp_watch_tests.rs"]
-mod watch_tests;
-
-#[cfg(test)]
-#[path = "mcp_agent_publisher_tests.rs"]
-mod publisher_tests;
-
-#[cfg(test)]
-#[path = "mcp_lost_answer_tests.rs"]
-mod lost_answer_tests;

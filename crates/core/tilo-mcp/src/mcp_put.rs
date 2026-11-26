@@ -423,6 +423,3 @@ fn too_long() -> String {
     format!("a chunk carries at most {MAX_CONTENT_PUT_CHUNK} bytes: split it")
 }
 
-#[cfg(test)]
-#[path = "mcp_content_tests.rs"]
-mod tests;

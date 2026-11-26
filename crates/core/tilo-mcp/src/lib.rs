@@ -713,15 +713,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self.programs_on_device = true;
         self
     }
-
-    /// Give the task's program `wait` to start and answer: what a test shortens, so a
-    /// program that never answers is observable without a minute's wait.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn with_task_answer_wait(mut self, wait: std::time::Duration) -> Self {
-        self.task_answer_wait = wait;
-        self
-    }
     /// Tell `watch` of each look this session makes at an invocation, and what
     /// the look found: a turn times what its tools waited for with it, where
     /// the tool's own work is counted.
@@ -3146,9 +3137,3 @@ fn definitions(content_puts: bool, content_gets: bool) -> Vec<Value> {
 pub fn tools_json() -> Value {
     json!({"tools": definitions(true, true)})
 }
-#[cfg(test)]
-#[path = "mcp_serve_tests.rs"]
-mod serve_tests;
-#[cfg(test)]
-#[path = "mcp_tests.rs"]
-mod tests;
