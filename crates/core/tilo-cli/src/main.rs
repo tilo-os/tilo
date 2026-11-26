@@ -666,7 +666,9 @@ fn command_here(here: Here) -> clap::Command {
         })
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
-                "open" | "action" => !here.desktop,
+                "open" => !here.desktop,
+                // The device's daemon answers its actions with or without a desktop.
+                "action" => !(here.desktop || login::logged_in()),
                 "app" => !here.apps,
                 "device" => !(here.system || nouns::any_present(nouns::DEVICE, here.has)),
                 // A computer logged in as one of the person's devices tells of its folders.

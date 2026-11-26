@@ -16498,6 +16498,7 @@ dependencies = [
  "tilo-action-services",
  "tilo-actions",
  "tilo-files",
+ "tilo-machine",
  "tilo-paths",
  "workspace-hack",
 ]
@@ -16643,6 +16644,7 @@ dependencies = [
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-compositor",
+ "tilo-control",
  "tilo-desktop-model",
  "tilo-device-identity",
  "tilo-device-vpn",

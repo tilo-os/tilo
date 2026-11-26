@@ -25,6 +25,8 @@ libc.workspace = true
 # An answer reads in the order the action gave its fields.
 serde_json = { workspace = true, features = ["preserve_order"] }
 tilo-paths.workspace = true
+# Where this computer's daemon listens, which answers the frames with or without a desktop.
+tilo-machine.workspace = true
 # The action model's frames, which `tilo do` and `tilo open` send, and the
 # published tree's own picking of an action by name.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }

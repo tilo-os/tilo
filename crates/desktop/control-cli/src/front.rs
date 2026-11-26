@@ -4,10 +4,10 @@
 //! `tilo open`, `tilo action …`, `tilo do`, the standalone `action` and
 //! `app open` are all this module. Each sends the action model's own frames
 //! ([`RemoteActionFrame`]) through the first socket that serves this process
-//! ([`crate::client`]): the device admin's socket at their own login, or the
-//! session's MCP server from inside an app such as Terminal, which acts with
-//! that app's workspace scope. Nothing here picks authority or a workspace;
-//! the desktop decides both.
+//! ([`crate::client`]): the device admin's socket at their own login, else
+//! the device's daemon, which answers as whoever the kernel says is calling
+//! whether or not a desktop session runs. Nothing here picks authority or a
+//! workspace; the device decides both.
 //!
 //! An action is named by its id (`new-window`), or its title
 //! (`new-terminal-window`), as the published tree picks them
@@ -87,15 +87,13 @@ pub struct Io<'a> {
 #[must_use]
 pub fn unreachable_sentence(why: &Unreachable) -> String {
     match why {
-        Unreachable::NoDesktop => "This needs a Tilo desktop session.".into(),
-        Unreachable::Refused {
-            socket: ControlSocket::Agent(_),
-            ..
-        } => "The desktop didn't let this terminal use its actions.".into(),
+        Unreachable::NoDesktop => {
+            "Tilo isn't answering on this computer. Run `tilo status` to see how it stands.".into()
+        }
         Unreachable::Refused { .. } => {
             "The desktop didn't let this program use its actions.".into()
         }
-        Unreachable::Io { .. } => "The desktop stopped answering. Try again.".into(),
+        Unreachable::Io { .. } => "Tilo stopped answering. Try again.".into(),
     }
 }
 
@@ -347,17 +345,6 @@ fn find<'a>(rows: &'a [Offer], name: &str, spelling: &Spelling) -> Result<&'a Of
 pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
     let mut desktop = match Desktop::connect(sockets) {
         Ok(desktop) => desktop,
-        // A desktop is where this desktop's actions are; a hosted workspace
-        // lists what it holds with `tilo ls`, which is the command to reach
-        // instead when there is no session here.
-        Err(Unreachable::NoDesktop) => {
-            let _ = writeln!(
-                io.err,
-                "This needs a Tilo desktop session. In a hosted workspace, `tilo ls -w <workspace>` \
-                 lists what it holds."
-            );
-            return 1;
-        }
         Err(why) => return said(Err(unreachable_sentence(&why)), io),
     };
     let rows = match offered(&mut desktop, filter.trim(), spelling) {

@@ -339,17 +339,16 @@ fn open_finds_an_app_by_name_and_opens_files_in_it() {
     assert_eq!(complete_apps(&sockets, "no"), ["notes"]);
 }
 
-/// From inside an app the admin socket turns the process away, and the
-/// same frames go to the session's MCP server, which acts with that app's
-/// scope.
+/// Where the admin socket turns the process away, the same frames go to the
+/// device's daemon, which answers as whoever the kernel says is calling.
 #[test]
-fn inside_an_app_the_frames_go_to_the_mcp_server() {
+fn a_process_the_admin_socket_turns_away_is_answered_by_the_daemon() {
     let dir = tempfile::tempdir().expect("tempdir");
     let admin = refusing_admin(dir.path());
-    let agent = FakeDesktop::serve(dir.path(), "agent.sock");
+    let agent = FakeDesktop::serve(dir.path(), "native.sock");
     let sockets = [
         ControlSocket::Admin(admin),
-        ControlSocket::Agent(agent.path.clone()),
+        ControlSocket::Daemon(agent.path.clone()),
     ];
     let done = ran(|io| {
         run(
@@ -366,13 +365,12 @@ fn inside_an_app_the_frames_go_to_the_mcp_server() {
 }
 
 #[test]
-fn the_listing_without_a_desktop_names_the_hosted_way() {
+fn the_listing_with_no_daemon_answering_says_how_to_look() {
     let listed = ran(|io| list(&[], "", &Spelling::tilo(), io));
     assert_eq!(listed.code, 1);
     assert_eq!(
         listed.err,
-        "This needs a Tilo desktop session. In a hosted workspace, `tilo ls -w <workspace>` lists \
-         what it holds.\n"
+        "Tilo isn't answering on this computer. Run `tilo status` to see how it stands.\n"
     );
 }
 

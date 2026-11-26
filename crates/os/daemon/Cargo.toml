@@ -175,6 +175,8 @@ tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
 tilo-mcp = { path = "../../core/tilo-mcp", features = ["test-support"] }
 # A device's shell session, which the daemon's shell runs attach to.
 tilo-session-client = { path = "../../core/session-client" }
+# `tilo do` as a person types it, reaching the daemon's one socket.
+tilo-control = { path = "../../desktop/control-cli" }
 # The desktop layout and its ownership, which the session's windows are read as.
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
 # The Files record a test's device keeps, and the tree its writes are read back from.

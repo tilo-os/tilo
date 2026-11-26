@@ -401,40 +401,12 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
-    use std::io::BufRead as _;
     host::in_own_process(|profile| {
-        let mut shell = std::process::Command::new("/bin/sh");
-        // The shell says the secret it was given, then waits: the link is the one that secret
-        // redeems.
-        shell
-            .args(["-c", "echo \"$TILO_SHELL_TOKEN\"; sleep 120"])
-            .stdout(std::process::Stdio::piped());
-        let mut session =
-            tilo_runtime::daemon::ShellSession::start(profile, shell, Duration::from_secs(120))
-                .unwrap();
-        let socket = session.native_socket().to_owned();
-        let mut said = String::new();
-        std::io::BufReader::new(
-            session
-                .shell()
-                .expect("the session's shell")
-                .stdout
-                .take()
-                .unwrap(),
-        )
-        .read_line(&mut said)
-        .unwrap();
-        let token = said.trim();
-        assert_eq!(token.len(), 64, "the shell is given one one-use secret");
-        let link = tilo_session_client::daemon_documents::link_from_token(&socket, token)
-            .expect("the secret admits the shell's link");
-        let link = std::os::unix::net::UnixStream::from(link);
-        link.set_nonblocking(true).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let (shell, _) = ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
+        let (session, socket, shell) = started_shell(profile, &runtime);
         let answered =
             runtime.block_on(shell.call(runtime_collab::wire::shell::ShellCall::Workspaces));
         assert!(
@@ -453,5 +425,104 @@ fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
             !socket.exists(),
             "the endpoint is gone once the session stopped"
         );
+    });
+}
+
+/// A started shell session's link, as the shell it starts redeems it: the session, the daemon's
+/// endpoint, and the shell's end of its link on `runtime`.
+#[cfg(target_os = "linux")]
+fn started_shell(
+    profile: &std::path::Path,
+    runtime: &tokio::runtime::Runtime,
+) -> (
+    tilo_runtime::daemon::ShellSession,
+    std::path::PathBuf,
+    ShellClient,
+) {
+    use std::io::BufRead as _;
+    let mut shell = std::process::Command::new("/bin/sh");
+    // The shell says the secret it was given, then waits: the link is the one that secret
+    // redeems.
+    shell
+        .args(["-c", "echo \"$TILO_SHELL_TOKEN\"; sleep 120"])
+        .stdout(std::process::Stdio::piped());
+    let mut session =
+        tilo_runtime::daemon::ShellSession::start(profile, shell, Duration::from_secs(120))
+            .unwrap();
+    let socket = session.native_socket().to_owned();
+    let mut said = String::new();
+    std::io::BufReader::new(
+        session
+            .shell()
+            .expect("the session's shell")
+            .stdout
+            .take()
+            .unwrap(),
+    )
+    .read_line(&mut said)
+    .unwrap();
+    let token = said.trim();
+    assert_eq!(token.len(), 64, "the shell is given one one-use secret");
+    let link = tilo_session_client::daemon_documents::link_from_token(&socket, token)
+        .expect("the secret admits the shell's link");
+    let link = std::os::unix::net::UnixStream::from(link);
+    link.set_nonblocking(true).unwrap();
+    let _inside = runtime.enter();
+    let (shell, _) = ShellClient::open(tokio::net::UnixStream::from_std(link).unwrap());
+    (session, socket, shell)
+}
+
+/// `tilo do` where no desktop's socket answers reaches the device's daemon, which answers the
+/// person's actions there: it no longer says a desktop session is needed.
+#[cfg(target_os = "linux")]
+#[test]
+fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
+    host::in_own_process(|profile| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (session, socket, shell) = started_shell(profile, &runtime);
+        // A fresh device holds no workspace until its shell founds the person's first, as the
+        // desktop does when it starts.
+        let mut first = Map::new();
+        first.insert("name".into(), json!("Home"));
+        first.insert("id".into(), json!(uuid::Uuid::new_v4().to_string()));
+        runtime
+            .block_on(shell.dispatch().settled(
+                None,
+                tilo_session_client::workspace_view::request(
+                    RemoteActionTarget {
+                        provider: tilo_action_policy::agent_answers::ACCOUNT_APP.into(),
+                        address: ActionAddress::new(
+                            tilo_peer_state::workspace_view::LIST,
+                            tilo_peer_state::workspace_view::CREATE,
+                        ),
+                    },
+                    first,
+                ),
+            ))
+            .expect("the shell founds the person's first workspace");
+
+        // `tilo do`, as the person types it, with no desktop's socket anywhere.
+        let daemon = [tilo_control::client::ControlSocket::Daemon(socket)];
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = tilo_control::front::run(
+            &daemon,
+            "layout#read",
+            &[],
+            true,
+            &tilo_control::front::Spelling::tilo(),
+            &mut tilo_control::front::Io {
+                out: &mut out,
+                err: &mut err,
+            },
+        );
+        let (out, err) = (String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+        assert_eq!(code, 0, "the daemon answers the person's call: {err}");
+        let answered: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(answered["status"], "ok", "{out}");
+        session.stop().unwrap();
     });
 }
