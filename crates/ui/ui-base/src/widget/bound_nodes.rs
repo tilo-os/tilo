@@ -37,16 +37,16 @@ fn widget_scope(widget: &dyn Widget, inherited: Scope) -> Scope {
 }
 
 /// One admitted node: the live widget at it, and the component it answers to.
-pub(crate) struct BoundNode {
-    pub(crate) pointer: *mut dyn Widget,
-    pub(crate) semantic_name: String,
-    pub(crate) binding: Scope,
-    pub(crate) inactive: bool,
+pub struct BoundNode {
+    pub pointer: *mut dyn Widget,
+    pub semantic_name: String,
+    pub binding: Scope,
+    pub inactive: bool,
 }
 
 /// What entering a widget for a walk ([`enter_widget`]) holds open until it drops: with the model,
 /// the scope of the component the widget is.
-pub(crate) struct NodeEntry {
+pub struct NodeEntry {
     _scope: EntryScope,
 }
 

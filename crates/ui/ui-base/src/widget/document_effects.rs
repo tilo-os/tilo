@@ -8,10 +8,10 @@ use super::{ResourceOperation, ResourceOperationStart};
 use automerge::{AutoCommit, ChangeHash};
 
 pub struct AppliedDocument<'a> {
-    pub(crate) invocation: tilo_actions::InvocationId,
-    pub(crate) before: &'a [ChangeHash],
-    pub(crate) document: &'a AutoCommit,
-    pub(crate) output: tilo_actions::ActionOutput,
+    pub invocation: tilo_actions::InvocationId,
+    pub before: &'a [ChangeHash],
+    pub document: &'a AutoCommit,
+    pub output: tilo_actions::ActionOutput,
 }
 
 impl AppliedDocument<'_> {

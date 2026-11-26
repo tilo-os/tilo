@@ -202,7 +202,7 @@ impl ControlDomain {
     pub fn same_owner_incarnation(&self, other: &Self) -> bool {
         self.0.borrow().incarnation == other.0.borrow().incarnation
     }
-    pub(crate) fn inherit_owner(&self, parent: &Self) -> Result<(), AttachError> {
+    pub fn inherit_owner(&self, parent: &Self) -> Result<(), AttachError> {
         let parent = parent.0.borrow();
         let mut state = self.0.borrow_mut();
         if state.closed || parent.closed {
@@ -673,9 +673,9 @@ impl RawControlSlot {
 }
 #[derive(Default)]
 pub struct RegisteredControls {
-    pub(crate) outer: VecDeque<ControlInvocation>,
+    pub outer: VecDeque<ControlInvocation>,
     #[cfg(feature = "model")]
-    pub(crate) components: Vec<(ComponentControl, ControlInvocation)>,
+    pub components: Vec<(ComponentControl, ControlInvocation)>,
 }
 impl ControlDomain {
     pub fn drain_partitioned(&self) -> RegisteredControls {

@@ -18,9 +18,9 @@ pub(crate) const AIM_HOLD: Duration = Duration::from_millis(300);
 /// One item of the row, as laid out now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Item {
-    pub(crate) idx: usize,
-    pub(crate) edge: f64,
-    pub(crate) controls: Rect,
+    pub idx: usize,
+    pub edge: f64,
+    pub controls: Rect,
 }
 
 impl Item {
@@ -32,10 +32,10 @@ impl Item {
 /// What the host knows about one pointer sample.
 #[derive(Clone, Copy, Debug)]
 pub struct Sample<'a> {
-    pub(crate) p: Point,
-    pub(crate) under: Option<Item>,
-    pub(crate) open: Option<Item>,
-    pub(crate) controls: &'a [Rect],
+    pub p: Point,
+    pub under: Option<Item>,
+    pub open: Option<Item>,
+    pub controls: &'a [Rect],
 }
 
 /// Why an open item stays open while the pointer is outside it.

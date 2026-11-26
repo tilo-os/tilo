@@ -472,7 +472,7 @@ impl<T, E> Arriving<T, E> {
     }
 
     /// Which read this is: the same for every clone of it, and for no other read while it lives.
-    pub(crate) fn identity(&self) -> usize {
+    pub fn identity(&self) -> usize {
         Arc::as_ptr(&self.began).addr()
     }
 

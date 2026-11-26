@@ -748,7 +748,7 @@ impl HistoryHost {
                 let observation = crate::bound_dispatch::control_observation(
                     live,
                     doc,
-                    &control.origin.target(),
+                    &super::pending_controls::origin_target(&control.origin),
                     &control.invocation,
                 )
                 .map_err(|error| error.to_string());

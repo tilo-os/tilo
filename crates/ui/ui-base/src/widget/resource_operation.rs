@@ -200,7 +200,7 @@ impl<'a> ResourceOperation<'a> {
         self
     }
 
-    pub(crate) fn with_resource(mut self, resource: &'a str) -> Self {
+    pub fn with_resource(mut self, resource: &'a str) -> Self {
         self.resource = Some(resource);
         self
     }

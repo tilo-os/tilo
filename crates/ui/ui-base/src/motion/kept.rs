@@ -223,7 +223,7 @@ pub fn closing_window() -> ClosingWindow {
 }
 
 /// Ends what [`closing_window`] began.
-pub(crate) struct ClosingWindow(());
+pub struct ClosingWindow(());
 
 impl Drop for ClosingWindow {
     fn drop(&mut self) {

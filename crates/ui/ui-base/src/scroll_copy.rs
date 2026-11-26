@@ -215,7 +215,7 @@ fn roles<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<ScrollRole<'a>> 
 /// What a relayout (and a rebuild a widget described) changed besides what scroll copies
 /// move.
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct Moves {
+pub struct Moves {
     /// The old and new box of every widget that moved or resized otherwise, and the box
     /// of every widget that came or went outside a scrolled content: a frame with any
     /// repaints as it would without copies.

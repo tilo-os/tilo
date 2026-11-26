@@ -50,7 +50,7 @@ pub fn laying_out_frame() -> LayingOutFrame {
 }
 
 /// Ends what [`laying_out_frame`] began.
-pub(crate) struct LayingOutFrame(());
+pub struct LayingOutFrame(());
 
 impl Drop for LayingOutFrame {
     fn drop(&mut self) {
@@ -102,7 +102,7 @@ pub(crate) fn debug_assert_frame_instant(now: Instant) {
 }
 
 /// Restores the frame clock [`pin_frame`] pinned.
-pub(crate) struct PinnedFrame(Option<Instant>);
+pub struct PinnedFrame(Option<Instant>);
 
 impl Drop for PinnedFrame {
     fn drop(&mut self) {
@@ -190,7 +190,7 @@ impl Drop for Owning {
 /// A surface on this thread that is not an app's: told apart from every other on the motion clock, and
 /// from the apps, whose surfaces are the addresses of their state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MotionSurface(pub(crate) usize);
+pub struct MotionSurface(pub usize);
 
 impl MotionSurface {
     /// A surface no other is.

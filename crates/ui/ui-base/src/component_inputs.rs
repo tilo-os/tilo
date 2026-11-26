@@ -338,7 +338,7 @@ impl Reads {
 
     /// What `self`, a later pass, read, and what the earlier passes read that it did not read again: a
     /// view may still show what an earlier pass read, while its checks skip reading it again.
-    pub(crate) fn carry(mut self, earlier: Self) -> Self {
+    pub fn carry(mut self, earlier: Self) -> Self {
         self.take(earlier.probes, true);
         self
     }

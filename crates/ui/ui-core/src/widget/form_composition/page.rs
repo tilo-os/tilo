@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use super::{
     Actions, Effective, Element, Form, FormSection, HashMap, LayoutInfo, LayoutOrigin, NodeId,
-    PageLayout, Parts, Point, Rect, Scrollable, TaffyTree, Text, TextRenderer, TextRole, Theme,
+    PageLayout, Parts, Point, Scrollable, TaffyTree, Text, TextRenderer, TextRole, Theme,
     Widget, column_style, fr, length, minmax, percent, spacing,
 };
 use tilo_ui_base::tokens::Rhythm;
