@@ -370,12 +370,6 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
         (
             HOST_ACTIONS_PROVIDER,
             HOST_WORKSPACES_RESOURCE.to_owned(),
-            LIST_WORKSPACES,
-            serde_json::json!({}),
-        ),
-        (
-            HOST_ACTIONS_PROVIDER,
-            HOST_WORKSPACES_RESOURCE.to_owned(),
             CREATE_WORKSPACE,
             serde_json::json!({ "name": "Squatter" }),
         ),
@@ -393,6 +387,44 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_workspace() {
             "Ann ran {provider} {action} on Globex: {answer:?}"
         );
     }
+
+    // The host's list of workspaces answers Ann with her own alone: Acme, and nothing of
+    // Globex, neither its name, its id nor a row that counts it.
+    let listed = action_answer(
+        &ann,
+        invocation(
+            HOST_ACTIONS_PROVIDER,
+            HOST_WORKSPACES_RESOURCE.to_owned(),
+            LIST_WORKSPACES,
+            serde_json::json!({}),
+        ),
+    )
+    .await;
+    let RemoteActionMessage::Receipt(receipt) = &listed else {
+        panic!("the host answers Ann's list with a receipt: {listed:?}");
+    };
+    let ReceiptStatus::Completed { output } = &receipt.status else {
+        panic!("Ann lists the workspaces she is in: {listed:?}");
+    };
+    let rows = output
+        .value
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .expect("the list is a list of workspaces");
+    let ids: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row["workspace"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [t.acme.workspace.as_str()],
+        "Ann's own workspace alone: {rows:?}"
+    );
+    let text = serde_json::to_string(rows).unwrap();
+    assert!(
+        !text.contains(globex) && !text.contains("Globex"),
+        "nothing of Globex reaches Ann: {text}"
+    );
 
     // Removing a member is refused.
     removal_refused(
@@ -628,7 +660,7 @@ async fn an_agent_never_administers_and_reaches_no_workspace_outside_its_grant()
     let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
     // The host's person's agent, under a key their root certified for Acme alone.
-    let agent = t.provider.enrol(
+    let agent = t.provider.agent_key(
         "acme-agent",
         DeviceCapabilities::agent_grant(AgentScope::agent_in(
             *t.acme.workspace_id.as_uuid().as_bytes(),

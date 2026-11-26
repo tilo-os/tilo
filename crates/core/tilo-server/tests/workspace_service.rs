@@ -22,7 +22,7 @@ use tilo_delivery_protocol::workspace_join::ServedWorkspace;
 use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
+use tilo_server::service::ServiceConfig;
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
@@ -411,22 +411,12 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
         "no workspace is hosted here yet"
     );
 
+    // The laptop's own service, which founds and seals as the laptop's device, answers on the
+    // router's endpoint once it is installed.
     let state = tempfile::tempdir().unwrap();
-    let service = Arc::new(
-        WorkspaceService::open(
-            ServiceConfig::new(state.path().to_path_buf(), WorkSetting::none()),
-            ServiceIdentity {
-                user_public_key: alice.user_pk,
-                device_signing_key: laptop.sk.clone(),
-                device_cert: laptop.cert.clone(),
-                revocations: RevocationList::new(),
-            },
-            endpoint.clone(),
-            None,
-        )
-        .await
-        .unwrap(),
-    );
+    let (service, _keys) =
+        crate::common::laptop_service_at(state.path(), &laptop, endpoint.clone()).await;
+    let service = Arc::new(service);
     // A workspace the laptop made is served here before any device asks for it.
     let home = service.workspaces().create("Home").await.unwrap();
     slot.install(Arc::clone(&service));

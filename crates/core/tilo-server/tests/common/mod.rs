@@ -132,6 +132,25 @@ impl TestUser {
         sign_device_cert(&mut cert, &self.user_sk).unwrap();
         TestDevice { sk: dev_sk, cert }
     }
+
+    /// Certify a key for an agent's grant `caps`: issued now and expiring within the day, as
+    /// every grant that is no server key must.
+    pub fn agent_key(&self, label: &str, caps: DeviceCapabilities) -> TestDevice {
+        let (dev_sk, dev) = DeviceIdentity::generate(label, 100);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: self.user_pk,
+            device_public_key: dev.public_key,
+            device_label: dev.label,
+            capabilities: caps,
+            issued_at_ns: now,
+            expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+            signature: [0u8; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &self.user_sk).unwrap();
+        TestDevice { sk: dev_sk, cert }
+    }
 }
 
 /// A "device" — signing key + signed cert.
@@ -1237,6 +1256,18 @@ pub async fn own_service(
     tilo_server::service::WorkspaceService,
     tilo_workspace_service::own_device::KeyService,
 ) {
+    laptop_service_at(state, laptop, device_endpoint(laptop).await).await
+}
+
+/// The laptop's own service, as `own_service` opens it, on `endpoint`, the endpoint a router built before the service answers on.
+pub async fn laptop_service_at(
+    state: &std::path::Path,
+    laptop: &TestDevice,
+    endpoint: iroh::Endpoint,
+) -> (
+    tilo_server::service::WorkspaceService,
+    tilo_workspace_service::own_device::KeyService,
+) {
     let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
         std::sync::Arc::new(laptop.sk.clone());
     let keys = tilo_workspace_service::own_device::KeyService::open(
@@ -1254,7 +1285,7 @@ pub async fn own_service(
             signer: &signer,
             itself: None,
         },
-        device_endpoint(laptop).await,
+        endpoint,
         keys.groups(),
         |config| config,
     )
