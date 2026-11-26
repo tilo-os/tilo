@@ -1479,6 +1479,10 @@ pub mod test_support {
     }
     /// Content that holds items, one of which has the keyboard: a list whose
     /// focused row stands at `anchor`.
+    #[tilo_ui_base::component::not_a_component(
+        framework,
+        "a test's list whose focused row has the keyboard"
+    )]
     pub struct RowWithTheKeyboard {
         pub inner: Spacer,
         pub anchor: Rect,
