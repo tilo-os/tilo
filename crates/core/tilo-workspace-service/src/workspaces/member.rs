@@ -1823,28 +1823,8 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Keep a locally drafted document, using its authenticated writer, and
-    /// carry it on the workspace's link.
-    pub(super) fn retain_local_document(
-        &self,
-        workspace_id: WorkspaceId,
-        author: [u8; 32],
-        app: &str,
-        document: &str,
-        readers: Option<&str>,
-        envelope: &SignedOp,
-    ) -> Result<NeighbourMsg, String> {
-        let message =
-            Self::local_document_message(workspace_id, author, app, document, readers, envelope)?;
-        let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-        self.inner
-            .records
-            .carry(workspace_id, author, &HostCommit { body })?;
-        Ok(message)
-    }
-
     /// The frame a write of `author`'s goes out as.
-    fn local_document_message(
+    pub(super) fn local_document_message(
         workspace_id: WorkspaceId,
         author: [u8; 32],
         app: &str,

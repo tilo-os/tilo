@@ -81,6 +81,67 @@ fn a_store_a_hard_stop_left_answers_from_its_index() {
     );
 }
 
+/// A batch of writes to one record keeps each write as it is taken and the record's snapshot
+/// once, as the batch ends: a process killed inside the batch starts again with every write it
+/// took, read from the document, and one killed after it starts from the snapshot.
+#[test]
+fn a_batch_keeps_each_write_and_the_snapshot_once() {
+    const WRITES: usize = 50;
+    let dir = tempfile::tempdir().unwrap();
+    let id = tilo_server_protocol::WorkspaceId::new();
+    let file = dir.path().join("workspace.workspace");
+    let kind = "task";
+    let doc = format!("*/{kind}#0");
+    let put = |resources: &mut super::Resources, index: usize| {
+        let before = resources.heads(&doc);
+        {
+            let mut store = resources.store();
+            let resource = Resource {
+                readers: "*".into(),
+                parent: None,
+                order: None,
+                fields: BTreeMap::from([(
+                    "title".to_owned(),
+                    Cell::One(Value::Text(format!("Task {index}"))),
+                )]),
+            };
+            store
+                .put(kind, &format!("t{index}"), resource, &Stamp::default())
+                .unwrap();
+        }
+        resources.kept(&doc, &before).unwrap();
+    };
+    let count = |resources: &super::Resources| resources.store().count(kind, &[], &|_| true);
+
+    let mut resources = super::Resources::open(&file, id);
+    put(&mut resources, 0);
+    resources.batch();
+    for index in 1..WRITES {
+        put(&mut resources, index);
+    }
+    // Killed inside the batch.
+    std::mem::forget(resources);
+    let mut reopened = super::Resources::open(&file, id);
+    assert_eq!(
+        count(&reopened),
+        WRITES,
+        "every write taken is there after the start"
+    );
+
+    reopened.batch();
+    put(&mut reopened, WRITES);
+    reopened.batch_kept();
+    std::mem::forget(reopened);
+    let reopened = super::Resources::open(&file, id);
+    let store = reopened.store();
+    assert_eq!(
+        store.in_memory(),
+        0,
+        "the start read the snapshot the batch kept"
+    );
+    assert_eq!(store.count(kind, &[], &|_| true), WRITES + 1);
+}
+
 /// A document whose id is longer than a file system names one file is kept, and read again by
 /// the next start, as any other is.
 #[test]

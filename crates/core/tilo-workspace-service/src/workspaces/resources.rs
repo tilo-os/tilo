@@ -129,6 +129,10 @@ pub(super) struct Resources {
     /// The writes of actions across several documents that are not all here yet, by the action's
     /// commit id: the store takes an action's writes together, once every one of them is here.
     actions: BTreeMap<[u8; 32], Vec<ActionWrite>>,
+    /// Whether a batch of writes is being kept ([`Self::batch`]), and whether one of them
+    /// changed a document: its snapshot and the views of it are brought up to date once, as the
+    /// batch ends.
+    batch: Option<bool>,
 }
 
 /// One write of an action across several documents, held until the action's other writes are
@@ -272,7 +276,31 @@ impl Resources {
             live_shown: None,
             transfers: tilo_peer_state::document_frame::Transfers::default(),
             actions: BTreeMap::new(),
+            batch: None,
         }
+    }
+
+    /// Keep the writes until [`Self::batch_kept`] as one batch: each is in its document's file
+    /// as it is taken, and the document's snapshot, the queries apps keep open and the live rows
+    /// are brought up to date once, when the batch ends. A record's snapshot is the index of all
+    /// it contains, so writing it for every write made an import of `n` writes take time in `n²`.
+    pub(super) fn batch(&mut self) {
+        self.batch.get_or_insert(false);
+    }
+
+    /// End the batch [`Self::batch`] began.
+    pub(super) fn batch_kept(&mut self) {
+        if self.batch.take() != Some(true) {
+            return;
+        }
+        let docs: Vec<String> = self.unsnapshotted.iter().cloned().collect();
+        for doc in docs {
+            if let Err(error) = self.write_snapshot(&doc) {
+                tracing::warn!(%doc, %error, "a resource document's snapshot was not kept");
+            }
+        }
+        self.tell_opened();
+        self.publish_live();
     }
 
     /// Whether the store holds the resource `id` of `kind`.
@@ -460,6 +488,13 @@ impl Resources {
         }
         .map_err(|error| error.to_string())?;
         self.used.insert(doc.to_owned(), tilo_clock::now());
+        if let Some(changed) = &mut self.batch {
+            // A start that finds no snapshot reads the document whole, as it is now.
+            *changed = true;
+            self.unsnapshotted.insert(doc.to_owned());
+            self.evict_idle();
+            return Ok(());
+        }
         match self.write_snapshot(doc) {
             Ok(()) => {}
             Err(error) => {
@@ -1573,7 +1608,17 @@ impl Workspaces {
         if !still_live(hosted) {
             return Err("the resource writer is no longer authorized".into());
         }
-        self.keep_resource_write(hosted, device, app, (write, true), &envelope, true)
+        let messages = Self::resource_write_messages(
+            hosted.workspace_id(),
+            device.device(),
+            app,
+            write,
+            &envelope,
+        )?;
+        self.inner
+            .records
+            .carry_all(hosted.workspace_id(), device.device(), &messages)?;
+        self.keep_resource_write(hosted, device, app, (write, true), messages, true)
             .await
     }
 
@@ -1677,13 +1722,37 @@ impl Workspaces {
         Ok(envelopes)
     }
 
+    /// The frames `write`'s `envelopes` go out as, `author`'s for `app`: what
+    /// [`crate::workspace_documents::WorkspaceDocuments::carry_all`] keeps before the store
+    /// takes them.
+    fn resource_write_messages(
+        workspace_id: tilo_server_protocol::WorkspaceId,
+        author: [u8; 32],
+        app: &str,
+        write: &tilo_resource_store::Written,
+        envelopes: &[collab_types::SignedOp],
+    ) -> Result<Vec<neighbour_wire::NeighbourMsg>, String> {
+        let document = &write.doc;
+        let named = (collab_types::is_store_document(document)
+            && write.readers != collab_types::EVERY_MEMBER)
+            .then_some(write.readers.as_str());
+        envelopes
+            .iter()
+            .map(|envelope| {
+                Self::local_document_message(workspace_id, author, app, document, named, envelope)
+            })
+            .collect()
+    }
+
+    /// Have the store take `write`, whose frames `messages` are kept already, and send them to
+    /// every device that follows the workspace.
     async fn keep_resource_write(
         &self,
         hosted: &mut HostedWorkspace,
         device: &super::MemberDevice,
         app: &str,
         (write, whole): (&tilo_resource_store::Written, bool),
-        envelopes: &[collab_types::SignedOp],
+        messages: Vec<neighbour_wire::NeighbourMsg>,
         compact: bool,
     ) -> Result<(), String> {
         let author = device.device();
@@ -1694,20 +1763,10 @@ impl Workspaces {
                 .check_write(write, author)
                 .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         }
-        let named = (collab_types::is_store_document(document)
-            && write.readers != collab_types::EVERY_MEMBER)
-            .then_some(write.readers.as_str());
-        for (index, envelope) in envelopes.iter().enumerate() {
+        let count = messages.len();
+        for (index, message) in messages.into_iter().enumerate() {
             // The store takes the change with its last segment.
-            let last = index.saturating_add(1) == envelopes.len();
-            let message = self.retain_local_document(
-                hosted.workspace_id(),
-                author,
-                app,
-                document,
-                named,
-                envelope,
-            )?;
+            let last = index.saturating_add(1) == count;
             let neighbour_wire::NeighbourMsg::AppDocument {
                 envelope, readers, ..
             } = &message
@@ -1728,7 +1787,7 @@ impl Workspaces {
                 self.follow_write(
                     hosted,
                     author,
-                    message.clone(),
+                    message,
                     (app.to_owned(), document.clone()),
                     compact && last,
                 )
@@ -2027,6 +2086,19 @@ impl Workspaces {
     /// document's write.
     #[cfg(feature = "apps")]
     pub async fn resource_command(
+        &self,
+        context: &tilo_broker_core::services::ResourceRequestContext,
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
+        let step = store_step(&command);
+        let answering = crate::timing::start();
+        let answer = self.answer_resource_command(context, command).await;
+        crate::timing::window(step, answering);
+        answer
+    }
+
+    #[cfg(feature = "apps")]
+    async fn answer_resource_command(
         &self,
         context: &tilo_broker_core::services::ResourceRequestContext,
         mut command: collab_types::store::wire::Command,
@@ -2398,14 +2470,33 @@ impl Workspaces {
         // one action.
         tokio::spawn(async move {
             let result = async {
-                for (index, (write, envelopes)) in writes.iter().zip(&requests).enumerate() {
+                // Every frame of the batch is kept, with one wait for the disk, before the store
+                // takes the first: the batch was checked whole above.
+                let author = device.device();
+                let mut messages = Vec::with_capacity(requests.len());
+                for (write, envelopes) in writes.iter().zip(&requests) {
+                    messages.push(Self::resource_write_messages(
+                        hosted.workspace_id(),
+                        author,
+                        &app,
+                        write,
+                        envelopes,
+                    )?);
+                }
+                workspaces.inner.records.carry_all(
+                    hosted.workspace_id(),
+                    author,
+                    &messages.iter().flatten().cloned().collect::<Vec<_>>(),
+                )?;
+                hosted.resources.batch();
+                for (index, (write, messages)) in writes.iter().zip(messages).enumerate() {
                     workspaces
                         .keep_resource_write(
                             &mut hosted,
                             &device,
                             &app,
                             (write, whole),
-                            envelopes,
+                            messages,
                             // Compaction can consume a sequence the batch already drafted.
                             index.saturating_add(1) == requests.len(),
                         )
@@ -2414,6 +2505,7 @@ impl Workspaces {
                 Ok(Reply::Written)
             }
             .await;
+            hosted.resources.batch_kept();
             let _ = complete.send(result);
         });
         answer
@@ -2823,6 +2915,28 @@ fn stamp_resource_invoker(
     }
     device.0.clone_into(&mut stamp.device);
     device.1.clone_into(&mut stamp.device_name);
+}
+
+/// The timing step an app's store command is counted under ([`crate::timing::window`]): a
+/// capacity run reads which commands an app's work spends its time in.
+#[cfg(feature = "apps")]
+fn store_step(command: &collab_types::store::wire::Command) -> &'static str {
+    use collab_types::store::wire::Command;
+    match command {
+        Command::Put { .. } => "store.put",
+        Command::Remove { .. } => "store.remove",
+        Command::Edit { .. } => "store.edit",
+        Command::Batch(_) => "store.batch",
+        Command::Get { .. } => "store.get",
+        Command::Query(_) => "store.query",
+        Command::Count { .. } => "store.count",
+        Command::Positions { .. } => "store.positions",
+        Command::PageAt { .. } => "store.page_at",
+        Command::RecordChange { .. } => "store.record_change",
+        Command::RecordChanges { .. } => "store.record_changes",
+        Command::Turn { .. } => "store.turn",
+        _ => "store.other",
+    }
 }
 
 /// Who a caller reads records as: a member as the person they are or act for, and a visitor, who

@@ -231,6 +231,43 @@ impl WorkspaceDocuments {
         }
         Ok(host_order())
     }
+
+    /// [`Self::carry`] each of `messages`, `author`'s, in order: the frames among them are
+    /// kept with one sync between them, so a batch of writes waits for the disk once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit`]; the messages before the one that failed are kept.
+    pub(crate) fn carry_all(
+        &self,
+        workspace_id: WorkspaceId,
+        author: [u8; 32],
+        messages: &[NeighbourMsg],
+    ) -> Result<(), String> {
+        if let Some(link) = self.direct.link(workspace_id) {
+            for message in messages {
+                link.carry(author, message)?;
+            }
+            return Ok(());
+        }
+        let mut frames = Vec::new();
+        for message in messages {
+            if let Ok(frame) = tilo_peer_state::store::Frame::of(message) {
+                frames.push(frame);
+                continue;
+            }
+            // A message kept elsewhere is kept after the frames before it.
+            self.store
+                .retain_all(workspace_id, &std::mem::take(&mut frames))
+                .map_err(|error| error.to_string())?;
+            let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+            self.carry(workspace_id, author, &HostCommit { body })?;
+        }
+        self.store
+            .retain_all(workspace_id, &frames)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
 }
 
 /// The host order of a write kept now: wall-clock nanoseconds, forced strictly

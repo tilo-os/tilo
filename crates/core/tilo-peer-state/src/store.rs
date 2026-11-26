@@ -326,6 +326,10 @@ impl Entry {
     }
 }
 
+/// How a writer's sync failed, if it did: each frame of a batch it covers answers that error
+/// ([`Store::retain_all`]).
+type SyncFailure = Option<(io::ErrorKind, String)>;
+
 /// What staging a frame did: nothing more to do, or a record to sync.
 enum Staging {
     Done(Retained),
@@ -778,6 +782,76 @@ impl Store {
     /// serve it then.
     pub fn retain(&self, workspace: WorkspaceId, frame: &Frame) -> Result<Retained, StoreError> {
         self.retain_from(workspace, frame, false, true)
+    }
+
+    /// [`Self::retain`] each of `frames`, in order, with one sync for all of
+    /// them: a batch of writes waits for the disk once, not once a frame.
+    /// Returns once every frame is synced, with what keeping each did.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error a frame met. The store serves none of the
+    /// frames the failed sync was to cover; those staged before a frame it
+    /// could not write are synced and served.
+    pub fn retain_all(
+        &self,
+        workspace: WorkspaceId,
+        frames: &[Frame],
+    ) -> Result<Vec<Retained>, StoreError> {
+        let mut staged = Vec::with_capacity(frames.len());
+        let mut failed = None;
+        for frame in frames {
+            match self.stage(workspace, frame, false, true) {
+                Ok(staging) => staged.push((frame, staging)),
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            }
+        }
+        // A writer synced to its last staged end covers every record staged before it.
+        let mut ends: Vec<(Arc<Writer>, u64)> = Vec::new();
+        for (_, staging) in &staged {
+            if let Staging::Appended(appended) = staging {
+                match ends
+                    .iter_mut()
+                    .find(|(writer, _)| Arc::ptr_eq(writer, &appended.writer))
+                {
+                    Some((_, end)) => *end = (*end).max(appended.end),
+                    None => ends.push((Arc::clone(&appended.writer), appended.end)),
+                }
+            }
+        }
+        let synced: Vec<(Arc<Writer>, SyncFailure)> = ends
+            .into_iter()
+            .map(|(writer, end)| {
+                let error = writer
+                    .sync_to(end)
+                    .err()
+                    .map(|error| (error.kind(), error.to_string()));
+                (writer, error)
+            })
+            .collect();
+        let mut kept = Vec::with_capacity(staged.len());
+        for (frame, staging) in staged {
+            match staging {
+                Staging::Done(outcome) => kept.push(Ok(outcome)),
+                Staging::Appended(appended) => {
+                    let sync = synced
+                        .iter()
+                        .find(|(writer, _)| Arc::ptr_eq(writer, &appended.writer))
+                        .and_then(|(_, error)| error.as_ref())
+                        .map_or(Ok(()), |(kind, error)| {
+                            Err(io::Error::new(*kind, error.clone()))
+                        });
+                    kept.push(self.settle(workspace, frame, appended, sync));
+                }
+            }
+        }
+        if let Some(error) = failed {
+            return Err(error);
+        }
+        kept.into_iter().collect()
     }
 
     /// [`Self::retain`] a frame one of the device's links brought it: the
@@ -3836,6 +3910,38 @@ mod tests {
             KEYSTROKES,
             "a newcomer replays one frame per keystroke"
         );
+    }
+
+    /// A batch of writes kept together is served in the order it was made, once each, and is
+    /// there when the store opens again.
+    #[test]
+    fn a_batch_kept_with_one_sync_is_served_in_order_after_a_restart() {
+        let (dir, store) = open();
+        let key = device(2);
+        let frames: Vec<Frame> = (1..=200)
+            .map(|seq| frame(&key, seq, ContentRetention::Delta))
+            .collect();
+        assert_eq!(
+            store.retain(workspace(), &frames[0]).unwrap(),
+            Retained::New
+        );
+        let kept = store.retain_all(workspace(), &frames).unwrap();
+        assert_eq!(
+            kept[0],
+            Retained::Duplicate,
+            "a frame kept before is kept once"
+        );
+        assert!(kept[1..].iter().all(|kept| *kept == Retained::New));
+        assert!(
+            store.retain_all(workspace(), &[]).unwrap().is_empty(),
+            "an empty batch keeps nothing"
+        );
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        let replay = reopened
+            .replay(workspace(), &[], Budget::default())
+            .unwrap();
+        assert_eq!(seqs(&replay), (1..=200).collect::<Vec<u64>>());
     }
 
     /// A device's own state is kept whole beside its frames and read back
