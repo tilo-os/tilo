@@ -37,7 +37,7 @@ import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, shellMetrics, machine, keepRecoveryWords} from './waits.mjs';
 import {clock} from './timing.mjs';
-import {agentCommand} from './shell.mjs';
+import {agentCommand, computerEnv} from './shell.mjs';
 
 const [site, server, tiloBin, out] = process.argv.slice(2);
 if (!site || !server || !tiloBin || !out) {
@@ -272,8 +272,7 @@ const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')
 const computer = name => {
   const home = join(out, `computer-${name}`);
   mkdirSync(join(home, 'bin'), {recursive: true});
-  return {PATH: `${join(home, 'bin')}:${process.env.PATH}`, HOME: home, XDG_STATE_HOME: join(home, 'state'),
-    XDG_CONFIG_HOME: join(home, 'config')};
+  return computerEnv(home);
 };
 // `tilo login TICKET --agent Reviewer` on that computer, then what its words ask
 // of the agent: Tilo's server added to the agent's own configuration and

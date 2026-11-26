@@ -27,7 +27,7 @@ import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {HOSTED_CLI_VERSION} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
-import {agentCommand, hostedTiloPath, runSetupPrompt} from './shell.mjs';
+import {agentCommand, computerEnv, hostedTiloPath, runSetupPrompt} from './shell.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
 
 const [site, server, out] = process.argv.slice(2);
@@ -144,10 +144,7 @@ exit 0
 writeFileSync(join(computer, 'bin', 'claude'), claude);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
 const env = {
-  PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
-  HOME: computer,
-  XDG_STATE_HOME: join(computer, 'state'),
-  XDG_CONFIG_HOME: join(computer, 'config'),
+  ...computerEnv(computer),
   // The tool this computer's commands run under, as every tool names itself to the commands it
   // runs.
   CLAUDECODE: '1',

@@ -46,7 +46,7 @@ import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, confirmRecoveryWords} from './waits.mjs';
 import {HOSTED_CLI_VERSION} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
-import {agentCommand, hostedTiloPath, mailLink, poll, pressText, runSetupPrompt, waitForMail, waitingCard} from './shell.mjs';
+import {agentCommand, computerEnv, hostedTiloPath, mailLink, poll, pressText, runSetupPrompt, waitForMail, waitingCard} from './shell.mjs';
 
 const [site, server, work, stack] = process.argv.slice(2);
 if (!site || !server || !work || !stack) {
@@ -370,12 +370,6 @@ const addOwner = async user => {
 // there, and the test certificate the command trusts for this run's site.
 mkdirSync(join(computer, 'bin'), {recursive: true});
 const agentConfiguration = join(computer, 'agent-mcp.json');
-const agentEnv = async () => ({
-  PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
-  HOME: computer,
-  XDG_STATE_HOME: join(computer, 'state'),
-  XDG_CONFIG_HOME: join(computer, 'config'),
-});
 const tilo = async (env, args) => new Promise(resolve => {
   execFile(tiloBin, args, {env, timeout: 180_000, maxBuffer: 1 << 20},
     (error, stdout, stderr) => resolve({code: error ? (error.code ?? 1) : 0, stdout, stderr}));
@@ -654,7 +648,7 @@ try {
   await until(stranger.tab, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click', stepLimit(4));
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
-  const env = await agentEnv();
+  const env = computerEnv(computer);
   const releasesLog = join(work, 'state', 'logs', 'releases.log');
   const beforeInstall = readFileSync(releasesLog, 'utf8').length;
   const login = await runSetupPrompt(prompt, {site: siteOrigin, version: HOSTED_CLI_VERSION, env});
