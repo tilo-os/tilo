@@ -22,10 +22,14 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.firewall@b304c3b3e2f55b7a";
+export const SURFACE = "so.tilo.firewall@17f328d656270e79";
 
 /** The arguments of `import_device`. */
 export interface ImportDeviceArgs {
+}
+
+/** The arguments of `arrive`. */
+export interface ArriveArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -139,11 +143,15 @@ export interface Firewall extends tilo.Resource {
     zone: string;
     rule: string;
   }): Promise<void>;
+  /** Opening the app reads this device's firewalld into the workspace's configuration when it holds none yet. */
+  arrive(): Promise<void>;
+  /** Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  arriveMany(items: ArriveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Firewall` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const FIREWALL_ACTIONS = ["apply_stored", "import_device", "import_deviceMany", "start", "stop", "enter_panic", "exit_panic", "make_active", "toggle_rule", "allow_service", "add_rule", "delete_rule"] as const;
+export const FIREWALL_ACTIONS = ["apply_stored", "import_device", "import_deviceMany", "start", "stop", "enter_panic", "exit_panic", "make_active", "toggle_rule", "allow_service", "add_rule", "delete_rule", "arrive", "arriveMany"] as const;
 
 /** The `tl.so.tilo.firewall.Firewall` kind at `path`. */
 export function firewall(ws: tilo.Workspace, path: string): Firewall {

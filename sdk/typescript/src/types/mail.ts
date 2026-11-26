@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@e425c220cad01233";
+export const SURFACE = "so.tilo.mail@246155a2bac6197d";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -287,11 +287,13 @@ export interface Thread extends tilo.Resource {
   answer(args: {
     body: string;
   }): Promise<Draft>;
+  /** Opening a conversation reads it, wherever it is opened from: the list, search, a link or an agent. */
+  read_on_open(): Promise<void>;
 }
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "to_inbox", "move_to", "delete", "junk", "purge", "flag", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "announce", "announceMany", "answer"] as const;
+export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "to_inbox", "move_to", "delete", "junk", "purge", "flag", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "announce", "announceMany", "answer", "read_on_open"] as const;
 
 /** The `tl.so.tilo.mail.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@52e942cb29f812d8";
+export const SURFACE = "so.tilo.tube@b454a095710a8005";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -262,11 +262,13 @@ export interface Video extends tilo.Resource {
   }): Promise<void>;
   /** Asks the service for the video's comments again, for what people said since the page opened. */
   refresh_comments(): Promise<void>;
+  /** Opening a video asks the service for what its page shows and the client does not hold yet: where its bytes play from at the person's preferred quality, its comments, the segments SponsorBlock marks, the community's title and picture (DeArrow) and how many people disliked it. Each answer is written by the origin, so one that comes late fills the page it is shown on. */
+  read_on_open(): Promise<void>;
 }
 
 /** The actions `Video` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VIDEO_ACTIONS = ["like", "likeMany", "watch_later", "watch_laterMany", "play", "resume", "play_at_quality", "progress", "skip_segment", "forget", "forgetMany", "retry_playback", "refresh_comments"] as const;
+export const VIDEO_ACTIONS = ["like", "likeMany", "watch_later", "watch_laterMany", "play", "resume", "play_at_quality", "progress", "skip_segment", "forget", "forgetMany", "retry_playback", "refresh_comments", "read_on_open"] as const;
 
 /** The `tl.so.tilo.tube.Video` kind at `path`. */
 export function video(ws: tilo.Workspace, path: string): Video {
@@ -287,11 +289,13 @@ export interface Playlist extends tilo.Resource {
   refresh_playlist(): Promise<void>;
   /** Plays the playlist from its first video, and the rest in its maker's order. */
   play_playlist(): Promise<void>;
+  /** Opening a playlist asks the service what it holds, when the client does not know yet: a playlist a search found is known by its name and cover alone, and its videos appear once YouTube says them, so a page is never empty until someone presses Refresh. */
+  fetch_on_open(): Promise<void>;
 }
 
 /** The actions `Playlist` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PLAYLIST_ACTIONS = ["refresh_playlist", "play_playlist"] as const;
+export const PLAYLIST_ACTIONS = ["refresh_playlist", "play_playlist", "fetch_on_open"] as const;
 
 /** The `tl.so.tilo.tube.Playlist` kind at `path`. */
 export function playlist(ws: tilo.Workspace, path: string): Playlist {

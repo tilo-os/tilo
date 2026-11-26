@@ -30,15 +30,20 @@ __all__ = [
     "ServiceDef",
     "TiloFirewall",
     "ImportDeviceArgs",
+    "ArriveArgs",
 ]
 
 ImportDeviceArgs = TypedDict("ImportDeviceArgs", {
 })
 """The arguments of `import_device`."""
 
+ArriveArgs = TypedDict("ArriveArgs", {
+})
+"""The arguments of `arrive`."""
+
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -99,7 +104,7 @@ class Notice(Resource):
 
 class Rule(Resource):
     """Rule — `tl.so.tilo.firewall.Rule`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     eeqhnuyu: str  # title
     @property
     def _3jndsc7i(self) -> str:
@@ -125,7 +130,7 @@ class Rule(Resource):
 
 class Zone(Resource):
     """Zone — `tl.so.tilo.firewall.Zone`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     kzbzenxe: str  # kind
     xthxweeb: str  # target
     @property
@@ -143,7 +148,7 @@ class Zone(Resource):
 
 class Firewall(Resource):
     """Firewall — `tl.so.tilo.firewall.Firewall`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     fzjbpclp: bool  # enabled
     lsn43itt: bool  # panic_mode
     qzperbb7: str  # default_zone
@@ -221,14 +226,22 @@ class Firewall(Resource):
         """Deletes a rule from a zone."""
         return self.action("delete_rule", zone=zone, rule=rule)
 
+    def arrive(self) -> None:
+        """Opening the app reads this device's firewalld into the workspace's configuration when it holds none yet."""
+        return self.action("arrive")
+
+    def arrive_many(self, items: list[ArriveArgs]) -> list[dict[str, Any]]:
+        """Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("arrive", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"apply_stored", "import_device", "import_device_many", "start", "stop", "enter_panic", "exit_panic", "make_active", "toggle_rule", "allow_service", "add_rule", "delete_rule"})
+    __actions__ = frozenset({"apply_stored", "import_device", "import_device_many", "start", "stop", "enter_panic", "exit_panic", "make_active", "toggle_rule", "allow_service", "add_rule", "delete_rule", "arrive", "arrive_many"})
 
 
 class ApplyConfig(Resource):
     """ApplyConfig — `tl.so.tilo.firewall.ApplyConfig`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     z4rwsmkt: bool  # enabled
     hfx4peji: bool  # panic_mode
     wpzvhcny: str  # default_zone
@@ -237,7 +250,7 @@ class ApplyConfig(Resource):
 
 class ApplyZone(Resource):
     """ApplyZone — `tl.so.tilo.firewall.ApplyZone`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     ki3bym3t: str  # kind
     npflzozj: str  # target
     yll5vuns: list[str]  # interfaces
@@ -248,7 +261,7 @@ class ApplyZone(Resource):
 
 class ApplyRule(Resource):
     """ApplyRule — `tl.so.tilo.firewall.ApplyRule`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     iddy2jy5: str  # service
     rukhcwu4: str  # port
     @property
@@ -266,7 +279,7 @@ class ApplyRule(Resource):
 
 class ServiceDef(Resource):
     """ServiceDef — `tl.so.tilo.firewall.ServiceDef`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     splkq5cx: str  # key
     um6wchuo: str  # name
     @property
@@ -283,7 +296,7 @@ class ServiceDef(Resource):
 
 class TiloFirewall(Resource):
     """Firewall — `tl.so.tilo.firewall`."""
-    __surface__ = "so.tilo.firewall@b304c3b3e2f55b7a"
+    __surface__ = "so.tilo.firewall@17f328d656270e79"
     def load_blocked(self) -> None:
         """Reads what the kernel dropped in the last hour."""
         return self.action("load_blocked")

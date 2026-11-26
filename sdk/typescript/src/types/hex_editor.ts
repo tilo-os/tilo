@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.hex-editor@8fb7a0a5ccb5edca";
+export const SURFACE = "so.tilo.hex-editor@70ec99f9dd9d56d3";
 
 /** The arguments of `show`. */
 export interface ShowArgs {
@@ -196,6 +196,10 @@ export interface OverwriteBytesArgs {
 export interface DeleteBytesArgs {
   offset: number;
   len: number;
+}
+
+/** The arguments of `arrive`. */
+export interface ArriveArgs {
 }
 
 /** The arguments of `forget`. */
@@ -546,11 +550,15 @@ export interface Document extends tilo.Resource {
   }): Promise<void>;
   /** Runs `delete_bytes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_bytesMany(items: DeleteBytesArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** A document is opened by whoever opens it: they get their own place in it, and the window reads the bytes it shows. */
+  arrive(): Promise<void>;
+  /** Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  arriveMany(items: ArriveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Document` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DOCUMENT_ACTIONS = ["move_cursor", "show", "showMany", "save", "saveMany", "save_bytes", "rebased", "rebasedMany", "press", "chord", "moved", "movedMany", "type_key", "type_keyMany", "type_hex", "type_hexMany", "type_ascii", "type_asciiMany", "backspace", "backspaceMany", "delete_at_cursor", "delete_at_cursorMany", "select_all", "select_allMany", "copy", "cut", "paste", "pasteMany", "replaced", "replacedMany", "start_search", "start_searchMany", "start_replace", "start_replaceMany", "start_goto", "start_gotoMany", "toggle_inspector", "toggle_inspectorMany", "close_panel", "close_panelMany", "search", "searchMany", "reveal", "revealMany", "replace_all", "replace_allMany", "replace_spans", "replace_spansMany", "search_kind", "search_kindMany", "search_case", "search_caseMany", "search_word", "search_wordMany", "go_to", "go_toMany", "set_endian", "set_endianMany", "set_mode", "set_modeMany", "set_column", "set_columnMany", "dismiss", "dismissMany", "pressed", "pressedMany", "scrolled", "scrolledMany", "insert_bytes", "insert_bytesMany", "overwrite_bytes", "overwrite_bytesMany", "delete_bytes", "delete_bytesMany"] as const;
+export const DOCUMENT_ACTIONS = ["move_cursor", "show", "showMany", "save", "saveMany", "save_bytes", "rebased", "rebasedMany", "press", "chord", "moved", "movedMany", "type_key", "type_keyMany", "type_hex", "type_hexMany", "type_ascii", "type_asciiMany", "backspace", "backspaceMany", "delete_at_cursor", "delete_at_cursorMany", "select_all", "select_allMany", "copy", "cut", "paste", "pasteMany", "replaced", "replacedMany", "start_search", "start_searchMany", "start_replace", "start_replaceMany", "start_goto", "start_gotoMany", "toggle_inspector", "toggle_inspectorMany", "close_panel", "close_panelMany", "search", "searchMany", "reveal", "revealMany", "replace_all", "replace_allMany", "replace_spans", "replace_spansMany", "search_kind", "search_kindMany", "search_case", "search_caseMany", "search_word", "search_wordMany", "go_to", "go_toMany", "set_endian", "set_endianMany", "set_mode", "set_modeMany", "set_column", "set_columnMany", "dismiss", "dismissMany", "pressed", "pressedMany", "scrolled", "scrolledMany", "insert_bytes", "insert_bytesMany", "overwrite_bytes", "overwrite_bytesMany", "delete_bytes", "delete_bytesMany", "arrive", "arriveMany"] as const;
 
 /** The `tl.so.tilo.hex-editor.Document` kind at `path`. */
 export function hexEditorDocument(ws: tilo.Workspace, path: string): Document {

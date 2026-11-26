@@ -151,7 +151,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -212,7 +212,7 @@ class Notice(Resource):
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -274,7 +274,7 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
@@ -293,7 +293,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -454,20 +454,24 @@ class Thread(Resource):
         """Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted."""
         return self.action("answer", body=body)
 
+    def read_on_open(self) -> None:
+        """Opening a conversation reads it, wherever it is opened from: the list, search, a link or an agent."""
+        return self.action("read_on_open")
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "to_inbox", "move_to", "delete", "junk", "purge", "flag", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "announce", "announce_many", "answer"})
+    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "to_inbox", "move_to", "delete", "junk", "purge", "flag", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "announce", "announce_many", "answer", "read_on_open"})
 
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -562,7 +566,7 @@ class Message(Resource):
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.mail.Picture`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     gb5hqtag: str  # source
     @property
     def _7hhcy4ay(self) -> Any:
@@ -576,7 +580,7 @@ class Picture(Resource):
 
 class TrustedSender(Resource):
     """TrustedSender — `tl.so.tilo.mail.TrustedSender`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     @property
     def _5eoon66w(self) -> str:
         """address (`5eoon66w` on the wire)."""
@@ -589,7 +593,7 @@ class TrustedSender(Resource):
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     m2g6zrle: str  # from
     zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
@@ -685,7 +689,7 @@ class Draft(Resource):
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -858,5 +862,5 @@ class Mail(Resource):
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@e425c220cad01233"
+    __surface__ = "so.tilo.mail@246155a2bac6197d"
 

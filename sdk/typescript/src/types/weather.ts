@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@bcadefef8e611e18";
+export const SURFACE = "so.tilo.weather@7fda9030556ec59d";
 
 /** The arguments of `use_as_default`. */
 export interface UseAsDefaultArgs {
@@ -80,6 +80,10 @@ export interface EndSearchArgs {
 export interface AcceptFoundArgs {
   reader: Searching;
   choice: string;
+}
+
+/** The arguments of `arrive`. */
+export interface ArriveArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -386,11 +390,15 @@ export interface Locations extends tilo.Resource {
   }): Promise<void>;
   /** Runs `accept_found` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   accept_foundMany(items: AcceptFoundArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Opening the window reads the places whose forecast is missing or no longer current. Nothing is read while it stands, so opening a window again costs nothing. */
+  arrive(): Promise<void>;
+  /** Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  arriveMany(items: ArriveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Locations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "move_place", "move_placeMany", "rename_place", "rename_placeMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "look_for_place", "look_for_placeMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
+export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "move_place", "move_placeMany", "rename_place", "rename_placeMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "look_for_place", "look_for_placeMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany", "arrive", "arriveMany"] as const;
 
 /** The `tl.so.tilo.weather.Locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.feeds@0795db6a7c1f504d";
+export const SURFACE = "so.tilo.feeds@f2ba044234aed5a4";
 
 /** The format a subscription is read in. One of "rss", "atom", "json", "gemini". */
 export type FeedFormat = "rss" | "atom" | "json" | "gemini";
@@ -76,6 +76,10 @@ export interface StarArgs {
 /** The arguments of `set_tags`. */
 export interface SetTagsArgs {
   tags: string;
+}
+
+/** The arguments of `read_on_open`. */
+export interface ReadOnOpenArgs {
 }
 
 /** The arguments of `show_place`. */
@@ -148,6 +152,10 @@ export interface RefreshEndedArgs {
 /** The arguments of `import_opml`. */
 export interface ImportOpmlArgs {
   file: unknown;
+}
+
+/** The arguments of `arrive`. */
+export interface ArriveArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -276,11 +284,15 @@ export interface Article extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_tags` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_tagsMany(items: SetTagsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Opening an article reads it, as every path to it does. */
+  read_on_open(): Promise<void>;
+  /** Runs `read_on_open` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  read_on_openMany(items: ReadOnOpenArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Article` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ARTICLE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "show_article", "show_articleMany", "set_read", "set_readMany", "star", "starMany", "set_tags", "set_tagsMany"] as const;
+export const ARTICLE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "show_article", "show_articleMany", "set_read", "set_readMany", "star", "starMany", "set_tags", "set_tagsMany", "read_on_open", "read_on_openMany"] as const;
 
 /** The `tl.so.tilo.feeds.Article` kind at `path`. */
 export function article(ws: tilo.Workspace, path: string): Article {
@@ -425,11 +437,15 @@ export interface Library extends tilo.Resource {
   import_opmlMany(items: ImportOpmlArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The library's subscriptions as an OPML 2.0 file. The system's one Export… lists it and saves it where the person says. */
   export_opml(): Promise<unknown>;
+  /** Opening Feeds gives the person a reading of their own. */
+  arrive(): Promise<void>;
+  /** Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  arriveMany(items: ArriveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["begin_reading", "add_subscription", "unsubscribe", "unsubscribeMany", "new_folder", "new_folderMany", "delete_folder", "delete_folderMany", "mark_read", "mark_readMany", "stop_refresh", "stop_refreshMany", "refresh_moved", "refresh_movedMany", "refresh_ended", "refresh_endedMany", "import_opml", "import_opmlMany", "export_opml"] as const;
+export const LIBRARY_ACTIONS = ["begin_reading", "add_subscription", "unsubscribe", "unsubscribeMany", "new_folder", "new_folderMany", "delete_folder", "delete_folderMany", "mark_read", "mark_readMany", "stop_refresh", "stop_refreshMany", "refresh_moved", "refresh_movedMany", "refresh_ended", "refresh_endedMany", "import_opml", "import_opmlMany", "export_opml", "arrive", "arriveMany"] as const;
 
 /** The `tl.so.tilo.feeds.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

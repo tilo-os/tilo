@@ -75,6 +75,7 @@ __all__ = [
     "RememberCredentialArgs",
     "WentToArgs",
     "TogglePauseArgs",
+    "OpenedPageArgs",
     "BookmarkArgs",
     "SetSiteProtectionArgs",
     "ToggleSiteProtectionArgs",
@@ -227,6 +228,10 @@ TogglePauseArgs = TypedDict("TogglePauseArgs", {
 })
 """The arguments of `toggle_pause`."""
 
+OpenedPageArgs = TypedDict("OpenedPageArgs", {
+})
+"""The arguments of `opened_page`."""
+
 BookmarkArgs = TypedDict("BookmarkArgs", {
     "url": "str",
     "title": NotRequired["str | None"],
@@ -306,7 +311,7 @@ RevealDownloadArgs = TypedDict("RevealDownloadArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -367,7 +372,7 @@ class Notice(Resource):
 
 class Bookmark(Resource):
     """Bookmark — `tl.so.tilo.browser.Bookmark`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _44buv5tt(self) -> str:
         """url (`44buv5tt` on the wire)."""
@@ -410,7 +415,7 @@ class Bookmark(Resource):
 
 class Visit(Resource):
     """Visit — `tl.so.tilo.browser.Visit`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     k73mxvmp: str  # url
     qy6vtgjc: str  # title
     @property
@@ -446,7 +451,7 @@ class Visit(Resource):
 
 class ImportedVisit(Resource):
     """ImportedVisit — `tl.so.tilo.browser.ImportedVisit`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     my4dhx2s: str  # url
     @property
     def _43vnrbh6(self) -> str:
@@ -462,7 +467,7 @@ class ImportedVisit(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.browser.Suggestion`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     zl6ois7x: SuggestionKind  # kind
     iwoez6ar: str  # title
     np2bxhf4: str  # url
@@ -471,7 +476,7 @@ class Suggestion(Resource):
 
 class RememberedForm(Resource):
     """RememberedForm — `tl.so.tilo.browser.RememberedForm`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _3wdvc5zt(self) -> str:
         """origin (`3wdvc5zt` on the wire)."""
@@ -509,7 +514,7 @@ class RememberedForm(Resource):
 
 class Question(Resource):
     """Question — `tl.so.tilo.browser.Question`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _2wlmb5rp(self) -> str:
         """name (`2wlmb5rp` on the wire)."""
@@ -526,7 +531,7 @@ class Question(Resource):
 
 class Address(Resource):
     """Address — `tl.so.tilo.browser.Address`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     fnyioh2y: str  # label
     @property
     def _3ewzn2z4(self) -> str:
@@ -559,7 +564,7 @@ class Address(Resource):
 
 class Page(Resource):
     """Page — `tl.so.tilo.browser.Page`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     hf6q2oo4: str  # url
     tyhunk32: str  # title
     @property
@@ -1541,14 +1546,22 @@ class Page(Resource):
         """The page `p` does what `request` (JSON, as the window's page reads it) says, and answers the page's own report. What was done is written into the page's record; a call that could not be made answers with its words. Every named page action below is this one, written out."""
         return self.action("ask_page", request=request)
 
+    def opened_page(self) -> None:
+        """The page's window opened: it settles a private page's engine before anything is read, then reads what the page asks and shows before anyone looks."""
+        return self.action("opened_page")
+
+    def opened_page_many(self, items: list[OpenedPageArgs]) -> list[dict[str, Any]]:
+        """Runs `opened_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("opened_page", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "open_from_page", "open_from_page_many", "remember_history", "remember_history_many", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreen_many", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "note_extension_download", "note_extension_download_many", "retry_download", "developer_tools", "print_page", "note_print", "note_print_many", "mute", "float_page_video", "float_page_video_many", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensions_many", "note_extension", "note_extension_many", "open_side_panel", "close_panel", "remember_panel", "remember_panel_many", "remember_omnibox", "remember_omnibox_many", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updates_many", "remember_credential", "remember_credential_many", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_to_many", "toggle_pause", "toggle_pause_many", "ask_page"})
+    __actions__ = frozenset({"read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "open_from_page", "open_from_page_many", "remember_history", "remember_history_many", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreen_many", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "note_extension_download", "note_extension_download_many", "retry_download", "developer_tools", "print_page", "note_print", "note_print_many", "mute", "float_page_video", "float_page_video_many", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensions_many", "note_extension", "note_extension_many", "open_side_panel", "close_panel", "remember_panel", "remember_panel_many", "remember_omnibox", "remember_omnibox_many", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updates_many", "remember_credential", "remember_credential_many", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_to_many", "toggle_pause", "toggle_pause_many", "ask_page", "opened_page", "opened_page_many"})
 
 
 class PageStep(Resource):
     """PageStep — `tl.so.tilo.browser.PageStep`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     cpjp36fw: int  # at
     @property
     def _4mcq24cu(self) -> str | None:
@@ -1588,7 +1601,7 @@ class PageStep(Resource):
 
 class DialogAsk(Resource):
     """DialogAsk — `tl.so.tilo.browser.DialogAsk`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     trchguwk: int  # request
     plkldhkl: str  # kind
     ruephqmr: str  # origin
@@ -1605,7 +1618,7 @@ class DialogAsk(Resource):
 
 class MenuAsk(Resource):
     """MenuAsk — `tl.so.tilo.browser.MenuAsk`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     hjqv4o64: int  # request
     f2gbwl6v: str  # link
     @property
@@ -1620,7 +1633,7 @@ class MenuAsk(Resource):
 
 class MenuRow(Resource):
     """MenuRow — `tl.so.tilo.browser.MenuRow`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     kybyncey: int  # command
     cgfpo6b7: str  # label
     hn5vxavq: bool  # disabled
@@ -1637,7 +1650,7 @@ class MenuRow(Resource):
 
 class PageMedia(Resource):
     """PageMedia — `tl.so.tilo.browser.PageMedia`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _3rpnjayb(self) -> str:
         """element (`3rpnjayb` on the wire)."""
@@ -1651,7 +1664,7 @@ class PageMedia(Resource):
 
 class Download(Resource):
     """Download — `tl.so.tilo.browser.Download`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     z4gzfvzw: str  # url
     wz6wi2p3: str  # name
     mhf455xb: str  # job
@@ -1676,14 +1689,14 @@ class Download(Resource):
 
 class DownloadSaved(Resource):
     """DownloadSaved — `tl.so.tilo.browser.DownloadSaved`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     xig3oj7a: str  # path
     as5zgbcl: str  # name
 
 
 class DownloadJob(Resource):
     """DownloadJob — `tl.so.tilo.browser.DownloadJob`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     q5gkqwpu: str  # state
     sr3wciux: int  # done
     r5unqai3: int  # total
@@ -1694,7 +1707,7 @@ class DownloadJob(Resource):
 
 class DownloadAsk(Resource):
     """DownloadAsk — `tl.so.tilo.browser.DownloadAsk`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _3dy7bucf(self) -> str:
         """url (`3dy7bucf` on the wire)."""
@@ -1709,7 +1722,7 @@ class DownloadAsk(Resource):
 
 class SiteInfo(Resource):
     """SiteInfo — `tl.so.tilo.browser.SiteInfo`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     hrkhpkbd: str  # origin
     scje2sv3: int  # generation
     lyopffwi: int  # blocked
@@ -1731,7 +1744,7 @@ class SiteInfo(Resource):
 
 class HistoryEntry(Resource):
     """HistoryEntry — `tl.so.tilo.browser.HistoryEntry`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     eyk6uw4k: int  # entry
     @property
     def _2chmpqlt(self) -> str:
@@ -1746,7 +1759,7 @@ class HistoryEntry(Resource):
 
 class PageButton(Resource):
     """PageButton — `tl.so.tilo.browser.PageButton`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     t25qin6v: str  # ext
     pigtj7mb: str  # label
     dizhfbps: str  # badge
@@ -1763,7 +1776,7 @@ class PageButton(Resource):
 
 class ExtensionNotice(Resource):
     """ExtensionNotice — `tl.so.tilo.browser.ExtensionNotice`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     bmmxddfi: str  # ext
     @property
     def _7wjg3mlt(self) -> str:
@@ -1780,7 +1793,7 @@ class ExtensionNotice(Resource):
 
 class Panel(Resource):
     """Panel — `tl.so.tilo.browser.Panel`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _52ms3sap(self) -> str:
         """kind (`52ms3sap` on the wire)."""
@@ -1803,7 +1816,7 @@ class Panel(Resource):
 
 class Omnibox(Resource):
     """Omnibox — `tl.so.tilo.browser.Omnibox`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     yf5tqm24: str  # ext
     h6pi6u6y: str  # name
     tzxibbua: str  # text
@@ -1812,14 +1825,14 @@ class Omnibox(Resource):
 
 class OmniboxRow(Resource):
     """OmniboxRow — `tl.so.tilo.browser.OmniboxRow`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     wdpe6rh5: str  # title
     d662kmwa: str  # content
 
 
 class Addressed(Resource):
     """Addressed — `tl.so.tilo.browser.Addressed`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     mkrajvka: str  # ext
     @property
     def _7sy22uee(self) -> str:
@@ -1834,7 +1847,7 @@ class Addressed(Resource):
 
 class Extension(Resource):
     """Extension — `tl.so.tilo.browser.Extension`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     iymjskx5: str  # key
     vhst373v: str  # name
     @property
@@ -1862,7 +1875,7 @@ class Extension(Resource):
 
 class LoginForm(Resource):
     """LoginForm — `tl.so.tilo.browser.LoginForm`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     hdxbxfcl: str  # form
     enz3azev: str  # username
     kqqay3gr: str  # kind
@@ -1870,7 +1883,7 @@ class LoginForm(Resource):
 
 class LoginAccount(Resource):
     """LoginAccount — `tl.so.tilo.browser.LoginAccount`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _53raewop(self) -> str:
         """account (`53raewop` on the wire)."""
@@ -1893,7 +1906,7 @@ class LoginAccount(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.browser.Ask`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     fqvhxdyr: str  # op
     hfpnr6ua: str | None  # element
     tpz54oe5: str | None  # text
@@ -2020,7 +2033,7 @@ class Ask(Resource):
 
 class Answer(Resource):
     """Answer — `tl.so.tilo.browser.Answer`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     @property
     def _2ubdeo5l(self) -> bool:
         """ok (`2ubdeo5l` on the wire)."""
@@ -2060,7 +2073,7 @@ class Answer(Resource):
 
 class Browser(Resource):
     """Browser — `tl.so.tilo.browser.Browser`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     v73p6lyt: bool  # adblock
     @property
     def _4mcclqi3(self) -> bool:
@@ -2269,7 +2282,7 @@ class Browser(Resource):
 
 class TiloBrowser(Resource):
     """Browser — `tl.so.tilo.browser`."""
-    __surface__ = "so.tilo.browser@8af0f4b7b72eec2b"
+    __surface__ = "so.tilo.browser@80b94289e9538e8b"
     def cancel_all_downloads(self) -> Answer:
         """Stops every download still going, from every window."""
         return self.action("cancel_all_downloads")

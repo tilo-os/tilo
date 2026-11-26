@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@59d8a9e50e5b1c03";
+export const SURFACE = "so.tilo.chat@d33fddee8d636e96";
 
 /** One emoji of the workspace. */
 export interface Emoji {
@@ -186,6 +186,10 @@ export interface DeleteArgs {
   m: Message;
 }
 
+/** The arguments of `open_channel`. */
+export interface OpenChannelArgs {
+}
+
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {
   block: string;
@@ -250,6 +254,10 @@ export interface ThreadDeleteArgs {
   m: Message;
 }
 
+/** The arguments of `open_thread`. */
+export interface OpenThreadArgs {
+}
+
 /** The arguments of `bridge`. */
 export interface DirectBridgeArgs {
   service: string;
@@ -268,6 +276,10 @@ export interface DirectSummarizeArgs {
 /** The arguments of `delete`. */
 export interface DirectDeleteArgs {
   m: Message;
+}
+
+/** The arguments of `open_direct`. */
+export interface OpenDirectArgs {
 }
 
 /** The arguments of `edit-block`. */
@@ -710,11 +722,15 @@ export interface TextChannel extends tilo.Resource {
     m: Message;
     name?: string;
   }): Promise<Thread>;
+  /** Opening a channel makes the draft its person writes in, when they have none: a press away and back finds what they typed, on every device of theirs, and nobody else reads it. */
+  open_channel(): Promise<void>;
+  /** Runs `open_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  open_channelMany(items: OpenChannelArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `TextChannel` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "start_thread"] as const;
+export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "start_thread", "open_channel", "open_channelMany"] as const;
 
 /** The `tl.so.tilo.chat.TextChannel` kind at `path`. */
 export function textChannel(ws: tilo.Workspace, path: string): TextChannel {
@@ -957,11 +973,15 @@ export interface Thread extends tilo.Resource {
   }): Promise<ChatReport>;
   /** A conversation as a Markdown file, which the system's one Export… lists and saves where the person says: every message in order, each under the name it shows with and the time it was written. */
   export_markdown(): Promise<unknown>;
+  /** [`open_channel`] for a thread. */
+  open_thread(): Promise<void>;
+  /** Runs `open_thread` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  open_threadMany(items: OpenThreadArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "archive_thread", "archive_threadMany", "continue_answer", "delete", "deleteMany", "report", "export_markdown"] as const;
+export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "archive_thread", "archive_threadMany", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "open_thread", "open_threadMany"] as const;
 
 /** The `tl.so.tilo.chat.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
@@ -1051,11 +1071,15 @@ export interface Direct extends tilo.Resource {
     m: Message;
     name?: string;
   }): Promise<Thread>;
+  /** [`open_channel`] for a direct conversation. */
+  open_direct(): Promise<void>;
+  /** Runs `open_direct` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  open_directMany(items: OpenDirectArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Direct` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "start_thread"] as const;
+export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "share_window", "relay", "continue_answer", "delete", "deleteMany", "report", "export_markdown", "start_thread", "open_direct", "open_directMany"] as const;
 
 /** The `tl.so.tilo.chat.Direct` kind at `path`. */
 export function direct(ws: tilo.Workspace, path: string): Direct {

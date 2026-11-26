@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@8af0f4b7b72eec2b";
+export const SURFACE = "so.tilo.browser@80b94289e9538e8b";
 
 /** Where a row the address bar offers comes from. One of "bookmark", "visited", "imported", "search". */
 export type SuggestionKind = "bookmark" | "visited" | "imported" | "search";
@@ -158,6 +158,10 @@ export interface WentToArgs {
 /** The arguments of `toggle_pause`. */
 export interface TogglePauseArgs {
   paused?: boolean;
+}
+
+/** The arguments of `opened_page`. */
+export interface OpenedPageArgs {
 }
 
 /** The arguments of `bookmark`. */
@@ -934,11 +938,15 @@ export interface Page extends tilo.Resource {
   ask_page(args: {
     request: string;
   }): Promise<Answer>;
+  /** The page's window opened: it settles a private page's engine before anything is read, then reads what the page asks and shows before anyone looks. */
+  opened_page(): Promise<void>;
+  /** Runs `opened_page` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  opened_pageMany(items: OpenedPageArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Page` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreenMany", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "note_extension_download", "note_extension_downloadMany", "retry_download", "developer_tools", "print_page", "note_print", "note_printMany", "mute", "float_page_video", "float_page_videoMany", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "open_side_panel", "close_panel", "remember_panel", "remember_panelMany", "remember_omnibox", "remember_omniboxMany", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updatesMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page"] as const;
+export const PAGE_ACTIONS = ["read_page", "read_page_changes", "read_page_element_at", "wait_page_settled", "read_page_console", "read_page_network", "read_page_record", "read_page_fields", "read_page_forms", "read_page_table", "find_page_text", "find_page_element", "click_page", "hover_page", "drag_page", "fill_page", "fill_page_secret", "select_page", "fill_page_files", "press_page", "submit_page", "open_from_page", "open_from_pageMany", "remember_history", "remember_historyMany", "fill_page_form", "pointer_page", "scroll_page", "capture_page", "navigate", "submit_address", "choose_omnibox", "back", "forward", "reload", "stop_loading", "leave_fullscreen", "remember_fullscreen", "remember_fullscreenMany", "reader", "zoom", "find_in_page", "stop_finding", "answer_page_dialog", "refresh_page", "allow_permission", "save_download", "discard_download", "download", "note_extension_download", "note_extension_downloadMany", "retry_download", "developer_tools", "print_page", "note_print", "note_printMany", "mute", "float_page_video", "float_page_videoMany", "read_back_history", "read_forward_history", "go_history_entry", "read_site", "clear_site_data", "block_site_permissions", "ask_site_permissions_again", "discover_logins", "list_saved_logins", "capture_login", "save_login", "fill_saved_login", "update_saved_login", "delete_saved_login", "cancel_login", "discover_addresses", "fill_saved_address", "list_extensions", "install_extension", "install_store_extension", "update_extensions", "enable_extension", "remove_extension", "click_extension", "choose_extension_notice", "dismiss_extension_notice", "remember_extensions", "remember_extensionsMany", "note_extension", "note_extensionMany", "open_side_panel", "close_panel", "remember_panel", "remember_panelMany", "remember_omnibox", "remember_omniboxMany", "typed_address", "address_left", "enter_omnibox", "note_extension_updates", "note_extension_updatesMany", "remember_credential", "remember_credentialMany", "sync_site_exceptions", "allow_extension_access", "sign_in", "cancel_sign_in", "let_leave", "context_menu_action", "fill_address", "went_to", "went_toMany", "toggle_pause", "toggle_pauseMany", "ask_page", "opened_page", "opened_pageMany"] as const;
 
 /** The `tl.so.tilo.browser.Page` kind at `path`. */
 export function page(ws: tilo.Workspace, path: string): Page {

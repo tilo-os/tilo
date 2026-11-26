@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@da913c05a77c12c0";
+export const SURFACE = "so.tilo.calendar@a3a5c2fe8735c119";
 
 /** The colours a calendar, an event or a project can take, each a place in the theme. One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Color = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";
@@ -178,6 +178,10 @@ export interface NextMonthArgs {
 
 /** The arguments of `this_week`. */
 export interface ThisWeekArgs {
+}
+
+/** The arguments of `land`. */
+export interface LandArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -741,11 +745,15 @@ export interface Calendars extends tilo.Resource {
   import_ics(args: {
     file: unknown;
   }): Promise<string>;
+  /** Opening the calendar shows this week. */
+  land(): Promise<void>;
+  /** Runs `land` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  landMany(items: LandArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Calendars` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "busy", "export_calendar", "take_invitation", "import_ics"] as const;
+export const CALENDARS_ACTIONS = ["new_event", "new_between", "new_task", "add_step", "remove_task", "remove_taskMany", "new_project", "move_project", "move_projectMany", "remove_project", "remove_projectMany", "go_to_day", "go_to_dayMany", "previous_day", "previous_dayMany", "next_day", "next_dayMany", "this_day", "this_dayMany", "sync", "new_calendar", "discard_draft", "previous_week", "previous_weekMany", "next_week", "next_weekMany", "previous_month", "previous_monthMany", "next_month", "next_monthMany", "this_week", "this_weekMany", "busy", "export_calendar", "take_invitation", "import_ics", "land", "landMany"] as const;
 
 /** The `tl.so.tilo.calendar.Calendars` kind at `path`. */
 export function calendars(ws: tilo.Workspace, path: string): Calendars {

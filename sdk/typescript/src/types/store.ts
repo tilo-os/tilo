@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.store@416e6ac6ddba3137";
+export const SURFACE = "so.tilo.store@626f51b2f2a76355";
 
 /** The arguments of `get`. */
 export interface GetArgs {
@@ -46,6 +46,10 @@ export interface UnpinArgs {
 
 /** The arguments of `cancel_change`. */
 export interface CancelChangeArgs {
+}
+
+/** The arguments of `read_details`. */
+export interface ReadDetailsArgs {
 }
 
 /** The arguments of `submit_report`. */
@@ -182,6 +186,10 @@ export interface RecordModerationCaseArgs {
 /** The arguments of `refresh_status`. */
 export interface RefreshStatusArgs {
   r: Report;
+}
+
+/** The arguments of `read_sources`. */
+export interface ReadSourcesArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -333,11 +341,15 @@ export interface App extends tilo.Resource {
   apply_action(args: {
     verb: string;
   }): Promise<void>;
+  /** Opening an app's page reads what its source says about it, once. */
+  read_details(): Promise<void>;
+  /** Runs `read_details` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  read_detailsMany(items: ReadDetailsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `App` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const APP_ACTIONS = ["get", "getMany", "update", "updateMany", "install_runtime", "install_runtimeMany", "pin", "pinMany", "unpin", "unpinMany", "cancel_change", "cancel_changeMany", "open_app", "apply_action"] as const;
+export const APP_ACTIONS = ["get", "getMany", "update", "updateMany", "install_runtime", "install_runtimeMany", "pin", "pinMany", "unpin", "unpinMany", "cancel_change", "cancel_changeMany", "open_app", "apply_action", "read_details", "read_detailsMany"] as const;
 
 /** The `tl.so.tilo.store.App` kind at `path`. */
 export function app(ws: tilo.Workspace, path: string): App {
@@ -605,11 +617,15 @@ export interface Store extends tilo.Resource {
   }): Promise<void>;
   /** Runs `refresh_status` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   refresh_statusMany(items: RefreshStatusArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The catalogue: the apps the sources offer, by the place a person chose, with the app's page beside the list. The bar reads the sources again, reviews a package, and opens the repositories and the trust page. */
+  read_sources(): Promise<void>;
+  /** Runs `read_sources` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  read_sourcesMany(items: ReadSourcesArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Store` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const STORE_ACTIONS = ["reading_moved", "reading_movedMany", "reading_done", "reading_doneMany", "change_done", "change_doneMany", "begin_reading", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany"] as const;
+export const STORE_ACTIONS = ["reading_moved", "reading_movedMany", "reading_done", "reading_doneMany", "change_done", "change_doneMany", "begin_reading", "begin", "beginMany", "read_app", "read_appMany", "show_details", "show_detailsMany", "take_catalogue", "take_catalogueMany", "read_flathub", "read_flathubMany", "read_flathub_details", "read_flathub_detailsMany", "absorb_text", "absorb_remote_text", "absorb_remote_textMany", "refresh_remotes", "refresh_remotesMany", "add_remote", "add_remoteMany", "enable_remote", "enable_remoteMany", "disable_remote", "disable_remoteMany", "remote_change", "remote_changeMany", "remove_remote", "remove_remoteMany", "browse", "browseMany", "update_all", "update_allMany", "add_bot", "add_botMany", "block_app", "block_appMany", "unblock_app", "unblock_appMany", "import_package", "install_reviewed", "install_reviewedMany", "open_reference", "open_referenceMany", "open_link", "review_runtime", "draft_report", "record_moderation_case", "record_moderation_caseMany", "prepare_report", "refresh_status", "refresh_statusMany", "read_sources", "read_sourcesMany"] as const;
 
 /** The `tl.so.tilo.store.Store` kind at `path`. */
 export function store(ws: tilo.Workspace, path: string): Store {

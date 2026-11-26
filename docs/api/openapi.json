@@ -11030,6 +11030,12 @@
         ],
         "description": "The page `p` does what `request` (JSON, as the window's page reads it) says, and answers the\npage's own report. What was done is written into the page's record; a call that could not be\nmade answers with its words. Every named page action below is this one, written out."
       },
+      "tl.so.tilo.browser.Page.opened_page.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The page's window opened: it settles a private page's engine before anything is read, then\nreads what the page asks and shows before anyone looks."
+      },
       "tl.so.tilo.browser.PageStep.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -14735,6 +14741,12 @@
         ],
         "description": "Imports the events and tasks of an iCalendar file, and answers how many it took: what a\nperson's own file offers, and what another calendar exported. A line naming a zone this\nbuild cannot read is read in the person's zone."
       },
+      "tl.so.tilo.calendar.Calendars.land.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening the calendar shows this week."
+      },
       "tl.so.tilo.calendar.Busy.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -15795,6 +15807,12 @@
         "properties": {},
         "required": [],
         "description": "Opens the capture that was taken last in the app that owns its bytes."
+      },
+      "tl.so.tilo.camera.Camera.look_on_open.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening the camera starts its moving picture and reads what it sees."
       },
       "tl.so.tilo.camera.StillAsk.$create.Arguments": {
         "type": "object",
@@ -22027,6 +22045,12 @@
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
       },
+      "tl.so.tilo.chat.TextChannel.open_channel.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening a channel makes the draft its person writes in, when they have none: a press away and\nback finds what they typed, on every device of theirs, and nobody else reads it."
+      },
       "tl.so.tilo.chat.OutsideAuthor.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -22953,6 +22977,12 @@
         "required": [],
         "description": "A conversation as a Markdown file, which the system's one Export… lists and saves where the\nperson says: every message in order, each under the name it shows with and the time it was\nwritten."
       },
+      "tl.so.tilo.chat.Thread.open_thread.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "[`open_channel`] for a thread."
+      },
       "tl.so.tilo.chat.Direct.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -23497,6 +23527,12 @@
           "m"
         ],
         "description": "Starts a thread from a message of a channel or a direct conversation, named after what the\nmessage says."
+      },
+      "tl.so.tilo.chat.Direct.open_direct.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "[`open_channel`] for a direct conversation."
       },
       "tl.so.tilo.chat.Draft.$create.Arguments": {
         "type": "object",
@@ -42273,6 +42309,12 @@
         ],
         "description": "Gives an article the tags a person typed, comma-separated: each trimmed, lower case, without\n`#`, at most 24 of them."
       },
+      "tl.so.tilo.feeds.Article.read_on_open.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening an article reads it, as every path to it does."
+      },
       "tl.so.tilo.feeds.Reader.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -42793,6 +42835,12 @@
         "properties": {},
         "required": [],
         "description": "The library's subscriptions as an OPML 2.0 file. The system's one Export… lists it and saves\nit where the person says."
+      },
+      "tl.so.tilo.feeds.Library.arrive.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening Feeds gives the person a reading of their own."
       },
       "tl.so.tilo.feeds.Ask.$create.Arguments": {
         "type": "object",
@@ -44881,6 +44929,12 @@
         ],
         "description": "Opens the app `a`, as pressing its row does."
       },
+      "tl.so.tilo.file-explorer.Files.arrive.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening Files reads the folder the person is in, unless this window has read it already."
+      },
       "tl.so.tilo.file-explorer.Crumb.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -45210,6 +45264,12 @@
           "rule"
         ],
         "description": "Deletes a rule from a zone."
+      },
+      "tl.so.tilo.firewall.Firewall.arrive.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening the app reads this device's firewalld into the workspace's configuration when it\nholds none yet."
       },
       "tl.so.tilo.firewall.ApplyConfig.$create.Arguments": {
         "type": "object",
@@ -48339,6 +48399,12 @@
         ],
         "description": "Runs `op` with `ask` and keeps the answer: the repository as it now stands, and the working\ntree as the device read it."
       },
+      "tl.so.tilo.git-client.Repository.arrive.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening the app gives the person their window on it, though they open no repository yet."
+      },
       "tl.so.tilo.git-client.ApprovedCheck.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -50693,6 +50759,12 @@
         ],
         "description": "Removes `len` bytes at `offset`."
       },
+      "tl.so.tilo.hex-editor.Document.arrive.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "A document is opened by whoever opens it: they get their own place in it, and the window\nreads the bytes it shows."
+      },
       "tl.so.tilo.hex-editor.Library.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -52306,6 +52378,12 @@
           "body"
         ],
         "description": "Answers the conversation with what was typed: the message goes to whoever wrote its newest,\nas a reply to it, quoted."
+      },
+      "tl.so.tilo.mail.Thread.read_on_open.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening a conversation reads it, wherever it is opened from: the list, search, a link or an\nagent."
       },
       "tl.so.tilo.mail.Label.$create.Arguments": {
         "type": "object",
@@ -69517,6 +69595,12 @@
         ],
         "description": "The registry answered: what it said about the application, or why it could not."
       },
+      "tl.so.tilo.publisher.Publisher.open_key.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening the app reads this computer's key."
+      },
       "tl.so.tilo.publisher.ForgeParts.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -83358,6 +83442,12 @@
         ],
         "description": "The action a page's one button runs, by the name the catalogue decided."
       },
+      "tl.so.tilo.store.App.read_details.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening an app's page reads what its source says about it, once."
+      },
       "tl.so.tilo.store.Remote.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -84520,6 +84610,12 @@
           "r"
         ],
         "description": "Reads the registry's verified status for the report's case again. A draft stays a draft\nuntil the registry answers."
+      },
+      "tl.so.tilo.store.Store.read_sources.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The catalogue: the apps the sources offer, by the place a person chose, with the app's page\nbeside the list. The bar reads the sources again, reviews a package, and opens the\nrepositories and the trust page."
       },
       "tl.so.tilo.store.Item.$create.Arguments": {
         "type": "object",
@@ -88856,6 +88952,12 @@
         "required": [],
         "description": "Asks the service for the video's comments again, for what people said since the page opened."
       },
+      "tl.so.tilo.tube.Video.read_on_open.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening a video asks the service for what its page shows and the client does not hold yet:\nwhere its bytes play from at the person's preferred quality, its comments, the segments\nSponsorBlock marks, the community's title and picture (DeArrow) and how many people disliked\nit. Each answer is written by the origin, so one that comes late fills the page it is shown on."
+      },
       "tl.so.tilo.tube.Playlist.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -88927,6 +89029,12 @@
         "properties": {},
         "required": [],
         "description": "Plays the playlist from its first video, and the rest in its maker's order."
+      },
+      "tl.so.tilo.tube.Playlist.fetch_on_open.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening a playlist asks the service what it holds, when the client does not know yet: a\nplaylist a search found is known by its name and cover alone, and its videos appear once\nYouTube says them, so a page is never empty until someone presses Refresh."
       },
       "tl.so.tilo.tube.Comment.$create.Arguments": {
         "type": "object",
@@ -98013,6 +98121,12 @@
         ],
         "description": "Takes the row a person picked from the search: saves the place and empties the search."
       },
+      "tl.so.tilo.weather.Locations.arrive.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Opening the window reads the places whose forecast is missing or no longer current. Nothing\nis read while it stands, so opening a window again costs nothing."
+      },
       "tl.so.tilo.weather.Readings.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -103401,6 +103515,12 @@
     },
     {
       "app": "so.tilo.browser",
+      "resource": "tl.so.tilo.browser.Page",
+      "action": "opened_page",
+      "arguments": "#/components/schemas/tl.so.tilo.browser.Page.opened_page.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
       "resource": "tl.so.tilo.browser.PageStep",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.browser.PageStep.$create.Arguments"
@@ -104949,6 +105069,12 @@
     },
     {
       "app": "so.tilo.calendar",
+      "resource": "tl.so.tilo.calendar.Calendars",
+      "action": "land",
+      "arguments": "#/components/schemas/tl.so.tilo.calendar.Calendars.land.Arguments"
+    },
+    {
+      "app": "so.tilo.calendar",
       "resource": "tl.so.tilo.calendar.Busy",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.calendar.Busy.$create.Arguments"
@@ -105444,6 +105570,12 @@
       "resource": "tl.so.tilo.camera.Camera",
       "action": "open_recent",
       "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.open_recent.Arguments"
+    },
+    {
+      "app": "so.tilo.camera",
+      "resource": "tl.so.tilo.camera.Camera",
+      "action": "look_on_open",
+      "arguments": "#/components/schemas/tl.so.tilo.camera.Camera.look_on_open.Arguments"
     },
     {
       "app": "so.tilo.camera",
@@ -107271,6 +107403,12 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.TextChannel",
+      "action": "open_channel",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.TextChannel.open_channel.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.OutsideAuthor",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.OutsideAuthor.$create.Arguments"
@@ -107553,6 +107691,12 @@
     },
     {
       "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Thread",
+      "action": "open_thread",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Thread.open_thread.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
       "resource": "tl.so.tilo.chat.Direct",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.$create.Arguments"
@@ -107652,6 +107796,12 @@
       "resource": "tl.so.tilo.chat.Direct",
       "action": "start_thread",
       "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.start_thread.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "tl.so.tilo.chat.Direct",
+      "action": "open_direct",
+      "arguments": "#/components/schemas/tl.so.tilo.chat.Direct.open_direct.Arguments"
     },
     {
       "app": "so.tilo.chat",
@@ -114183,6 +114333,12 @@
     },
     {
       "app": "so.tilo.feeds",
+      "resource": "tl.so.tilo.feeds.Article",
+      "action": "read_on_open",
+      "arguments": "#/components/schemas/tl.so.tilo.feeds.Article.read_on_open.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
       "resource": "tl.so.tilo.feeds.Reader",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.feeds.Reader.$create.Arguments"
@@ -114366,6 +114522,12 @@
       "resource": "tl.so.tilo.feeds.Library",
       "action": "export_opml",
       "arguments": "#/components/schemas/tl.so.tilo.feeds.Library.export_opml.Arguments"
+    },
+    {
+      "app": "so.tilo.feeds",
+      "resource": "tl.so.tilo.feeds.Library",
+      "action": "arrive",
+      "arguments": "#/components/schemas/tl.so.tilo.feeds.Library.arrive.Arguments"
     },
     {
       "app": "so.tilo.feeds",
@@ -115293,6 +115455,12 @@
     },
     {
       "app": "so.tilo.file-explorer",
+      "resource": "tl.so.tilo.file-explorer.Files",
+      "action": "arrive",
+      "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Files.arrive.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
       "resource": "tl.so.tilo.file-explorer.Crumb",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.file-explorer.Crumb.$create.Arguments"
@@ -115446,6 +115614,12 @@
       "resource": "tl.so.tilo.firewall.Firewall",
       "action": "delete_rule",
       "arguments": "#/components/schemas/tl.so.tilo.firewall.Firewall.delete_rule.Arguments"
+    },
+    {
+      "app": "so.tilo.firewall",
+      "resource": "tl.so.tilo.firewall.Firewall",
+      "action": "arrive",
+      "arguments": "#/components/schemas/tl.so.tilo.firewall.Firewall.arrive.Arguments"
     },
     {
       "app": "so.tilo.firewall",
@@ -116565,6 +116739,12 @@
     },
     {
       "app": "so.tilo.git-client",
+      "resource": "tl.so.tilo.git-client.Repository",
+      "action": "arrive",
+      "arguments": "#/components/schemas/tl.so.tilo.git-client.Repository.arrive.Arguments"
+    },
+    {
+      "app": "so.tilo.git-client",
       "resource": "tl.so.tilo.git-client.ApprovedCheck",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.git-client.ApprovedCheck.$create.Arguments"
@@ -117519,6 +117699,12 @@
     },
     {
       "app": "so.tilo.hex-editor",
+      "resource": "tl.so.tilo.hex-editor.Document",
+      "action": "arrive",
+      "arguments": "#/components/schemas/tl.so.tilo.hex-editor.Document.arrive.Arguments"
+    },
+    {
+      "app": "so.tilo.hex-editor",
       "resource": "tl.so.tilo.hex-editor.Library",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.hex-editor.Library.$create.Arguments"
@@ -118278,6 +118464,12 @@
       "resource": "tl.so.tilo.mail.Thread",
       "action": "answer",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.answer.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
+      "action": "read_on_open",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.read_on_open.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -124263,6 +124455,12 @@
     },
     {
       "app": "so.tilo.publisher",
+      "resource": "tl.so.tilo.publisher.Publisher",
+      "action": "open_key",
+      "arguments": "#/components/schemas/tl.so.tilo.publisher.Publisher.open_key.Arguments"
+    },
+    {
+      "app": "so.tilo.publisher",
       "resource": "tl.so.tilo.publisher.ForgeParts",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.publisher.ForgeParts.$create.Arguments"
@@ -128421,6 +128619,12 @@
     },
     {
       "app": "so.tilo.store",
+      "resource": "tl.so.tilo.store.App",
+      "action": "read_details",
+      "arguments": "#/components/schemas/tl.so.tilo.store.App.read_details.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
       "resource": "tl.so.tilo.store.Remote",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.store.Remote.$create.Arguments"
@@ -128706,6 +128910,12 @@
       "resource": "tl.so.tilo.store.Store",
       "action": "refresh_status",
       "arguments": "#/components/schemas/tl.so.tilo.store.Store.refresh_status.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "tl.so.tilo.store.Store",
+      "action": "read_sources",
+      "arguments": "#/components/schemas/tl.so.tilo.store.Store.read_sources.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -130305,6 +130515,12 @@
     },
     {
       "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
+      "action": "read_on_open",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.read_on_open.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
       "resource": "tl.so.tilo.tube.Playlist",
       "action": "$create",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.$create.Arguments"
@@ -130344,6 +130560,12 @@
       "resource": "tl.so.tilo.tube.Playlist",
       "action": "play_playlist",
       "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.play_playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
+      "action": "fetch_on_open",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.fetch_on_open.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -133482,6 +133704,12 @@
       "resource": "tl.so.tilo.weather.Locations",
       "action": "accept_found",
       "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.accept_found.Arguments"
+    },
+    {
+      "app": "so.tilo.weather",
+      "resource": "tl.so.tilo.weather.Locations",
+      "action": "arrive",
+      "arguments": "#/components/schemas/tl.so.tilo.weather.Locations.arrive.Arguments"
     },
     {
       "app": "so.tilo.weather",

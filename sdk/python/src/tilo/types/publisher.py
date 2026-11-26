@@ -35,6 +35,7 @@ __all__ = [
     "ApplyForNamespacesArgs",
     "CheckStatusArgs",
     "AnsweredArgs",
+    "OpenKeyArgs",
 ]
 
 ReadKeyArgs = TypedDict("ReadKeyArgs", {
@@ -58,9 +59,13 @@ AnsweredArgs = TypedDict("AnsweredArgs", {
 })
 """The arguments of `answered`."""
 
+OpenKeyArgs = TypedDict("OpenKeyArgs", {
+})
+"""The arguments of `open_key`."""
+
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -121,14 +126,14 @@ class Notice(Resource):
 
 class Reading(Resource):
     """Reading — `tl.so.tilo.publisher.Reading`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     hia3wxhi: str  # at
     ntbsg676: str  # summary
 
 
 class Publisher(Resource):
     """Publisher — `tl.so.tilo.publisher.Publisher`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     izqbnlov: str  # registry
     @property
     def _4hwurbpa(self) -> str:
@@ -214,21 +219,29 @@ class Publisher(Resource):
         """Runs `answered` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("answered", items)
 
+    def open_key(self) -> None:
+        """Opening the app reads this computer's key."""
+        return self.action("open_key")
+
+    def open_key_many(self, items: list[OpenKeyArgs]) -> list[dict[str, Any]]:
+        """Runs `open_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("open_key", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_key", "read_key_many", "create_key", "create_key_many", "copy_proof", "copy_secret", "export_key", "apply_for_namespaces", "apply_for_namespaces_many", "check_status", "check_status_many", "answered", "answered_many"})
+    __actions__ = frozenset({"read_key", "read_key_many", "create_key", "create_key_many", "copy_proof", "copy_secret", "export_key", "apply_for_namespaces", "apply_for_namespaces_many", "check_status", "check_status_many", "answered", "answered_many", "open_key", "open_key_many"})
 
 
 class ForgeParts(Resource):
     """ForgeParts — `tl.so.tilo.publisher.ForgeParts`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     y36hrf57: str  # host
     iwdc7ejj: str  # account
 
 
 class KeyFile(Resource):
     """KeyFile — `tl.so.tilo.publisher.KeyFile`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     @property
     def _6347lg4i(self) -> str:
         """text (`6347lg4i` on the wire)."""
@@ -241,7 +254,7 @@ class KeyFile(Resource):
 
 class ApplyAsk(Resource):
     """ApplyAsk — `tl.so.tilo.publisher.ApplyAsk`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     gh566qcn: str  # registry
     eb4v6asr: str  # domain
     hjj2vyhq: str  # forge_account
@@ -250,13 +263,13 @@ class ApplyAsk(Resource):
 
 class StatusAsk(Resource):
     """StatusAsk — `tl.so.tilo.publisher.StatusAsk`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     lbble236: str  # registry
 
 
 class RegistryWords(Resource):
     """RegistryWords — `tl.so.tilo.publisher.RegistryWords`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     @property
     def _2gablpyd(self) -> str:
         """summary (`2gablpyd` on the wire)."""
@@ -269,7 +282,7 @@ class RegistryWords(Resource):
 
 class KeyState(Resource):
     """KeyState — `tl.so.tilo.publisher.KeyState`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
     iyvbvvra: str  # state
     @property
     def _5gktvyxf(self) -> str:
@@ -283,5 +296,5 @@ class KeyState(Resource):
 
 class TiloPublisher(Resource):
     """App Publisher — `tl.so.tilo.publisher`."""
-    __surface__ = "so.tilo.publisher@61f62c65e169cd7f"
+    __surface__ = "so.tilo.publisher@246acf6984dd6943"
 

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@b696750e887da5a6";
+export const SURFACE = "so.tilo.git-client@4616a1dcf6f75038";
 
 /** Where a change stands: in the next commit, still in the working tree, or not tracked yet. One of "staged", "unstaged", "untracked". */
 export type ChangeArea = "staged" | "unstaged" | "untracked";
@@ -256,6 +256,10 @@ export interface AsksArgs {
   s: Session;
   op: string;
   ask: string;
+}
+
+/** The arguments of `arrive`. */
+export interface ArriveArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -772,11 +776,15 @@ export interface Repository extends tilo.Resource {
   }): Promise<void>;
   /** Runs `asks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   asksMany(items: AsksArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Opening the app gives the person their window on it, though they open no repository yet. */
+  arrive(): Promise<void>;
+  /** Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  arriveMany(items: ArriveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Repository` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const REPOSITORY_ACTIONS = ["open_repository", "open_repositoryMany", "choose_repository", "choose_repositoryMany", "open_browsed", "open_browsedMany", "close_picker", "close_pickerMany", "stage_file", "stage_fileMany", "unstage_file", "unstage_fileMany", "change_on_key", "change_on_keyMany", "discard_file", "discard_fileMany", "stage_all", "stage_allMany", "unstage_all", "unstage_allMany", "stage_hunk", "stage_hunkMany", "unstage_hunk", "unstage_hunkMany", "discard_hunk", "discard_hunkMany", "commit", "commitMany", "resolve_conflict", "resolve_conflictMany", "create_branch", "create_branchMany", "checkout_branch", "checkout_branchMany", "switch_stashing", "switch_stashingMany", "switch_carrying", "switch_carryingMany", "cancel_switch", "cancel_switchMany", "switch_to", "switch_toMany", "delete_branch", "delete_branchMany", "branch_on_key", "branch_on_keyMany", "save_stash", "save_stashMany", "apply_stash", "apply_stashMany", "create_worktree", "create_worktreeMany", "fetch", "fetchMany", "pull", "pullMany", "push", "pushMany", "runApprovedCheck", "runApprovedCheckMany", "poll_check", "poll_checkMany", "cancel_check", "cancel_checkMany", "clear_check", "clear_checkMany", "read_commit", "read_commitMany", "commit_on_key", "commit_on_keyMany", "toggle_layout", "toggle_layoutMany", "toggle_syntax", "toggle_syntaxMany", "toggle_whitespace", "toggle_whitespaceMany", "toggle_wrap", "toggle_wrapMany", "clear_trouble", "clear_troubleMany", "clear_notice", "clear_noticeMany", "asks", "asksMany"] as const;
+export const REPOSITORY_ACTIONS = ["open_repository", "open_repositoryMany", "choose_repository", "choose_repositoryMany", "open_browsed", "open_browsedMany", "close_picker", "close_pickerMany", "stage_file", "stage_fileMany", "unstage_file", "unstage_fileMany", "change_on_key", "change_on_keyMany", "discard_file", "discard_fileMany", "stage_all", "stage_allMany", "unstage_all", "unstage_allMany", "stage_hunk", "stage_hunkMany", "unstage_hunk", "unstage_hunkMany", "discard_hunk", "discard_hunkMany", "commit", "commitMany", "resolve_conflict", "resolve_conflictMany", "create_branch", "create_branchMany", "checkout_branch", "checkout_branchMany", "switch_stashing", "switch_stashingMany", "switch_carrying", "switch_carryingMany", "cancel_switch", "cancel_switchMany", "switch_to", "switch_toMany", "delete_branch", "delete_branchMany", "branch_on_key", "branch_on_keyMany", "save_stash", "save_stashMany", "apply_stash", "apply_stashMany", "create_worktree", "create_worktreeMany", "fetch", "fetchMany", "pull", "pullMany", "push", "pushMany", "runApprovedCheck", "runApprovedCheckMany", "poll_check", "poll_checkMany", "cancel_check", "cancel_checkMany", "clear_check", "clear_checkMany", "read_commit", "read_commitMany", "commit_on_key", "commit_on_keyMany", "toggle_layout", "toggle_layoutMany", "toggle_syntax", "toggle_syntaxMany", "toggle_whitespace", "toggle_whitespaceMany", "toggle_wrap", "toggle_wrapMany", "clear_trouble", "clear_troubleMany", "clear_notice", "clear_noticeMany", "asks", "asksMany", "arrive", "arriveMany"] as const;
 
 /** The `tl.so.tilo.git-client.Repository` kind at `path`. */
 export function repository(ws: tilo.Workspace, path: string): Repository {

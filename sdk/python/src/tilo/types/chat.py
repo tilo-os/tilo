@@ -69,6 +69,7 @@ __all__ = [
     "SetTopicArgs",
     "ArchiveChannelArgs",
     "DeleteArgs",
+    "OpenChannelArgs",
     "EditBlockArgs",
     "InsertBlockArgs",
     "DeleteBlockArgs",
@@ -81,10 +82,12 @@ __all__ = [
     "ThreadSummarizeArgs",
     "ArchiveThreadArgs",
     "ThreadDeleteArgs",
+    "OpenThreadArgs",
     "DirectBridgeArgs",
     "DirectUnbridgeArgs",
     "DirectSummarizeArgs",
     "DirectDeleteArgs",
+    "OpenDirectArgs",
     "DraftEditBlockArgs",
     "DraftInsertBlockArgs",
     "DraftDeleteBlockArgs",
@@ -262,6 +265,10 @@ DeleteArgs = TypedDict("DeleteArgs", {
 })
 """The arguments of `delete`."""
 
+OpenChannelArgs = TypedDict("OpenChannelArgs", {
+})
+"""The arguments of `open_channel`."""
+
 EditBlockArgs = TypedDict("EditBlockArgs", {
     "block": "str",
     "text": "str",
@@ -326,6 +333,10 @@ ThreadDeleteArgs = TypedDict("ThreadDeleteArgs", {
 })
 """The arguments of `delete`."""
 
+OpenThreadArgs = TypedDict("OpenThreadArgs", {
+})
+"""The arguments of `open_thread`."""
+
 DirectBridgeArgs = TypedDict("DirectBridgeArgs", {
     "service": "str",
     "outside_id": NotRequired["str | None"],
@@ -345,6 +356,10 @@ DirectDeleteArgs = TypedDict("DirectDeleteArgs", {
     "m": "Message",
 })
 """The arguments of `delete`."""
+
+OpenDirectArgs = TypedDict("OpenDirectArgs", {
+})
+"""The arguments of `open_direct`."""
 
 DraftEditBlockArgs = TypedDict("DraftEditBlockArgs", {
     "block": "str",
@@ -455,7 +470,7 @@ OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -516,7 +531,7 @@ class Notice(Resource):
 
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.chat.Conversations`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     @property
     def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel | VoiceChannel]]:
         """channels (`5kzdptyg` on the wire)."""
@@ -709,7 +724,7 @@ class Conversations(Resource):
 
 class Category(Resource):
     """Category — `tl.so.tilo.chat.Category`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     hbhrds5c: str  # name
     hvqgmwrk: list[Entry[TextChannel | VoiceChannel]]  # channels
     @property
@@ -769,7 +784,7 @@ class Category(Resource):
 
 class VoiceChannel(Resource):
     """VoiceChannel — `tl.so.tilo.chat.VoiceChannel`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     olqjezxu: str  # name
     enzjdbyp: str  # service
     nvzanb5n: str  # outside_id
@@ -813,7 +828,7 @@ class VoiceChannel(Resource):
 
 class Hearing(Resource):
     """Hearing — `tl.so.tilo.chat.Hearing`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     ua6lm2xh: list[Entry[Heard]]  # people
 
     def set_hearing(self,
@@ -851,7 +866,7 @@ class Hearing(Resource):
 
 class Heard(Resource):
     """Heard — `tl.so.tilo.chat.Heard`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     a2np4gvd: str  # who
     u4nfj5zx: int  # percent
     xtnm4w32: bool  # silenced
@@ -859,7 +874,7 @@ class Heard(Resource):
 
 class TextChannel(Resource):
     """TextChannel — `tl.so.tilo.chat.TextChannel`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     x3haugpo: str  # name
     u6b35mgm: str  # topic
     fld77g72: str  # summary
@@ -1048,14 +1063,22 @@ class TextChannel(Resource):
             args["name"] = name
         return self.action("start_thread", **args)
 
+    def open_channel(self) -> None:
+        """Opening a channel makes the draft its person writes in, when they have none: a press away and back finds what they typed, on every device of theirs, and nobody else reads it."""
+        return self.action("open_channel")
+
+    def open_channel_many(self, items: list[OpenChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `open_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("open_channel", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "send", "summarize", "summarize_many", "send_view", "share_window", "relay", "rename_channel", "rename_channel_many", "set_topic", "set_topic_many", "archive_channel", "archive_channel_many", "continue_answer", "delete", "delete_many", "report", "export_markdown", "start_thread"})
+    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "send", "summarize", "summarize_many", "send_view", "share_window", "relay", "rename_channel", "rename_channel_many", "set_topic", "set_topic_many", "archive_channel", "archive_channel_many", "continue_answer", "delete", "delete_many", "report", "export_markdown", "start_thread", "open_channel", "open_channel_many"})
 
 
 class OutsideAuthor(Resource):
     """OutsideAuthor — `tl.so.tilo.chat.OutsideAuthor`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     @property
     def _5fxndhc2(self) -> str:
         """name (`5fxndhc2` on the wire)."""
@@ -1071,7 +1094,7 @@ class OutsideAuthor(Resource):
 
 class LiveShare(Resource):
     """LiveShare — `tl.so.tilo.chat.LiveShare`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     noscllor: str  # window
     n4s3rmdn: str  # workspace
     k535m2ok: str  # title
@@ -1083,14 +1106,14 @@ class LiveShare(Resource):
 
 class OutsideEmoji(Resource):
     """OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     ldtylgfu: str  # name
     jjutyqgx: str  # picture
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.chat.Message`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     xfrqdy3y: str  # body
     @property
     def _4uwxpnw2(self) -> Message | None:
@@ -1247,7 +1270,7 @@ class Message(Resource):
 
 class ChatReport(Resource):
     """Report — `tl.so.tilo.chat.Report`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     jqcabz2h: Message | None  # message
     e3zqz33a: str | None  # person
     adip7bw4: str  # said
@@ -1293,7 +1316,7 @@ class ChatReport(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.chat.Thread`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     xuvfifa5: str  # name
     cv664irm: str  # summary
     ijy454g6: list[Entry[Message]]  # messages
@@ -1433,14 +1456,22 @@ class Thread(Resource):
         """A conversation as a Markdown file, which the system's one Export… lists and saves where the person says: every message in order, each under the name it shows with and the time it was written."""
         return self.action("export_markdown")
 
+    def open_thread(self) -> None:
+        """[`open_channel`] for a thread."""
+        return self.action("open_thread")
+
+    def open_thread_many(self, items: list[OpenThreadArgs]) -> list[dict[str, Any]]:
+        """Runs `open_thread` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("open_thread", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"send", "summarize", "summarize_many", "send_view", "share_window", "relay", "archive_thread", "archive_thread_many", "continue_answer", "delete", "delete_many", "report", "export_markdown"})
+    __actions__ = frozenset({"send", "summarize", "summarize_many", "send_view", "share_window", "relay", "archive_thread", "archive_thread_many", "continue_answer", "delete", "delete_many", "report", "export_markdown", "open_thread", "open_thread_many"})
 
 
 class Direct(Resource):
     """Direct — `tl.so.tilo.chat.Direct`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     @property
     def _5stv6ro7(self) -> str:
         """name (`5stv6ro7` on the wire)."""
@@ -1617,14 +1648,22 @@ class Direct(Resource):
             args["name"] = name
         return self.action("start_thread", **args)
 
+    def open_direct(self) -> None:
+        """[`open_channel`] for a direct conversation."""
+        return self.action("open_direct")
+
+    def open_direct_many(self, items: list[OpenDirectArgs]) -> list[dict[str, Any]]:
+        """Runs `open_direct` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("open_direct", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "unread_count", "send", "summarize", "summarize_many", "send_view", "share_window", "relay", "continue_answer", "delete", "delete_many", "report", "export_markdown", "start_thread"})
+    __actions__ = frozenset({"bridge", "bridge_many", "unbridge", "unbridge_many", "unread_count", "send", "summarize", "summarize_many", "send_view", "share_window", "relay", "continue_answer", "delete", "delete_many", "report", "export_markdown", "start_thread", "open_direct", "open_direct_many"})
 
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.chat.Draft`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     @property
     def _5shwuvrs(self) -> Direct | TextChannel | Thread:
         """conversation (`5shwuvrs` on the wire)."""
@@ -1691,7 +1730,7 @@ class Draft(Resource):
 
 class Attached(Resource):
     """Attached — `tl.so.tilo.chat.Attached`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     qsdc77jc: str  # name
     h5lqkkjt: str  # media
     g7nx7a7g: int  # size
@@ -1708,7 +1747,7 @@ class Attached(Resource):
 
 class RelayedReaction(Resource):
     """RelayedReaction — `tl.so.tilo.chat.RelayedReaction`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     r2zcptjt: str  # emoji
     awgtnj33: str  # persona
     hammizbi: str  # by
@@ -1716,7 +1755,7 @@ class RelayedReaction(Resource):
 
 class Part(Resource):
     """Part — `tl.so.tilo.chat.Part`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     zevnbs3i: str  # kind
     @property
     def _3hkzkqvr(self) -> str:
@@ -1730,7 +1769,7 @@ class Part(Resource):
 
 class Skill(Resource):
     """Skill — `tl.so.tilo.chat.Skill`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     gfk6pm4a: str  # name
     gnfldsvz: str  # work
     bn3w5doj: str  # how
@@ -1812,7 +1851,7 @@ class Skill(Resource):
 
 class Example(Resource):
     """Example — `tl.so.tilo.chat.Example`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     fspydtu6: str  # text
     @property
     def _2u2ngevv(self) -> bool:
@@ -1835,11 +1874,11 @@ class Example(Resource):
 
 class Chat(Resource):
     """Chat — `tl.so.tilo.chat`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     emoji: dict[str, Emoji]  # Emoji
 
     def add_emoji(self,
@@ -1901,7 +1940,7 @@ class WorkspaceEmoji(Resource):
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@59d8a9e50e5b1c03"
+    __surface__ = "so.tilo.chat@d33fddee8d636e96"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Reports"""

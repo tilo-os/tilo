@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.camera@a2e078b8f7fe2273";
+export const SURFACE = "so.tilo.camera@beab31c6f1f8602a";
 
 /** A capture is a still picture or a clip. One of "photo", "video". */
 export type CaptureKind = "photo" | "video";
@@ -229,6 +229,10 @@ export interface CropPageArgs {
   top: number;
   right: number;
   bottom: number;
+}
+
+/** The arguments of `look_on_open`. */
+export interface LookOnOpenArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -634,11 +638,15 @@ export interface Camera extends tilo.Resource {
   document_pdf(): Promise<unknown>;
   /** Opens the capture that was taken last in the app that owns its bytes. */
   open_recent(): Promise<void>;
+  /** Opening the camera starts its moving picture and reads what it sees. */
+  look_on_open(): Promise<void>;
+  /** Runs `look_on_open` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  look_on_openMany(items: LookOnOpenArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Camera` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CAMERA_ACTIONS = ["register_capture", "register_captureMany", "record_scan", "record_scanMany", "set_grid", "set_gridMany", "set_level", "set_levelMany", "prefs_of", "session_of", "use_mode", "use_modeMany", "use_lens", "use_lensMany", "cycle_lens", "cycle_lensMany", "use_camera", "use_cameraMany", "retry_camera", "retry_cameraMany", "list_cameras", "list_camerasMany", "set_resolution", "set_resolutionMany", "set_photo_format", "set_photo_formatMany", "set_timer", "set_timerMany", "set_mirror_front", "set_mirror_frontMany", "set_geotag", "set_geotagMany", "set_hdr", "set_hdrMany", "set_default_lens", "set_default_lensMany", "start_look", "start_lookMany", "stop_look", "stop_lookMany", "look", "lookMany", "read_codes", "read_codesMany", "shutter", "shutterMany", "arm_timer", "arm_timerMany", "capture", "captureMany", "start_recording", "start_recordingMany", "recorded", "recordedMany", "stop_recording", "stop_recordingMany", "capture_page", "capture_pageMany", "shutter_due", "shutter_dueMany", "import_image", "import_imageMany", "copy_code", "keep_scan", "keep_scanMany", "set_scanner", "set_scannerMany", "set_scan_resolution", "set_scan_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "select_page", "select_pageMany", "rotate_page", "rotate_pageMany", "recognize_text", "recognize_textMany", "copy_text", "move_page", "move_pageMany", "remove_page", "remove_pageMany", "crop_source", "crop_page", "crop_pageMany", "document_pdf", "open_recent"] as const;
+export const CAMERA_ACTIONS = ["register_capture", "register_captureMany", "record_scan", "record_scanMany", "set_grid", "set_gridMany", "set_level", "set_levelMany", "prefs_of", "session_of", "use_mode", "use_modeMany", "use_lens", "use_lensMany", "cycle_lens", "cycle_lensMany", "use_camera", "use_cameraMany", "retry_camera", "retry_cameraMany", "list_cameras", "list_camerasMany", "set_resolution", "set_resolutionMany", "set_photo_format", "set_photo_formatMany", "set_timer", "set_timerMany", "set_mirror_front", "set_mirror_frontMany", "set_geotag", "set_geotagMany", "set_hdr", "set_hdrMany", "set_default_lens", "set_default_lensMany", "start_look", "start_lookMany", "stop_look", "stop_lookMany", "look", "lookMany", "read_codes", "read_codesMany", "shutter", "shutterMany", "arm_timer", "arm_timerMany", "capture", "captureMany", "start_recording", "start_recordingMany", "recorded", "recordedMany", "stop_recording", "stop_recordingMany", "capture_page", "capture_pageMany", "shutter_due", "shutter_dueMany", "import_image", "import_imageMany", "copy_code", "keep_scan", "keep_scanMany", "set_scanner", "set_scannerMany", "set_scan_resolution", "set_scan_resolutionMany", "set_scan_colour", "set_scan_colourMany", "set_scan_source", "set_scan_sourceMany", "set_ocr_language", "set_ocr_languageMany", "select_page", "select_pageMany", "rotate_page", "rotate_pageMany", "recognize_text", "recognize_textMany", "copy_text", "move_page", "move_pageMany", "remove_page", "remove_pageMany", "crop_source", "crop_page", "crop_pageMany", "document_pdf", "open_recent", "look_on_open", "look_on_openMany"] as const;
 
 /** The `tl.so.tilo.camera.Camera` kind at `path`. */
 export function camera(ws: tilo.Workspace, path: string): Camera {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.publisher@61f62c65e169cd7f";
+export const SURFACE = "so.tilo.publisher@246acf6984dd6943";
 
 /** The arguments of `read_key`. */
 export interface ReadKeyArgs {
@@ -43,6 +43,10 @@ export interface CheckStatusArgs {
 /** The arguments of `answered`. */
 export interface AnsweredArgs {
   j: unknown;
+}
+
+/** The arguments of `open_key`. */
+export interface OpenKeyArgs {
 }
 
 /** Notice — `tl.tilo.host.Notice`. */
@@ -121,11 +125,15 @@ export interface Publisher extends tilo.Resource {
   }): Promise<void>;
   /** Runs `answered` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   answeredMany(items: AnsweredArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Opening the app reads this computer's key. */
+  open_key(): Promise<void>;
+  /** Runs `open_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  open_keyMany(items: OpenKeyArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Publisher` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PUBLISHER_ACTIONS = ["read_key", "read_keyMany", "create_key", "create_keyMany", "copy_proof", "copy_secret", "export_key", "apply_for_namespaces", "apply_for_namespacesMany", "check_status", "check_statusMany", "answered", "answeredMany"] as const;
+export const PUBLISHER_ACTIONS = ["read_key", "read_keyMany", "create_key", "create_keyMany", "copy_proof", "copy_secret", "export_key", "apply_for_namespaces", "apply_for_namespacesMany", "check_status", "check_statusMany", "answered", "answeredMany", "open_key", "open_keyMany"] as const;
 
 /** The `tl.so.tilo.publisher.Publisher` kind at `path`. */
 export function publisher(ws: tilo.Workspace, path: string): Publisher {

@@ -95,6 +95,7 @@ __all__ = [
     "RemoveFavoriteArgs",
     "InspectArgs",
     "NameItArgs",
+    "ArriveArgs",
 ]
 
 SortBy = Literal["name", "size", "modified", "format"]
@@ -389,9 +390,13 @@ NameItArgs = TypedDict("NameItArgs", {
 })
 """The arguments of `name_it`."""
 
+ArriveArgs = TypedDict("ArriveArgs", {
+})
+"""The arguments of `arrive`."""
+
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -452,7 +457,7 @@ class Notice(Resource):
 
 class Entry(Resource):
     """Entry — `tl.so.tilo.file-explorer.Entry`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     lm429k0c: str  # name
     sq7vzl81: str  # path
     @property
@@ -471,7 +476,7 @@ class Entry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.file-explorer.Listing`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     uzztpcqp: str  # path
     @property
     def _9ilrk28j(self) -> list[Entry]:
@@ -488,7 +493,7 @@ class Listing(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.file-explorer.Place`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     kcy1i0qo: str  # label
     z0dyhfw9: str  # path
     @property
@@ -503,13 +508,13 @@ class Place(Resource):
 
 class Favorite(Resource):
     """Favorite — `tl.so.tilo.file-explorer.Favorite`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     m5mpzvqt: str  # place
 
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.file-explorer.Recent`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     v8w5s5s2: str  # name
     ddeyygde: str  # path
     flcdg3ss: str  # opened
@@ -517,7 +522,7 @@ class Recent(Resource):
 
 class Preview(Resource):
     """Preview — `tl.so.tilo.file-explorer.Preview`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     @property
     def _3knlafaw(self) -> str:
         """path (`3knlafaw` on the wire)."""
@@ -539,7 +544,7 @@ class Preview(Resource):
 
 class Destination(Resource):
     """Destination — `tl.so.tilo.file-explorer.Destination`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     @property
     def _3wtmjgc5(self) -> str:
         """name (`3wtmjgc5` on the wire)."""
@@ -553,7 +558,7 @@ class Destination(Resource):
 
 class Transfer(Resource):
     """Transfer — `tl.so.tilo.file-explorer.Transfer`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     holiaqgm: str  # job
     dtg3bicb: str  # label
     b4sboihw: int  # done
@@ -576,7 +581,7 @@ class Transfer(Resource):
 
 class FileFacts(Resource):
     """FileFacts — `tl.so.tilo.file-explorer.FileFacts`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     foqi2yof: int  # width
     sg7ksmy3: int  # height
     opvq63ti: int  # duration
@@ -587,7 +592,7 @@ class FileFacts(Resource):
 
 class TransferAsk(Resource):
     """TransferAsk — `tl.so.tilo.file-explorer.TransferAsk`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     wsdpc7wm: list[str]  # paths
     @property
     def _3s3dhes2(self) -> str:
@@ -609,7 +614,7 @@ class TransferAsk(Resource):
 
 class TransferState(Resource):
     """TransferState — `tl.so.tilo.file-explorer.TransferState`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     xy4h2hjf: int  # done
     xqn7tfzw: int  # total
     mfmf4wlj: str  # current
@@ -617,7 +622,7 @@ class TransferState(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.file-explorer.Session`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     zxu7qmx7: str  # here
     roylouv1: SortBy  # sort
     hm8xkfti: bool  # ascending
@@ -722,7 +727,7 @@ class Session(Resource):
 
 class Files(Resource):
     """Files — `tl.so.tilo.file-explorer.Files`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     @property
     def _7dfrn16h(self) -> list[Entry[Session]]:
         """sessions (`7dfrn16h` on the wire)."""
@@ -1290,19 +1295,27 @@ class Files(Resource):
         """Opens the app `a`, as pressing its row does."""
         return self.action("open_app", app_key=app_key)
 
+    def arrive(self) -> None:
+        """Opening Files reads the folder the person is in, unless this window has read it already."""
+        return self.action("arrive")
+
+    def arrive_many(self, items: list[ArriveArgs]) -> list[dict[str, Any]]:
+        """Runs `arrive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("arrive", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_listing", "read_listing_many", "changed", "changed_many", "preview_step", "preview_step_many", "go", "go_many", "back", "back_many", "forward", "forward_many", "up", "up_many", "show", "show_many", "extract_into", "extract_into_many", "move_into", "move_into_many", "drop_into", "drop_into_many", "copy_into", "copy_into_many", "put_into", "put_into_many", "transfer_ended", "transfer_ended_many", "stop_transfer", "dismiss_transfer", "dismiss_transfer_many", "send_nearby", "dismiss_notice", "dismiss_notice_many", "sort_by", "sort_by_many", "ascending", "ascending_many", "show_grid", "show_grid_many", "choose_view", "choose_view_many", "toggle_hidden", "toggle_hidden_many", "set_zoom", "set_zoom_many", "zoom_in", "zoom_in_many", "zoom_out", "zoom_out_many", "open_entry", "open_entry_many", "find_openers", "find_openers_many", "open_with", "open_with_many", "close_openers", "close_openers_many", "open_terminal", "open_terminal_many", "compress_entry", "compress_entry_many", "extract_entry", "extract_entry_many", "touch_entry", "touch_entry_many", "choose", "choose_many", "select_all", "select_all_many", "clear_selection", "clear_selection_many", "note_recent", "note_recent_many", "new_folder", "new_folder_many", "start_new_file", "start_new_file_many", "new_from_template", "new_from_template_many", "new_file", "new_file_many", "import_dropped", "import_dropped_many", "open_drive", "rename_entry", "rename_entry_many", "trash_entries", "trash_entries_many", "restore_entry", "restore_entry_many", "delete_permanently", "delete_permanently_many", "empty_trash", "empty_trash_many", "carry", "carry_many", "carry_selection", "carry_selection_many", "compress_selection", "compress_selection_many", "paste", "paste_many", "free_name", "key_on", "key_on_many", "carry_row", "carry_row_many", "trash_row", "trash_row_many", "add_favorite", "add_favorite_many", "remove_favorite", "remove_favorite_many", "inspect", "inspect_many", "name_it", "name_it_many", "open_app"})
+    __actions__ = frozenset({"read_listing", "read_listing_many", "changed", "changed_many", "preview_step", "preview_step_many", "go", "go_many", "back", "back_many", "forward", "forward_many", "up", "up_many", "show", "show_many", "extract_into", "extract_into_many", "move_into", "move_into_many", "drop_into", "drop_into_many", "copy_into", "copy_into_many", "put_into", "put_into_many", "transfer_ended", "transfer_ended_many", "stop_transfer", "dismiss_transfer", "dismiss_transfer_many", "send_nearby", "dismiss_notice", "dismiss_notice_many", "sort_by", "sort_by_many", "ascending", "ascending_many", "show_grid", "show_grid_many", "choose_view", "choose_view_many", "toggle_hidden", "toggle_hidden_many", "set_zoom", "set_zoom_many", "zoom_in", "zoom_in_many", "zoom_out", "zoom_out_many", "open_entry", "open_entry_many", "find_openers", "find_openers_many", "open_with", "open_with_many", "close_openers", "close_openers_many", "open_terminal", "open_terminal_many", "compress_entry", "compress_entry_many", "extract_entry", "extract_entry_many", "touch_entry", "touch_entry_many", "choose", "choose_many", "select_all", "select_all_many", "clear_selection", "clear_selection_many", "note_recent", "note_recent_many", "new_folder", "new_folder_many", "start_new_file", "start_new_file_many", "new_from_template", "new_from_template_many", "new_file", "new_file_many", "import_dropped", "import_dropped_many", "open_drive", "rename_entry", "rename_entry_many", "trash_entries", "trash_entries_many", "restore_entry", "restore_entry_many", "delete_permanently", "delete_permanently_many", "empty_trash", "empty_trash_many", "carry", "carry_many", "carry_selection", "carry_selection_many", "compress_selection", "compress_selection_many", "paste", "paste_many", "free_name", "key_on", "key_on_many", "carry_row", "carry_row_many", "trash_row", "trash_row_many", "add_favorite", "add_favorite_many", "remove_favorite", "remove_favorite_many", "inspect", "inspect_many", "name_it", "name_it_many", "open_app", "arrive", "arrive_many"})
 
 
 class Crumb(Resource):
     """Crumb — `tl.so.tilo.file-explorer.Crumb`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
     lbeg1rhd: str  # label
     sv3ucdrd: str  # path
 
 
 class FileExplorer(Resource):
     """Files — `tl.so.tilo.file-explorer`."""
-    __surface__ = "so.tilo.file-explorer@82c2fee48cb5790e"
+    __surface__ = "so.tilo.file-explorer@e5e7a9aa2e56ffa6"
 
