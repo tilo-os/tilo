@@ -253,7 +253,7 @@ impl KeySessions {
             whose,
         };
         // Opening admits the key in its workspace, which waits on the workspaces: never on the
-        // app runtime's own thread, whose tasks that wait would hold.
+        // app runtime's own thread, whose every task would wait with it.
         if tilo_rt::app().is_runtime_thread() {
             return Ok(Run::Opening(opening));
         }
