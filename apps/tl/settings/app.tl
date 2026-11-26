@@ -21,7 +21,7 @@ use so.tilo.migrate.engine as engine
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
 /// resource the session publishes — the person's appearance, notification, accessibility and
-/// input settings, the device's sound, network, Bluetooth, displays, printers and power — so a
+/// input settings, the device's sound, network, Bluetooth, displays and power — so a
 /// change made here, in the shell's quick settings or by an agent is one change, with one history.
 type Settings {
     /// The pane in front, by its own name: a search row, an agent or the sidebar's own presses
@@ -85,8 +85,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("power", "Power", icon: .battery) {
                         on select: open_pane("power")
                     }
+                    // Printers, their queues and scanners have one place: Print Centre.
                     ui.NavItem("printers", "Printers", icon: .printer) {
-                        on select: open_pane("printers")
+                        on select: session.open_app(app: "so.tilo.print-centre")
                     }
                     ui.NavItem("drives", "Drives", icon: .hard_drive) {
                         on select: open_pane("drives")
@@ -223,10 +224,6 @@ view settings_window(s: Settings) {
                             read_pane(of: device.power, what: what) {
                                 power_pane()
                             }
-                        } else if s.pane == "printers" {
-                            read_pane(of: device.printers, what: what) {
-                                printers_pane()
-                            }
                         } else if s.pane == "drives" {
                             read_pane(of: device.drives, what: what) {
                                 drives_pane()
@@ -352,8 +349,6 @@ fn pane_title(pane: Text) -> Text {
         "Speakers"
     } else if pane == "power" {
         "Power"
-    } else if pane == "printers" {
-        "Printers"
     } else if pane == "drives" {
         "Drives"
     } else if pane == "server" {

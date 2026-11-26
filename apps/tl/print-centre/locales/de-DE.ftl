@@ -415,6 +415,7 @@ d-cc2z6dbc = Größenwörter
     .w-mb = { $value } MB
 
 d-m2njqkkd = Fenster
+    .w-the-printer-service-refused-that = Der Druckdienst hat das abgelehnt
     .w-pages-scanned-on-this-computer = Auf diesem Computer gescannte Seiten
     .w-no-scanner = Kein Scanner
     .w-this-computer-has-no-scanner-or = Dieser Computer hat keinen Scanner, oder keiner antwortete.
@@ -490,6 +491,7 @@ d-homrycev = Druckerkarte
     .w-default = Voreinstellung
     .w-not-reachable = Nicht erreichbar
     .w-its-level-is-not-reported = { $name }: sein Stand wird nicht gemeldet
+    .w-paper-it-prints-on-unless-told = Papier, auf dem er druckt, wenn nichts anderes gesagt wird
     .w-use-first = Zuerst verwenden
     .w-resume = Fortsetzen
     .w-pause = Pausieren

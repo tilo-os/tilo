@@ -51,7 +51,9 @@ view apps_access_pane() {
                                     if capability.can_change {
                                         ui.Toggle(
                                             shown: capability.allowed,
-                                            label: if capability.allowed { "Allowed" } else { "Blocked" },
+                                            label: if capability.allowed {
+                                                "Allowed"
+                                            } else { "Blocked" },
                                         ) {
                                             on check(on): workspace.access.set_outside(
                                                 workspace: granted_in.workspace,
@@ -73,11 +75,7 @@ view apps_access_pane() {
             }
             ui.Section("Files and folders") {
                 if entries.is_empty() {
-                    ui.Text(
-                        "No app or person was given a file.",
-                        role: .caption,
-                        secondary: true,
-                    )
+                    ui.Text("No app or person was given a file.", role: .caption, secondary: true)
                 } else {
                     files.access_list(
                         entries: entries.sort_by(e -> e.path).sort_by(e -> e.holder),
@@ -141,9 +139,7 @@ fn outside_words(capability: Text) -> Text {
         "Load a video playlist"
     } else if capability == "youtube.stream" {
         "Stream a video"
-    } else if capability == "youtube.comments" {
-        "Load comments"
-    } else { capability }
+    } else if capability == "youtube.comments" { "Load comments" } else { capability }
 }
 
 /// How one capability stands now, said with what it does or what turning it off stops.

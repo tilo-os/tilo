@@ -39,7 +39,6 @@ const PANES: &[&str] = &[
     "sound",
     "speakers",
     "power",
-    "printers",
     "drives",
     "server",
     "input",

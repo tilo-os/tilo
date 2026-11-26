@@ -631,9 +631,6 @@ view window(p: PrintCentre) {
                 if not printers.serving {
                     ui.StatusLine("This computer has no printer service", status: .warning)
                 }
-                if let problem = printers.problem {
-                    ui.StatusLine(problem, status: .error)
-                }
             }
         }
         actions: {
@@ -653,32 +650,37 @@ view window(p: PrintCentre) {
                 }
             }
         }
-        if not printers.serving {
-            ui.EmptyState(
-                "No printer service",
-                message: "This computer cannot print: no printer service is answering.",
-                icon: .printer,
-            )
-        } else if here == "dashboard" {
-            dashboard(p, printers, scanners)
-        } else if here == "queue" {
-            queue_pane(printers)
-        } else if here == "history" {
-            history_pane(printers)
-        } else if here == "diagnostics" {
-            diagnostics_pane(printers, scanners)
-        } else if here == "discover" {
-            discover_pane(printers)
-        } else if here == "print" {
-            if let doc = p.documents.first() {
-                print_pane(p, doc, printers)
-            } else {
-                print_form(p, printers)
+        stack(gap: .group) {
+            if let problem = printers.problem {
+                ui.Banner("The printer service refused that", message: problem, kind: .error)
             }
-        } else if let scan = p.scans.first() {
-            scan_pane(p, scan, scanners, cropping, crop_edges)
-        } else {
-            scan_form(p, scanners)
+            if not printers.serving {
+                ui.EmptyState(
+                    "No printer service",
+                    message: "This computer cannot print: no printer service is answering.",
+                    icon: .printer,
+                )
+            } else if here == "dashboard" {
+                dashboard(p, printers, scanners)
+            } else if here == "queue" {
+                queue_pane(printers)
+            } else if here == "history" {
+                history_pane(printers)
+            } else if here == "diagnostics" {
+                diagnostics_pane(printers, scanners)
+            } else if here == "discover" {
+                discover_pane(printers)
+            } else if here == "print" {
+                if let doc = p.documents.first() {
+                    print_pane(p, doc, printers)
+                } else {
+                    print_form(p, printers)
+                }
+            } else if let scan = p.scans.first() {
+                scan_pane(p, scan, scanners, cropping, crop_edges)
+            } else {
+                scan_form(p, scanners)
+            }
         }
     }
 }
@@ -702,7 +704,7 @@ view dashboard(p: PrintCentre, printers: device.Printers, scanners: device.Scann
     if not waiting.is_empty() {
         ui.Section("Printing now") {
             for job in waiting {
-                job_row(job)
+                job_row(job, printers)
             }
         }
     }
@@ -710,7 +712,7 @@ view dashboard(p: PrintCentre, printers: device.Printers, scanners: device.Scann
     if not failed.is_empty() {
         ui.Section("Needs attention") {
             for job in failed {
-                job_row(job)
+                job_row(job, printers)
             }
         }
     }
@@ -750,6 +752,20 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
                 ui.Text("{supply.name}: its level is not reported", role: .caption, secondary: true)
             }
         }
+        if not queue.media.is_empty() {
+            ui.Text("Paper it prints on unless told otherwise", role: .caption, secondary: true)
+            row(gap: .tight, wrap: true) {
+                for size in queue.media {
+                    ui.Chip(size, selected: queue.default_media == .some(size)) {
+                        on press: device.set_media(
+                            device.printers,
+                            printer: queue.name,
+                            media: size,
+                        )
+                    }
+                }
+            }
+        }
         row(gap: .tight, wrap: true) {
             if not queue.default {
                 ui.Button("Use first", size: .small) {
@@ -771,10 +787,17 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
 }
 
 /// One job: what it is, where it goes and how far it is.
-view job_row(job: device.PrintJob) {
+view job_row(job: device.PrintJob, printers: device.Printers) {
+    // A job that stopped or failed says why its printer stands as it does, when it says.
+    let queue = printers.queues.find(q -> q.name == job.destination)
+    let why: Option<Text> = if not job_failed(job) {
+        .none
+    } else if let q = queue { q.reason } else { .none }
     ui.ListRow(
         if job.title != "" { job.title } else { std.say("Untitled document") },
-        secondary: "{job.destination} - {job.owner}",
+        secondary: if let reason = why {
+            "{job.destination} - {reason}"
+        } else { "{job.destination} - {job.owner}" },
         value: job_words(job.state),
         meta: size_words(job.size_bytes),
         meta_tone: if job.state == .failed {
@@ -789,8 +812,16 @@ view job_row(job: device.PrintJob) {
                         on press: device.retry_job(device.printers, job: job.id)
                     }
                 }
-                ui.Button("Cancel", icon: .x, icon_only: true, role: .destructive, size: .small) {
-                    on press: device.cancel_job(device.printers, job: job.id)
+                if job_active(job) {
+                    ui.Button(
+                        "Cancel",
+                        icon: .x,
+                        icon_only: true,
+                        role: .destructive,
+                        size: .small,
+                    ) {
+                        on press: device.cancel_job(device.printers, job: job.id)
+                    }
                 }
             }
         }
@@ -811,7 +842,7 @@ view queue_pane(printers: device.Printers) {
         if not jobs.is_empty() {
             ui.Section(queue.name) {
                 for job in jobs {
-                    job_row(job)
+                    job_row(job, printers)
                 }
             }
         }
@@ -826,7 +857,7 @@ view history_pane(printers: device.Printers) {
     }
     stack(gap: .none) {
         for job in finished {
-            job_row(job)
+            job_row(job, printers)
         }
     }
 }

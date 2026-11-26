@@ -354,7 +354,15 @@ impl Installed {
 /// The words the page shows: each node's text, its title and the label a described component
 /// reads by.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in ["value", "title", "label", "text", "message", "action"] {
+    for prop in [
+        "value",
+        "title",
+        "label",
+        "text",
+        "message",
+        "action",
+        "secondary",
+    ] {
         if let Some(Value::Text(text)) = node.props.get(prop) {
             into.push(text.clone());
         }
@@ -768,4 +776,118 @@ fn a_new_scanned_document_clears_the_pages_and_is_refused_while_scanning() {
     let mut window = app.window();
     pick(&mut window, "place", Value::text("scan"));
     assert!(contains(&window, "Save this page"), "{:?}", shown(&window));
+}
+
+/// The buttons labelled `label` the window shows.
+fn buttons<'a>(window: &'a ViewInstance, label: &str) -> Vec<&'a UiNode> {
+    window
+        .tree()
+        .of_kind("ui.Button")
+        .into_iter()
+        .filter(
+            |button| matches!(button.props.get("label"), Some(Value::Text(text)) if text == label),
+        )
+        .collect()
+}
+
+/// What the app asked of the device's printers under the action `name`, by its tilolang name or
+/// the verb the device publishes it as.
+fn printers_asked(app: &Installed, name: &str) -> Vec<Value> {
+    let verb = name.replace('_', "-");
+    app.sent
+        .0
+        .borrow()
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action {
+                name: asked, args, ..
+            } if *asked == name || *asked == verb => {
+                Some(args.iter().map(|(_, value)| value.clone()).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the app asks `{name}`"))
+}
+
+// Print Centre is where this computer's printers are kept: a person picks the paper a printer
+// uses unless told otherwise, cancels what still waits (and only that), reads why a job failed
+// beside it, and sees what the printer service refused.
+#[test]
+fn printers_their_paper_queue_and_failures_are_kept_in_one_place() {
+    let app = Installed::new();
+    let mut window = app.window();
+
+    // The paper a printer uses: the one it uses now is chosen, and another is one press away.
+    let letter = window
+        .tree()
+        .of_kind("ui.Chip")
+        .into_iter()
+        .find(|chip| matches!(chip.props.get("label"), Some(Value::Text(text)) if text == "Letter"))
+        .map_or_else(
+            || panic!("the studio printer offers Letter: {:?}", shown(&window)),
+            |chip| chip.key.clone(),
+        );
+    window.press(&letter).expect("the chip sets the paper");
+    let asked = printers_asked(&app, "set_media");
+    assert!(
+        asked
+            .iter()
+            .any(|value| matches!(value, Value::Text(text) if text == "Letter"))
+            && asked
+                .iter()
+                .any(|value| matches!(value, Value::Text(text) if text == "studio")),
+        "Letter is set on studio: {asked:?}"
+    );
+
+    // What still prints can be cancelled; what printed or failed cannot, and the failed one can
+    // be tried again.
+    pick(&mut window, "place", Value::text("queue"));
+    let cancel = buttons(&window, "Cancel").first().map_or_else(
+        || panic!("the printing job can be cancelled: {:?}", shown(&window)),
+        |button| button.key.clone(),
+    );
+    window.press(&cancel).expect("the button cancels the job");
+    let asked = printers_asked(&app, "cancel_job");
+    assert!(
+        asked
+            .iter()
+            .any(|value| matches!(value, Value::Text(text) if text == "studio-7")),
+        "the printing job is the one cancelled: {asked:?}"
+    );
+    pick(&mut window, "place", Value::text("history"));
+    assert!(
+        buttons(&window, "Cancel").is_empty(),
+        "nothing finished is cancelled"
+    );
+    assert_eq!(
+        buttons(&window, "Retry").len(),
+        1,
+        "the failed job is tried again"
+    );
+
+    // The printer says why the job failed, and the service says what it refused.
+    let failing = PRINTERS
+        .replace(
+            r#""accepting": true, "reason": null"#,
+            r#""accepting": true, "reason": "Out of paper""#,
+        )
+        .replace(
+            r#""problem": null"#,
+            r#""problem": "studio did not take the job""#,
+        );
+    app.host
+        .runtime()
+        .set_reading(&printers(), &failing)
+        .expect("the printers read");
+    window.poll_patches().expect("the window runs again");
+    assert!(
+        contains(&window, "studio - Out of paper"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "studio did not take the job"),
+        "{:?}",
+        shown(&window)
+    );
 }
