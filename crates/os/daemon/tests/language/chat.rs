@@ -364,12 +364,15 @@ fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
 
         // One step: the record's own history takes the whole batch back. The call is held
         // until the undo has ended, so a batch this size is given the time it takes; the
-        // helpers' deadlines name it if it never ends.
+        // helpers' deadlines name it if it never ends. `tilo_do` answers `pending` past its
+        // wait, and the step the undo takes is the batch's own: a full batch on a loaded
+        // machine exceeds the default.
         let undo_answer = agent
             .tool(
                 "tilo_do",
                 &json!({"path": format!("so.tilo.chat/{CHAT_RESOURCE}#undo"),
-                        "args": {"steps": BATCH}}),
+                        "args": {"steps": BATCH},
+                        "wait_ms": 60_000}),
             )
             .await;
         let (undone, failed) = said(&undo_answer);
