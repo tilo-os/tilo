@@ -98,8 +98,6 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // Notifications and the live activity.
     case reminder, brief, inProgressCount = "in-progress-count"
     // What the person's Tilo told them: why something did not notify, what it offers, what came while they were away.
-    case quietLine = "quiet-line", quietLinePlain = "quiet-line-plain", quietNoRule = "quiet-no-rule"
-    case quietWhile = "quiet-while", quietByRule = "quiet-by-rule", quietUnjudged = "quiet-unjudged"
     case offeredBy = "offered-by", allow, deny
     case sinceLeft = "since-left", sinceWaits = "since-waits", sinceDidAlone = "since-did-alone"
     case sinceCameIn = "since-came-in", sinceMore = "since-more"
@@ -364,12 +362,6 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .reminder: "Reminder"
         case .brief: "Brief"
         case .inProgressCount: "{count} in progress"
-        case .quietLine: "{what} did not notify you: {why}"
-        case .quietLinePlain: "This did not notify you: {why}"
-        case .quietNoRule: "you have not said what is important to you"
-        case .quietWhile: "not important while {fact} is {value}"
-        case .quietByRule: "not important by what you said"
-        case .quietUnjudged: "nobody could judge whether it is important"
         case .offeredBy: "{name} offers this"
         case .allow: "Allow"
         case .deny: "Deny"

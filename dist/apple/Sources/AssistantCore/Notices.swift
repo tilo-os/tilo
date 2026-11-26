@@ -112,40 +112,6 @@ public enum NoticePlan {
     }
 }
 
-/// Why a piece did not notify its person, as the line the app says it in. Their Tilo decides
-/// whether a thing reaches them and gives the reason as a code; nothing here judges anything.
-public enum Quiet {
-    /// - Parameters:
-    ///   - title: a few words for what did not notify; empty where it has none.
-    ///   - code: their Tilo's word for why. `no-rule`: the person said nothing about what is
-    ///     important. `nothing-holds`: every line of their rule waits on `fact`, which is
-    ///     `value` now. `judged`: their own model decided by their rule, `words` is its line.
-    ///     `unjudged`: no model could be asked, `words` says why.
-    public static func line(about title: String, code: String, fact: String = "", value: String = "", words: String = "") -> String {
-        var why: String
-        var after = ""
-        switch code {
-        case "no-rule": why = AssistantWords.quietNoRule.said
-        case "nothing-holds" where !fact.isEmpty: why = AssistantWords.quietWhile.said(["fact": fact, "value": value])
-        case "judged" where !words.isEmpty: why = words
-        case "unjudged":
-            why = AssistantWords.quietUnjudged.said
-            after = words
-        default: why = AssistantWords.quietByRule.said
-        }
-        func ended(_ sentence: String) -> String {
-            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let last = trimmed.last, !".!?…".contains(last) else { return trimmed }
-            return trimmed + "."
-        }
-        why = ended(why)
-        let what = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let line = what.isEmpty ? AssistantWords.quietLinePlain.said(["why": why])
-            : AssistantWords.quietLine.said(["what": what, "why": why])
-        return after.isEmpty ? line : "\(line) \(ended(after))"
-    }
-}
-
 extension Item {
     /// The piece's own words on one line, without Markdown's characters.
     public var said: String {

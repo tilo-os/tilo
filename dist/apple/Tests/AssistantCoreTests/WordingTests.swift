@@ -67,9 +67,6 @@ final class WordingTests: XCTestCase {
                                                         second: "Affinity · added 12 Nov · 14 commands"))
         XCTAssertEqual(wording.logins(facts), Line(first: "LinkedIn · typed 17 Nov · used today",
                                                    second: "GitHub and 31 more from Bitwarden, fetched when needed"))
-        XCTAssertEqual(wording.importance(facts), Line(
-            first: "An investor who has invested is always important",
-            second: "New investor inbound is important only while I am raising · Raising: no"))
         XCTAssertEqual(wording.learned(facts), Line(first: "You sign mails with Best, Xaver",
                                                     second: "Dima at Mento is an investor · 46 more"))
         XCTAssertEqual(wording.places(facts), Line(first: "The cloud machine, always",
@@ -90,7 +87,7 @@ final class WordingTests: XCTestCase {
         // What nobody counted is not said as nought.
         XCTAssertEqual(wording.messages(facts.usage), "Not counted yet")
         XCTAssertEqual(wording.tokens(facts.usage), "Not counted yet")
-        for line in [wording.connections(facts), wording.logins(facts), wording.importance(facts),
+        for line in [wording.connections(facts), wording.logins(facts),
                      wording.learned(facts), wording.places(facts), wording.workspaces(facts)] {
             XCTAssertEqual(line, Wording.Line(first: "Nothing yet", second: nil))
         }

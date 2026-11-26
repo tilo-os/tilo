@@ -16,7 +16,7 @@ final class TellingTests: XCTestCase {
         let quiet = try XCTUnwrap(notices[2])
         XCTAssertEqual(quiet.kind, .quiet)
         XCTAssertFalse(quiet.interrupts)
-        XCTAssertEqual(quiet.body, "Dima's mail did not notify you: not important while you are not raising.")
+        XCTAssertEqual(quiet.body, "Dima's mail did not notify you: it is news, so it waits in the conversation.")
         XCTAssertNil(quiet.answer)
 
         // A decision that waits interrupts, carries the mark, and offers the first answer.
@@ -32,24 +32,6 @@ final class TellingTests: XCTestCase {
         XCTAssertEqual(NoticePlan.notice(for: plain, in: .main)?.body, "Maya, who invested in your seed, asks for the October numbers. I drafted a reply with the figures from the metrics sheet.")
         XCTAssertEqual(decision.answer, Notice.Answer(question: "maya-reply", choice: "send", title: "Send it"))
         XCTAssertEqual(NoticePlan.category(of: decision), "assistant.decision.Send it")
-    }
-
-    func testWhyAThingDidNotNotifyIsSaidFromTheReasonItsServerGives() {
-        // A line of the person's rule waits on something that is otherwise now.
-        XCTAssertEqual(Quiet.line(about: "Dima's mail", code: "nothing-holds", fact: "raising", value: "no"),
-                       "Dima's mail did not notify you: not important while raising is no.")
-        // They have said nothing about what is important; and the thing has no words over it.
-        XCTAssertEqual(Quiet.line(about: "", code: "no-rule"), "This did not notify you: you have not said what is important to you.")
-        // Their own model decided by their rule: its line is said as it gave it.
-        XCTAssertEqual(Quiet.line(about: "The newsletter", code: "judged", words: "It is a newsletter."),
-                       "The newsletter did not notify you: It is a newsletter.")
-        // No model could be asked: it was not treated as important, and why is said after.
-        XCTAssertEqual(Quiet.line(about: " ", code: "unjudged", words: "No model is linked"),
-                       "This did not notify you: nobody could judge whether it is important. No model is linked.")
-        // A reason this app does not know, or one with nothing to say it with, is said plainly.
-        for code in ["a-later-code", "nothing-holds", "judged", ""] {
-            XCTAssertEqual(Quiet.line(about: "The note", code: code), "The note did not notify you: not important by what you said.", code)
-        }
     }
 
     func testWhatItsServerOffersStandsUnderTheNoticeTheExpectedOneFirst() throws {
@@ -75,11 +57,11 @@ final class TellingTests: XCTestCase {
         XCTAssertEqual(told.words, "The draft is ready.\nScout offers this")
         // What did not interrupt offers nothing to press.
         news.isImportant = false
-        news.keptQuiet = Quiet.line(about: "", code: "no-rule")
+        news.keptQuiet = "This did not notify you: it is news."
         let quiet = try XCTUnwrap(NoticePlan.notice(for: news, in: .main))
         XCTAssertEqual(quiet.kind, .quiet)
         XCTAssertEqual(quiet.offers, [])
-        XCTAssertEqual(quiet.words, "This did not notify you: you have not said what is important to you.")
+        XCTAssertEqual(quiet.words, "This did not notify you: it is news.")
     }
 
     func testWhatCameSinceThePersonLeftStandsBeforeTheFirstPieceThatCameAfter() {

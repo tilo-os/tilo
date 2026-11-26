@@ -54,7 +54,7 @@ public enum Drawing {
         choices: [Choice(id: "send", title: "Send it", isMain: true), Choice(id: "show", title: "Show me the draft"),
                   Choice(id: "later", title: "Not now")])
 
-    public static let quietReason = "Dima's mail did not notify you: not important while you are not raising."
+    public static let quietReason = "Dima's mail did not notify you: it is news, so it waits in the conversation."
 
     public static var mainChat: [Item] {
         let rundown = TaskLine(task: "morning-rundown", title: "Morning rundown", state: .scheduled("every day"))
@@ -115,16 +115,6 @@ public enum Drawing {
             Item(id: "deck", at: at(9, 13), .message(Message(.assistant, "The board deck for Friday has a first draft.")),
                  isImportant: true, offers: [Offer(id: "show-deck", title: "Show the draft", isMain: true, by: "Researcher")]),
             Item(id: "remind-jonas", at: at(10, 14), .reminder("Call Jonas."), raised: 1),
-        ]
-    }
-
-    /// Why three things did not notify, each said from the reason a person's server gives:
-    /// a line of their rule that waits on something, no rule at all, and their own model's line.
-    public static var toldQuiet: [String] {
-        [
-            Quiet.line(about: "Dima's mail", code: "nothing-holds", fact: "raising", value: "no"),
-            Quiet.line(about: "Nine mails sorted", code: "no-rule"),
-            Quiet.line(about: "", code: "judged", words: "A newsletter, and you said nothing about newsletters"),
         ]
     }
 
@@ -206,9 +196,6 @@ public enum Drawing {
             ],
             logins: [Supervision.Login(id: "linkedin", name: "LinkedIn", typed: at(8, 30), lastUsed: at(9, 0))],
             manager: Supervision.ManagerLogins(manager: "Bitwarden", first: "GitHub", count: 32),
-            importance: ["An investor who has invested is always important",
-                         "New investor inbound is important only while I am raising"],
-            situations: [Supervision.Situation(name: "Raising", value: "no")],
             learned: [Supervision.Learned(id: "sign", text: "You sign mails with Best, Xaver"),
                       Supervision.Learned(id: "dima", text: "Dima at Mento is an investor")],
             learnedCount: 48,

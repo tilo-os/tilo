@@ -254,12 +254,6 @@
 "reminder" = "Reminder";
 "brief" = "Brief";
 "in-progress-count" = "{count} in progress";
-"quiet-line" = "{what} did not notify you: {why}";
-"quiet-line-plain" = "This did not notify you: {why}";
-"quiet-no-rule" = "you have not said what is important to you";
-"quiet-while" = "not important while {fact} is {value}";
-"quiet-by-rule" = "not important by what you said";
-"quiet-unjudged" = "nobody could judge whether it is important";
 "offered-by" = "{name} offers this";
 "allow" = "Allow";
 "deny" = "Deny";

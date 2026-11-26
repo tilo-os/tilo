@@ -209,13 +209,6 @@ public struct Wording: Sendable {
         return lines(all)
     }
 
-    public func importance(_ facts: Supervision) -> Line {
-        guard let first = facts.importance.first else { return Line(first: W.none.said, second: nil) }
-        let situations = facts.situations.map { "\($0.name): \($0.value)" }
-        let rest = Array(facts.importance.dropFirst().prefix(1)) + situations
-        return Line(first: first, second: rest.isEmpty ? nil : joined(rest))
-    }
-
     public func learned(_ facts: Supervision) -> Line {
         guard let first = facts.learned.first else { return Line(first: W.none.said, second: nil) }
         var rest = facts.learned.dropFirst().prefix(1).map(\.text)

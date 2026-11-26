@@ -776,10 +776,6 @@ public struct Supervision: Equatable, Sendable {
     public var logins: [Login]
     /// What the person's password manager holds for it: fetched when needed, never kept here.
     public var manager: ManagerLogins?
-    /// What is important, in the person's own words, most general first.
-    public var importance: [String]
-    /// The situations those words depend on: "Travelling" is "no".
-    public var situations: [Situation]
     /// What it has learned, newest first. `learnedCount` may be more than are listed.
     public var learned: [Learned]
     public var learnedCount: Int
@@ -787,8 +783,7 @@ public struct Supervision: Equatable, Sendable {
     public var workspaces: [String]
 
     public init(isOn: Bool = true, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
-                logins: [Login] = [], manager: ManagerLogins? = nil, importance: [String] = [],
-                situations: [Situation] = [], learned: [Learned] = [], learnedCount: Int? = nil,
+                logins: [Login] = [], manager: ManagerLogins? = nil, learned: [Learned] = [], learnedCount: Int? = nil,
                 places: [Place] = [], workspaces: [String] = []) {
         self.isOn = isOn
         self.model = model
@@ -796,8 +791,6 @@ public struct Supervision: Equatable, Sendable {
         self.connections = connections
         self.logins = logins
         self.manager = manager
-        self.importance = importance
-        self.situations = situations
         self.learned = learned
         self.learnedCount = learnedCount ?? learned.count
         self.places = places
@@ -875,16 +868,6 @@ public struct Supervision: Equatable, Sendable {
             self.manager = manager
             self.first = first
             self.count = count
-        }
-    }
-
-    public struct Situation: Equatable, Sendable {
-        public var name: String
-        public var value: String
-
-        public init(name: String, value: String) {
-            self.name = name
-            self.value = value
         }
     }
 
