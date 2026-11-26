@@ -131,7 +131,7 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
         false,
         "{overview}"
     );
-    let layout_key = tilo_action_services::session_actions::LAYOUT_RESOURCE
+    let layout_key = tilo_actions::remote::session_actions::LAYOUT_RESOURCE
         .rsplit(':')
         .next()
         .expect("a resource key");

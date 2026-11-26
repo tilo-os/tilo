@@ -757,7 +757,7 @@ fn certified_provider(provider: &str) -> bool {
         // The device's own answers, and the dispatch's own: the language's actions, and the
         // workspace's invocations its calls that wait for a person are answered in. Each is
         // admitted under the ownership the host retained for the call.
-        tilo_action_services::device_tickets::PROVIDER
+        tilo_actions::remote::device_tickets::PROVIDER
             | tilo_action_services::server_account::PROVIDER
             | tilo_action_services::own_device::PROVIDER
             | tilo_actions::remote::ACTIONS_PROVIDER

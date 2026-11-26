@@ -2623,7 +2623,7 @@ fn ask(
 
 /// The provider the session's own actions are published under.
 fn wire_provider() -> &'static str {
-    tilo_action_services::SESSION_ACTIONS_PROVIDER
+    tilo_actions::remote::session_actions::PROVIDER
 }
 
 /// The workspace an app's own provider names: `application:<workspace>:<app>…`, an app the shell

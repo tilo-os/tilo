@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_action_services::session_actions::{INVITE_RESOURCE, ISSUE_INVITATION};
+use tilo_actions::remote::session_actions::{INVITE_RESOURCE, ISSUE_INVITATION};
 use tilo_peer_state::join::Role;
 use tilo_session_core::desktop::workspace_settings as domain;
 use tilo_sheets::invite as sheet;

@@ -54,10 +54,10 @@ pub const RUN_LINE: &str = "run-line";
 /// The target of [`RUN_LINE`]: the session's own provider, on [`PROGRAMS_RESOURCE`]. A composer
 /// asks it as the person typing it.
 #[must_use]
-pub fn run_line_target() -> tilo_actions::remote::RemoteActionTarget {
-    tilo_actions::remote::RemoteActionTarget {
+pub fn run_line_target() -> crate::remote::RemoteActionTarget {
+    crate::remote::RemoteActionTarget {
         provider: PROVIDER.to_owned(),
-        address: tilo_actions::ActionAddress::new(PROGRAMS_RESOURCE, RUN_LINE),
+        address: crate::ActionAddress::new(PROGRAMS_RESOURCE, RUN_LINE),
     }
 }
 
@@ -92,10 +92,10 @@ pub const PAIR_DEVICE: &str = "pair-device";
 /// [`INVITE_RESOURCE`]. An app invokes one of these as the person using it, through the action
 /// broker.
 #[must_use]
-pub fn target(action: &str) -> tilo_actions::remote::RemoteActionTarget {
-    tilo_actions::remote::RemoteActionTarget {
+pub fn target(action: &str) -> crate::remote::RemoteActionTarget {
+    crate::remote::RemoteActionTarget {
         provider: PROVIDER.to_owned(),
-        address: tilo_actions::ActionAddress::new(INVITE_RESOURCE, action),
+        address: crate::ActionAddress::new(INVITE_RESOURCE, action),
     }
 }
 
@@ -106,9 +106,9 @@ pub const AGENTS_RESOURCE: &str = "session:agents";
 /// [`AGENTS_RESOURCE`]. An app invokes one of these as the person using it, through the action
 /// API.
 #[must_use]
-pub fn agents_target(action: &str) -> tilo_actions::remote::RemoteActionTarget {
-    tilo_actions::remote::RemoteActionTarget {
+pub fn agents_target(action: &str) -> crate::remote::RemoteActionTarget {
+    crate::remote::RemoteActionTarget {
         provider: PROVIDER.to_owned(),
-        address: tilo_actions::ActionAddress::new(AGENTS_RESOURCE, action),
+        address: crate::ActionAddress::new(AGENTS_RESOURCE, action),
     }
 }

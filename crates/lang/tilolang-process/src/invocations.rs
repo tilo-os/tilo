@@ -281,7 +281,7 @@ impl Invocations {
         });
         self.lines_moved.insert(place.clone());
         let request = request(
-            tilo_action_services::session_actions::run_line_target(),
+            tilo_actions::remote::session_actions::run_line_target(),
             &json!({ "line": line }),
         );
         self.asked

@@ -735,9 +735,9 @@ pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invit
 pub fn shell_answer(device: &Device, args: &serde_json::Value) -> serde_json::Value {
     device.act_wait(
         &at(
-            tilo_action_services::session_actions::PROVIDER,
-            tilo_action_services::session_actions::INVITE_RESOURCE,
-            tilo_action_services::session_actions::ISSUE_INVITATION,
+            tilo_actions::remote::session_actions::PROVIDER,
+            tilo_actions::remote::session_actions::INVITE_RESOURCE,
+            tilo_actions::remote::session_actions::ISSUE_INVITATION,
         ),
         args,
     )
@@ -3067,7 +3067,7 @@ pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
 /// The session's own verb that makes a new workspace, as the workspace menu invokes it.
 pub fn new_workspace() -> RemoteActionTarget {
     at(
-        tilo_action_services::SESSION_ACTIONS_PROVIDER,
+        tilo_actions::remote::session_actions::PROVIDER,
         "desktop:chrome",
         "new-workspace",
     )

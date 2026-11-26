@@ -27,7 +27,7 @@ use tilo_actions::MemberId;
 use {tilo_actions::ActionAddress, tilo_actions::remote::RemoteActionTarget};
 
 /// The provider that answers a workspace's events under.
-pub const PROVIDER: &str = "tilo.events";
+pub const PROVIDER: &str = tilo_actions::remote::WORKSPACE_EVENTS_PROVIDER;
 /// The resource the events are actions of.
 pub const RESOURCE: &str = "events";
 /// The kind of that resource.

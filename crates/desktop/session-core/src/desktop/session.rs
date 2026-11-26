@@ -44,9 +44,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_action_services::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, formats,
-    mcp_server, server_account, session_actions,
+    mcp_server, server_account,
 };
 use tilo_actions::InvocationId;
+use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{
     ACCOUNTS_PROVIDER, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError,
     ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, InvocationReceipt,

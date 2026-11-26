@@ -240,7 +240,7 @@ pub fn what_a_person_was_told_is_asked_by_the_person_alone() {
 /// for the person can't ask for either.
 #[test]
 pub fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
-    use tilo_action_services::session_actions;
+    use tilo_actions::remote::session_actions;
     for (shown, chosen) in [
         (
             session_actions::SHOW_CONNECT,

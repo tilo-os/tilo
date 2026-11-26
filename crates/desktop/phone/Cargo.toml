@@ -26,7 +26,6 @@ unified-push = true
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 runtime-dylib = { path = "../../../crates/sdk/runtime-dylib", optional = true }
 # What a person's assistant told them, as the host that keeps their workspace publishes it: the
 # phone reads their log live and shows each thing that waits as a notification.

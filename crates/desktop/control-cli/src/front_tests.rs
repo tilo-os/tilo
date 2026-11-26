@@ -572,7 +572,7 @@ fn a_call_that_asks_first_is_confirmed_at_tilos_own_prompt() {
     assert_eq!(resolved.len(), 1, "{resolved:?}");
     assert_eq!(
         resolved[0].target.provider,
-        tilo_action_services::workspace_invocations::PROVIDER
+        tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER
     );
     assert_eq!(
         resolved[0].target.address,

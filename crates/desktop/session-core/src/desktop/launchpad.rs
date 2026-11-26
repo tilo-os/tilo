@@ -137,7 +137,7 @@ impl LaunchpadAction {
         match self {
             // Connecting an agent is the person's own action, which their card and search offer
             // already: the card asks for that one, so it is one thing wherever it is chosen.
-            Self::Agent => tilo_action_services::session_actions::CONNECT_AGENT.to_owned(),
+            Self::Agent => tilo_actions::remote::session_actions::CONNECT_AGENT.to_owned(),
             _ => format!("launchpad-{}", self.slug()),
         }
     }

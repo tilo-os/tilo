@@ -58,7 +58,11 @@ mod confirmation;
 mod content_get;
 mod content_link;
 mod content_put;
+/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
+/// issues it, prints the one string, and the new computer logs in with it.
+pub mod device_tickets;
 mod pending;
+pub mod session_actions;
 mod vault;
 pub use vault::{
     ItemRef, KEEP_SEALED, KEEP_USES, REMOVE_SEALED, VAULT_DEVICE_KEY, VAULT_FIND,
@@ -403,6 +407,15 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
 /// The provider a workspace's invocations answer under: the record of what was invoked
 /// there, and the asked records a call waits in.
 pub const WORKSPACE_INVOCATIONS_PROVIDER: &str = "tilo.invocations";
+
+/// The provider that answers a person's install machines.
+pub const MACHINES_PROVIDER: &str = "tilo.machines";
+
+/// The provider a server answers its accounts under.
+pub const SERVER_ACCOUNT_PROVIDER: &str = "tilo.server";
+
+/// The provider that answers a workspace's events under.
+pub const WORKSPACE_EVENTS_PROVIDER: &str = "tilo.events";
 
 /// The provider a moderation turn reaches a person's recorded changes under.
 pub const MODERATION_PROVIDER: &str = "tilo.moderation";

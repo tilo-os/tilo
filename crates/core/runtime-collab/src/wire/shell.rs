@@ -369,7 +369,7 @@ pub struct SpokenFor {
 }
 
 /// What the name of every provider a shell serves begins with, besides the session's own actions
-/// ([`tilo_action_services::session_actions::PROVIDER`]).
+/// ([`tilo_actions::remote::session_actions::PROVIDER`]).
 pub const SHELL_PROVIDERS: &str = "session.";
 
 /// The providers a shell serves under the ids apps have always called them by, each with the
@@ -378,16 +378,18 @@ pub const SHELL_PROVIDERS: &str = "session.";
 /// settings and model keys on this computer, the account this computer is signed in to, the
 /// machines it plans, and the workspace's events, which read the shortcuts this session saves.
 pub const SEAT_PROVIDERS: &[(&str, &str)] = {
-    use tilo_action_services::{machines, server_account, workspace_events};
-    use tilo_actions::remote::{MODELS_PROVIDER, settings_resources, workspace_activity};
+    use tilo_actions::remote::{
+        MACHINES_PROVIDER, MODELS_PROVIDER, SERVER_ACCOUNT_PROVIDER, WORKSPACE_EVENTS_PROVIDER,
+        settings_resources, workspace_activity,
+    };
     const SETTINGS: &str = "so.tilo.settings";
     &[
         (workspace_activity::PROVIDER, workspace_activity::APP_ID),
-        (machines::PROVIDER, "so.tilo.imager"),
+        (MACHINES_PROVIDER, "so.tilo.imager"),
         (MODELS_PROVIDER, SETTINGS),
-        (server_account::PROVIDER, SETTINGS),
+        (SERVER_ACCOUNT_PROVIDER, SETTINGS),
         (settings_resources::PROVIDER, SETTINGS),
-        (workspace_events::PROVIDER, workspace_events::PROVIDER),
+        (WORKSPACE_EVENTS_PROVIDER, WORKSPACE_EVENTS_PROVIDER),
     ]
 };
 
@@ -404,7 +406,7 @@ pub fn seat_app(provider: &str) -> Option<&'static str> {
 /// the device or an app answers.
 #[must_use]
 pub fn serves(provider: &str) -> bool {
-    provider == tilo_action_services::session_actions::PROVIDER
+    provider == tilo_actions::remote::session_actions::PROVIDER
         || seat_app(provider).is_some()
         || provider
             .strip_prefix(SHELL_PROVIDERS)

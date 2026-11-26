@@ -33,7 +33,6 @@ pub mod retained_retirement;
 #[cfg(feature = "client")]
 use runtime_portal::NotAvailable;
 
-pub use tilo_action_services::approved_checks;
 pub mod external_moderation;
 pub mod shown_actions;
 /// The host distinguishes local UI intent from continuation of a published action.

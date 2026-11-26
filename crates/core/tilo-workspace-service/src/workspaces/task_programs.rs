@@ -423,7 +423,7 @@ fn default_group(caller: ProgramCaller<'_>) -> WorkGroup {
             (session, tilo_actions::context::AGENT_SESSION_GROUP)
         }
         ProgramCaller::Person { session, .. } => (
-            session.unwrap_or(tilo_action_services::session_actions::PROGRAMS_RESOURCE),
+            session.unwrap_or(tilo_actions::remote::session_actions::PROGRAMS_RESOURCE),
             "api",
         ),
     };

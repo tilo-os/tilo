@@ -78,7 +78,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Api, note: &st
         "the session's own resources are listed: {apps}"
     );
     // The layout is found by its resource id, never by the label the person reads.
-    let layout_key = tilo_action_services::session_actions::LAYOUT_RESOURCE
+    let layout_key = tilo_actions::remote::session_actions::LAYOUT_RESOURCE
         .rsplit(':')
         .next()
         .expect("a resource key");

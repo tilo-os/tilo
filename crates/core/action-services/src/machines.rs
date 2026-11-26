@@ -9,7 +9,7 @@ use tilo_actions::ParamType;
 use {tilo_actions::ActionAddress, tilo_actions::remote::RemoteActionTarget};
 
 /// The provider that answers a person's install machines.
-pub const PROVIDER: &str = "tilo.machines";
+pub const PROVIDER: &str = tilo_actions::remote::MACHINES_PROVIDER;
 /// The resource the steps are actions of.
 pub const RESOURCE: &str = "machines";
 /// Plan a machine from its plan document (`plan`, `label`, `token_file`,

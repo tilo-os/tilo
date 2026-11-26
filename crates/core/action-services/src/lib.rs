@@ -19,7 +19,7 @@ pub mod browser;
 pub mod device_files;
 
 pub mod downloaded_apps;
-/// What an action declares it writes, and whether its answer is a secret.
+
 pub mod environment_commands;
 
 pub mod environment_device;
@@ -51,8 +51,6 @@ pub mod own_device;
 
 pub mod server_account;
 
-pub mod session_actions;
-
 pub mod task_programs;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -62,9 +60,6 @@ pub mod window_follow;
 
 pub mod workspace_events;
 
-/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
-/// issues it, prints the one string, and the new computer logs in with it.
-pub mod device_tickets;
 /// A device's migrations: another product's data brought into the workspace by
 /// `review`, `choose` and `start`, followed by `status`, on the resource of the
 /// device that holds the data (`devices/<key>/migrate`). An app finds this
@@ -88,7 +83,6 @@ pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
-pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_provider::TestProvider;
 

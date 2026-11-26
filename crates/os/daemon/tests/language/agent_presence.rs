@@ -545,10 +545,10 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
-            target: tilo_action_services::device_tickets::target(
-                tilo_action_services::device_tickets::REVOKE,
+            target: tilo_actions::remote::device_tickets::target(
+                tilo_actions::remote::device_tickets::REVOKE,
             ),
-            argument: tilo_action_services::device_tickets::Revoke::retired(&grant).argument(),
+            argument: tilo_actions::remote::device_tickets::Revoke::retired(&grant).argument(),
             context: None,
             confirmation: None,
             revision: None,

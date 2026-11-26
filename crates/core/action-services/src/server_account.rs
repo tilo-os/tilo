@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use {tilo_actions::ActionAddress, tilo_actions::remote::RemoteActionTarget};
 
 /// The provider a server answers its accounts under.
-pub const PROVIDER: &str = "tilo.server";
+pub const PROVIDER: &str = tilo_actions::remote::SERVER_ACCOUNT_PROVIDER;
 /// The resource the account's actions are actions of.
 pub const RESOURCE: &str = "server.account";
 /// Live: the calling person's account with this host, as a [`ServerAccount`].

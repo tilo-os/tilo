@@ -331,9 +331,9 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
     ];
     // The actions a desktop hands on to this daemon, as they are described everywhere.
     rows.extend(
-        tilo_action_services::device_tickets::HANDED_ON
+        tilo_actions::remote::device_tickets::HANDED_ON
             .into_iter()
-            .map(|action| row(tilo_action_services::device_tickets::descriptor(action))),
+            .map(|action| row(tilo_actions::remote::device_tickets::descriptor(action))),
     );
     // What the daemon does with the device key for the other programs of this computer.
     rows.extend(

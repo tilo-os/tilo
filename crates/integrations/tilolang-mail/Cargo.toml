@@ -11,7 +11,6 @@ description = "The mail origin of tilolang packages: the logic that keeps a pack
 ignored = ["mail-test-support"]
 
 [dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 # Mail's model and its IMAP and SMTP engine.
 mail-engine = { path = "../mail-engine", optional = true }
 # The workspace's accounts and their sign-ins, as the device's dispatch tells the connector

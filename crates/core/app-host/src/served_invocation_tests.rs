@@ -23,7 +23,7 @@ impl crate::services::LauncherServices for ProgressFixtureLaunch {
 fn progress_descriptors() -> Vec<runtime_collab::ExportedAction> {
     let directory = signed_worker::directory_state("reported-check-r1");
     let mut check = directory.borrow().row().descriptor.unwrap();
-    check.action = runtime_collab::approved_checks::ACTION_ID.into();
+    check.action = tilo_action_services::approved_checks::ACTION_ID.into();
     check.operation_kind = tilo_actions::OperationKind::Effect;
     check.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity {
         kind: check.resource_kind.clone(),
@@ -181,7 +181,7 @@ impl PersonSession {
         let request = signed_worker::invoke_request(
             &peer.to_string(),
             resource,
-            runtime_collab::approved_checks::ACTION_ID,
+            tilo_action_services::approved_checks::ACTION_ID,
             Some(serde_json::json!({"check_id": "regression"})),
         );
         let receipt = on_broker_turn(broker, self.provider.invoke(&self.caller, request))
@@ -476,7 +476,7 @@ async fn an_apps_call_for_a_delivered_invocation_reaches_the_device_as_that_invo
                     route.document_id.clone(),
                     tilo_actions::ActionAddress::new(
                         "workspace:atlas",
-                        runtime_collab::approved_checks::ACTION_ID
+                        tilo_action_services::approved_checks::ACTION_ID
                     ),
                 ))],
                 "the provider is told the delivered invocation, as delivered"

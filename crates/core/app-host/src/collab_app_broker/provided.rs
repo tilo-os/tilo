@@ -1302,8 +1302,8 @@ mod identity_admin_tests {
     use super::super::action_provider::RowScope;
     use crate::test_support::{Grants as _, Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
-    use tilo_action_services::device_tickets;
     use tilo_actions::remote::admitted::top_level;
+    use tilo_actions::remote::device_tickets;
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Admitted, Caller, Completer, Confirmation, InvokeArgument,
         InvokeRequest, Outcome, Pending, RemoteActionMessage, pending,

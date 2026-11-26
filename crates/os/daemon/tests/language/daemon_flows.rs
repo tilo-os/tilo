@@ -3,8 +3,8 @@
 //! and another device of theirs, or a key nobody certified, over the device link.
 
 use serde_json::{Value, json};
-use tilo_action_services::device_tickets;
 use tilo_actions::remote::ActionProvider as _;
+use tilo_actions::remote::device_tickets;
 
 use crate::language::host;
 use crate::language::host::said;

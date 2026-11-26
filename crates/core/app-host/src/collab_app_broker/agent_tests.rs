@@ -644,8 +644,8 @@ struct TurnSteps {
 }
 
 impl tilo_actions::remote::Admits for TurnSteps {
-    const PROVIDER: &'static str = tilo_action_services::session_actions::PROVIDER;
-    const APP: &'static str = tilo_action_services::session_actions::PROVIDER;
+    const PROVIDER: &'static str = tilo_actions::remote::session_actions::PROVIDER;
+    const APP: &'static str = tilo_actions::remote::session_actions::PROVIDER;
 
     fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
         tilo_actions::remote::admitted::top_level(TurnSteps::descriptors())
@@ -693,8 +693,8 @@ impl TurnSteps {
     fn providers(steps: Arc<Self>) -> tilo_workspace_service::workspaces::providers::Providers {
         let providers = tilo_workspace_service::workspaces::providers::Providers::default();
         providers.provide(
-            tilo_action_services::session_actions::PROVIDER,
-            tilo_action_services::session_actions::PROVIDER,
+            tilo_actions::remote::session_actions::PROVIDER,
+            tilo_actions::remote::session_actions::PROVIDER,
             tilo_workspace_service::workspaces::providers::Reach::Turns,
             steps as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
         );
@@ -743,7 +743,7 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
                     .eager_catalogue(caller, action_provider::RowScope::All)
                     .0
                     .iter()
-                    .any(|row| row.provider == tilo_action_services::session_actions::PROVIDER)
+                    .any(|row| row.provider == tilo_actions::remote::session_actions::PROVIDER)
             };
             assert!(
                 listed(&agent),
@@ -791,7 +791,7 @@ fn grant_the_layout(f: &Fixture, may: bool) {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     let node = tilo_actions::action_node(
         &TreePath::workspace(workspace_id().to_string()),
-        tilo_action_services::session_actions::PROVIDER,
+        tilo_actions::remote::session_actions::PROVIDER,
         "shell",
         "shell:layout",
         None,
@@ -828,7 +828,7 @@ fn stray_invoke(
             &InvokeRequest {
                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
                 target: tilo_actions::remote::RemoteActionTarget {
-                    provider: tilo_action_services::session_actions::PROVIDER.into(),
+                    provider: tilo_actions::remote::session_actions::PROVIDER.into(),
                     address: tilo_actions::ActionAddress::new("shell:layout", "place"),
                 },
                 argument: tilo_actions::remote::InvokeArgument::None,

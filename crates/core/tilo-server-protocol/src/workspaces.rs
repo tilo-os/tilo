@@ -731,7 +731,7 @@ pub const CREATE_WORKSPACE: &str = "workspace.create";
 /// one), `language` (the language one they do not name is named in, a tag such
 /// as `de-DE`; English when omitted), `workspace` (the identity of a workspace
 /// that moves here as theirs; a different one than theirs is refused with a
-/// `tilo_action_services::server_account::AdminRefusal`), and `expires_in_seconds`
+/// tilo-action-services' `server_account::AdminRefusal`), and `expires_in_seconds`
 /// (how long the invitation stays redeemable; 600 when omitted). Answers a
 /// [`CreatedWorkspace`] with the invitation the person's devices redeem to
 /// hold it, as its administrator.
