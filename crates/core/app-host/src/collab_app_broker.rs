@@ -105,12 +105,12 @@ mod published_invocation;
 mod record_changes;
 mod resolved_invocation;
 mod route_holds;
-mod shortcut_approval;
 /// A desktop session's app socket, which only a Unix session has.
 #[cfg(unix)]
 pub mod seat;
 #[cfg(test)]
 mod shell_tests;
+mod shortcut_approval;
 #[cfg_attr(
     not(test),
     allow(
@@ -427,7 +427,8 @@ pub struct AppBrokerState {
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look
     /// executable.
-    action_directory_bridge: ActionDirectoryRequestQueue,
+    /// The broker's own end of the action directory bridge its askers reach.
+    action_directory_requests: ActionDirectoryRequests,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,

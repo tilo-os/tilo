@@ -562,6 +562,13 @@ impl LocalDirectoryFixture {
 
 #[cfg(test)]
 fn local_directory_fixture() -> LocalDirectoryFixture {
+    local_directory_fixture_on(Arc::new(FanoutState::new()))
+}
+
+/// [`local_directory_fixture`] whose broker is attached to `fanout`, so a
+/// second broker can replace it there.
+#[cfg(test)]
+fn local_directory_fixture_on(fanout: Arc<FanoutState>) -> LocalDirectoryFixture {
     let mut tree = crate::test_support::WorkspaceTree::default();
     let mut workspace = crate::test_support::Workspace::new(
         crate::test_support::WorkspaceId::from_u128(71),
@@ -570,7 +577,16 @@ fn local_directory_fixture() -> LocalDirectoryFixture {
     workspace.policy.set_owner("fixture-owner".to_string());
     tree.workspaces.push(workspace);
     tree.set_active(crate::test_support::WorkspaceId::from_u128(71));
-    local_directory_fixture_with_membership(tree.shared())
+    let membership = tree.shared();
+    let mut fixture = local_directory_fixture_with_authority_on(
+        fanout,
+        membership.authority(),
+        membership.services(),
+        Some(71),
+        None,
+    );
+    fixture.membership = Some(membership);
+    fixture
 }
 
 pub fn local_directory_fixture_with_membership(
@@ -607,6 +623,22 @@ pub fn local_directory_fixture_with_authority(
     peer_id: Option<u64>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
 ) -> LocalDirectoryFixture {
+    local_directory_fixture_with_authority_on(
+        Arc::new(FanoutState::new()),
+        membership,
+        services,
+        peer_id,
+        trusted_devices,
+    )
+}
+
+fn local_directory_fixture_with_authority_on(
+    fanout: Arc<FanoutState>,
+    membership: crate::services::WorkspaceAuthorityHandle,
+    services: ProcessServices,
+    peer_id: Option<u64>,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+) -> LocalDirectoryFixture {
     let cluster_id = membership
         .snapshot()
         .unwrap()
@@ -615,7 +647,6 @@ pub fn local_directory_fixture_with_authority(
         .id()
         .to_string();
     let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
-    let fanout = Arc::new(FanoutState::new());
     let (state, bridge_rx) = AppBrokerState::new_configured(
         &fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),

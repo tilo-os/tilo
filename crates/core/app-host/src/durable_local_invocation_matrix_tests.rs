@@ -249,7 +249,7 @@ mod durable_local_matrix {
             // another eager admission after the caller's first explicit drain.
             let bridge_state = Arc::downgrade(&state);
             let bridge_directories = directories.clone();
-            let turn = state.action_directory_bridge.turn.clone();
+            let turn = state.action_directory_requests.turn.clone();
             let bridge_task = tokio::task::spawn_local(async move {
                 loop {
                     turn.notified().await;

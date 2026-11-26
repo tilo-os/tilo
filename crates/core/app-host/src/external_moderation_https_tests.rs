@@ -522,7 +522,7 @@ mod https_completion {
                 let target = bounded("durable Store worker", workspace.worker(988)).await;
                 let state = Arc::downgrade(&workspace.state);
                 let directories = workspace.directories.clone();
-                let turn = workspace.state.action_directory_bridge.turn.clone();
+                let turn = workspace.state.action_directory_requests.turn.clone();
                 let _pump = DirectoryPump(tokio::task::spawn_local(async move {
                     loop {
                         turn.notified().await;
@@ -651,7 +651,7 @@ mod https_completion {
                 let target = bounded("native Store launch", native_app(&workspace, 987)).await;
                 let state = Arc::downgrade(&workspace.state);
                 let directories = workspace.directories.clone();
-                let turn = workspace.state.action_directory_bridge.turn.clone();
+                let turn = workspace.state.action_directory_requests.turn.clone();
                 let _pump = DirectoryPump(tokio::task::spawn_local(async move {
                     loop {
                         turn.notified().await;

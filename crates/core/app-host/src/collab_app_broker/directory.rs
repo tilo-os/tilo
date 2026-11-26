@@ -277,6 +277,16 @@ pub(super) enum ActionDirectoryBridgeRequest {
 /// valid.  Callers receive a oneshot they may poll from any executor.
 #[derive(Clone)]
 pub struct ActionDirectoryRequestQueue {
+    /// The session's fanout, which holds the broker that is live now: an ask
+    /// resolves it when it is made, so a handle kept from before a broker
+    /// replacement reaches the broker that replaced it.
+    fanout: std::sync::Weak<crate::collab_broker::FanoutState>,
+}
+
+/// The broker's own end of the bridge: the queue askers hand their requests
+/// to and the wake that makes the broker's loop drain them.
+#[derive(Clone)]
+pub(super) struct ActionDirectoryRequests {
     pub(super) sender: std::sync::mpsc::SyncSender<ActionDirectoryBridgeRequest>,
     /// Wakes the accept loop, which is the only drainer of this queue.
     pub(super) turn: std::sync::Arc<tokio::sync::Notify>,
@@ -285,27 +295,37 @@ pub struct ActionDirectoryRequestQueue {
 impl ActionDirectoryRequestQueue {
     pub(super) const CAPACITY: usize = 64;
 
-    pub(crate) fn unavailable() -> Self {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
-        drop(receiver);
-        Self {
-            sender,
-            turn: std::sync::Arc::new(tokio::sync::Notify::new()),
-        }
+    pub(super) fn reaching(fanout: std::sync::Weak<crate::collab_broker::FanoutState>) -> Self {
+        Self { fanout }
+    }
+
+    /// The broker to ask now, or why there is none: a broker that is truly
+    /// gone refuses the ask once, saying so.
+    fn requests(&self) -> Result<ActionDirectoryRequests, ActionDirectoryBridgeError> {
+        self.fanout
+            .upgrade()
+            .and_then(|fanout| fanout.app_broker())
+            .map(|broker| broker.action_directory_requests.clone())
+            .ok_or_else(|| {
+                ActionDirectoryBridgeError::Refused("the collaboration broker is gone".into())
+            })
     }
 
     pub(super) fn deliver(
         &self,
         request: ActionDirectoryBridgeRequest,
     ) -> Result<(), ActionDirectoryBridgeError> {
-        match self.sender.try_send(request) {
+        let ActionDirectoryRequests { sender, turn } = self.requests()?;
+        match sender.try_send(request) {
             Ok(()) => {
-                self.turn.notify_one();
+                turn.notify_one();
                 Ok(())
             }
             Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
+                Err(ActionDirectoryBridgeError::Refused(
+                    "the collaboration broker's directory bridge is gone".into(),
+                ))
             }
         }
     }
@@ -893,7 +913,7 @@ impl AppBrokerState {
     /// it later services the request.
     #[must_use]
     pub fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
-        self.action_directory_bridge.clone()
+        ActionDirectoryRequestQueue::reaching(self.fanout.clone())
     }
     #[track_caller]
     pub(super) fn refresh_action_directory_root_snapshot(&self) {

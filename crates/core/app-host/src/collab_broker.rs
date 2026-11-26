@@ -180,7 +180,7 @@ impl FanoutState {
             return;
         }
         if let Ok(mut g) = self.app_broker.lock()
-            && g.is_none()
+            && g.as_ref().is_none_or(|attached| !attached.is_accepting())
             && !self.stopped.load(Ordering::Acquire)
             && state.is_accepting()
         {
@@ -578,11 +578,7 @@ impl AppActionBroker {
     pub fn action_directory_request_queue(
         &self,
     ) -> crate::collab_app_broker::ActionDirectoryRequestQueue {
-        self.state
-            .while_live(|state| Ok(state.action_directory_request_queue()))
-            .unwrap_or_else(|_| {
-                crate::collab_app_broker::ActionDirectoryRequestQueue::unavailable()
-            })
+        self.state.action_directory_request_queue()
     }
 
     /// A local action api bound to an already-issued signed workspace admission and

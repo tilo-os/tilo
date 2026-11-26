@@ -419,6 +419,54 @@ async fn a_call_made_while_the_directory_is_republished_is_answered_from_the_nex
         .await;
 }
 
+/// A provider that kept its action-directory queue from before a broker
+/// replacement asks the broker that replaced it, and is answered: the queue
+/// resolves the session's live broker when the ask is made.
+#[tokio::test(flavor = "current_thread")]
+async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one() {
+    use tilo_actions::remote::Caller;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fanout = std::sync::Arc::new(crate::collab_broker::FanoutState::new());
+            let first = local_directory_fixture_on(std::sync::Arc::clone(&fanout));
+            let queue = first.broker.action_directory_request_queue();
+            // The broker this queue was made under stops; the next live one
+            // takes its place on the same session's fanout.
+            first.state.stop();
+            let live = local_directory_fixture_on(std::sync::Arc::clone(&fanout));
+            let caller = Caller::local_person("fixture-owner")
+                .in_workspace(live.cluster_id.clone())
+                .in_new_execution();
+            let query = runtime_collab::ActionDirectoryQuery {
+                peer_id: live.peer_id,
+                revision: String::new(),
+                cursor: Vec::new(),
+                needle: String::new(),
+                parent_resource: String::new(),
+                max_results: 8,
+                max_bytes: 65536,
+                max_work: 8,
+                max_depth: 4,
+                resource_name: String::new(),
+            };
+            let asked = live.drive(
+                queue
+                    .try_query_pending(live.state.caller_actor(&caller), &live.cluster_id, query)
+                    .expect("the live broker takes the kept queue's ask"),
+            );
+            let answered = asked.await.expect("the live broker answers");
+            let ActionDirectoryBridgeResponse::Page(page) = answered else {
+                panic!("the live broker answers the ask with a page");
+            };
+            assert_eq!(
+                page.rows.len(),
+                1,
+                "the broker that replaced the queue's own answers it"
+            );
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
