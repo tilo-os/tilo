@@ -2478,8 +2478,22 @@ impl Driver {
         };
         let Some(&node) = targets.get(name) else {
             // A name no widget has is a target a widget publishes for a node of its own.
-            return by_target(semantic_target.unwrap_or(name))
-                .ok_or_else(|| format!("no addressable widget named {name:?}"));
+            if let Some(found) = by_target(semantic_target.unwrap_or(name)) {
+                return Ok(found);
+            }
+            // A widget that paints rows itself (a menu's items) has no widget for each: a node
+            // it publishes with its own target and a name is reached by that name, as a screen
+            // reader and a tool reach it. One name that is two nodes is none of them in
+            // particular.
+            let mut named = tree.iter().filter(|candidate| {
+                candidate.semantic_target.is_some()
+                    && !candidate.state.hidden
+                    && candidate.name.as_deref().map(str::trim) == Some(name)
+            });
+            return match (named.next(), named.next()) {
+                (Some(found), None) => Ok(found.id.clone()),
+                _ => Err(format!("no addressable widget named {name:?}")),
+            };
         };
         let raw = u64::from(node);
         let found = tree.iter().find(|candidate| {
