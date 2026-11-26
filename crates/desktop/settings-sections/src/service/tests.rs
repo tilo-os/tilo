@@ -544,6 +544,50 @@ fn an_apps_preferences_are_set_one_by_one_by_their_own_verbs() {
     );
 }
 
+/// The keyboard's settings are a system section's, kept at the app's address
+/// (`settings/apps/so.tilo.osk`): an app declares no preferences there, and a write that would
+/// be one is refused rather than share the section's record. The section still sets its own
+/// fields at that address.
+#[test]
+fn a_system_sections_app_address_takes_no_app_preferences() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = crate::in_memory::scoped();
+    let mut services = services();
+    let resource = "settings/apps/so.tilo.osk";
+    let refusal = services
+        .invoke(
+            resource,
+            "set-font-size",
+            &arguments(json!({ "value": 13 })),
+        )
+        .expect("the address is answered")
+        .expect_err("an app's preference is not written where a system section stands");
+    let said = refusal.to_string();
+    assert!(said.contains("settings.osk-sources"), "{said}");
+    assert!(said.contains(resource), "{said}");
+    assert!(said.contains("so.tilo.osk"), "{said}");
+    assert_eq!(
+        services
+            .read(resource)
+            .and_then(|reading| reading.get("font_size").cloned()),
+        None,
+        "nothing wrote the app's preference there"
+    );
+    // The section's own setter still changes it.
+    services
+        .invoke(
+            resource,
+            "set-layouts",
+            &arguments(json!({ "layouts": ["qwerty", "azerty"], "active": "azerty" })),
+        )
+        .expect("answered")
+        .expect("set");
+    assert_eq!(
+        services.read(resource),
+        Some(json!({ "layout": "azerty", "layouts": ["qwerty", "azerty"] }))
+    );
+}
+
 /// Two providers the person set up: one on this device with two models, and
 /// one hosted with one, the device's the one agents answer with.
 fn configured() -> agent_provider_config::ProviderConfig {

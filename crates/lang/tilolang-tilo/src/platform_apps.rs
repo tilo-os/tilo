@@ -940,6 +940,18 @@ pub fn prefs_address(app: &str) -> String {
     format!("settings/apps/{app}")
 }
 
+/// The system's settings section that keeps `app`'s settings at [`prefs_address`], when one
+/// does: `settings.osk-sources` for the on-screen keyboard. Its resource is that record, so the
+/// app declares no preferences of its own there.
+#[must_use]
+pub fn section_keeping(app: &str) -> Option<String> {
+    let at = prefs_address(app);
+    settings_roots()
+        .ok()?
+        .into_iter()
+        .find_map(|(_, kind, published)| (published == at).then_some(kind))
+}
+
 /// Why the resource `id` is another app's preferences, which this app neither reads nor changes:
 /// its own live at `settings/apps/{app}`. `None` for its own, and for anything else.
 #[must_use]

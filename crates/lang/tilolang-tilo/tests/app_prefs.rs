@@ -47,6 +47,9 @@ struct Service {
     inner: Arc<Inner>,
 }
 
+/// One setter the app invoked: the resource, the verb and its arguments.
+type Sent = (String, String, serde_json::Map<String, serde_json::Value>);
+
 #[derive(Default)]
 struct Inner {
     /// Each resource's newest reading, waiting to be handed to a runtime.
@@ -54,7 +57,7 @@ struct Inner {
     /// Each app's stored preferences, as its setters wrote them.
     stored: Mutex<BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
     /// Every setter the app invoked: its resource, verb and arguments.
-    sent: Mutex<Vec<(String, String, serde_json::Map<String, serde_json::Value>)>>,
+    sent: Mutex<Vec<Sent>>,
 }
 
 impl Service {
@@ -138,9 +141,11 @@ impl PublishedSource for Service {
             .unwrap_or_default();
         let reading = {
             let mut stored = self.inner.stored.lock().unwrap();
-            let held = stored.entry(resource.to_owned()).or_insert(initial);
-            held.insert(field, value);
-            serde_json::Value::Object(held.clone())
+            let preferences = stored.entry(resource.to_owned()).or_insert(initial);
+            preferences.insert(field, value);
+            let reading = serde_json::Value::Object(preferences.clone());
+            drop(stored);
+            reading
         };
         self.publish(resource, reading);
         self.inner.sent.lock().unwrap().push((
@@ -208,7 +213,7 @@ struct App {
     host: Host,
     view: String,
     roots: Rc<RefCell<Roots>>,
-    app: String,
+    id: String,
 }
 
 impl App {
@@ -218,19 +223,7 @@ impl App {
             || None,
         )
         .expect("a host");
-        let source = SOURCE.replace("APP", app);
-        let compiled = tilolang::compile_package(&source, &IdsLock::new(), &[]).unwrap_or_else(
-            |diagnostics| {
-                panic!(
-                    "{}",
-                    diagnostics
-                        .iter()
-                        .map(|d| format!("{}: {}", d.code, d.message))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                )
-            },
-        );
+        let compiled = compiled_for(app);
         let package = host.load_compiled(&compiled).expect("the app loads");
         let view = package
             .meta
@@ -249,7 +242,7 @@ impl App {
             host,
             view,
             roots: Rc::new(RefCell::new(roots)),
-            app: app.to_owned(),
+            id: app.to_owned(),
         }
     }
 
@@ -260,13 +253,13 @@ impl App {
 
     fn window(&self) -> ViewInstance {
         self.host
-            .open_resource(&preferences(&self.app), Some(&self.view))
+            .open_resource(&preferences(&self.id), Some(&self.view))
             .expect("the window opens")
     }
 
     fn anchor(&self, name: &str) -> String {
         self.host
-            .package(&self.app)
+            .package(&self.id)
             .expect("the app is loaded")
             .meta
             .views
@@ -401,6 +394,53 @@ tilo_test_env::scenario! {
         assert!(
             refusal.contains("preferences of test.prefs.other"),
             "{refusal}"
+        );
+    }
+}
+
+/// `SOURCE` compiled for the app `app`, as `tilolang build` builds it.
+fn compiled_for(app: &str) -> tilolang::Compiled {
+    let source = SOURCE.replace("APP", app);
+    tilolang::compile_package(&source, &IdsLock::new(), &[]).unwrap_or_else(|diagnostics| {
+        panic!(
+            "{}",
+            diagnostics
+                .iter()
+                .map(|d| format!("{}: {}", d.code, d.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    })
+}
+
+tilo_test_env::scenario! {
+    fn an_app_whose_settings_a_system_section_keeps_declares_no_preferences;
+
+    phase the_keyboards_settings_live_in_the_system_section_at_its_address;
+    {
+        let keyboard = compiled_for("so.tilo.osk");
+        assert!(
+            !keyboard.meta.prefs.is_empty(),
+            "the keyboard's id declares preferences"
+        );
+        let refusal = tilolang_tilo::bundle::Bundle::from_parts(
+            keyboard.wasm.clone(),
+            keyboard.ids.to_text(),
+            &[],
+        )
+        .expect_err("the keyboard's settings are a system section's, not an app's preferences");
+        let said = refusal.to_string();
+        assert!(said.contains("settings.osk-sources"), "{said}");
+        assert!(said.contains("settings/apps/so.tilo.osk"), "{said}");
+    }
+
+    phase an_ordinary_apps_preferences_install;
+    {
+        let ours = compiled_for("test.prefs.installed");
+        assert!(
+            tilolang_tilo::bundle::Bundle::from_parts(ours.wasm.clone(), ours.ids.to_text(), &[])
+                .is_ok(),
+            "an app the system keeps nothing for declares its own preferences"
         );
     }
 }

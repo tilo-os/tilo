@@ -47,6 +47,18 @@ pub fn address(kind: &str) -> Option<String> {
 /// puts the key of the device whose settings it reads there.
 pub use ui::settings_device::DEVICE_PLACEHOLDER as DEVICE;
 
+/// The system's section that keeps `app`'s settings at its own address
+/// (`settings/apps/<app>`), when one does: the on-screen keyboard's layouts are the app
+/// `so.tilo.osk`'s settings, kept by `settings.osk-sources` in the person's. Its section and
+/// kind, so a reader knows both which record holds them and what to call it. An app a section
+/// keeps there declares no preferences of its own.
+#[must_use]
+pub fn system_section_of(app: &str) -> Option<(&'static str, &'static str)> {
+    places()
+        .into_iter()
+        .find_map(|(kind, section, held)| (held == Some(app)).then_some((section, kind)))
+}
+
 /// What the settings provider publishes, as a view of another language reads it: one resource
 /// per place the settings keep a section, each with its fields and the verbs it declares, its
 /// setters following from its fields (two types kept in one place are one resource, of the

@@ -463,6 +463,22 @@ impl Service for SettingsService {
             Some(Value::Object(fields)) => fields,
             _ => Map::new(),
         };
+        // A system settings section keeps some apps' settings at their own address
+        // (`settings/apps/<app>`, the on-screen keyboard's layouts): the app declares no
+        // preferences of its own there, so a write that would be one is refused rather than
+        // share the section's record.
+        if !typed
+            && let Some((section, app, _)) = preference_at(resource, action)
+            && let Some((kept, kind)) = crate::system_section_of(&app)
+            && kept == section
+        {
+            return Err(ApiError::Refused {
+                code: "system-section-settings".to_owned(),
+                reason: format!(
+                    "`{resource}` is the system's settings section `{kind}`, which keeps {app}'s settings: an app declares no preferences there"
+                ),
+            });
+        }
         if let Some((section, app, preference)) = preference_at(resource, action)
             .filter(|(.., preference)| !typed && !fields.contains_key(preference))
         {

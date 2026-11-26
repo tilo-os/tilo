@@ -55,6 +55,12 @@ pub enum BundleError {
     UnreadableTypes { app: String, types: String },
     #[error("{app}: its surface could not be written: {reason}")]
     Surface { app: String, reason: String },
+    #[error(
+        "`{app}` declares preferences, but its settings are the system's settings section \
+         `{section}`, kept at `settings/apps/{app}`: the app's settings live there, so it \
+         declares none of its own"
+    )]
+    PrefsOwned { app: String, section: String },
     #[error("{MODULE_ENV} is not set: the tilolang runtime runs the package the launcher names")]
     Unset,
 }
@@ -274,7 +280,8 @@ impl Bundle {
     }
 
     /// The bundle, once every type its packages' metadata names parses
-    /// ([`crate::meta::unreadable_types`]): what is derived from it later reads them all.
+    /// ([`crate::meta::unreadable_types`]) and no app it carries declares preferences at an
+    /// address a system settings section keeps: what is derived from it later reads them all.
     fn checked(self) -> Result<Self, BundleError> {
         for meta in self
             .imports
@@ -282,6 +289,17 @@ impl Bundle {
             .map(|import| &import.meta)
             .chain([&self.meta])
         {
+            // A system settings section keeps some apps' settings at their own address
+            // (`settings/apps/<app>`): an app's preferences there would claim the section's
+            // record, so the package is refused rather than installed over it.
+            if !meta.prefs.is_empty()
+                && let Some(section) = crate::platform_apps::section_keeping(&meta.app)
+            {
+                return Err(BundleError::PrefsOwned {
+                    app: meta.app.clone(),
+                    section,
+                });
+            }
             let unreadable = crate::meta::unreadable_types(meta);
             if !unreadable.is_empty() {
                 return Err(BundleError::UnreadableTypes {
