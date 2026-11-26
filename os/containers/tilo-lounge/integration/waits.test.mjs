@@ -1,12 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, stat} from 'node:fs/promises';
 import {createServer} from 'node:http';
+import {createServer as createSocketServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {reloaded} from './waits.mjs';
-import {agentCommand, hostedTiloPath, runSetupPrompt} from './shell.mjs';
+import {agentCommand, computerEnv, hostedTiloPath, runSetupPrompt} from './shell.mjs';
 import {HOSTED_CLI_VERSION, setupPrompt, signInPrompt} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+
+test('two simulated computers can hold independent local daemon sockets', async t => {
+  // A short path fits the kernel's Unix socket name on Linux and macOS.
+  const homes = await mkdtemp('/tmp/tilo-runtime-');
+  t.after(() => rm(homes, {recursive: true, force: true}));
+  const servers = [];
+  try {
+    for (const name of ['first', 'second']) {
+      const home = join(homes, name);
+      await mkdir(home);
+      const runtime = computerEnv(home).XDG_RUNTIME_DIR;
+      assert.ok(runtime, 'the computer has its own runtime directory');
+      assert.equal((await stat(runtime)).mode & 0o777, 0o700);
+      const dir = join(runtime, 'tilo');
+      await mkdir(dir, {mode: 0o700, recursive: true});
+      const server = createSocketServer();
+      await new Promise((resolve, reject) => server.once('error', reject)
+        .listen(join(dir, 'session-0000000000000001.api.sock'), resolve));
+      servers.push(server);
+    }
+    assert.notEqual(servers[0].address(), servers[1].address());
+  } finally {
+    await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+  }
+});
 
 test('the page drivers run the ticket displayed in the setup and sign-in prompts', () => {
   const ticket = `tilo1${'ab'.repeat(80)}`;

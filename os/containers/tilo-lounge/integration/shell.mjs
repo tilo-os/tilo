@@ -4,20 +4,25 @@
 // is a picture), the shell's search, invitation links, what a page said while
 // it loaded, and the mails a stack's entry sends.
 import {execFile} from 'node:child_process';
-import {readdirSync, readFileSync} from 'node:fs';
+import {mkdirSync, readdirSync, readFileSync} from 'node:fs';
 import {dirname, isAbsolute, join} from 'node:path';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from './waits.mjs';
 
-/** Each test computer keeps its own identity and daemon. The computers share one
- * network namespace, so let the kernel give each daemon its own UDP listener. */
-export const computerEnv = home => ({
-  PATH: `${join(home, 'bin')}:${process.env.PATH}`,
-  HOME: home,
-  XDG_STATE_HOME: join(home, 'state'),
-  XDG_CONFIG_HOME: join(home, 'config'),
-  TILO_DEVICE_PORT: '0',
-});
+/** Each simulated computer keeps its own identity and private daemon sockets. The
+ * computers share one network namespace, so the kernel chooses each UDP listener. */
+export const computerEnv = home => {
+  const runtime = join(home, 'run');
+  mkdirSync(runtime, {recursive: true, mode: 0o700});
+  return {
+    PATH: `${join(home, 'bin')}:${process.env.PATH}`,
+    HOME: home,
+    XDG_STATE_HOME: join(home, 'state'),
+    XDG_CONFIG_HOME: join(home, 'config'),
+    XDG_RUNTIME_DIR: runtime,
+    TILO_DEVICE_PORT: '0',
+  };
+};
 
 // The command printed for the person to give their agent. A ticket ends before
 // the comma introducing the next instruction; older hosts offer a short code.
