@@ -13,7 +13,9 @@
 
 use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
+use tilo_server_protocol::page::{
+    OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, PageUpdate,
+};
 pub use tilo_server_protocol::page_window::{HostedOpened, HostedPage, HostedPages};
 
 /// Answers remote-action requests addressed to this host.
@@ -187,13 +189,15 @@ pub trait AppPages: Send + Sync {
 
     /// Act on `page` as its person did (the element's number, its semantic
     /// target and the action), or with no act, answer what changed on it
-    /// since others wrote: the elements that changed, outermost first.
+    /// since others wrote: the elements that changed, outermost first, or the
+    /// page whole again once an app that had drawn nothing into it when it
+    /// opened draws its view.
     fn act(
         &self,
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>>;
+    ) -> Pending<Result<PageUpdate, PageRefusal>>;
 
     /// Let go of `page`: its person closed it.
     fn close(&self, workspace_id: WorkspaceId, page: u64);

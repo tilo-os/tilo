@@ -211,8 +211,19 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                         }])
                     }
                     _ => match pages.act(workspace_id, page, None).await {
-                        Some(Ok(patches)) if patches.is_empty() => continue,
-                        Some(Ok(patches)) => PageAnswer::Changed(patches),
+                        Some(Ok(tilo_server_protocol::page::PageUpdate::Changed(patches)))
+                            if patches.is_empty() =>
+                        {
+                            continue;
+                        }
+                        Some(Ok(tilo_server_protocol::page::PageUpdate::Changed(patches))) => {
+                            PageAnswer::Changed(patches)
+                        }
+                        Some(Ok(tilo_server_protocol::page::PageUpdate::Shown {
+                            title,
+                            css,
+                            body,
+                        })) => PageAnswer::Shown { title, css, body },
                         // A pass the page did not ask for answers nothing: the
                         // page's own asks keep their order, and the next pass
                         // answers what changed. A page that left hears it on its
@@ -273,10 +284,12 @@ where
 }
 
 fn patched(
-    answered: Option<Result<Vec<tilo_server_protocol::page::PagePatch>, PageRefusal>>,
+    answered: Option<Result<tilo_server_protocol::page::PageUpdate, PageRefusal>>,
 ) -> PageAnswer {
+    use tilo_server_protocol::page::PageUpdate;
     match answered {
-        Some(Ok(patches)) => PageAnswer::Patched(patches),
+        Some(Ok(PageUpdate::Changed(patches))) => PageAnswer::Patched(patches),
+        Some(Ok(PageUpdate::Shown { title, css, body })) => PageAnswer::Shown { title, css, body },
         Some(Err(refusal)) => PageAnswer::Refused(refusal),
         None => PageAnswer::Refused(PageRefusal::Unavailable("the page was dropped".to_owned())),
     }

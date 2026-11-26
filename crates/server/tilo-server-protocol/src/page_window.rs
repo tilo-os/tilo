@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{Caller, Pending};
 
 use crate::WorkspaceId;
-use crate::page::{MAX_PAGE_FRAME_BYTES, PageAction, PagePatch, PageRefusal};
+use crate::page::{MAX_PAGE_FRAME_BYTES, PageAction, PagePatch, PageRefusal, PageUpdate};
 
 /// What a device asks of a page window.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,9 +108,10 @@ pub struct HostedOpened {
 /// One page of an app this device runs itself.
 pub trait HostedPage: Send + Sync {
     /// Act on it as its person did, or with no act, answer what changed on it since: the
-    /// elements that changed, outermost first.
+    /// elements that changed, outermost first, or the page whole again once an app that had
+    /// drawn nothing into it when it opened draws its view.
     fn act(
         &self,
         act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>>;
+    ) -> Pending<Result<PageUpdate, PageRefusal>>;
 }

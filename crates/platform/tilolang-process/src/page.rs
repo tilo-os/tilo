@@ -35,6 +35,10 @@ pub struct PageWindow {
     harness: FrameHarness,
     page: Page,
     css: String,
+    /// Whether the page last written had no element at all: the app had drawn nothing yet, for
+    /// instance while it read its document. There is nothing of it in the page to patch, so its
+    /// first drawing is answered whole rather than as the elements that changed.
+    empty: bool,
 }
 
 impl PageWindow {
@@ -55,6 +59,7 @@ impl PageWindow {
             harness,
             page: Page::new(),
             css,
+            empty: true,
         }
     }
 
@@ -102,9 +107,11 @@ impl PageWindow {
                     self.exchange(hosted);
                 }
                 self.page = Page::new();
+                let body = self.page.render(&self.harness.composition());
+                self.empty = body.is_empty();
                 Answer::Shown {
                     css: self.css.clone(),
-                    body: self.page.render(&self.harness.composition()),
+                    body,
                 }
             }
             Ask::Act { id, target, action } => {
@@ -123,7 +130,22 @@ impl PageWindow {
                 self.exchange(hosted);
                 Answer::Patched(self.patch())
             }
-            Ask::Changes => Answer::Patched(self.patch()),
+            Ask::Changes => {
+                // A page the app had drawn nothing into when it was asked for it has no element
+                // to patch: what it draws next is written whole.
+                if self.empty {
+                    self.page = Page::new();
+                    let body = self.page.render(&self.harness.composition());
+                    if !body.is_empty() {
+                        self.empty = false;
+                        return Answer::Shown {
+                            css: self.css.clone(),
+                            body,
+                        };
+                    }
+                }
+                Answer::Patched(self.patch())
+            }
         }
     }
 

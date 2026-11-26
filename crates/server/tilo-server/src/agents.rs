@@ -644,7 +644,7 @@ impl crate::app_serving::AppPages for ActionPages {
         page: u64,
         act: Option<(u32, Option<String>, tilo_server_protocol::page::PageAction)>,
     ) -> Pending<
-        Result<Vec<tilo_server_protocol::page::PagePatch>, tilo_server_protocol::page::PageRefusal>,
+        Result<tilo_server_protocol::page::PageUpdate, tilo_server_protocol::page::PageRefusal>,
     > {
         self.actions.act_on_page(workspace_id, page, act)
     }

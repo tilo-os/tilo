@@ -4,7 +4,7 @@ use tilo_actions::remote::{Caller, Pending};
 use tilo_server_client::frame::{read_frame, write_frame};
 use tilo_server_protocol::auth::{Hello, HelloAck, client_challenge_digest};
 use tilo_server_protocol::page::{
-    OpenedPage, PageAction, PageAddress, PageAnswer, PageAsk, PagePatch, PageRefusal,
+    OpenedPage, PageAction, PageAddress, PageAnswer, PageAsk, PagePatch, PageRefusal, PageUpdate,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
@@ -138,14 +138,15 @@ impl AppPages for Echo {
         _: WorkspaceId,
         _: u64,
         act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
-        Pending::ready(Ok(act
-            .map(|(id, _, action)| PagePatch {
+    ) -> Pending<Result<PageUpdate, PageRefusal>> {
+        Pending::ready(Ok(PageUpdate::Changed(
+            act.map(|(id, _, action)| PagePatch {
                 id,
                 html: format!("{action:?}"),
             })
             .into_iter()
-            .collect()))
+            .collect(),
+        )))
     }
 
     fn close(&self, _: WorkspaceId, page: u64) {
@@ -244,8 +245,8 @@ impl AppPages for Asking {
         _: WorkspaceId,
         _: u64,
         _: Option<(u32, Option<String>, PageAction)>,
-    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
-        Pending::ready(Ok(Vec::new()))
+    ) -> Pending<Result<PageUpdate, PageRefusal>> {
+        Pending::ready(Ok(PageUpdate::Changed(Vec::new())))
     }
 
     fn close(&self, _: WorkspaceId, _: u64) {}
@@ -343,4 +344,75 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
         pages.closed.lock().unwrap().is_empty(),
         "nothing was opened"
     );
+}
+
+/// A page its app had drawn nothing into when it was opened, and drew later: what a page opened
+/// on an app still reading its document is.
+#[derive(Default)]
+struct Late;
+
+impl AppPages for Late {
+    fn open(
+        &self,
+        _: WorkspaceId,
+        _: &Caller,
+        _: PageAddress,
+    ) -> Pending<Result<OpenedPage, PageRefusal>> {
+        Pending::ready(Ok(OpenedPage {
+            page: 1,
+            title: "Notes".into(),
+            css: String::new(),
+            body: String::new(),
+        }))
+    }
+
+    fn act(
+        &self,
+        _: WorkspaceId,
+        _: u64,
+        _: Option<(u32, Option<String>, PageAction)>,
+    ) -> Pending<Result<PageUpdate, PageRefusal>> {
+        Pending::ready(Ok(PageUpdate::Shown {
+            title: "Notes".into(),
+            css: "body{}".into(),
+            body: "<div data-p=\"0\">New note</div>".into(),
+        }))
+    }
+
+    fn close(&self, _: WorkspaceId, _: u64) {}
+}
+
+/// A page that had drawn nothing when it was asked for is written whole once its app draws:
+/// there is no element of the empty page to patch, so a pass answering patches alone would
+/// leave it empty for good.
+#[tokio::test]
+async fn a_pass_answers_the_page_whole_once_a_page_that_had_drawn_nothing_draws() {
+    let pages = Late;
+    let person = Caller::authenticated([1; 32], [2; 32]);
+    let (mut browser, served) = tokio::io::duplex(1 << 16);
+    let (recv, send) = tokio::io::split(served);
+    let address = PageAddress {
+        workspace: WORKSPACE.into(),
+        app: "notes".into(),
+        show: None,
+    };
+    let serving = serve_pages(&pages, &person, true, |_, _| async { Ok(true) }, recv, send);
+    let browsing = async {
+        ask(&mut browser, &PageAsk::Open(address)).await;
+        assert_eq!(answer(&mut browser).await, PageAnswer::Loading);
+        let PageAnswer::Shown { body, .. } = answer(&mut browser).await else {
+            panic!("the page is shown, empty");
+        };
+        assert_eq!(body, "", "the app had drawn nothing yet");
+        // A pass with no act answers the page whole: what the app drew since.
+        let PageAnswer::Shown { title, css, body } = answer(&mut browser).await else {
+            panic!("the page is written whole again");
+        };
+        assert_eq!(
+            (title.as_str(), css.as_str(), body.as_str()),
+            ("Notes", "body{}", "<div data-p=\"0\">New note</div>")
+        );
+        drop(browser);
+    };
+    tokio::join!(serving, browsing);
 }

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tilo_actions::remote::{Caller, Pending, pending};
 use tilo_desktop_model::WorkspaceId;
-use tilo_server_protocol::page::{PageAction, PagePatch, PageRefusal};
+use tilo_server_protocol::page::{PageAction, PageRefusal, PageUpdate};
 use tilo_server_protocol::page_window::{self, Answer, Ask, HostedOpened, HostedPage, HostedPages};
 use tilo_workspace_service::apps::caller_signer::{Callers, VerifiedCaller};
 
@@ -201,6 +201,7 @@ impl Pages {
             connection: Arc::new(Mutex::new(connection)),
             reading: self.readers.reading(workspace, &app, reader),
             runtime: self.apps.server_workspaces().runtime().clone(),
+            title: title.clone(),
         };
         launcher
             .open_page(
@@ -282,26 +283,30 @@ struct ServerPage {
     connection: Arc<Mutex<UnixStream>>,
     reading: Reading,
     runtime: tokio::runtime::Handle,
+    /// The app's name, as the page's title: what it is called again when the page is written
+    /// whole after opening on an app that had drawn nothing yet.
+    title: String,
 }
 
 impl HostedPage for ServerPage {
     fn act(
         &self,
         act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+    ) -> Pending<Result<PageUpdate, PageRefusal>> {
         let asked = match act {
             Some((id, target, action)) => Ask::Act { id, target, action },
             None => Ask::Changes,
         };
         let connection = Arc::clone(&self.connection);
+        let title = self.title.clone();
         let (done, answer) = pending();
         self.runtime.spawn_blocking(move || {
             done.complete(match ask(&connection, &asked) {
-                Ok(Answer::Patched(patches)) => Ok(patches),
+                Ok(Answer::Patched(patches)) => Ok(PageUpdate::Changed(patches)),
+                // A page whose app drew nothing into it when it opened answers its first
+                // drawing whole.
+                Ok(Answer::Shown { css, body }) => Ok(PageUpdate::Shown { title, css, body }),
                 Ok(Answer::Failed(error)) | Err(error) => Err(PageRefusal::Unavailable(error)),
-                Ok(Answer::Shown { .. }) => Err(PageRefusal::Unavailable(
-                    "the page answered out of turn".into(),
-                )),
             });
         });
         answer

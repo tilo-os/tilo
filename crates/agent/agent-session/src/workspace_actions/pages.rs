@@ -18,7 +18,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
     COPY_INVITE_LINK, DEVICES_AND_ACCESS, OpenedPage, PAGE_ACTIONS_PROVIDER, PageAction,
-    PageAddress, PagePatch, PageRefusal, WAITING_TO_JOIN, WaitingAddress, encode_part,
+    PageAddress, PagePatch, PageRefusal, PageUpdate, WAITING_TO_JOIN, WaitingAddress, encode_part,
 };
 use tilo_server_protocol::page_window::{HostedOpened, HostedPage, HostedPages};
 
@@ -75,7 +75,7 @@ pub(super) enum PageJob {
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
-        done: Completer<Result<Vec<PagePatch>, PageRefusal>>,
+        done: Completer<Result<PageUpdate, PageRefusal>>,
     },
     Close {
         workspace_id: WorkspaceId,
@@ -468,7 +468,7 @@ impl WorkspaceActions {
         workspace_id: WorkspaceId,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>> {
+    ) -> Pending<Result<PageUpdate, PageRefusal>> {
         if page & HOSTED_PAGE != 0 {
             let open = self.shared.hosted.open().get(&page).cloned();
             return match open {
@@ -516,7 +516,7 @@ impl Worker {
                 act,
                 done,
             } => match self.act_on_page(page, act.clone()) {
-                Some(answer) => done.complete(answer),
+                Some(answer) => done.complete(answer.map(PageUpdate::from)),
                 // Its record or its chains are still on their way: it waits off the thread,
                 // and goes on once they arrive.
                 None => self.await_part(

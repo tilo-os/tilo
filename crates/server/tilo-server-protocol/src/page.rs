@@ -216,6 +216,27 @@ pub struct PagePatch {
     pub html: String,
 }
 
+/// What an open page answers to an act, or to a pass with no act: the elements that changed, or
+/// the page whole again. A page whose app had drawn nothing into it when it was opened has no
+/// element to patch, so its first drawing is answered whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageUpdate {
+    /// The elements that changed, outermost first.
+    Changed(Vec<PagePatch>),
+    /// The page whole: its title, the theme's stylesheet and its body.
+    Shown {
+        title: String,
+        css: String,
+        body: String,
+    },
+}
+
+impl From<Vec<PagePatch>> for PageUpdate {
+    fn from(patches: Vec<PagePatch>) -> Self {
+        Self::Changed(patches)
+    }
+}
+
 /// A page a serving device opened: the number a page's next asks name it by,
 /// and the page whole.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
