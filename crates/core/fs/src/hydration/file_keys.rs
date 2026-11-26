@@ -852,12 +852,8 @@ mod tests {
             ns.create_dir(scopes, workspace.to_string(), 1).unwrap()
         };
         let hydrator = Arc::new(hydrator);
-        let fs = crate::QuickFS::new(
-            namespace.clone(),
-            hydrator.clone(),
-            Arc::new(crate::Heuristics::new(hydrator.clone())),
-        )
-        .with_acl(policy.clone(), reader);
+        let fs = crate::QuickFS::over(namespace.clone(), hydrator.clone())
+            .with_acl(policy.clone(), reader);
         let path = Path::new(".workspaces")
             .join(workspace.to_string())
             .join("private.txt");

@@ -42,8 +42,7 @@ fn mounted(state: &Path) -> (QuickFS, tokio::runtime::Runtime) {
     let _entered = runtime.enter();
     let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
     let namespace = Arc::new(Mutex::new(Namespace::new("mount-tests").unwrap()));
-    let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-    let fs = QuickFS::new(namespace, hydrator, heuristics)
+    let fs = QuickFS::over(namespace, hydrator)
         .with_actor(fs_protocol::FileActor {
             person: fs_protocol::Ed25519PublicKey::from_bytes([3; 32]),
             device: fs_protocol::Ed25519PublicKey::from_bytes([4; 32]),

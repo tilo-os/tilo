@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use tilo_fs::fs::QuickFS;
 use tilo_fs::hydration::{FileKeys, Hydrator};
-use tilo_fs::smart::Heuristics;
 use tilo_fs::tree_sync::TreeSync;
 
 #[cfg(not(target_os = "linux"))]
@@ -87,12 +86,11 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
             .with_source(Arc::clone(&parts.content))
             .with_file_keys(parts.keys.clone()),
     );
-    let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
     let availability = tilo_fs::AvailabilityRegistry::open(parts.state.join("availability.json"))
         .map_err(std::io::Error::other)?;
     let evictions = tilo_fs::eviction::EvictionQueue::open(parts.state.join("evictions.json"))
         .map_err(std::io::Error::other)?;
-    let fs = QuickFS::new(Arc::clone(&parts.replica.namespace), hydrator, heuristics)
+    let fs = QuickFS::over(Arc::clone(&parts.replica.namespace), hydrator)
         .with_availability(Arc::new(std::sync::Mutex::new(availability)))
         .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(evictions)))
         .with_actor(parts.actor)
@@ -236,12 +234,11 @@ mod tests {
             // The filesystem is made on the task, as `filesystem` makes it, and only the
             // recovery that waits is moved off.
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
             let namespace = Arc::new(std::sync::Mutex::new(
                 tilo_fs::namespace::Namespace::new("test").unwrap(),
             ));
             let queue = tilo_fs::eviction::EvictionQueue::open(state).unwrap();
-            let fs = QuickFS::new(namespace, hydrator, heuristics)
+            let fs = QuickFS::over(namespace, hydrator)
                 .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(queue)));
             off_the_worker(move || fs.resume_pending_evictions());
             let _ = told.send(());
@@ -265,12 +262,11 @@ mod tests {
         std::thread::spawn(move || {
             tilo_rt::app().handle().block_on(async move {
                 let hydrator = Arc::new(Hydrator::new(store));
-                let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
                 let namespace = Arc::new(std::sync::Mutex::new(
                     tilo_fs::namespace::Namespace::new("test").unwrap(),
                 ));
                 let queue = tilo_fs::eviction::EvictionQueue::open(state).unwrap();
-                let fs = QuickFS::new(namespace, hydrator, heuristics)
+                let fs = QuickFS::over(namespace, hydrator)
                     .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(queue)));
                 off_the_worker(move || fs.resume_pending_evictions());
             });
@@ -297,12 +293,11 @@ mod tests {
             tilo_rt::app()
                 .block_on(async move {
                     let hydrator = Arc::new(Hydrator::new(store));
-                    let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
                     let namespace = Arc::new(std::sync::Mutex::new(
                         tilo_fs::namespace::Namespace::new("test").unwrap(),
                     ));
                     let queue = tilo_fs::eviction::EvictionQueue::open(state).unwrap();
-                    let fs = QuickFS::new(namespace, hydrator, heuristics)
+                    let fs = QuickFS::over(namespace, hydrator)
                         .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(queue)));
                     off_the_worker(move || fs.resume_pending_evictions());
                 })

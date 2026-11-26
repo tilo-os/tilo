@@ -604,6 +604,13 @@ pub struct QuickFS {
 }
 
 impl QuickFS {
+    /// A file system over `namespace` and `hydrator` with access heuristics of its own: for a
+    /// mount no prefetch switch or cache policy steers.
+    pub fn over(namespace: Arc<Mutex<Namespace>>, hydrator: Arc<Hydrator>) -> Self {
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        Self::new(namespace, hydrator, heuristics)
+    }
+
     pub fn new(
         namespace: Arc<Mutex<Namespace>>,
         hydrator: Arc<Hydrator>,

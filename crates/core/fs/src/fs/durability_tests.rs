@@ -34,9 +34,8 @@ impl Fixture {
     }
 
     fn mount(&self, staging: bool) -> QuickFS {
-        let heuristics = Arc::new(Heuristics::new(self.hydrator.clone()));
-        let fs = QuickFS::new(self.namespace.clone(), self.hydrator.clone(), heuristics)
-            .with_actor(self.actor);
+        let fs =
+            QuickFS::over(self.namespace.clone(), self.hydrator.clone()).with_actor(self.actor);
         if staging {
             fs.with_unsaved_store(crate::unsaved::UnsavedStore::open(self.staging_dir()).unwrap())
         } else {

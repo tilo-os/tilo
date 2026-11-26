@@ -90,8 +90,7 @@ impl RemoteFolder {
                 })
                 .collect()
         };
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(namespace, hydrator, heuristics);
+        let fs = QuickFS::over(namespace, hydrator);
         Self {
             fs,
             files,
@@ -123,8 +122,7 @@ impl RemoteFolder {
             })
             .collect();
         files.reverse();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::new(Mutex::new(namespace)), hydrator, heuristics);
+        let fs = QuickFS::over(Arc::new(Mutex::new(namespace)), hydrator);
         let fs = match kept {
             Some((root, delay)) => fs.with_kept_prefetch_history_after(root, WORKSPACE, delay),
             None => fs,

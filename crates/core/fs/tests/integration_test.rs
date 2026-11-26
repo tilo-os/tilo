@@ -251,8 +251,7 @@ async fn cap_fixture_with(identity: [u8; 32], acl: tilo_fs::AclHandle) -> CapFix
 
     let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(store));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
+    let fs = QuickFS::over(namespace, hydrator).with_acl(acl, identity);
 
     CapFixture {
         fs,
@@ -600,8 +599,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store.clone()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
 
             let options = vec![
                 MountOption::RO,
@@ -644,8 +642,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
                 let shutdown_store = store.clone();
                 let hydrator = Arc::new(Hydrator::new(store));
-                let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-                let fs = QuickFS::new(namespace, hydrator, heuristics);
+                let fs = QuickFS::over(namespace, hydrator);
 
                 let mut config = Config::default();
                 config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
@@ -688,8 +685,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let store = Arc::new(ContentStore::memory());
             let namespace = Arc::new(Mutex::new(Namespace::new("byte-name-peer").unwrap()));
             let hydrator = Arc::new(Hydrator::new(store.clone()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+            let fs = QuickFS::over(namespace.clone(), hydrator);
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_non_utf8".into())];
             let session = fuser::spawn_mount(fs, first_mount.path(), &config).unwrap();
@@ -714,8 +710,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 Namespace::from_bytes("reopened", &snapshot).unwrap(),
             ));
             let hydrator = Arc::new(Hydrator::new(store.clone()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(reopened, hydrator, heuristics);
+            let fs = QuickFS::over(reopened, hydrator);
             let session = fuser::spawn_mount(fs, second_mount.path(), &config).unwrap();
             wait_for_mount(second_mount.path()).await;
             let mut after_restart = second_mount.path().to_path_buf();
@@ -736,8 +731,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer").unwrap()));
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_rm".to_string())];
@@ -779,8 +773,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer").unwrap()));
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_doc".to_string())];
@@ -863,8 +856,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
 
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
 
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_xattr".to_string())];
@@ -908,8 +900,7 @@ async fn an_append_through_the_kernel_mount_lands_at_the_real_end() {
         let namespace = Arc::new(Mutex::new(Namespace::new("append-peer").unwrap()));
         let shutdown_store = store.clone();
         let hydrator = Arc::new(Hydrator::new(store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics);
+        let fs = QuickFS::over(namespace.clone(), hydrator.clone());
 
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_append".to_string())];
@@ -988,8 +979,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let namespace = Arc::new(Mutex::new(Namespace::new("replace-handle-peer").unwrap()));
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_replace_handle".to_string())];
             let session = fuser::spawn_mount(fs, &path, &config).expect("spawn FUSE session");
@@ -1039,8 +1029,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let namespace = Arc::new(Mutex::new(Namespace::new("unlink-handle-peer").unwrap()));
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_unlink_handle".to_string())];
             let session =
@@ -1087,8 +1076,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let namespace = Arc::new(Mutex::new(Namespace::new("two-writer-peer").unwrap()));
             let shutdown_store = store.clone();
             let hydrator = Arc::new(Hydrator::new(store));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let fs = QuickFS::new(namespace, hydrator, heuristics);
+            let fs = QuickFS::over(namespace, hydrator);
             let mut config = Config::default();
             config.mount_options = vec![MountOption::FSName("quickfs_two_writers".to_string())];
             let session =
@@ -1203,8 +1191,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     }
     let shutdown_store = store.clone();
     let hydrator = Arc::new(Hydrator::new(store));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+    let fs = QuickFS::over(namespace.clone(), hydrator);
     let fs = match acl {
         Some((a, id)) => fs.with_acl(a, id),
         None => fs,
@@ -1542,13 +1529,12 @@ async fn signalled_mount() -> SignalledMount {
         Hydrator::new(store.clone())
             .with_source(Arc::clone(&keeper) as Arc<dyn tilo_fs::hydration::ContentSource>),
     );
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let signal = Arc::new(tilo_fs::change_signal::ChangeSignal::new().unwrap());
     let registry_dir = tempdir().unwrap();
     let availability = Arc::new(Mutex::new(
         tilo_fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
     ));
-    let quick_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics)
+    let quick_fs = QuickFS::over(namespace.clone(), hydrator.clone())
         .with_change_signal(signal.clone())
         .with_availability(availability.clone());
     let dir = tempdir().unwrap();
@@ -1844,8 +1830,7 @@ async fn mount_owned_by(
         .create_dir(ROOT_INO, ".config", 1)
         .unwrap();
     let hydrator = Arc::new(Hydrator::new(store.clone()));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    let fs = QuickFS::new(namespace, hydrator, heuristics).with_owner(owner);
+    let fs = QuickFS::over(namespace, hydrator).with_owner(owner);
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs_owner".to_string())];
     if allow_other {
@@ -1952,7 +1937,6 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("writer-peer").unwrap()));
     let hydrator = Arc::new(Hydrator::new(store.clone()));
-    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     // This test process, as a desktop app would show it.
     let fake = tempdir().unwrap();
     let pid = std::process::id();
@@ -1976,7 +1960,7 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
         person: collab_types::Ed25519PublicKey([0x41; 32]),
         device: collab_types::Ed25519PublicKey([0x52; 32]),
     };
-    let quick = QuickFS::new(namespace.clone(), hydrator, heuristics)
+    let quick = QuickFS::over(namespace.clone(), hydrator)
         .with_actor(actor)
         .with_writers(writers);
     let mount_dir = tempdir().unwrap();

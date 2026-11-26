@@ -12,8 +12,7 @@ fn mount() -> (QuickFS, [u64; 3]) {
             .create_file(ROOT_INO, name, None, 0, 1)
             .unwrap()
     });
-    let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-    (QuickFS::new(namespace, hydrator, heuristics), inos)
+    (QuickFS::over(namespace, hydrator), inos)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

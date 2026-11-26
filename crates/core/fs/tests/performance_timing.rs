@@ -18,7 +18,7 @@ use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
 use tilo_fs::document_media::DocumentMedia;
-use tilo_fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
+use tilo_fs::{ContentStore, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use tilo_lock::MutexRecover as _;
 
 const ENABLE_ENV: &str = "TILO_FS_PERF_CHECK";
@@ -158,11 +158,7 @@ async fn mount_ranged_read_under_remote_apply_performance_check() {
             source.save_incremental()
         })
         .collect();
-    let mount = QuickFS::new(
-        Arc::clone(&namespace),
-        Arc::clone(&hydrator),
-        Arc::new(Heuristics::new(Arc::clone(&hydrator))),
-    );
+    let mount = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator));
     let stop = Arc::new(AtomicBool::new(false));
     let applier = {
         let (namespace, stop) = (Arc::clone(&namespace), Arc::clone(&stop));

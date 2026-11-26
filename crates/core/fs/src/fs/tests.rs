@@ -1,6 +1,17 @@
 use super::read::BufferedRead;
 use super::*;
 
+/// The availability registry of a device whose state is in `dir`.
+fn registry_in(dir: &tempfile::TempDir) -> Arc<Mutex<AvailabilityRegistry>> {
+    let path = dir.path().join("availability.json");
+    Arc::new(Mutex::new(AvailabilityRegistry::open(path).unwrap()))
+}
+
+/// An empty namespace of the device `host`.
+fn host() -> Arc<Mutex<Namespace>> {
+    Arc::new(Mutex::new(Namespace::new("host").unwrap()))
+}
+
 mod availability_control_tests {
     use super::*;
 
@@ -113,9 +124,7 @@ mod availability_control_tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("wake-test").unwrap()));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
+            let registry = registry_in(&dir);
             let candidate = current_pinned_candidate(&namespace, &registry);
             assert!(pinned_candidate_is_current(
                 &candidate, &namespace, &registry
@@ -143,9 +152,7 @@ mod availability_control_tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("unpin-wake-test").unwrap()));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
+            let registry = registry_in(&dir);
             let candidate = current_pinned_candidate(&namespace, &registry);
             let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
             let cancellation_registry = Arc::clone(&registry);
@@ -194,11 +201,8 @@ mod availability_control_tests {
                     )
                     .unwrap();
             }
-            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
-            let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            let registry = registry_in(&dir);
+            let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
                 .with_availability(Arc::clone(&registry));
             fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
                 .unwrap();
@@ -261,13 +265,11 @@ mod availability_control_tests {
             let registry_path = dir.path().join("availability.json");
             let store = Arc::new(ContentStore::memory());
             let hydrator = Arc::new(Hydrator::new(store));
-            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+            let namespace = host();
             let registry = Arc::new(Mutex::new(
                 AvailabilityRegistry::open(&registry_path).unwrap(),
             ));
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_availability(registry.clone());
+            let fs = QuickFS::over(namespace.clone(), hydrator).with_availability(registry.clone());
 
             let folder = namespace
                 .lock_recover()
@@ -299,18 +301,15 @@ mod availability_control_tests {
             let dir = tempfile::tempdir().unwrap();
             let store = Arc::new(ContentStore::memory());
             let hydrator = Arc::new(Hydrator::new(store));
-            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+            let namespace = host();
             let ino = namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "shared.txt", None, 0, 1)
                 .unwrap();
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
+            let registry = registry_in(&dir);
             let mut acl = crate::acl::WorkspaceAcl::new();
             acl.grant_read(READER, "/shared.txt");
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+            let fs = QuickFS::over(namespace.clone(), hydrator)
                 .with_availability(Arc::clone(&registry))
                 .with_acl(acl, READER);
 
@@ -382,9 +381,7 @@ mod availability_control_tests {
                 namespace.document_id_for(other_ino).unwrap(),
             )
         };
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
+        let registry = registry_in(&dir);
         let content = |hash: Hash| Some(fs_protocol::ContentHash(*hash.as_bytes()));
         keep_files_at(
             &registry,
@@ -397,8 +394,7 @@ mod availability_control_tests {
         let queue = Arc::new(tokio::sync::Mutex::new(
             EvictionQueue::open(dir.path().join("evictions.json")).unwrap(),
         ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+        let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
             .with_availability(Arc::clone(&registry))
             .with_eviction_queue(queue);
         let projected = |id| {
@@ -481,11 +477,10 @@ mod availability_control_tests {
             .unwrap()
             .create_dir(ROOT_INO, "offline", 1)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+        let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration();
         fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
@@ -511,8 +506,7 @@ mod availability_control_tests {
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+        let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration();
         wait_for_availability(&registry, document_id, |record| {
@@ -564,11 +558,8 @@ mod availability_control_tests {
                     .unwrap(),
             )
         };
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+        let registry = registry_in(&dir);
+        let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
             .with_availability(Arc::clone(&registry));
         let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
         let pass = || {
@@ -656,11 +647,8 @@ mod availability_control_tests {
                 .unwrap();
             folder
         };
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+        let registry = registry_in(&dir);
+        let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
             .with_availability(Arc::clone(&registry));
         let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
         let files = store.files();
@@ -712,11 +700,8 @@ mod availability_control_tests {
             let first = namespace.create_file(folder, "first", None, 0, 1).unwrap();
             (folder, namespace.document_id_for(first).unwrap())
         };
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+        let registry = registry_in(&dir);
+        let fs = QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration_every(Duration::from_secs(3600));
         fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
@@ -804,13 +789,9 @@ mod availability_control_tests {
                 .unwrap()
                 .unwrap();
             let hydrator = Arc::new(Hydrator::new(store));
-            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_availability(registry.clone());
+            let namespace = host();
+            let registry = registry_in(&dir);
+            let fs = QuickFS::over(namespace.clone(), hydrator).with_availability(registry.clone());
             let ino = namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "retry.txt", Some(&hash), 17, 1)
@@ -837,13 +818,9 @@ mod availability_control_tests {
             let dir = tempfile::tempdir().unwrap();
             let store = Arc::new(ContentStore::memory());
             let hydrator = Arc::new(Hydrator::new(store));
-            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_availability(registry.clone());
+            let namespace = host();
+            let registry = registry_in(&dir);
+            let fs = QuickFS::over(namespace.clone(), hydrator).with_availability(registry.clone());
             let ino = namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "empty.txt", None, 0, 1)
@@ -860,13 +837,9 @@ mod availability_control_tests {
             let dir = tempfile::tempdir().unwrap();
             let store = Arc::new(ContentStore::memory());
             let hydrator = Arc::new(Hydrator::new(store));
-            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let registry = Arc::new(Mutex::new(
-                AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-            ));
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_availability(registry.clone());
+            let namespace = host();
+            let registry = registry_in(&dir);
+            let fs = QuickFS::over(namespace.clone(), hydrator).with_availability(registry.clone());
             let missing = Hash::from([9; 32]);
             let ino = namespace
                 .lock_recover()
@@ -902,16 +875,14 @@ mod availability_control_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+        let namespace = host();
         let ino = namespace
             .lock_recover()
             .create_file(ROOT_INO, "empty.txt", None, 0, 1)
             .unwrap();
         let document_id = namespace.lock_recover().document_id_for(ino).unwrap();
         let content_hash = iroh_blobs::Hash::from([5; 32]);
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
+        let registry = registry_in(&dir);
         let mut availability = DocumentAvailability::new(document_id, EntryKind::File);
         availability.current_hash = Some(fs_protocol::ContentHash(*content_hash.as_bytes()));
         availability.residency = Residency::Resident { bytes: 0 };
@@ -943,8 +914,7 @@ mod availability_control_tests {
         current.current_hash = Some(fs_protocol::ContentHash([6; 32]));
         current.residency = Residency::Resident { bytes: 0 };
         registry.lock_recover().put(current).unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let fs = QuickFS::new(namespace, hydrator, heuristics)
+        let fs = QuickFS::over(namespace, hydrator)
             .with_availability(Arc::clone(&registry))
             .with_eviction_queue(queue);
 
@@ -982,10 +952,9 @@ mod thumb_tests {
     fn fixture(thumb_dir: &std::path::Path) -> (Arc<Mutex<Namespace>>, Arc<ContentStore>, QuickFS) {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(store.clone()));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let namespace = host();
         let provider = ThumbProvider::open(thumb_dir).unwrap();
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
+        let fs = QuickFS::over(namespace.clone(), hydrator).with_thumbs(provider);
         (namespace, store, fs)
     }
 
@@ -1133,12 +1102,8 @@ mod predictive_tests {
     fn fixture() -> (Arc<Mutex<Namespace>>, QuickFS) {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        (
-            namespace.clone(),
-            QuickFS::new(namespace, hydrator, heuristics),
-        )
+        let namespace = host();
+        (namespace.clone(), QuickFS::over(namespace, hydrator))
     }
 
     #[tokio::test]
@@ -1640,8 +1605,7 @@ mod write_stage_tests {
                 Arc::new(crate::hydration::StoreSource(Arc::clone(&source_store))),
             ));
             let namespace = Arc::new(Mutex::new(Namespace::new("stage-client").unwrap()));
-            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-            let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+            let fs = QuickFS::over(Arc::clone(&namespace), hydrator)
                 .with_write_stage_dir(dir.path().join("stage"));
             Self {
                 dir,
@@ -1786,8 +1750,7 @@ mod write_stage_tests {
             .unwrap()
             .create_file(ROOT_INO, "remote.txt", Some(&elsewhere), 200_000, 1)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+        let fs = QuickFS::over(Arc::clone(&namespace), hydrator)
             .with_write_stage_dir(dir.path().join("stage"));
 
         assert_eq!(fs.write_buffer(ino, 200_000, b"tail"), Ok(4));
@@ -1804,8 +1767,7 @@ mod write_stage_tests {
         let dir = tempfile::tempdir().unwrap();
         let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("contention").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+        let fs = QuickFS::over(Arc::clone(&namespace), hydrator)
             .with_write_stage_dir(dir.path().join("stage"));
         let large = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
         fs.publish();
@@ -1890,8 +1852,7 @@ mod write_stage_tests {
     async fn a_file_reads_back_the_bytes_written_whatever_its_format() {
         let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("formats").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        let fs = QuickFS::over(Arc::clone(&namespace), hydrator);
         tokio::task::spawn_blocking(move || {
             let contents: [(&str, &[u8]); 6] = [
                 (
@@ -1939,8 +1900,7 @@ mod write_stage_tests {
     async fn a_mode_given_to_a_file_or_directory_is_kept_without_setuid() {
         let hydrator = Arc::new(Hydrator::new(Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("modes").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        let fs = QuickFS::over(Arc::clone(&namespace), hydrator);
         tokio::task::spawn_blocking(move || {
             let tool = fs.create_empty_file(ROOT_INO, "tool").unwrap();
             assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o644);
@@ -1978,7 +1938,7 @@ mod read_lock_tests {
         let store = Arc::new(ContentStore::memory());
         let hash = store.write_content(BYTES).await.unwrap().unwrap();
         let hydrator = Arc::new(Hydrator::new(store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+        let namespace = host();
         let (shared, file) = {
             let mut ns = lock_namespace(&namespace);
             let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
@@ -1988,8 +1948,7 @@ mod read_lock_tests {
             drop(ns);
             (shared, file)
         };
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        let fs = QuickFS::over(namespace.clone(), hydrator);
         Fixture {
             namespace,
             fs,
@@ -2126,8 +2085,7 @@ mod read_lock_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("adopt").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+        let fs = QuickFS::over(Arc::clone(&namespace), hydrator)
             .with_write_stage_dir(dir.path().join("stage"));
         let ino = fs.create_empty_file(ROOT_INO, "photo.jpg").unwrap();
         fs.publish();
@@ -2199,9 +2157,8 @@ mod read_lock_tests {
             let store = Arc::new(ContentStore::memory());
             let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
             let namespace = Arc::new(Mutex::new(Namespace::new("adopt-plain").unwrap()));
-            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-            let fs = QuickFS::new(namespace, hydrator, heuristics)
-                .with_write_stage_dir(dir.path().join("stage"));
+            let fs =
+                QuickFS::over(namespace, hydrator).with_write_stage_dir(dir.path().join("stage"));
             (fs, store)
         });
         let ino = fs.create_empty_file(ROOT_INO, "photo.jpg").unwrap();
@@ -2235,7 +2192,6 @@ mod listing_stream_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(store));
         let namespace = Arc::new(Mutex::new(Namespace::new("listing-replica").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let flat = {
             let mut ns = namespace.lock_recover();
             let flat = ns.create_dir(ROOT_INO, "flat", 1).unwrap();
@@ -2245,7 +2201,7 @@ mod listing_stream_tests {
             drop(ns);
             flat
         };
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        let fs = QuickFS::over(namespace.clone(), hydrator);
         let first = fs.listing_page(flat, 0).unwrap();
         assert_eq!(first.len(), 5, "`.` and `..` and the three files");
         {
@@ -2289,9 +2245,7 @@ mod settled_read_tests {
         );
         let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("settled-reads").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let mut fs =
-            QuickFS::new(namespace, hydrator, heuristics).with_write_stage_dir(root.join("stage"));
+        let mut fs = QuickFS::over(namespace, hydrator).with_write_stage_dir(root.join("stage"));
         if let Some(journal) = journal {
             fs = fs.with_change_journal(journal);
         }

@@ -9,7 +9,6 @@ use super::{Pass, SyncFolder};
 use crate::fs::QuickFS;
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
-use crate::smart::Heuristics;
 use crate::store::ContentStore;
 
 struct Fixture {
@@ -40,8 +39,7 @@ impl Fixture {
             person: Ed25519PublicKey([1; 32]),
             device: Ed25519PublicKey([2; 32]),
         };
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(namespace, hydrator, heuristics).with_actor(actor);
+        let fs = QuickFS::over(namespace, hydrator).with_actor(actor);
         Self {
             dir,
             fs: Arc::new(fs),
