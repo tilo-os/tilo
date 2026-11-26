@@ -1743,12 +1743,12 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
         &[("probe", b"binary")],
     );
     let asked = root.join("launched");
-    // A stand-in launcher: it records what it was asked, reads its launch hold to the end, and
-    // ends, as the connector test's does.
+    // A stand-in launcher: it records what it was asked and keeps running, as a launcher released
+    // to run its app does. One that ended at once would be a start that ran no app.
     let launcher = tilo_test_env::stand_in(
         root.join("tilo-launcher"),
         &format!(
-            "printf '%s\\n' \"$*\" > '{asked}'\nexec cat >/dev/null\n",
+            "printf '%s\\n' \"$*\" > '{asked}'\nhold\n",
             asked = asked.display()
         ),
     )
@@ -1759,8 +1759,7 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     let launch = apps
         .start_showing(VIEWER, WORKSPACE, Shows::Nothing, None)
         .expect("the installed app starts");
-    let _ = launch.wait();
-    let asked = std::fs::read_to_string(&asked).unwrap();
+    let asked = wait_for(&asked.display().to_string());
     assert!(
         asked.starts_with("run ")
             && asked.contains(&format!("--manifest {}", installed.manifest_path.display()))
@@ -1783,6 +1782,7 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
             .contains("so.tilo.passwords is not installed on this computer; install it first with `tilo app install so.tilo.passwords`"),
         "{refused}"
     );
+    launch.kill();
 }
 
 // A start whose program ends as it starts has run no app: it answers the status and the
