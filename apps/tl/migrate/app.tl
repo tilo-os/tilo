@@ -7,11 +7,14 @@ app so.tilo.migrate "Migrations" (
 
 use so.tilo.migrate.engine as engine
 
-/// Where a migration's run stands: reviewed, with what the source holds waiting to be chosen;
+/// Where a migration's run stands: offered, a source the device can read that nobody looked at
+/// yet; reviewed, with what the source holds waiting to be chosen;
 /// running, while the device that holds the data brings in what was chosen; stopped by a person,
 /// keeping what it brought until then; failed, its failure saying why; or complete. The device
 /// that holds the data moves it on as its run goes.
 enum RunState {
+    /// Not looked at yet
+    offered (icon: .circle_plus)
     /// Reviewed
     reviewed
     /// Running
@@ -93,6 +96,18 @@ type Migration (title: title) {
     landed: Set<Text>
     /// What each run brought in.
     runs: Collection<Run>
+    /// Why the device cannot read this source at all (no Thunderbird profile, no browser), as it
+    /// said when it offered it; empty for one it can.
+    unavailable: Text = ""
+    /// What connecting asks for before the source can be read: the server's address, as its
+    /// example reads (`https://cloud.example.com`), or empty when it takes none.
+    asks_url: Text = ""
+    /// The sign-in name connecting asks for, as its example reads (`you@example.com`), or empty.
+    asks_login: Text = ""
+    /// Whether the source is an account to connect before it is read.
+    connects: Bool = false
+    /// Who started the last run: told when it ends.
+    started_by: Option<Actor> = .none
 }
 
 /// The workspace's migrations.
@@ -120,12 +135,77 @@ action reviewed(m: Migrations, source: Text, title: Text, device: Text, handle: 
         g.title = title
         g.handle = handle
         g.refused = ""
+        if g.state == .offered {
+            g.state = .reviewed
+        }
         for what in g.unreadable {
             g.unreadable.remove(what)
         }
         g
     } else {
         m.migrations.insert(Migration(source: source, title: title, device: device, handle: handle))
+    }
+}
+
+/// A source the device that holds the data can read, as it offers it.
+type Offered {
+    /// The engine's key for the source.
+    source: Text
+    title: Text
+    /// Why the device cannot read it at all; empty when it can.
+    unavailable: Text = ""
+    /// Whether it is an account to connect before it is read.
+    connects: Bool = false
+    /// The server's address connecting asks for, as its example reads, or empty.
+    asks_url: Text = ""
+    /// The sign-in name connecting asks for, as its example reads, or empty.
+    asks_login: Text = ""
+}
+
+/// The device `device` offers the sources `sources`: each is a migration the list shows for a
+/// person to pick, made the first time, saying why the device cannot read it and what connecting
+/// it asks for.
+action offer(m: Migrations, device: Text, sources: List<Offered>) (
+    icon: .circle_plus,
+    did: "found sources",
+) {
+    for o in sources {
+        let found = m.migrations.filter(x -> x.source == o.source and x.device == device).first()
+        if let g = found {
+            if g.unavailable != o.unavailable {
+                g.unavailable = o.unavailable
+            }
+            if g.connects != o.connects {
+                g.connects = o.connects
+            }
+            if g.asks_url != o.asks_url {
+                g.asks_url = o.asks_url
+            }
+            if g.asks_login != o.asks_login {
+                g.asks_login = o.asks_login
+            }
+        } else {
+            m.migrations.insert(
+                Migration(
+                    source: o.source,
+                    title: o.title,
+                    device: device,
+                    state: .offered,
+                    unavailable: o.unavailable,
+                    connects: o.connects,
+                    asks_url: o.asks_url,
+                    asks_login: o.asks_login,
+                ),
+            )
+        }
+    }
+}
+
+/// The device refused a step asked of `source` before anything of it was read, for `why`: the
+/// source it offered says so until the next step goes through.
+action source_refused(m: Migrations, source: Text, device: Text, why: Text) {
+    if let g = m.migrations.filter(x -> x.source == source and x.device == device).first() {
+        g.refused = why
     }
 }
 
@@ -245,10 +325,25 @@ action landed(g: Migration, run: Text, keys: List<Text>, kind: Text, count: Int,
 }
 
 /// The run ended as `state`: stopped, failed with `failure`, or complete.
-action ended(g: Migration, state: RunState, failure: Text) {
+action ended(g: Migration, state: RunState, failure: Text) uses notify {
     require state == .stopped or state == .failed or state == .complete "A run ends stopped, failed or complete"
     g.state = state
     g.failure = failure
+    if let who = g.started_by {
+        if state == .complete {
+            let brought = brought_said(g)
+            notify(
+                to: who,
+                title: g.title,
+                body: if brought != "" {
+                    "Brought in {brought}"
+                } else { "Everything chosen is here" },
+                opens: g,
+            )
+        } else if state == .failed {
+            notify(to: who, title: g.title, body: "Bringing in stopped: {failure}", opens: g)
+        }
+    }
 }
 
 /// The device took out of the workspace what the run `run` brought in: its keys are no longer
@@ -277,15 +372,44 @@ action refused(g: Migration, why: Text) {
     g.refused = why
 }
 
+/// Lists every source this device can bring things in from, each as a migration nobody looked at
+/// yet: what a person picks from to start one.
+primary action find_sources(m: Migrations) (
+    icon: .plus,
+    label: "Bring something in",
+    did: "looked for sources",
+) {
+    engine.sources()
+}
+
 /// Read `g`'s source again: what it holds now is what there is to choose from.
 action review(g: Migration) (icon: .refresh, label: "Look again", did: "looked at a source again") {
     engine.review(source: g.source)
+}
+
+/// Signs in to the account `g` is, with the server's address and the sign-in name it asks for
+/// and the password or key the person typed; the device keeps the secret in its vault and reads
+/// the account once it is connected.
+action connect(g: Migration, url: Text = "", login: Text = "", secret: Text = "") (
+    icon: .link,
+    label: "Connect",
+    did: "connected a source",
+) {
+    require g.asks_url == "" or url.trim() != "" "Type the server's address"
+    require g.asks_login == "" or login.trim() != "" "Type the name you sign in with"
+    engine.connect(
+        source: g.source,
+        url: if url.trim() == "" { .none } else { .some(url.trim()) },
+        login: if login.trim() == "" { .none } else { .some(login.trim()) },
+        secret: if secret == "" { .none } else { .some(secret) },
+    )
 }
 
 /// Bring in what is chosen of `g`'s source: the device that holds the data runs it as one run,
 /// and the migration follows it there, as `begun`, `landed` and `ended`. The action lasts as long
 /// as the run, and stopping it stops the run.
 action start(g: Migration) (icon: .play, did: "started bringing in") {
+    g.started_by = .some(invoker)
     engine.start(source: g.source)
 }
 
@@ -315,7 +439,11 @@ fn parent_of(g: Migration, x: Item) -> Option<Item> {
 
 /// Every migration of the workspace, each opening beside the list.
 view migrations(m: Migrations) {
-    std.browse(m, m.migrations, empty: "Nothing is being brought in") { g ->
+    std.browse(
+        m,
+        m.migrations,
+        empty: "Nothing is being brought in. Choose Bring something in to see what this computer can bring.",
+    ) { g ->
         migration_row(g)
     }
 }
@@ -326,10 +454,12 @@ view migration_row(g: Migration) {
     let brought = brought_said(g)
     ui.ListRow(
         g.title,
-        secondary: if g.state == .failed and g.failure != "" {
+        secondary: if g.unavailable != "" {
+            g.unavailable
+        } else if g.state == .failed and g.failure != "" {
             g.failure
-        } else if brought != "" { "{brought} brought in" },
-        meta: g.state.label(),
+        } else if g.refused != "" { g.refused } else if brought != "" { "{brought} brought in" },
+        meta: if g.unavailable != "" { "Not here" } else { g.state.label() },
         meta_tone: if g.state == .failed {
             .danger
         } else if g.state == .complete {
@@ -343,6 +473,62 @@ view migration_row(g: Migration) {
 /// not be read, and the runs that brought things in.
 view migration_page(g: Migration) {
     std.document(g) {
+        if g.state == .offered {
+            source_start(g)
+        } else {
+            migration_body(g)
+        }
+    }
+}
+
+/// A source nobody looked at yet: why the device cannot read it, the account to connect first,
+/// or looking at what it holds.
+view source_start(g: Migration) {
+    state url: Text = ""
+    state login: Text = ""
+    state secret: Text = ""
+    stack(gap: .related) {
+        if g.unavailable != "" {
+            ui.Banner("This computer cannot bring this in", message: g.unavailable, kind: .info)
+        } else if g.connects {
+            text(
+                "Connect the account first. Nothing is brought in until you choose what.",
+                secondary: true,
+            )
+            form {
+                if g.asks_url != "" {
+                    field("Server") {
+                        ui.TextInput(bind: url, placeholder: g.asks_url, autofocus: true)
+                    }
+                }
+                if g.asks_login != "" {
+                    field("Sign in as") {
+                        ui.TextInput(bind: login, placeholder: g.asks_login)
+                    }
+                }
+                field("Password or key", help: "Kept in this computer's vault.") {
+                    ui.TextInput(bind: secret, secret: true)
+                }
+            }
+            ui.Button("Connect", icon: .link) {
+                on press: connect(g, url, login, secret).then(set(secret, ""))
+            }
+        } else {
+            text("See what it holds, then choose what to bring in.", secondary: true)
+            ui.Button("Look at what it holds", icon: .search) {
+                on press: review(g)
+            }
+        }
+        if g.refused != "" {
+            ui.Banner("That could not be done", message: g.refused, kind: .warning)
+        }
+    }
+}
+
+/// A migration that was looked at: where its run stands, what the source holds to choose from,
+/// what could not be read, and the runs that brought things in.
+view migration_body(g: Migration) {
+    stack(gap: .group) {
         run_status(g)
         if not g.unreadable.is_empty() {
             section("Could not be read") {
@@ -383,7 +569,7 @@ view migration_page(g: Migration) {
 /// Where the run stands: its state, what it brought so far, and why it failed.
 view run_status(g: Migration) {
     stack(gap: .related) {
-        row(gap: .related) {
+        row(gap: .related, wrap: true) {
             ui.Badge(
                 g.state.label(),
                 tone: if g.state == .failed {
@@ -623,4 +809,32 @@ scenario "a migration halfway" -> Migration {
     let now = tb.runs.insert(Run(id: "run-2", title: "Mail, contacts and calendars"))
     now.keys.add("calendar:home")
     tb
+}
+
+scenario "a mail account not looked at yet" -> Migration {
+    let m = root Migrations
+    m.migrations.insert(
+        Migration(
+            source: "imap",
+            title: "A mail account on its server",
+            device: "5b0e9c41d2a7f3e8",
+            state: .offered,
+            connects: true,
+            asks_url: "imaps://mail.example.com",
+            asks_login: "you@example.com",
+        ),
+    )
+}
+
+scenario "a source this computer cannot read" -> Migration {
+    let m = root Migrations
+    m.migrations.insert(
+        Migration(
+            source: "outlook",
+            title: "Outlook data files",
+            device: "5b0e9c41d2a7f3e8",
+            state: .offered,
+            unavailable: "Outlook keeps its mail on Windows, and this computer runs Linux.",
+        ),
+    )
 }

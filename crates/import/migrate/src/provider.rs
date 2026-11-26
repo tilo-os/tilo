@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
@@ -69,6 +69,22 @@ impl std::fmt::Display for SecretNeeded {
 }
 
 impl std::error::Error for SecretNeeded {}
+
+/// What a refused step says on the migration, in the words its person reads: a key or password
+/// connecting asks for is named, not a step's argument.
+fn said_to_a_person(error: &anyhow::Error) -> String {
+    match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SecretNeeded>())
+    {
+        Some(needed) => {
+            let asks = needed.0.trim().trim_end_matches(':');
+            let asks = asks.split(" (").next().unwrap_or(asks).trim();
+            format!("Connecting asks for the {asks}: type it, then connect again.")
+        }
+        None => format!("{error:#}"),
+    }
+}
 
 /// The longest a follower of a step waits before looking at it again, when nothing it can be
 /// told of moved.
@@ -548,11 +564,57 @@ impl Running {
 
     /// What the step `action` answers.
     fn answer(&self, action: &str, arguments: &Map<String, Value>) -> Result<Value> {
+        // The sources this device reads are offered in the Migrations app, for a person to pick.
+        if action == "sources" {
+            let listed = self.stepped(action, arguments)?;
+            let open = || self.open();
+            records::offered(&open, &self.device, &listed)
+                .context("the sources were not offered in Migrations")?;
+            return Ok(listed);
+        }
+        // A source connected is read at once, so the person picks what to bring in next; what
+        // connecting refused is said on the source. Connecting answers what it answers alone.
+        if action == "connect" {
+            let connected = self.stepped(action, arguments);
+            let told = match &connected {
+                Ok(_) => {
+                    let mut asked = Map::new();
+                    if let Some(source) = arguments.get("source") {
+                        asked.insert("source".to_owned(), source.clone());
+                    }
+                    self.answer("review", &asked).map(drop)
+                }
+                Err(_) => self.told(action, arguments, &connected),
+            };
+            return match (connected, told) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Ok(_), Err(error)) => Err(error.context("connected, but the source was not read")),
+                (Err(error), _) => Err(error),
+            };
+        }
         let answered = self.stepped(action, arguments);
         // A run tells the migration's record as it goes ([`Self::start`]).
         if !matches!(action, "review" | "choose" | "undo") {
             return answered;
         }
+        let told = self.told(action, arguments, &answered);
+        match (answered, told) {
+            (answered, Ok(())) => answered,
+            (Ok(_), Err(error)) => Err(error.context("the migration's record was not told")),
+            (Err(error), Err(also)) => {
+                Err(error.context(format!("and the migration's record was not told: {also:#}")))
+            }
+        }
+    }
+
+    /// Tell the migration's record what the step `action` answered: what a review found, what is
+    /// chosen, a run taken back, or why the step was refused.
+    fn told(
+        &self,
+        action: &str,
+        arguments: &Map<String, Value>,
+        answered: &Result<Value>,
+    ) -> Result<()> {
         let named = |name: &str| {
             arguments
                 .get(name)
@@ -560,7 +622,7 @@ impl Running {
                 .and_then(|source| engine::registry::named(source).ok())
                 .map(|row| row.key.to_owned())
         };
-        let source = match (action, &answered) {
+        let source = match (action, answered) {
             ("undo", Ok(value)) => value
                 .get("source")
                 .and_then(Value::as_str)
@@ -569,12 +631,12 @@ impl Running {
             _ => named("source"),
         };
         let Some(source) = source else {
-            return answered;
+            return Ok(());
         };
         let place = self.host.place(&self.workspace);
         let open = || self.open();
         let mut records = Records::of(&open, &place, &self.device, &source);
-        let told = match &answered {
+        match answered {
             Ok(value) if action == "undo" => records.forgot(
                 value
                     .get("run_id")
@@ -587,14 +649,7 @@ impl Running {
                 Ok(None) => Ok(()),
                 Err(error) => Err(error),
             },
-            Err(error) => records.refused(&format!("{error:#}")),
-        };
-        match (answered, told) {
-            (answered, Ok(())) => answered,
-            (Ok(_), Err(error)) => Err(error.context("the migration's record was not told")),
-            (Err(error), Err(also)) => {
-                Err(error.context(format!("and the migration's record was not told: {also:#}")))
-            }
+            Err(error) => records.refused(&said_to_a_person(error)),
         }
     }
 

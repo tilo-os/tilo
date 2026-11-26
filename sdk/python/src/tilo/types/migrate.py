@@ -27,6 +27,7 @@ __all__ = [
     "Run",
     "Migration",
     "Migrations",
+    "Offered",
     "Migrate",
     "ForgetItemsArgs",
     "UnreadableArgs",
@@ -36,10 +37,12 @@ __all__ = [
     "EndedArgs",
     "ForgotRunArgs",
     "RefusedArgs",
+    "OfferArgs",
+    "SourceRefusedArgs",
 ]
 
-RunState = Literal["reviewed", "running", "stopped", "failed", "complete"]
-"""Where a migration's run stands: reviewed, with what the source holds waiting to be chosen; running, while the device that holds the data brings in what was chosen; stopped by a person, keeping what it brought until then; failed, its failure saying why; or complete. The device that holds the data moves it on as its run goes."""
+RunState = Literal["offered", "reviewed", "running", "stopped", "failed", "complete"]
+"""Where a migration's run stands: offered, a source the device can read that nobody looked at yet; reviewed, with what the source holds waiting to be chosen; running, while the device that holds the data brings in what was chosen; stopped by a person, keeping what it brought until then; failed, its failure saying why; or complete. The device that holds the data moves it on as its run goes."""
 
 ForgetItemsArgs = TypedDict("ForgetItemsArgs", {
     "keep": "list[str]",
@@ -89,9 +92,22 @@ RefusedArgs = TypedDict("RefusedArgs", {
 })
 """The arguments of `refused`."""
 
+OfferArgs = TypedDict("OfferArgs", {
+    "device": "str",
+    "sources": "list[Offered]",
+})
+"""The arguments of `offer`."""
+
+SourceRefusedArgs = TypedDict("SourceRefusedArgs", {
+    "source": "str",
+    "device": "str",
+    "why": "str",
+})
+"""The arguments of `source_refused`."""
+
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -152,7 +168,7 @@ class Notice(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.migrate.Item`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
     z7gblqe6: str  # key
     fvmu6lru: str  # kind
     ove3mkdj: str  # title
@@ -179,7 +195,7 @@ class Item(Resource):
 
 class Count(Resource):
     """Count — `tl.so.tilo.migrate.Count`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
     @property
     def _3cttshux(self) -> str:
         """kind (`3cttshux` on the wire)."""
@@ -193,7 +209,7 @@ class Count(Resource):
 
 class Run(Resource):
     """Run — `tl.so.tilo.migrate.Run`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
     wphp5gxk: str  # id
     e73pil4f: str  # title
     ifezl4lz: list[str]  # keys
@@ -201,7 +217,7 @@ class Run(Resource):
 
 class Migration(Resource):
     """Migration — `tl.so.tilo.migrate.Migration`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
     jy4y5q35: str  # source
     d66kqgv4: str  # title
     @property
@@ -252,6 +268,25 @@ class Migration(Resource):
     @_45kagnwx.setter
     def _45kagnwx(self, value: list[Entry[Run]]) -> None:
         self.edit("45kagnwx", value=value)
+    xtrjfeho: str  # unavailable
+    wvipamf3: str  # asks_url
+    @property
+    def _2vpco7cd(self) -> str:
+        """asks_login (`2vpco7cd` on the wire)."""
+        return self.fields["2vpco7cd"]
+
+    @_2vpco7cd.setter
+    def _2vpco7cd(self, value: str) -> None:
+        self.edit("2vpco7cd", value=value)
+    jgqgx3cc: bool  # connects
+    @property
+    def _34hahsxq(self) -> str | None:
+        """started_by (`34hahsxq` on the wire)."""
+        return self.fields["34hahsxq"]
+
+    @_34hahsxq.setter
+    def _34hahsxq(self, value: str | None) -> None:
+        self.edit("34hahsxq", value=value)
 
     def review_item(self,
         *,
@@ -367,6 +402,22 @@ class Migration(Resource):
         """Read `g`'s source again: what it holds now is what there is to choose from."""
         return self.action("review")
 
+    def connect(self,
+        *,
+        url: str | None = None,
+        login: str | None = None,
+        secret: str | None = None,
+    ) -> None:
+        """Signs in to the account `g` is, with the server's address and the sign-in name it asks for and the password or key the person typed; the device keeps the secret in its vault and reads the account once it is connected."""
+        args: dict[str, Any] = {}
+        if url is not None:
+            args["url"] = url
+        if login is not None:
+            args["login"] = login
+        if secret is not None:
+            args["secret"] = secret
+        return self.action("connect", **args)
+
     def start(self) -> None:
         """Bring in what is chosen of `g`'s source: the device that holds the data runs it as one run, and the migration follows it there, as `begun`, `landed` and `ended`. The action lasts as long as the run, and stopping it stops the run."""
         return self.action("start")
@@ -381,12 +432,12 @@ class Migration(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"review_item", "forget_items", "forget_items_many", "unreadable", "unreadable_many", "choose", "choose_keys", "choose_keys_many", "begun", "begun_many", "landed", "landed_many", "ended", "ended_many", "forgot_run", "forgot_run_many", "refused", "refused_many", "review", "start", "stop", "undo"})
+    __actions__ = frozenset({"review_item", "forget_items", "forget_items_many", "unreadable", "unreadable_many", "choose", "choose_keys", "choose_keys_many", "begun", "begun_many", "landed", "landed_many", "ended", "ended_many", "forgot_run", "forgot_run_many", "refused", "refused_many", "review", "connect", "start", "stop", "undo"})
 
 
 class Migrations(Resource):
     """Migrations — `tl.so.tilo.migrate.Migrations`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
     l7nahbny: list[Entry[Migration]]  # migrations
 
     def reviewed(self,
@@ -399,12 +450,73 @@ class Migrations(Resource):
         """The device that reviewed `source` lists it: the migration for that source on that device, made the first time, with its title and the handle the review read. What it could not read is cleared; the review's items follow with `review_item`."""
         return self.action("reviewed", source=source, title=title, device=device, handle=handle)
 
+    def offer(self,
+        *,
+        device: str,
+        sources: list[Offered],
+    ) -> None:
+        """The device `device` offers the sources `sources`: each is a migration the list shows for a person to pick, made the first time, saying why the device cannot read it and what connecting it asks for."""
+        return self.action("offer", device=device, sources=sources)
+
+    def offer_many(self, items: list[OfferArgs]) -> list[dict[str, Any]]:
+        """Runs `offer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("offer", items)
+
+    def source_refused(self,
+        *,
+        source: str,
+        device: str,
+        why: str,
+    ) -> None:
+        """The device refused a step asked of `source` before anything of it was read, for `why`: the source it offered says so until the next step goes through."""
+        return self.action("source_refused", source=source, device=device, why=why)
+
+    def source_refused_many(self, items: list[SourceRefusedArgs]) -> list[dict[str, Any]]:
+        """Runs `source_refused` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("source_refused", items)
+
+    def find_sources(self) -> None:
+        """Lists every source this device can bring things in from, each as a migration nobody looked at yet: what a person picks from to start one."""
+        return self.action("find_sources")
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reviewed"})
+    __actions__ = frozenset({"reviewed", "offer", "offer_many", "source_refused", "source_refused_many", "find_sources"})
+
+
+class Offered(Resource):
+    """Offered — `tl.so.tilo.migrate.Offered`."""
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
+    @property
+    def _3ltncvkq(self) -> str:
+        """source (`3ltncvkq` on the wire)."""
+        return self.fields["3ltncvkq"]
+
+    @_3ltncvkq.setter
+    def _3ltncvkq(self, value: str) -> None:
+        self.edit("3ltncvkq", value=value)
+    @property
+    def _42gztby5(self) -> str:
+        """title (`42gztby5` on the wire)."""
+        return self.fields["42gztby5"]
+
+    @_42gztby5.setter
+    def _42gztby5(self, value: str) -> None:
+        self.edit("42gztby5", value=value)
+    vjwhzdbo: str  # unavailable
+    @property
+    def _7fkckwdj(self) -> bool:
+        """connects (`7fkckwdj` on the wire)."""
+        return self.fields["7fkckwdj"]
+
+    @_7fkckwdj.setter
+    def _7fkckwdj(self, value: bool) -> None:
+        self.edit("7fkckwdj", value=value)
+    w7ga2i7u: str  # asks_url
+    gfk2qksr: str  # asks_login
 
 
 class Migrate(Resource):
     """Migrations — `tl.so.tilo.migrate`."""
-    __surface__ = "so.tilo.migrate@90fe4c800b0f019f"
+    __surface__ = "so.tilo.migrate@0a9f11e16728ab8e"
 

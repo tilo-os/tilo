@@ -212,7 +212,7 @@ impl<'a> Records<'a> {
     }
 
     /// A step asked of the migration was refused, for `why`: the record says so until the next
-    /// step goes through. A source never reviewed has no record to say it in.
+    /// step goes through. A source never reviewed says it where it is offered.
     ///
     /// # Errors
     /// The app refused, or could not be reached.
@@ -220,11 +220,71 @@ impl<'a> Records<'a> {
         if self.place.field::<String>(&self.source, RECORD)?.is_none()
             && self.place.review(&self.source)?.is_none()
         {
-            return Ok(());
+            // A source only offered says it on the migration the app lists for it, if any.
+            let (source, device) = (self.source.clone(), self.device);
+            return self
+                .ask(
+                    APP,
+                    "source_refused",
+                    json!({"source": source, "device": device, "why": why}),
+                )
+                .map(drop);
         }
         let path = self.record()?;
         self.ask(&path, "refused", json!({ "why": why })).map(drop)
     }
+}
+
+/// The sources `sources` (what the engine's `sources` answers) are offered on `device`: each is
+/// a migration the Migrations app lists for a person to pick, made the first time, saying why the
+/// device cannot read one and what connecting one asks for.
+///
+/// # Errors
+/// The app refused, or could not be reached.
+pub fn offered(
+    open: &dyn Fn() -> Result<Box<dyn Workspace>>,
+    device: &str,
+    sources: &Value,
+) -> Result<()> {
+    let listed = sources
+        .get("sources")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("the engine listed no sources"))?;
+    let mut offered = Vec::new();
+    for one in listed {
+        let Some(key) = one.get("source").and_then(Value::as_str) else {
+            continue;
+        };
+        let row = crate::engine::registry::named(key)?;
+        let asks = row.connect.unwrap_or_default();
+        offered.push(json!({
+            "source": row.key,
+            "title": row.title,
+            "unavailable": one.get("unavailable").and_then(Value::as_str).unwrap_or_default(),
+            "connects": row.connect.is_some(),
+            "asks_url": example_of(asks, "--url"),
+            "asks_login": example_of(asks, "--login"),
+        }));
+    }
+    open()?
+        .ask(
+            &format!("{APP}#offer"),
+            json!({"device": device, "sources": offered}),
+        )
+        .context("the Migrations app did not take the sources")
+        .map(drop)
+}
+
+/// The example a source's connect arguments give for `flag` (`--url https://cloud.example.com`
+/// gives `https://cloud.example.com`), or empty when they name none.
+fn example_of(arguments: &str, flag: &str) -> String {
+    let mut words = arguments.split_whitespace();
+    while let Some(word) = words.next() {
+        if word == flag {
+            return words.next().unwrap_or_default().to_owned();
+        }
+    }
+    String::new()
 }
 
 /// The path of the Migrations app's record `id`.

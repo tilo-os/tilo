@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.migrate@90fe4c800b0f019f";
+export const SURFACE = "so.tilo.migrate@0a9f11e16728ab8e";
 
-/** Where a migration's run stands: reviewed, with what the source holds waiting to be chosen; running, while the device that holds the data brings in what was chosen; stopped by a person, keeping what it brought until then; failed, its failure saying why; or complete. The device that holds the data moves it on as its run goes. One of "reviewed", "running", "stopped", "failed", "complete". */
-export type RunState = "reviewed" | "running" | "stopped" | "failed" | "complete";
+/** Where a migration's run stands: offered, a source the device can read that nobody looked at yet; reviewed, with what the source holds waiting to be chosen; running, while the device that holds the data brings in what was chosen; stopped by a person, keeping what it brought until then; failed, its failure saying why; or complete. The device that holds the data moves it on as its run goes. One of "offered", "reviewed", "running", "stopped", "failed", "complete". */
+export type RunState = "offered" | "reviewed" | "running" | "stopped" | "failed" | "complete";
 
 /** The arguments of `forget_items`. */
 export interface ForgetItemsArgs {
@@ -72,6 +72,19 @@ export interface ForgotRunArgs {
 
 /** The arguments of `refused`. */
 export interface RefusedArgs {
+  why: string;
+}
+
+/** The arguments of `offer`. */
+export interface OfferArgs {
+  device: string;
+  sources: Offered[];
+}
+
+/** The arguments of `source_refused`. */
+export interface SourceRefusedArgs {
+  source: string;
+  device: string;
   why: string;
 }
 
@@ -164,6 +177,11 @@ export interface Migration extends tilo.Resource {
   hl5hwgex: number;  // already_there
   g44f5aep: string[];  // landed
   "45kagnwx": Array<tilo.Entry<Run>>;  // runs
+  xtrjfeho: string;  // unavailable
+  wvipamf3: string;  // asks_url
+  "2vpco7cd": string;  // asks_login
+  jgqgx3cc: boolean;  // connects
+  "34hahsxq": string | null;  // started_by
   /** The review found the item `key`: it is kept as found, and one found before keeps whether a person chose it; a new one is chosen as `chosen` says. */
   review_item(args: {
     key: string;
@@ -238,6 +256,12 @@ export interface Migration extends tilo.Resource {
   refusedMany(items: RefusedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Read `g`'s source again: what it holds now is what there is to choose from. */
   review(): Promise<void>;
+  /** Signs in to the account `g` is, with the server's address and the sign-in name it asks for and the password or key the person typed; the device keeps the secret in its vault and reads the account once it is connected. */
+  connect(args?: {
+    url?: string;
+    login?: string;
+    secret?: string;
+  }): Promise<void>;
   /** Bring in what is chosen of `g`'s source: the device that holds the data runs it as one run, and the migration follows it there, as `begun`, `landed` and `ended`. The action lasts as long as the run, and stopping it stops the run. */
   start(): Promise<void>;
   /** Stop `g`'s run after the item it is on: what it brought stays, and starting again resumes it. */
@@ -250,7 +274,7 @@ export interface Migration extends tilo.Resource {
 
 /** The actions `Migration` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MIGRATION_ACTIONS = ["review_item", "forget_items", "forget_itemsMany", "unreadable", "unreadableMany", "choose", "choose_keys", "choose_keysMany", "begun", "begunMany", "landed", "landedMany", "ended", "endedMany", "forgot_run", "forgot_runMany", "refused", "refusedMany", "review", "start", "stop", "undo"] as const;
+export const MIGRATION_ACTIONS = ["review_item", "forget_items", "forget_itemsMany", "unreadable", "unreadableMany", "choose", "choose_keys", "choose_keysMany", "begun", "begunMany", "landed", "landedMany", "ended", "endedMany", "forgot_run", "forgot_runMany", "refused", "refusedMany", "review", "connect", "start", "stop", "undo"] as const;
 
 /** The `tl.so.tilo.migrate.Migration` kind at `path`. */
 export function migration(ws: tilo.Workspace, path: string): Migration {
@@ -267,15 +291,51 @@ export interface Migrations extends tilo.Resource {
     device: string;
     handle: string;
   }): Promise<Migration>;
+  /** The device `device` offers the sources `sources`: each is a migration the list shows for a person to pick, made the first time, saying why the device cannot read it and what connecting it asks for. */
+  offer(args: {
+    device: string;
+    sources: Offered[];
+  }): Promise<void>;
+  /** Runs `offer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  offerMany(items: OfferArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The device refused a step asked of `source` before anything of it was read, for `why`: the source it offered says so until the next step goes through. */
+  source_refused(args: {
+    source: string;
+    device: string;
+    why: string;
+  }): Promise<void>;
+  /** Runs `source_refused` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  source_refusedMany(items: SourceRefusedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Lists every source this device can bring things in from, each as a migration nobody looked at yet: what a person picks from to start one. */
+  find_sources(): Promise<void>;
 }
 
 /** The actions `Migrations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MIGRATIONS_ACTIONS = ["reviewed"] as const;
+export const MIGRATIONS_ACTIONS = ["reviewed", "offer", "offerMany", "source_refused", "source_refusedMany", "find_sources"] as const;
 
 /** The `tl.so.tilo.migrate.Migrations` kind at `path`. */
 export function migrations(ws: tilo.Workspace, path: string): Migrations {
   return resourceProxy(ws, path, SURFACE, MIGRATIONS_ACTIONS) as unknown as Migrations;
+}
+
+/** Offered — `tl.so.tilo.migrate.Offered`. */
+export interface Offered extends tilo.Resource {
+  "3ltncvkq": string;  // source
+  "42gztby5": string;  // title
+  vjwhzdbo: string;  // unavailable
+  "7fkckwdj": boolean;  // connects
+  w7ga2i7u: string;  // asks_url
+  gfk2qksr: string;  // asks_login
+}
+
+/** The actions `Offered` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OFFERED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.migrate.Offered` kind at `path`. */
+export function offered(ws: tilo.Workspace, path: string): Offered {
+  return resourceProxy(ws, path, SURFACE, OFFERED_ACTIONS) as unknown as Offered;
 }
 
 /** Migrations — `tl.so.tilo.migrate`. */

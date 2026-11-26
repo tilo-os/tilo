@@ -121,7 +121,8 @@ async fn migration(host: &host::Host) -> String {
 /// The Migrations window on one migration, as the person's browser opens its page.
 struct Window {
     host: std::sync::Arc<host::Host>,
-    migration: String,
+    /// The migration it shows, or none for the list of them.
+    migration: Option<String>,
 }
 
 impl Window {
@@ -144,7 +145,7 @@ impl Window {
                 PageAddress {
                     workspace,
                     app: "migrate".to_owned(),
-                    show: Some(migration),
+                    show: migration,
                 },
             ))
             .expect("the migration's page opens");
@@ -191,7 +192,7 @@ impl Window {
                 PageAddress {
                     workspace,
                     app: "migrate".to_owned(),
-                    show: Some(migration),
+                    show: migration,
                 },
             ))
             .expect("the migration's page opens");
@@ -241,8 +242,9 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
             .expect("the agent reviews Thunderbird");
         let (book, book_title) = item_of(&review, "contacts");
         let (calendar, calendar_title) = item_of(&review, "calendar");
+        let resource = migration(host.as_ref()).await;
         let window = Window {
-            migration: migration(host.as_ref()).await,
+            migration: Some(resource.clone()),
             host: std::sync::Arc::clone(&host),
         };
         let body = window.shows(&book_title).await;
@@ -254,8 +256,7 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
 
         // A start with nothing chosen, asked of the migration as any caller asks it, is refused
         // by the device, and the window says why.
-        let target =
-            application_action_target(host.workspace(), MIGRATE, &window.migration, "start");
+        let target = application_action_target(host.workspace(), MIGRATE, &resource, "start");
         let started = host
             .dispatch()
             .invoke(
@@ -327,6 +328,129 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
             .expect("the agent reads the migration");
         assert_eq!(status["state"], "reviewed", "{status:#}");
         drop(agent);
+    });
+}
+
+/// The migration of the source whose title starts with `title` that the device offered: the
+/// resource its `review` is published on, once the catalogue lists it.
+async fn offered(host: &host::Host, title: &str) -> String {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let page = host
+            .dispatch()
+            .query(
+                &host.caller(),
+                CatalogueQuery {
+                    app_id: Some(MIGRATE.to_owned()),
+                    action: Some("review".to_owned()),
+                    ..CatalogueQuery::default()
+                },
+            )
+            .await
+            .expect("the catalogue answers")
+            .expect("the catalogue lists the app");
+        let found = page.rows.iter().find_map(|row| {
+            let action = row.action.as_ref()?;
+            (action.address.action == "review" && row.resource.label.starts_with(title))
+                .then(|| action.address.resource.clone())
+        });
+        if let Some(resource) = found {
+            return resource;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the device never offered {title:?}: {:?}",
+            page.rows
+                .iter()
+                .map(|row| row.resource.label.as_str())
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+// A person with nothing brought in yet opens Migrations, asks what this computer can bring, picks
+// Thunderbird from the list, looks at what it holds, chooses the address book and brings it in:
+// the run's result is on the page, and a notice tells them it finished. A mail account offered
+// beside it asks for its server and password before anything is read, and connecting without the
+// password says what it needs on the account's own page.
+#[test]
+fn a_person_picks_a_source_from_the_list_and_brings_it_in() {
+    host::run_with(&["migrate", "contacts"], |host| async move {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
+        tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
+        host.daemon().serve_migrations();
+
+        let list = Window {
+            migration: None,
+            host: std::sync::Arc::clone(&host),
+        };
+        list.shows("Bring something in").await;
+        list.press("Bring something in").await;
+        let body = list.shows("Thunderbird on this computer").await;
+        assert!(body.contains("A mail account on its server"), "{body}");
+
+        // The mail account asks what connecting needs, and says what is missing on its page.
+        let mail = Window {
+            migration: Some(offered(host.as_ref(), "A mail account").await),
+            host: std::sync::Arc::clone(&host),
+        };
+        let body = mail.shows("Connect").await;
+        assert!(
+            body.contains("you@example.com"),
+            "the sign-in name is asked for: {body}"
+        );
+        assert!(body.contains("Password or key"), "{body}");
+
+        // Thunderbird needs no connecting: looking at it lists what it holds, nothing chosen.
+        let window = Window {
+            migration: Some(offered(host.as_ref(), "Thunderbird").await),
+            host: std::sync::Arc::clone(&host),
+        };
+        window.press("Look at what it holds").await;
+        let book = "Personal address book";
+        let body = window.shows(book).await;
+        assert_eq!(checked(&body, book), Some(false), "{body}");
+        assert!(button_labelled(&body, "Bring in").is_none(), "{body}");
+
+        window.check(book).await;
+        window.shows("Bring in").await;
+        window.press("Bring in").await;
+        let body = window.shows("Complete").await;
+        assert!(body.contains("2 contacts"), "{body}");
+
+        // The person who started it is told it finished, wherever they are.
+        let daemon = host.daemon();
+        let workspaces = daemon.workspaces();
+        let own = tilo_workspace_service::workspaces::person_workspace::found(workspaces)
+            .await
+            .expect("the person's own workspace");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let record = tilo_workspace_service::workspaces::person_workspace::read_on::<
+                tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+            >(
+                workspaces,
+                &own,
+                tilo_workspace_service::workspaces::person_workspace::devices::DEVICES,
+            )
+            .await
+            .expect("the record of their devices reads");
+            let told = record
+                .notices
+                .values()
+                .find(|notice| notice.app_id == MIGRATE && notice.title.starts_with("Thunderbird"));
+            if let Some(notice) = told {
+                assert!(notice.body.contains("2 contacts"), "{notice:?}");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "nobody was told the run finished: {:?}",
+                record.notices
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     });
 }
 

@@ -123,6 +123,10 @@ d-rj2svje3-filter-already_there = Schon vorhanden
 
 d-rj2svje3-filter-landed = Angekommen
 
+d-rj2svje3-filter-connects = Verbindet sich
+
+d-rj2svje3-filter-started_by = Gestartet von
+
 d-uqkltwh2 = Umzüge
     .doc = Die Umzüge des Arbeitsbereichs.
     .noun = { $count ->
@@ -134,6 +138,8 @@ d-l7nahbny = Umzüge
 
 d-dgwyov6w = Stand des Laufs
     .doc = Wo der Lauf eines Umzugs steht: durchgesehen, und was die Quelle enthält, wartet auf die Auswahl; läuft, während das Gerät mit den Daten das Ausgewählte übernimmt; von jemandem angehalten, wobei das bis dahin Übernommene bleibt; fehlgeschlagen, mit dem Grund; oder fertig.
+
+d-ggrmlksu = Noch nicht angesehen
 
 d-wi42igkx = Durchgesehen
 
@@ -225,6 +231,9 @@ d-sm5273v2-already = Schon da
 d-mzjsihxi = Beendet
     .doc = Der Lauf endete als `state`: angehalten, fehlgeschlagen mit `failure`, oder fertig.
     .w-a-run-ends-stopped-failed-or = Ein Lauf endet angehalten, fehlgeschlagen oder fertig
+    .w-brought-in = { $brought } übernommen
+    .w-everything-chosen-is-here = Alles Ausgewählte ist da
+    .w-bringing-in-stopped = Das Übernehmen ist stehen geblieben: { $failure }
 
 d-mzjsihxi-state = Stand
 
@@ -260,13 +269,30 @@ d-x6sqvfbn-r = R
 
 d-rzpx6bzh = Beenden
 
+d-e575um2p = Verbinden
+
 d-vzbtgrfk = Umzüge
-    .w-nothing-is-being-brought-in = Es wird nichts übernommen
+    .w-nothing-is-being-brought-in-choose = Es wird nichts übernommen. Wähle „Etwas übernehmen“, um zu sehen, was dieser Computer übernehmen kann.
 
 d-gd45slyw = Umzugszeile
     .w-brought-in = { $brought } übernommen
+    .w-not-here = Nicht hier
 
 d-m6xdvzmk = Umzugsseite
+
+d-ppjrgkrc = Quelle beginnen
+    .w-this-computer-cannot-bring-this-in = Dieser Computer kann das nicht übernehmen
+    .w-connect-the-account-first-nothing-is = Verbinde zuerst das Konto. Übernommen wird erst, was du auswählst.
+    .w-server = Server
+    .w-sign-in-as = Anmelden als
+    .w-password-or-key = Passwort oder Schlüssel
+    .w-kept-in-this-computer-s-vault = Wird im Tresor dieses Computers aufbewahrt.
+    .w-connect = Verbinden
+    .w-see-what-it-holds-then-choose = Sieh nach, was sie enthält, und wähle dann aus, was übernommen wird.
+    .w-look-at-what-it-holds = Nachsehen, was sie enthält
+    .w-that-could-not-be-done = Das ging nicht
+
+d-zezhz2t3 = Umzugsinhalt
     .w-could-not-be-read = Nicht lesbar
     .w-what-to-bring-in = Was übernommen wird
     .w-the-review-found-nothing-to-bring = Die Durchsicht hat nichts zum Übernehmen gefunden
@@ -288,3 +314,77 @@ d-toxseay6 = Eintragszeile
 d-htm3bmqz = Laufzeile
     .w-items = { $len } Einträge
     .w-undo = Rückgängig
+
+d-xtrjfeho = Nicht verfügbar
+    .doc = Warum das Gerät diese Quelle gar nicht lesen kann (kein Thunderbird-Profil, kein Browser), wie es beim Anbieten sagte; leer, wenn es sie lesen kann.
+
+d-wvipamf3 = Gefragte Adresse
+    .doc = Was das Verbinden fragt, bevor die Quelle gelesen werden kann: die Adresse des Servers, wie ihr Beispiel lautet (`https://cloud.example.com`), oder leer, wenn es keine braucht.
+
+d-2vpco7cd = Gefragter Anmeldename
+    .doc = Der Anmeldename, den das Verbinden fragt, wie sein Beispiel lautet (`you@example.com`), oder leer.
+
+d-jgqgx3cc = Wird verbunden
+    .doc = Ob die Quelle ein Konto ist, das vor dem Lesen verbunden wird.
+
+d-34hahsxq = Gestartet von
+    .doc = Wer den letzten Lauf gestartet hat: erfährt, wenn er endet.
+
+d-qzokqqj2 = Angebotene Quelle
+    .doc = Eine Quelle, die das Gerät mit den Daten lesen kann, wie es sie anbietet.
+    .noun = { $count ->
+        [one] angebotene Quelle
+       *[other] angebotene Quellen
+    }
+
+d-qzokqqj2-filter-connects = Verbindet sich
+
+d-3ltncvkq = Quelle
+    .doc = Der Schlüssel der Engine für die Quelle.
+
+d-42gztby5 = Titel
+
+d-vjwhzdbo = Nicht verfügbar
+    .doc = Warum das Gerät sie gar nicht lesen kann; leer, wenn es sie lesen kann.
+
+d-7fkckwdj = Wird verbunden
+    .doc = Ob sie ein Konto ist, das vor dem Lesen verbunden wird.
+
+d-w7ga2i7u = Gefragte Adresse
+    .doc = Die Adresse des Servers, die das Verbinden fragt, wie ihr Beispiel lautet, oder leer.
+
+d-gfk2qksr = Gefragter Anmeldename
+    .doc = Der Anmeldename, den das Verbinden fragt, wie sein Beispiel lautet, oder leer.
+
+d-q4yeh525 = Anbieten
+    .doc = Das Gerät `device` bietet die Quellen `sources` an: jede ist ein Umzug, den die Liste zum Auswählen zeigt, beim ersten Mal angelegt, und sagt, warum das Gerät sie nicht lesen kann und was ihr Verbinden fragt.
+    .did = hat Quellen gefunden
+
+d-q4yeh525-device = Gerät
+
+d-q4yeh525-sources = Quellen
+
+d-s2rmjthx = Quelle abgelehnt
+    .doc = Das Gerät hat einen Schritt für `source` abgelehnt, bevor etwas davon gelesen wurde, aus dem Grund `why`: die angebotene Quelle sagt es, bis der nächste Schritt gelingt.
+
+d-s2rmjthx-source = Quelle
+
+d-s2rmjthx-device = Gerät
+
+d-s2rmjthx-why = Grund
+
+d-wzdxruns = Etwas übernehmen
+    .doc = Listet jede Quelle, aus der dieses Gerät etwas übernehmen kann, jede als Umzug, den noch niemand angesehen hat: daraus wählt man, um einen zu beginnen.
+    .did = hat nach Quellen gesucht
+
+d-jkquvjej = Verbinden
+    .doc = Meldet sich bei dem Konto `g` an, mit der Adresse des Servers und dem Anmeldenamen, die es fragt, und dem eingegebenen Passwort oder Schlüssel; das Gerät bewahrt das Geheimnis in seinem Tresor auf und liest das Konto, sobald es verbunden ist.
+    .did = hat eine Quelle verbunden
+    .w-type-the-server-s-address = Gib die Adresse des Servers ein
+    .w-type-the-name-you-sign-in = Gib den Namen ein, mit dem du dich anmeldest
+
+d-jkquvjej-url = Adresse
+
+d-jkquvjej-login = Anmeldename
+
+d-jkquvjej-secret = Passwort oder Schlüssel

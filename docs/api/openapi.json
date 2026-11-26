@@ -54962,7 +54962,10 @@
               "run",
               "run_title",
               "failure",
-              "refused"
+              "refused",
+              "unavailable",
+              "asks_url",
+              "asks_login"
             ],
             "type": "string"
           },
@@ -54980,7 +54983,9 @@
         "properties": {
           "field": {
             "description": "The name of the field to set.",
-            "enum": [],
+            "enum": [
+              "connects"
+            ],
             "type": "string"
           },
           "value": {
@@ -55187,11 +55192,13 @@
             "choice_labels": {
               "complete": "Complete",
               "failed": "Failed",
+              "offered": "Not looked at yet",
               "reviewed": "Reviewed",
               "running": "Running",
               "stopped": "Stopped"
             },
             "enum": [
+              "offered",
               "reviewed",
               "running",
               "stopped",
@@ -55239,6 +55246,22 @@
         "properties": {},
         "required": [],
         "description": "Read `g`'s source again: what it holds now is what there is to choose from."
+      },
+      "tl.so.tilo.migrate.Migration.connect.Arguments": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Signs in to the account `g` is, with the server's address and the sign-in name it asks for\nand the password or key the person typed; the device keeps the secret in its vault and reads\nthe account once it is connected."
       },
       "tl.so.tilo.migrate.Migration.start.Arguments": {
         "type": "object",
@@ -55363,6 +55386,135 @@
           "handle"
         ],
         "description": "The device that reviewed `source` lists it: the migration for that source on that device,\nmade the first time, with its title and the handle the review read. What it could not read\nis cleared; the review's items follow with `review_item`."
+      },
+      "tl.so.tilo.migrate.Migrations.offer.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "pick": "resource",
+              "properties": {
+                "app": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "id": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "kind": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "record": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app",
+                "kind",
+                "id",
+                "label"
+              ],
+              "resource_kind": "tl.so.tilo.migrate.Offered",
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "device",
+          "sources"
+        ],
+        "description": "The device `device` offers the sources `sources`: each is a migration the list shows for a\nperson to pick, made the first time, saying why the device cannot read it and what connecting\nit asks for."
+      },
+      "tl.so.tilo.migrate.Migrations.source_refused.Arguments": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "device",
+          "why"
+        ],
+        "description": "The device refused a step asked of `source` before anything of it was read, for `why`: the\nsource it offered says so until the next step goes through."
+      },
+      "tl.so.tilo.migrate.Migrations.find_sources.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Lists every source this device can bring things in from, each as a migration nobody looked at\nyet: what a person picks from to start one."
+      },
+      "tl.so.tilo.migrate.Offered.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.migrate.Offered.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "source",
+              "title",
+              "unavailable",
+              "asks_url",
+              "asks_login"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.migrate.Offered.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "connects"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.migrate.Offered.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
       },
       "tl.so.tilo.monitor.Row.$create.Arguments": {
         "type": "object",
@@ -119276,6 +119428,12 @@
     {
       "app": "so.tilo.migrate",
       "resource": "tl.so.tilo.migrate.Migration",
+      "action": "connect",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Migration.connect.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Migration",
       "action": "start",
       "arguments": "#/components/schemas/tl.so.tilo.migrate.Migration.start.Arguments"
     },
@@ -119320,6 +119478,48 @@
       "resource": "tl.so.tilo.migrate.Migrations",
       "action": "reviewed",
       "arguments": "#/components/schemas/tl.so.tilo.migrate.Migrations.reviewed.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Migrations",
+      "action": "offer",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Migrations.offer.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Migrations",
+      "action": "source_refused",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Migrations.source_refused.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Migrations",
+      "action": "find_sources",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Migrations.find_sources.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Offered",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Offered.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Offered",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Offered.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Offered",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Offered.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.migrate",
+      "resource": "tl.so.tilo.migrate.Offered",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.migrate.Offered.$scenario.Arguments"
     },
     {
       "app": "so.tilo.monitor",
