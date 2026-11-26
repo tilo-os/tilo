@@ -20733,6 +20733,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-person-services",
  "tilo-runtime",
  "tilo-runtime-collab",
  "tilo-runtime-portal",

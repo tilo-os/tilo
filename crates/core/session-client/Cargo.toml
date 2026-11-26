@@ -139,6 +139,7 @@ fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The relays and DNS a device's endpoint binds with, as a runtime binds its own.
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 tilo-server = { path = "../tilo-server", features = ["web", "test-support"] }
+tilo-person-services = { path = "../person-services", features = ["test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 # A server listener on loopback, as the live session's acceptance test drives it.
