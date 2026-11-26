@@ -111,7 +111,7 @@ fn check(
     if !document.encryption_required || document.stores_sealed() {
         return Err("sealed history for a record that is not encrypted".into());
     }
-    for op in ops {
+    for (at, op) in ops.iter().enumerate() {
         collab_types::verify_op(op).map_err(err)?;
         // A write sealed before reader sets is history as its author signed it, under the
         // artifact its document had then: a key holder opens it as it is, and seals its content
@@ -133,28 +133,39 @@ fn check(
         // names it ([`sealed_compaction::check_stored`]).
         let admitted = DocumentAdmission::from_op(&core.workspace, &route.app, &route.record, op)
             .map_err(err)?;
-        // A compaction is numbered as a write of its author it folds, and its
-        // evidence is the mark that fold leaves rather than an entry.
+        // A write its author's mark covers was folded into that mark: its evidence is the mark,
+        // not an entry. A compaction is numbered as a write of its author it folds, and earlier
+        // builds marked an author up to a compaction's own number while a write of theirs below
+        // it, which the compaction did not fold, stayed in the history.
         let exact = core.exact_admissions.get(&admitted.key) == Some(&admitted.operation_id);
-        let folded = op.kind == collab_types::OpKind::Compaction
+        let folded = core.exact_admissions.get(&admitted.key).is_none()
             && core.exact_admissions.covers(&admitted.key);
         if !collab_types::is_compaction_segment(op) && !exact && !folded {
             let held = match (
                 core.exact_admissions.get(&admitted.key),
                 core.exact_admissions.mark(&admitted.key),
             ) {
-                (Some(_), _) => "another write's bytes",
-                (None, Some(_)) => "a compaction's mark below it",
-                (None, None) => "nothing",
+                (Some(_), _) => "another write's bytes".to_owned(),
+                (None, Some(mark)) => format!("its author's compaction mark at {mark}"),
+                (None, None) => "nothing".to_owned(),
             };
             return Err(format!(
                 "sealed history lacks exact admission evidence: the {:?} write {} of author {} \
-                 to {} {}, where the index holds {held}",
+                 to {} {}, {} of {} in the history after {} kept beside it{}, where the index \
+                 holds {held}",
                 op.kind,
                 op.seq,
                 hex::encode(&op.author.as_bytes()[..4]),
                 route.app,
-                route.record
+                route.record,
+                at.saturating_add(1),
+                ops.len(),
+                beside.len(),
+                if route.sealed_before_reader_sets(&core.workspace, op) {
+                    ", sealed before reader sets"
+                } else {
+                    ""
+                },
             ));
         }
         if document

@@ -1534,6 +1534,34 @@ tilo_test_env::scenario! {
             assert_set_aside(&tampered, f.restore(&tampered), why, reason);
         }
     }
+
+    phase a_history_holding_a_write_its_authors_mark_covers_restores_with_it;
+    {
+        // Earlier builds marked an author up to a compaction's own number, which folded the
+        // entry of a write of theirs the compaction never folded: the history still holds that
+        // write, and its evidence is the mark.
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::by(&f.replica, &f.other);
+        let kept = envelope_of(&put(
+            &mut f.replica,
+            &f.other,
+            &keys,
+            &author.edit("value", "kept"),
+            now,
+        ));
+        let workspace = f.replica.core.workspace.clone();
+        f.replica
+            .core
+            .exact_admissions
+            .cover((&workspace, APP, RECORD), [(*kept.author.as_bytes(), kept.seq + 1)])
+            .unwrap();
+        let bytes = f.replica.durable().unwrap();
+        let restored = f.restore(&bytes).unwrap();
+        assert!(held(&restored).contains(&kept));
+        assert_eq!(held(&restored), held(&f.replica));
+    }
 }
 
 tilo_test_env::scenario! {
