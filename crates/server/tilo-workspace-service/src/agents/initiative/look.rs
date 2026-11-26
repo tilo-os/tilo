@@ -43,6 +43,10 @@ impl Access {
             .agent_access(&owner.workspace, &agent.id.0, &owner.person)
             .await
             .map_err(|error| error.to_string())?;
+        if matches!(&signing, AgentAccess::Hosted { created_at, .. } if *created_at != agent.created_at)
+        {
+            return Err("the grant belongs to a former assistant roster entry".into());
+        }
         if !signing.permits_app(Store::INITIATIVE.app) || !signing.permits_app(crate::agents::CHAT)
         {
             return Err("the assistant needs access to Assistant and Chat for a look-round".into());

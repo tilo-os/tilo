@@ -702,6 +702,105 @@ async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writ
     page.peer.close();
 }
 
+/// The keeper retires a child while its first Chat model call is in flight.
+/// The lead still has its approved key, but that key cannot take another step as the child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retiring_a_working_child_ends_its_use_of_the_leads_grant() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let hold = Arc::new(Hold::default());
+    let _opens = Opens(Arc::clone(&hold));
+    let held = Arc::clone(&hold);
+    let agents = served
+        .approving_for(
+            &workspace,
+            &[SCOUT],
+            &[CHAT, ui::tilo_workspace_agent::OWNER],
+        )
+        .await
+        .scripted(plays(&asked, move |request| {
+            if of_sub_agent(request) && !answered_a_tool(request) {
+                held.pass();
+                return looks();
+            }
+            says("Finished.")
+        }));
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Reader", "Read the conversation."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    let conversation =
+        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("reader")]);
+    caused(&workspaces, &workspace, (conversation.as_str(), "job"), 1).await;
+    agents.look(&workspace).await.unwrap();
+    until("the child's first model call is in flight", || {
+        asked.lock().unwrap().iter().any(of_sub_agent)
+    })
+    .await;
+
+    let keeper = root.verifying_key().to_bytes();
+    let device = served
+        .server
+        .agent_link()
+        .roster_session_device(
+            &served.roster.sessions,
+            WorkspaceId::parse(&workspace).unwrap(),
+            SCOUT,
+            &keeper,
+        )
+        .await
+        .unwrap();
+    let list = roster(&workspaces, &workspace).await;
+    let lead = list.get(&Id::from_raw(SCOUT.to_owned())).unwrap();
+    let child_id = Id::from_raw("reader".to_owned());
+    let child = list.get(&child_id).unwrap();
+    let signer = Caller::delegated_agent(SCOUT, keeper, device)
+        .in_workspace(&workspace)
+        .on_roster(lead.created_at, keeper);
+    let as_child = |created_at| {
+        signer
+            .clone()
+            .working_under("reader", &child.name, created_at)
+    };
+    let running = as_child(child.created_at);
+    assert!(workspaces.agent_may_act(&workspace, &running, CHAT).await);
+    assert!(
+        !workspaces
+            .agent_may_act(&workspace, &as_child(child.created_at + 1), CHAT)
+            .await
+    );
+
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, &person),
+        WorkspaceAgents::RETIRE_AGENT.with(workspace_agents::RetireAgent { agent: child_id }),
+    )
+    .await
+    .expect("the keeper retires the working child");
+    assert!(workspaces.agent_may_act(&workspace, &signer, CHAT).await);
+    assert!(!workspaces.agent_may_act(&workspace, &running, CHAT).await);
+    hold.open();
+    assert!(agents.draining().finish(Duration::from_secs(30)).await);
+    assert_eq!(
+        asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| of_sub_agent(request))
+            .count(),
+        1,
+        "retirement prevents another child model call"
+    );
+    page.peer.close();
+}
+
 /// Several sub-agents work at once, each in its own conversation, and a stop on the list
 /// ends the one it names while the others go on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

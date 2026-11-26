@@ -180,7 +180,7 @@ async fn an_agent_on_its_persons_device_is_held_to_its_own_bound() {
         .in_new_execution()
         .on_roster(1, person);
     let free = agent.clone().held_to(Vec::new());
-    let helper = free.clone().working_under("helper", "Helper");
+    let helper = free.clone().working_under("helper", "Helper", 2);
     let deny = tilo_action_policy::Rule::new(
         AnswerScope::kind("so.tilo.test", "test.block").node(&workspace),
         tilo_action_policy::KindSet::ALL,
@@ -191,7 +191,7 @@ async fn an_agent_on_its_persons_device_is_held_to_its_own_bound() {
     // Beyond its bound it runs nothing, and neither does a sub-agent it started, which works
     // under its key and its bound.
     let held = agent.clone().held_to(vec![deny]);
-    for caller in [held.clone(), held.working_under("helper", "Helper")] {
+    for caller in [held.clone(), held.working_under("helper", "Helper", 2)] {
         let bounded = answered(&caller, sign(&grant, &key));
         assert!(
             matches!(

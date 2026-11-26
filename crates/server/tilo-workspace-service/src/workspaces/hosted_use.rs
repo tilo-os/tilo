@@ -425,35 +425,34 @@ pub(crate) struct AskedSigner {
 impl AskedSigner {
     async fn of(workspaces: &Workspaces, turn: &HostedTurn<'_>) -> Result<Self, ActionCallError> {
         let caller = turn.caller;
-        let mut origin = Self {
+        let origin = Self {
             workspace: turn.workspace,
             actor: caller.acting().agent_id().ok_or(UnknownAction)?.to_owned(),
             signer: caller.approved_agent().ok_or(UnknownAction)?.to_owned(),
             keeper: *caller.user_public_key().ok_or(UnknownAction)?,
             device: *caller.device_public_key().ok_or(UnknownAction)?,
             created_at: caller.roster_created_at().ok_or(UnknownAction)?,
-            child_created_at: None,
+            child_created_at: caller.child_created_at(),
         };
-        if origin.actor != origin.signer {
-            origin.child_created_at = Some(
-                origin
-                    .current_child(workspaces)
-                    .await
-                    .ok_or(UnknownAction)?,
-            );
-        }
-        Ok(origin)
+        origin
+            .current_actor(workspaces)
+            .await
+            .then_some(origin)
+            .ok_or(UnknownAction)
     }
 
-    async fn current_child(&self, workspaces: &Workspaces) -> Option<i64> {
-        let (created_at, lead) = workspaces
-            .child_lead(
-                &self.workspace.to_string(),
-                &self.actor,
-                &hex::encode(self.keeper),
-            )
-            .await?;
-        (lead.id.0 == self.signer && lead.created_at == self.created_at).then_some(created_at)
+    async fn current_actor(&self, workspaces: &Workspaces) -> bool {
+        self.actor == self.signer
+            || workspaces
+                .child_of_signer(
+                    &self.workspace.to_string(),
+                    &self.actor,
+                    &self.keeper,
+                    &self.signer,
+                    Some(self.created_at),
+                    self.child_created_at,
+                )
+                .await
     }
 
     /// Recheck a pending question against the session carrying out its answer.
@@ -517,9 +516,7 @@ impl AskedSigner {
         origin.device == *device
             && origin.created_at == *created_at
             && access.permits_app(app)
-            && (origin.actor == origin.signer
-                || origin.child_created_at.is_some()
-                    && origin.current_child(workspaces).await == origin.child_created_at)
+            && origin.current_actor(workspaces).await
     }
 }
 

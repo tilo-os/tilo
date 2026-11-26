@@ -10,6 +10,7 @@ use tilo_server_protocol::agents::{AgentGrantAction, AgentGrantStatus, GrantStat
 pub(super) const WORK_APPS: [&str; 4] = [CHAT, TASKS, ui::apps::ASSISTANT, ui::apps::SHORTCUTS];
 const LAST_UPDATE: &str = "The private appointment is at Marlow Quay.";
 const SUMMARY: &str = "The private crossing ends at Staveley Pier.";
+const FACT: &str = "They prefer the Alden landing.";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_manual_and_a_scheduled_look_use_only_the_assistants_current_grant() {
@@ -48,8 +49,16 @@ async fn a_manual_and_a_scheduled_look_use_only_the_assistants_current_grant() {
     previous_updates(&hands, &workspace).await;
     hosted
         .turn(
-            "What do you remember about the private appointment?",
-            vec![Reply::text(LAST_UPDATE), Reply::text(SUMMARY)],
+            "Remember my landing preference and confirm the appointment.",
+            vec![
+                Reply::tool_call(
+                    "note-the-preference",
+                    "learn",
+                    serde_json::json!({"text":FACT,"source":"The keeper told me"}),
+                ),
+                Reply::text(LAST_UPDATE),
+                Reply::text(SUMMARY),
+            ],
         )
         .await;
     let (initiative, events) = Initiative::start_with(
@@ -222,8 +231,9 @@ async fn a_manual_and_a_scheduled_look_use_only_the_assistants_current_grant() {
         .find(|turn| turn.typed && turn.cause == fresh.as_str())
         .unwrap();
     let recalled = chat::recall::instruction_with_history(&fresh_turn.request, &fresh_turn.history);
-    assert!(recalled.contains(LAST_UPDATE), "{recalled}");
-    assert!(recalled.contains(SUMMARY), "{recalled}");
+    for private in [LAST_UPDATE, SUMMARY, FACT] {
+        assert!(recalled.contains(private), "{recalled}");
+    }
     hosted.model.then(Reply::text(reply));
     hosted.agents.answer(&workspace, fresh_turn).await.unwrap();
     let messages = conversation_part(&hosted.workspaces, &workspace)
@@ -250,8 +260,9 @@ async fn a_manual_and_a_scheduled_look_use_only_the_assistants_current_grant() {
         .expect("a new authorized look can run after a stale one");
     assert!(automatic.history.is_empty());
     assert!(automatic.fold.is_none());
-    assert!(!automatic.request.contains(SUMMARY));
-    assert!(!automatic.request.contains(LAST_UPDATE));
+    for private in [LAST_UPDATE, SUMMARY, FACT] {
+        assert!(!automatic.request.contains(private));
+    }
     assert!(automatic.request.contains(TASKS), "{}", automatic.request);
     hosted.model.then(Reply::text("One fresh task changed."));
     hosted.agents.answer(&workspace, automatic).await.unwrap();
@@ -259,8 +270,9 @@ async fn a_manual_and_a_scheduled_look_use_only_the_assistants_current_grant() {
     assert_eq!(asked.len(), before + 2);
     let sent = format!("{:?}", asked.last().unwrap().request.messages);
     assert!(sent.contains(TASKS));
-    assert!(!sent.contains(SUMMARY));
-    assert!(!sent.contains(LAST_UPDATE));
+    for private in [LAST_UPDATE, SUMMARY, FACT] {
+        assert!(!sent.contains(private));
+    }
     assert_eq!(hosted.server.agents.supervisor().expire(u64::MAX), [SCOUT]);
     blocked().await;
     assert_eq!(hands.handed.lock().unwrap().len(), 2);

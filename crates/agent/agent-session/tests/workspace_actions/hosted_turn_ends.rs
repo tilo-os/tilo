@@ -12,6 +12,144 @@ fn begins_with(request: &ModelRequest, words: &str) -> bool {
     asked_in(request).starts_with(words)
 }
 
+/// A model returns its learned tool after the keeper has revoked the original turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoking_an_open_turn_prevents_it_from_keeping_a_fact() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let message = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Remember that I take the ferry.",
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let hold = Arc::new(Hold::default());
+    let _opens = Opens(Arc::clone(&hold));
+    let learn = answer(
+        vec![Content::ToolCall(ToolCall {
+            id: "learn-1".into(),
+            name: "learn".into(),
+            input: serde_json::json!({"text": "Takes the ferry.", "source": "They said so"}),
+            extra_content: None,
+        })],
+        StopReason::ToolCalls,
+        1,
+    );
+    let agents = worked(
+        &served,
+        &workspace,
+        waits(vec![learn, says("Done.")], 0, &asked, &hold),
+    )
+    .await;
+    let turn = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.cause == message.to_string())
+        .unwrap();
+    let mut page = page;
+    let (_, ()) = tokio::join!(Box::pin(agents.answer(&workspace, &turn)), async {
+        until("the model is composing its fact", || {
+            asked.lock().unwrap().len() == 1
+        })
+        .await;
+        member_grant_action(
+            &mut page,
+            tilo_server_protocol::agents::AgentGrantAction::Revoke,
+        )
+        .await;
+        hold.open();
+    });
+    assert!(
+        asked.lock().unwrap()[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "learn")
+    );
+    assert!(
+        workspaces.learned_about(&workspace).is_none(),
+        "the revoked tool wrote a fact"
+    );
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        1,
+        "the revoked turn asked again"
+    );
+}
+
+/// Recheck the original signer even after the summary has selected a model and its
+/// conversation is finished. The fallback provider must never receive these older messages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoking_an_open_turn_prevents_its_queued_summary_from_asking_a_model() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let written = (&root, &browser);
+    long_notes(&actions, &workspaces, &workspace, written, "Ferry records").await;
+    let message = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "Is the ferry late?",
+    )
+    .await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let made = Arc::new(AtomicUsize::new(0));
+    let hold = Arc::new(Hold::default());
+    let _opens = Opens(Arc::clone(&hold));
+    let model = plays(&asked, |_| says("It is on time."));
+    let (count, gate) = (Arc::clone(&made), Arc::clone(&hold));
+    let agents = worked(
+        &served,
+        &workspace,
+        Arc::new(move || {
+            if count.fetch_add(1, Ordering::SeqCst) == 1 {
+                gate.pass();
+            }
+            model()
+        }),
+    )
+    .await;
+    let turn = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.cause == message.to_string())
+        .unwrap();
+    assert!(turn.fold.is_some(), "the turn owes a summary");
+    let mut page = page;
+    let (answered, ()) = tokio::join!(Box::pin(agents.answer(&workspace, &turn)), async {
+        until("the finished turn selects its summary model", || {
+            made.load(Ordering::SeqCst) == 2
+        })
+        .await;
+        member_grant_action(
+            &mut page,
+            tilo_server_protocol::agents::AgentGrantAction::Revoke,
+        )
+        .await;
+        hold.open();
+    });
+    answered.unwrap();
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        1,
+        "only the person's question was sent"
+    );
+    assert_eq!(
+        ended(&workspaces, &workspace, &message).await.text,
+        "It is on time."
+    );
+}
+
 /// Her message is answered, and a look that read the workspace before that answer enters its
 /// place only afterwards. The message is not asked of the model again, and its reply stands as
 /// it was written.

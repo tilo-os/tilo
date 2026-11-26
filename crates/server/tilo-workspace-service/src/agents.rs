@@ -854,7 +854,7 @@ async fn agent_caller(
         Roster::Device(_) => caller.held_to(signer.turn_rules(&workspace.to_string())),
     };
     Ok(if agent.is_sub() {
-        caller.working_under(agent.id.0.clone(), &agent.name)
+        caller.working_under(agent.id.0.clone(), &agent.name, agent.created_at)
     } else {
         caller
     })
@@ -1499,80 +1499,84 @@ impl ServerAgents {
             waiting.extend(self::asks::waiting_in(workspace, document, &part, agents));
             answered.extend(answers::answered_in(&part, agents));
             woken.extend(answers::woken_in(&part));
-            for summons in chat::summons::summonses(&chat, &part) {
-                let Some(agent) = agents.get(&summons.agent) else {
-                    continue;
-                };
-                let Some(message) = part.messages.get(&summons.message) else {
-                    continue;
-                };
-                let program = message
-                    .cause
-                    .as_ref()
-                    .filter(|cause| {
-                        !cause.by_person()
-                            && cause.person.person_id() == Some(summons.person.as_str())
-                    })
-                    .and_then(|_| message.author.agent_id());
-                let look_grant = message
-                    .cause
-                    .as_ref()
-                    .and_then(|cause| cause.look_grant.as_ref())
-                    .map(|grant| grant.0.as_str());
-                if !initiative::may_take_look(
-                    &self.workspaces,
-                    self.initiative.as_ref(),
-                    workspace,
-                    &summons.person,
-                    &agent.id.0,
-                    program,
-                    look_grant,
-                )
-                .await
-                {
-                    continue;
-                }
-                let request = carried::request(message);
-                let told = if look_grant.is_some() {
-                    // A look reports only what its current grant allowed it to gather.
-                    chat::recall::Told {
-                        request,
-                        history: Vec::new(),
-                        fold: None,
-                    }
-                } else {
-                    let asked_by = (summons.person.as_str(), &summons.conversation);
-                    let known =
-                        learned::learned_for(&self.workspaces, workspace, agent, asked_by).await;
-                    chat::recall::told(
-                        &chat,
-                        &part,
-                        known.as_ref(),
-                        &summons.conversation,
-                        &summons.message,
-                        &collaboration::permissions::MemberId::agent(&summons.agent),
-                        request,
+            for pending in chat::summons::pending_summonses(&chat, &part) {
+                for summons in pending {
+                    let Some(agent) = agents.get(&summons.agent) else {
+                        continue;
+                    };
+                    let Some(message) = part.messages.get(&summons.message) else {
+                        continue;
+                    };
+                    let program = message
+                        .cause
+                        .as_ref()
+                        .filter(|cause| {
+                            !cause.by_person()
+                                && cause.person.person_id() == Some(summons.person.as_str())
+                        })
+                        .and_then(|_| message.author.agent_id());
+                    let look_grant = message
+                        .cause
+                        .as_ref()
+                        .and_then(|cause| cause.look_grant.as_ref())
+                        .map(|grant| grant.0.as_str());
+                    if !initiative::may_take_look(
+                        &self.workspaces,
+                        self.initiative.as_ref(),
+                        workspace,
+                        &summons.person,
+                        &agent.id.0,
+                        program,
+                        look_grant,
                     )
-                };
-                asks.turns.push(Turn {
-                    agent: agent.clone(),
-                    person: summons.person.clone(),
-                    conversation: summons.address(),
-                    cause: summons.message.to_string(),
-                    program: program.map(str::to_owned),
-                    look_grant: look_grant.map(str::to_owned),
-                    request: told.request,
-                    history: told.history,
-                    asked: chat::summons::asked_words(message),
-                    fold: told.fold,
-                    typed: summons.typed,
-                    line: None,
-                    ask: Ask::Message {
-                        part: document.clone(),
-                        message: summons.message.to_string(),
-                        attempt: summons.attempt,
-                    },
-                });
+                    .await
+                    {
+                        continue;
+                    }
+                    let request = carried::request(message);
+                    let told = if look_grant.is_some() {
+                        // A look reports only what its current grant allowed it to gather.
+                        chat::recall::Told {
+                            request,
+                            history: Vec::new(),
+                            fold: None,
+                        }
+                    } else {
+                        let asked_by = (summons.person.as_str(), &summons.conversation);
+                        let known =
+                            learned::learned_for(&self.workspaces, workspace, agent, asked_by)
+                                .await;
+                        chat::recall::told(
+                            &chat,
+                            &part,
+                            known.as_ref(),
+                            &summons.conversation,
+                            &summons.message,
+                            &collaboration::permissions::MemberId::agent(&summons.agent),
+                            request,
+                        )
+                    };
+                    asks.turns.push(Turn {
+                        agent: agent.clone(),
+                        person: summons.person.clone(),
+                        conversation: summons.address(),
+                        cause: summons.message.to_string(),
+                        program: program.map(str::to_owned),
+                        look_grant: look_grant.map(str::to_owned),
+                        request: told.request,
+                        history: told.history,
+                        asked: chat::summons::asked_words(message),
+                        fold: told.fold,
+                        typed: summons.typed,
+                        line: None,
+                        ask: Ask::Message {
+                            part: document.clone(),
+                            message: summons.message.to_string(),
+                            attempt: summons.attempt,
+                        },
+                    });
+                    break;
+                }
             }
             for summons in chat::summons::stopped(&chat, &part) {
                 let Some(agent) = agents.get(&summons.agent) else {

@@ -66,7 +66,7 @@ pub struct Caller {
     roster_created_at: Option<i64>,
     // The roster agent whose approval this caller works under, where that is another agent
     // than the one acting: a sub-agent its starter started (`Self::working_under`).
-    approved_as: Option<String>,
+    approved_as: Option<(String, i64)>,
     // The person whose message the server's turn answers, as the server read
     // its cause (`Self::on_roster_turn`).
     turn_person: Option<[u8; 32]>,
@@ -467,7 +467,12 @@ impl Caller {
     /// its own. Changes nothing for a caller not bound to its roster entry
     /// ([`Self::on_roster`]).
     #[must_use]
-    pub fn working_under(mut self, agent_id: impl Into<String>, name: &str) -> Self {
+    pub fn working_under(
+        mut self,
+        agent_id: impl Into<String>,
+        name: &str,
+        created_at: i64,
+    ) -> Self {
         let Some(approved) = self.approved_agent().map(str::to_owned) else {
             return self;
         };
@@ -475,7 +480,7 @@ impl Caller {
             return self;
         }
         self.acting = self.acting.handed_on(agent_id);
-        self.approved_as = Some(approved);
+        self.approved_as = Some((approved, created_at));
         self.agent_name = None;
         self.named(name)
     }
@@ -487,8 +492,15 @@ impl Caller {
     pub fn approved_agent(&self) -> Option<&str> {
         self.roster_created_at?;
         self.approved_as
-            .as_deref()
+            .as_ref()
+            .map(|(signer, _)| signer.as_str())
             .or_else(|| self.acting.agent_id())
+    }
+
+    /// The incarnation of the child that acts under the approved agent, when there is one.
+    #[must_use]
+    pub fn child_created_at(&self) -> Option<i64> {
+        self.approved_as.as_ref().map(|(_, created_at)| *created_at)
     }
 
     /// The person a roster agent works for ([`Self::on_roster`]).
@@ -748,7 +760,7 @@ mod tests {
         );
         assert_eq!(scout.turn_person(), Some(&bo));
 
-        let helper = scout.clone().working_under("helper", "Helper");
+        let helper = scout.clone().working_under("helper", "Helper", 11);
         let acting = helper.acting();
         assert_eq!(acting.agent_id(), Some("helper"));
         assert_eq!(
@@ -762,6 +774,7 @@ mod tests {
             "its starter's whole tree: {acting:?}"
         );
         assert_eq!(helper.approved_agent(), Some("scout"));
+        assert_eq!(helper.child_created_at(), Some(11));
 
         // Ada's own turn records her once.
         let hers = Caller::delegated_agent("scout", ada, [3; 32]).on_roster(7, ada);

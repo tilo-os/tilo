@@ -805,11 +805,51 @@ impl super::Workspaces {
         else {
             return false;
         };
-        caller.workspace() == Some(workspace)
-            && self
+        if caller.workspace() != Some(workspace)
+            || !self
                 .agent_access(workspace, agent, keeper)
                 .await
                 .is_ok_and(|access| access.matches_caller(caller) && access.permits_app(app))
+        {
+            return false;
+        }
+        let Some(actor) = caller.acting().agent_id() else {
+            return false;
+        };
+        actor == agent
+            || self
+                .child_of_signer(
+                    workspace,
+                    actor,
+                    keeper,
+                    agent,
+                    caller.roster_created_at(),
+                    caller.child_created_at(),
+                )
+                .await
+    }
+
+    /// A child may act only while the same child and its original signing lead remain active.
+    pub(crate) async fn child_of_signer(
+        &self,
+        workspace: &str,
+        actor: &str,
+        keeper: &[u8; 32],
+        signer: &str,
+        lead_created_at: Option<i64>,
+        child_created_at: Option<i64>,
+    ) -> bool {
+        let (Some(lead_created_at), Some(child_created_at)) = (lead_created_at, child_created_at)
+        else {
+            return false;
+        };
+        self.child_lead(workspace, actor, &hex::encode(keeper))
+            .await
+            .is_some_and(|(created_at, lead)| {
+                created_at == child_created_at
+                    && lead.id.0 == signer
+                    && lead.created_at == lead_created_at
+            })
     }
 
     /// This device runs `engine` from now on.

@@ -301,52 +301,59 @@ fn asked<'a>(chat: &Chat, part: &'a ChatMessages) -> Vec<Asked<'a>> {
 /// stopped message asks nothing, and an archived conversation neither.
 #[must_use]
 pub fn summonses(chat: &Chat, part: &ChatMessages) -> Vec<Summons> {
-    let mut out = Vec::new();
-    for asked in asked(chat, part) {
-        let key = MemberId::agent(&asked.agent);
-        let reply = |id: &Id, message: &Message| {
-            part.messages.get(&reply_id_at(id, &key, message.attempts))
-        };
-        let open: Vec<(&Id, &Message)> = asked
-            .asks
-            .iter()
-            .copied()
-            .filter(|(id, message)| !stopped_now(message) && unanswered(reply(id, message)))
-            .collect();
-        // The newest one they wrote, ties by id: the order the conversation shows them in.
-        let turn = open
-            .iter()
-            .copied()
-            .filter(|(_, message)| typed(message))
-            .max_by_key(|(id, message)| (message.ts, *id))
-            .or_else(|| {
-                open.iter()
-                    .copied()
-                    .filter(|(id, message)| reply(id, message).is_some())
-                    .min_by_key(|(id, message)| (message.ts, id.as_str()))
-            })
-            .or_else(|| {
-                open.iter()
-                    .copied()
-                    .min_by_key(|(id, message)| (message.ts, id.as_str()))
-            });
-        let Some((id, message)) = turn else {
-            continue;
-        };
-        let Some(person) = asks_for(message) else {
-            continue;
-        };
-        out.push(Summons {
-            conversation: asked.conversation.clone(),
-            message: id.clone(),
-            agent: asked.agent.clone(),
-            person,
-            attempt: message.attempts,
-            mentioned: asked.mentioned,
-            typed: typed(message),
-        });
+    pending_summonses(chat, part)
+        .filter_map(|mut pending| pending.next())
+        .collect()
+}
+
+/// The pending asks for each conversation and agent, in the order they should be answered.
+/// A host can skip an ask whose originating grant was withdrawn and take the next one.
+pub fn pending_summonses<'a>(
+    chat: &'a Chat,
+    part: &'a ChatMessages,
+) -> impl Iterator<Item = impl Iterator<Item = Summons> + 'a> + 'a {
+    use std::cmp::Reverse;
+
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum Priority<'a> {
+        Person(Reverse<(i64, &'a Id)>),
+        Begun(i64, &'a Id),
+        Waiting(i64, &'a Id),
     }
-    out
+
+    asked(chat, part).into_iter().map(move |asked| {
+        let key = MemberId::agent(&asked.agent);
+        let mut pending: Vec<_> = asked
+            .asks
+            .into_iter()
+            .filter_map(|(id, message)| {
+                let reply = part.messages.get(&reply_id_at(id, &key, message.attempts));
+                if stopped_now(message) || !unanswered(reply) {
+                    return None;
+                }
+                let priority = if typed(message) {
+                    Priority::Person(Reverse((message.ts, id)))
+                } else if reply.is_some() {
+                    Priority::Begun(message.ts, id)
+                } else {
+                    Priority::Waiting(message.ts, id)
+                };
+                Some((priority, id, message))
+            })
+            .collect();
+        pending.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        pending.into_iter().filter_map(move |(_, id, message)| {
+            Some(Summons {
+                conversation: asked.conversation.clone(),
+                message: id.clone(),
+                agent: asked.agent.clone(),
+                person: asks_for(message)?,
+                attempt: message.attempts,
+                mentioned: asked.mentioned,
+                typed: typed(message),
+            })
+        })
+    })
 }
 
 /// Every turn a stop reached whose agent has not ended its work yet: whoever runs the agent ends
