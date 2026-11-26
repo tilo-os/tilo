@@ -316,8 +316,10 @@ impl RevocationList {
         cert_refused(cert, Some(at_ns), |root, key| self.revoked_at(root, key))
     }
 
-    /// When `root` revoked its device `key`, if it did.
-    fn revoked_at(&self, root: &[u8; 32], key: &[u8; 32]) -> Option<u64> {
+    /// When `root` revoked its device `key`, if it did: what a caller refused for it tells its
+    /// person, however it was revoked.
+    #[must_use]
+    pub fn revoked_at(&self, root: &[u8; 32], key: &[u8; 32]) -> Option<u64> {
         self.entries
             .get(&(*root, *key))
             .map(|entry| entry.revoked_at_ns)

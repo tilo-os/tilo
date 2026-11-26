@@ -43,6 +43,10 @@ pub enum Refusal {
     Unavailable { reason: String },
     /// The call came from a caller this run was not admitted for.
     Stranger,
+    /// The key the run acts under is one its person's root revoked: it acts no more, whether
+    /// this run was admitted before the revocation or after, and the refusal says so and what
+    /// to do about it.
+    Revoked { reason: String },
 }
 
 impl Refusal {
@@ -56,6 +60,7 @@ impl Refusal {
                 "the caller's ownership could not be verified, so this call was not run: {reason}; nothing changed, retry the call"
             ),
             Self::Stranger => "the caller may not invoke this action".into(),
+            Self::Revoked { reason } => reason.clone(),
         }
     }
 }
@@ -66,6 +71,7 @@ impl From<Refusal> for tilo_actions::remote::ActionCallError {
     fn from(refusal: Refusal) -> Self {
         match refusal {
             Refusal::Unavailable { reason } => Self::Unavailable { reason },
+            Refusal::Revoked { reason } => Self::Refused { reason },
             Refusal::Ended | Refusal::Stranger => Self::NotPermitted,
         }
     }
@@ -129,6 +135,11 @@ impl SessionAdmission {
     pub fn check(&self, workspaces: &Workspaces) -> Result<(), Refusal> {
         if !self.caller.execution_is_live() {
             return Err(Refusal::Ended);
+        }
+        // A key its person revoked acts no more: the run ends with its key, however long it
+        // was admitted before the revocation answered.
+        if let Some(revoked) = workspaces.revoked(&self.caller) {
+            return Err(revoked);
         }
         self.check_original_ownership(workspaces)
     }

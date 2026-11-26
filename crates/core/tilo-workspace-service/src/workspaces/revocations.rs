@@ -22,9 +22,36 @@
 use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_revocation_entry};
 
-use super::{HostedWorkspace, Workspaces};
+use tilo_actions::remote::Caller;
+
+use super::{HostedWorkspace, Refusal, Workspaces};
 
 impl Workspaces {
+    /// Why `caller` may make no call here: the key it acts under is one its person's root
+    /// revoked, and every call it makes is refused from the answer that revoked it — on a
+    /// session admitted before that answer as on any other, and in every workspace this host
+    /// serves. The refusal says the key was revoked and what to do about it. `None` while the
+    /// key acts, and for a caller with no key of its own.
+    #[must_use]
+    pub fn revoked(&self, caller: &Caller) -> Option<Refusal> {
+        let (Some(person), Some(device)) = (caller.user_public_key(), caller.device_public_key())
+        else {
+            return None;
+        };
+        let revoked_at_ns = self
+            .inner
+            .host
+            .revocations
+            .read_recover()
+            .revoked_at(person, device)?;
+        Some(Refusal::Revoked {
+            reason: format!(
+                "key_revoked: this key was revoked at {}",
+                revoked_at_ns / 1_000_000
+            ),
+        })
+    }
+
     /// Take in the root-signed `entries` a device announced. An entry whose
     /// root the server does not serve, or one naming a device this server knows
     /// certified by another root, is another person's key, which the entry's
@@ -275,7 +302,58 @@ mod tests {
         sign_revocation_entry,
     };
 
-    use super::super::fixtures::{hosting_device, test_host};
+    use super::super::fixtures::{device_cert, hosting_device, test_host};
+
+    /// A run admitted before its key was revoked is refused on its next call after it: the
+    /// revocation answers, and every call the key makes is refused from then on, whatever
+    /// session the key was admitted in.
+    #[tokio::test]
+    async fn a_run_admitted_before_its_key_was_revoked_is_refused_after() {
+        // The authority epoch is the whole process's, which every test that narrows anything
+        // bumps: only in a process of its own does the epoch stay still of this server's doing.
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_run_admitted_before_its_key_was_revoked_is_refused_after",
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = hosting_device();
+        let root = SigningKey::from_bytes(&[1; 32]);
+        assert_eq!(root.verifying_key().to_bytes(), cert.user_public_key);
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
+        let created = workspaces.create("Plans").await.unwrap();
+        // Another device of the person's holds a run in their workspace.
+        let (_, laptop) = device_cert(&root, "laptop", DeviceCapabilities::member());
+        let admission = workspaces
+            .admit_execution(
+                &created.workspace,
+                &hex::encode(cert.user_public_key),
+                &laptop,
+                Vec::new(),
+            )
+            .await
+            .expect("the person's device holds a run");
+        admission.check(workspaces).expect("its key acts");
+        // Their root takes the key back: the run admitted before it is refused on its next call.
+        workspaces
+            .take_revocations(vec![revocation(&root, laptop.device_public_key)])
+            .await
+            .expect("the host takes the revocation");
+        let refusal = admission
+            .check(workspaces)
+            .expect_err("a revoked key's next call is refused");
+        assert!(
+            matches!(refusal, crate::workspaces::Refusal::Revoked { .. }),
+            "{refusal:?}"
+        );
+        assert!(
+            refusal.message().contains("key_revoked"),
+            "the refusal says the key was revoked: {refusal}"
+        );
+        server.shutdown().await;
+    }
 
     fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
         let mut entry = RevocationEntry {

@@ -5505,6 +5505,18 @@ impl AdmittedRuntimeSession {
             );
             return Err(Refusal::Stranger);
         }
+        // A key its person revoked acts no more: the call that finds it is refused, whichever
+        // session it was admitted in and whatever the run serves, and the refusal says the key
+        // was revoked and what to do. The agent's own key is what its calls go as, beside the
+        // admission's caller for a run on the person's own device.
+        if let Some(revoked) = workspaces.copies().revoked(caller).or_else(|| {
+            self.agent
+                .as_ref()
+                .and_then(|agent| workspaces.copies().revoked(agent))
+        }) {
+            tracing::warn!("a revoked key asked to act; this call is refused");
+            return Err(revoked);
+        }
         self.admission.check(workspaces.copies())
     }
 
