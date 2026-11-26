@@ -69,10 +69,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Do the one action `path` names. One of Files' verbs on the workspace's own folder
-    /// ([`in_workspace_folder`]), which is on no one device, is asked of the workspace, with no
-    /// app started for it; every other action is done in the app that offers it. A file read
-    /// by its bare name is first the entry Files shows by that name where the agent acts
-    /// ([`Self::read_where_shown`]).
+    /// ([`in_workspace_folder`]) starts no app: a read is asked of the workspace, a put or a
+    /// change of the device that keeps the tree. Every other action is done in the app that
+    /// offers it. A file read by its bare name is first the entry Files shows by that name where
+    /// the agent acts ([`Self::read_where_shown`]).
     pub(super) async fn do_one_value(
         &self,
         path: &str,
@@ -115,10 +115,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             {
                 return read;
             }
-            let files = fs_protocol::tree::FILES_APP;
-            let value = self
-                .app_in_workspace(files, action, arguments, invocation, wait_ms)
-                .await?;
+            // A read is answered by the workspace's listing of its folder; a put or a change is
+            // the device's, which keeps the tree.
+            let value = if reads_workspace_folder(action, &arguments) {
+                let files = fs_protocol::tree::FILES_APP;
+                self.app_in_workspace(files, action, arguments, invocation, wait_ms)
+                    .await?
+            } else {
+                self.in_device_folder(action, arguments, invocation, wait_ms)
+                    .await?
+            };
             let reply = outcome(&value);
             return Ok(Done::Launched {
                 value,
@@ -262,6 +268,33 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         reply
     }
 
+    /// Files' `action` on the workspace's own folder (its `open` of content, a verb by paths in
+    /// it), as the device that keeps the tree answers it under the workspace's grants for Files.
+    async fn in_device_folder(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, Value>,
+        invocation: Option<String>,
+        wait_ms: Option<u64>,
+    ) -> Result<Value, String> {
+        use tilo_action_services::device_files;
+        Box::pin(self.invoke_one(OneCall {
+            provider: Addressed {
+                provider: device_files::PROVIDER.to_owned(),
+                app_id: None,
+            },
+            workspace: false,
+            revision: None,
+            resource: device_files::FOLDER.to_owned(),
+            action: action.to_owned(),
+            arguments,
+            invocation_id: invocation,
+            wait_ms,
+        }))
+        .await
+        .map_err(String::from)
+    }
+
     /// The workspace's `action` (its `open` or its `start`) of the app `app_id`, with
     /// `arguments` for the files it opens there: the workspace's answer, which names the
     /// instance it started at [`super::OPENED_PEER`].
@@ -303,8 +336,9 @@ pub(super) fn starts_app(action: &str) -> bool {
 /// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
 /// the workspace's own folder, its `write-file` there, its `open` of content
 /// ([`puts_into_workspace_folder`]), or one of its reads of it ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
-/// change or read. Those go to the workspace, which changes its tree wherever that is kept, as a file put
-/// into the workspace does; with a `device` they stay Files' own on that device.
+/// change or read. Those start no app: the workspace reads its tree, and the device that keeps it
+/// changes it, as a file put into the workspace is; with a `device` they stay Files' own on that
+/// device.
 pub(super) fn in_workspace_folder(
     parsed: &Address,
     action: &str,
