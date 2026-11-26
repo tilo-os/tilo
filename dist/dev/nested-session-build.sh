@@ -27,9 +27,11 @@
 # publishes. Without it the script stops rather than resolving a registry
 # image by name, which is egress no check pins.
 #
-# With Browser among the apps, the Chromium engine it renders with is built
-# too (scripts/browser/build-host.py, CMake and the pinned CEF SDK) and staged
-# in chromium-engine/, which nested-session.sh signs as the engine runtime.
+# With Browser among the apps, the Chromium engine it renders with is staged
+# in chromium-engine/, which nested-session.sh signs as the engine runtime. It
+# comes from the chromium-engine check's output where TILO_CHROMIUM_ENGINE
+# names it (scripts/browser/build-host.py, CMake and the pinned CEF SDK, which
+# that check builds once for every tree); a developer's run builds it here.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -280,12 +282,27 @@ seal_env_runtime() {
 # `tilo-runtime/<RUNTIME_VERSION>` bundle Browser requires
 # (ui::webview::chromium::runtime). The tilolang Browser (apps/tl/browser) pins
 # that runtime, and a session installs it from the tree whatever app set this
-# build carries, so the engine is built whenever the tree has that Browser.
-# Built again only when the CEF pin or the
-# host's sources change. The key hashes the sources themselves: a build copy of
-# the tree (a builder's, synced without `.git`) has no index to list them from.
+# build carries, so the engine is there whenever the tree has that Browser.
+# Its inputs are the CEF pin and the host's sources alone, so on t the
+# `chromium-engine` check builds it once and every tree is given it
+# (`TILO_CHROMIUM_ENGINE`): nothing here downloads or compiles Chromium. A
+# developer's run, which no check builds it for, builds it here, again only
+# when the CEF pin or the host's sources change. The key hashes the sources
+# themselves: a build copy of the tree (a builder's, synced without `.git`) has
+# no index to list them from.
 chromium_engine=$target/nested-session-chromium
+if [[ -n ${TILO_CHROMIUM_ENGINE:-} ]]; then
+    chromium_runtime=$TILO_CHROMIUM_ENGINE/chromium
+else
+    chromium_runtime=$chromium_engine/runtime/chromium
+fi
 build_chromium_engine() {
+    if [[ -n ${TILO_CHROMIUM_ENGINE:-} ]]; then
+        [[ -x $chromium_runtime/tilo-chromium-host ]] \
+            || { echo "no Chromium engine in $TILO_CHROMIUM_ENGINE" >&2; return 1; }
+        echo "the Chromium engine comes from the chromium-engine check"
+        return 0
+    fi
     local key began=$SECONDS
     key=$( { cat scripts/browser/cef-lock.json scripts/browser/build-host.py
              find crates/engines/chromium-host/chromium crates/engines/chromium-blocker -type f -print \
@@ -353,7 +370,7 @@ done < <(cat "$target/$thin_profile/runtime-engines"
          echo tilolang-process
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 [[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
-[[ ! -d $chromium_engine/runtime/chromium ]] || cp -rp "$chromium_engine/runtime/chromium" "$out/chromium-engine"
+[[ ! -d $chromium_runtime ]] || cp -rp "$chromium_runtime" "$out/chromium-engine"
 # The tree's translations, packed as the OS image packs them: every language a
 # catalogue is translated into, one directory per language, beside the apps
 # that read them. An app package carries its source language alone, so without

@@ -3632,16 +3632,32 @@ heavy = true
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "nested-session"
-# The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json) the Browser among the apps
-# renders with, and the build scripts' pinned assets.
+name = "chromium-engine"
+# The Browser's engine alone: the pinned CEF archive (its SHA-256 in
+# scripts/browser/cef-lock.json), the host's sources and the blocker library they link, and
+# nothing else of the tree. So one build answers every tree, and the checks that need a session
+# are given it (`TILO_CHROMIUM_ENGINE`) rather than downloading and compiling Chromium each. A
+# developer's own `dist/dev/nested-session-build.sh` run, which no check answers, builds it in
+# place as before.
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
+run = "python3 scripts/browser/build-host.py --work /target/chromium-build --runtime /target/chromium-engine --jobs \"${CARGO_BUILD_JOBS:-$(nproc)}\""
+outputs = ["/target/chromium-engine/**"]
+requires = ["arch=x86_64"]
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "nested-session"
+# The build scripts' pinned assets. The engine the Browser renders with comes from the
+# chromium-engine check, so no CEF archive is fetched here.
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
-needs = ["image-env-runtime-dev-tree-x86_64"]
+needs = ["image-env-runtime-dev-tree-x86_64", "chromium-engine"]
 # The build's own default app set, and Calendar: a user story walks a person connecting their
 # calendar in it (stories/shell/calendar-invite.py), and a session installs only the apps its
-# build carries.
-env = { TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
+# build carries. TILO_CHROMIUM_ENGINE is the chromium-engine check's output: the session's
+# engine runtime, which this build stages instead of building.
+env = { TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees", TILO_CHROMIUM_ENGINE = "/target/chromium-engine" }
 requires = ["arch=x86_64"]
 outputs = ["/target/nested-session/**"]
 timeout_secs = 5400
