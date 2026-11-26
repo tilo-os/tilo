@@ -99,6 +99,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
     asks: document.getElementById('tilo-page')?.dataset.asks ?? null,
     answers: document.getElementById('tilo-page')?.dataset.answers ?? null,
     status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
+    html: document.getElementById('tilo-page')?.innerHTML?.slice(0, 1200) ?? null,
   })`).catch(() => 'unreadable');
   await fail(`${what} never happened: ${shown}`);
 };

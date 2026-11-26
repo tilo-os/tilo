@@ -52,6 +52,20 @@ enum Made {
     Call,
 }
 
+/// What a run of an app is handed: the connections its process reaches through, and what the
+/// person it runs for may do.
+struct Handed {
+    /// The tab its page shows on, or the number its windowless run is known by.
+    tab: u64,
+    /// Its window's connection, for a run that shows a page.
+    patch: Option<OwnedFd>,
+    collaboration: OwnedFd,
+    identity: OwnedFd,
+    content: Option<OwnedFd>,
+    /// What the person may do in the app, for a run a page shows.
+    access: Option<tilo_action_policy::MemberAccess>,
+}
+
 /// The runs of one workspace's packages on this device.
 pub struct PackageRuns {
     workspace: String,
@@ -155,11 +169,14 @@ impl PackageRuns {
         let run = self.handed(
             app,
             &self.device_person,
-            tab,
-            None,
-            collaboration,
-            identity,
-            content,
+            Handed {
+                tab,
+                patch: None,
+                collaboration,
+                identity,
+                content,
+                access: None,
+            },
         );
         Ok((processes, run))
     }
@@ -178,6 +195,7 @@ impl PackageRuns {
         person: &str,
         call: [u8; 16],
         page: OwnedFd,
+        access: tilo_action_policy::MemberAccess,
     ) -> Result<u64, String> {
         let processes = Arc::clone(self.processes()?);
         let (identity, content) = self.services(app, Some(call))?;
@@ -189,11 +207,14 @@ impl PackageRuns {
             .show_page(self.handed(
                 app,
                 person,
-                tab,
-                Some(page),
-                collaboration,
-                identity,
-                content,
+                Handed {
+                    tab,
+                    patch: Some(page),
+                    collaboration,
+                    identity,
+                    content,
+                    access: Some(access),
+                },
             ))
             .map_err(|error| error.to_string())?;
         Ok(tab)
@@ -263,33 +284,25 @@ impl PackageRuns {
             .map_err(|error| format!("{app} did not run: {error}"))
     }
 
-    fn handed(
-        &self,
-        app: &str,
-        person: &str,
-        tab: u64,
-        patch: Option<OwnedFd>,
-        collaboration: OwnedFd,
-        identity: OwnedFd,
-        content: Option<OwnedFd>,
-    ) -> Instance {
+    fn handed(&self, app: &str, person: &str, run: Handed) -> Instance {
         Instance {
             app: app.to_owned(),
             workspace: self.workspace.clone(),
-            instance: tab,
+            instance: run.tab,
             person: person.to_owned(),
-            patch,
-            collaboration,
-            identity,
+            patch: run.patch,
+            collaboration: run.collaboration,
+            identity: run.identity,
             // An app that reaches an outside service, and the person's chooser, have no
             // connection here yet: such an app keeps to what the workspace holds.
             origin: None,
-            content,
+            content: run.content,
             chooser: None,
             opens: tilo_app_launch::Opens::default(),
             // What each person may do is decided per call by the broker, as the caller who made
-            // it; the view offers what the workspace's policy says once it is told.
-            access: None,
+            // it. A page also tells its app what the person may do there, which is what its view
+            // offers them.
+            access: run.access,
             locale: runtime_portal::process_link::Locale::default(),
         }
     }

@@ -209,6 +209,7 @@ impl Pages {
                 &hex::encode(reader.user_public_key),
                 page.reading.call(),
                 std::os::fd::OwnedFd::from(theirs),
+                access,
             )
             .map_err(unavailable)?;
         let shown = ask(&page.connection, &Ask::Show { show }).map_err(unavailable)?;

@@ -57,8 +57,9 @@ impl ServerLauncher {
         person: &str,
         call: [u8; 16],
         page: OwnedFd,
+        access: tilo_action_policy::MemberAccess,
     ) -> Result<u64, String> {
-        self.runs.open_page(app, person, call, page)
+        self.runs.open_page(app, person, call, page, access)
     }
 }
 
