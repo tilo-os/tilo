@@ -1802,12 +1802,11 @@ lay_out_lounge() {
     # programs, the catalog, the files the image's context takes and this
     # commit, whose history the app surfaces come from.
     local stamp container=$repo/os/containers/tilo-lounge
-    local apps=${TILO_SH_APPS:-} apps_stamp=
-    if [[ -n $apps ]]; then apps_stamp=$(made_from "$apps/bin/tilo-launcher" "$apps/runtime-publishers.txt"); fi
+    local apps=${TILO_SH_APPS:-}
     stamp=$(made_from "$programs/tilo-runtime" "$programs/discord-worker" "$fonts/manifest.toml" \
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$container/install-apps.sh" "$repo/apps/discord/bridge/program.json")
-    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp $apps_stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
+    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
       # The apps the workspace runs: the launcher, the runtimes and the signed packages
       # (lounge-apps.sh), which a caller may hand over, else t builds beside the programs.
       if [[ -z $apps ]]; then
@@ -1823,11 +1822,10 @@ lay_out_lounge() {
             || die 'could not build the apps the workspace runs (lounge-apps.sh)'
         fi
       fi
-      apps_stamp=$(made_from "$apps/bin/tilo-launcher" "$apps/runtime-publishers.txt")
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
         bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" "$apps" >/dev/null \
         || die 'could not lay out the server (lounge-context.sh)'
-      printf '%s\n' "$stamp $apps_stamp" > "$native/lounge.made-from"
+      printf '%s\n' "$stamp" > "$native/lounge.made-from"
     fi
     lounge=$native/lounge
   fi

@@ -56,8 +56,8 @@ release=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else 
 # release's own build (dist/dev/nested-session-build.sh builds them the same
 # way), and the tilolang process beside the server is not a thin one.
 cargo build --locked --profile "$profile" -p launcher --bin tilo-launcher "${launcher_features[@]}"
-cargo build --locked --profile "$profile" -p tilo-install --bin tilo-install \
-  -p runtime-bundle --bin tilo-runtime-bundle -p tilolang-process --bin tilolang-process
+cargo build --locked --profile "$profile" -p install --bin tilo-install \
+  -p tilo-runtime-bundle --bin tilo-runtime-bundle -p tilolang-process --bin tilolang-process
 cargo build --locked --profile "$profile" -p tilolang-cli --bin tilolang \
   -p tilolang --bin tilolang-std
 built=$target/$profile
