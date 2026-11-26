@@ -1434,10 +1434,15 @@ impl Workspaces {
                     .collect()
             })
             .unwrap_or_default();
-        Ok(json!({
-            "mails": listed.get("mails").and_then(Value::as_bool).unwrap_or(false),
-            "entries": entries,
-        }))
+        Ok(json!(
+            tilo_server_protocol::page::PageActionAnswer::WaitList {
+                mails: listed
+                    .get("mails")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                entries,
+            }
+        ))
     }
 
     /// Invite the address `entry` waiting at the workspace `workspace_id`'s

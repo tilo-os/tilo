@@ -1268,6 +1268,64 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
     page.peer.close();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_search_does_not_run_the_action_that_replaced_the_clicked_row() {
+    use super::hosted_page_stream::{SignedPage, button, control};
+    use tilo_server_protocol::page::PageAsk;
+
+    let served = Served::start(1).await;
+    let mut page = SignedPage::open(
+        &served.alive,
+        &served.devices.1,
+        &served.devices.0,
+        &served.opened[0].0,
+        "search",
+        "list the wait list",
+    )
+    .await;
+    let (old, search) = page
+        .until("the signed search offers the wait list", |html| {
+            Some((
+                button(html, "List the wait list")?,
+                control(html, &["tilo-search-field"], Some("set your name"))?,
+            ))
+        })
+        .await
+        .unwrap();
+    page.ask(&search).await;
+    let rename = page
+        .until("the name action replaces the wait list", |html| {
+            button(html, "Set your name")
+        })
+        .await
+        .unwrap();
+    let (PageAsk::Act { id: old_id, .. }, PageAsk::Act { id: new_id, .. }) = (&old, &rename) else {
+        panic!("the rows must offer actions");
+    };
+    assert_eq!(old_id, new_id, "the new action occupies the old row");
+
+    page.ask(&old).await;
+    page.until(
+        "the stale click leaves the current action unopened",
+        |html| {
+            button(html, "Set your name")?;
+            assert!(
+                !html.contains("tilo-search-form") && !html.contains("tilo-search-notice"),
+                "{html}"
+            );
+            Some(())
+        },
+    )
+    .await
+    .unwrap();
+    page.ask(&rename).await;
+    page.until("the current action asks for the person's name", |html| {
+        html.contains("name=\"name\"").then_some(())
+    })
+    .await
+    .unwrap();
+}
+
 /// What the page's search asks the workspace answers with a word in an issue's body: the page
 /// itself no longer reads bodies, its documents being named there from names alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

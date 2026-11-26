@@ -192,6 +192,18 @@ struct RowField {
 }
 
 impl RowRun {
+    /// The semantic target a search button sends back, even when another action
+    /// now occupies its row. Each of the address parts has its own boundary.
+    fn page_target(&self) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            if self.host { "host" } else { "record" },
+            encode_part(&self.provider),
+            encode_part(&self.resource),
+            encode_part(&self.action),
+        )
+    }
+
     /// The host's own page action this row runs, when it runs one
     /// (`tilo.page`): the two whose press opens something on the page.
     fn runs_page_action(&self, action: &str) -> bool {
@@ -989,7 +1001,7 @@ impl Worker {
         (workspace_id, caller, _needle): (WorkspaceId, Caller, String),
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
-        let Some((id, _, action)) = act else {
+        let Some((id, target, action)) = act else {
             // A pass over the page: an action it ran that has settled says so.
             return Ok(self.settled_search(page));
         };
@@ -1030,7 +1042,9 @@ impl Worker {
                 }
                 self.search_again(page, workspace_id, &caller, &text)
             }
-            PageAction::Activate => self.run_search_row(page, workspace_id, &caller, id),
+            PageAction::Activate => {
+                self.run_search_row(page, workspace_id, &caller, target.as_deref())
+            }
             PageAction::Toggle | PageAction::Focus | PageAction::Select { .. } => Ok(Vec::new()),
         }
     }
@@ -1064,7 +1078,7 @@ impl Worker {
         self.patch_search(page)
     }
 
-    /// Run the action the row numbered `id` names, as a caller of the
+    /// Run the offered action the clicked row names, as a caller of the
     /// workspace runs one: logged for the person, admitted where every
     /// invocation is, and answered with what the action answers.
     fn run_search_row(
@@ -1072,7 +1086,7 @@ impl Worker {
         page: u64,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        id: u32,
+        target: Option<&str>,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         let Some(HeldPage::Search {
             rows,
@@ -1086,12 +1100,12 @@ impl Worker {
         if pending.is_some() {
             return self.patch_search(page);
         }
-        let Some((label, run)) = rows
-            .iter()
-            .find(|row| row.id == id)
-            .and_then(|row| row.run.clone().map(|run| (row.label.clone(), run)))
-        else {
-            return Ok(Vec::new());
+        let Some((label, run)) = rows.iter().find_map(|row| {
+            let run = row.run.as_ref()?;
+            (target == Some(run.page_target().as_str())).then(|| (row.label.clone(), run.clone()))
+        }) else {
+            // A later query removed the action that the person pressed.
+            return self.patch_search(page);
         };
         // An action that needs something typed asks for it first, in fields
         // of its own under the row.
@@ -1468,6 +1482,7 @@ impl Worker {
     /// The search page `page` as it stands, as the patch that shows it.
     fn patch_search(&self, page: u64) -> Result<Vec<PagePatch>, PageRefusal> {
         let Some(HeldPage::Search {
+            needle,
             rows,
             notes,
             notice,
@@ -1485,7 +1500,7 @@ impl Worker {
         if let Some(asking) = asking {
             html = asking_html(&asking.label, &asking.run.fields, &asking.values) + &html;
         }
-        let html = results_div(&html);
+        let html = results_div(needle, &html);
         Ok(vec![PagePatch {
             id: SEARCH_RESULTS,
             html,
@@ -1825,7 +1840,7 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
                     escape(href),
                     escape(&row.label)
                 );
-            } else {
+            } else if let Some(run) = &row.run {
                 // A row that hands a link over carries it on the element: the
                 // press copies it inside the gesture, and the handover beside
                 // it holds it for a browser that would not.
@@ -1837,9 +1852,10 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
                 let _ = write!(
                     out,
                     "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"activate\" \
-                     data-p=\"{}\"{copy}><span class=\"tilo-search-row-label\">{}</span>{secondary}\
+                     data-p=\"{}\" data-t=\"{}\"{copy}><span class=\"tilo-search-row-label\">{}</span>{secondary}\
                      </button>",
                     row.id,
+                    run.page_target(),
                     escape(&row.label)
                 );
                 if let Some(link) = &row.copy {
@@ -1860,8 +1876,11 @@ fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -
 
 /// The results element, holding `contents`: the one element a search page
 /// patches.
-fn results_div(contents: &str) -> String {
-    format!("<div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{contents}</div>")
+fn results_div(needle: &str, contents: &str) -> String {
+    format!(
+        "<div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\" data-query=\"{}\">{contents}</div>",
+        escape(needle)
+    )
 }
 
 /// The card one of the host's own actions opened, as the page shows it: the
@@ -1988,7 +2007,7 @@ fn search_body(needle: &str, results: &str) -> String {
          data-p=\"1\" value=\"{needle}\" placeholder=\"Search apps, actions and records\" \
          aria-label=\"Search\"></div>{results}</div>",
         needle = escape(needle),
-        results = results_div(results),
+        results = results_div(needle, results),
     )
 }
 

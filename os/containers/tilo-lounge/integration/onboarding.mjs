@@ -252,22 +252,21 @@ const pageSearch = async (tab, query, title) => {
   const field = `document.querySelector('#tilo-page .tilo-search-field')`;
   await until(tab, `document.activeElement === ${field}`, 'the search field taking the caret', stepLimit(3));
   await type(tab, query);
-  const row = `[...document.querySelectorAll('#tilo-page .tilo-search-row')]
-    .find(row => (row.innerText || '').includes(${JSON.stringify(title)})) ?? null`;
-  const rows = JSON.parse(await until(tab, String.raw`(() => {
-    const rows = [...document.querySelectorAll('#tilo-page .tilo-search-row')].map(row => (row.innerText || '').replace(/\s+/g, ' ').trim());
-    return rows.some(text => text.includes(${JSON.stringify(title)})) ? JSON.stringify(rows) : '';
-  })()`, `the search offering "${title}"`, stepLimit(4)));
-  const box = JSON.parse(await until(tab, `(() => {
-    const found = (${row});
+  const hit = JSON.parse(await until(tab, String.raw`(() => {
+    const results = document.querySelector('#tilo-page .tilo-search-results');
+    if (results?.dataset.query !== ${JSON.stringify(query)}) return '';
+    const rows = [...results.querySelectorAll('.tilo-search-row')];
+    const found = rows.find(row => row.matches('button[data-a="activate"][data-t]:enabled, a[href]')
+      && row.querySelector('.tilo-search-row-label')?.textContent === ${JSON.stringify(title)});
     if (!found) return '';
     found.scrollIntoView({block: 'nearest'});
     const rect = found.getBoundingClientRect();
-    return rect.width && rect.height
-      ? JSON.stringify({x: rect.x + Math.min(rect.width / 2, 40), y: rect.y + rect.height / 2}) : '';
-  })()`, `the row "${title}" drawn`, stepLimit(3)));
-  await clickAt(tab, box.x, box.y);
-  return rows;
+    const x = rect.x + Math.min(rect.width / 2, 40), y = rect.y + rect.height / 2;
+    if (!found.contains(document.elementFromPoint(x, y))) return '';
+    return JSON.stringify({x, y, rows: rows.map(row => (row.innerText || '').replace(/\s+/g, ' ').trim())});
+  })()`, `the search offering "${title}" for "${query}"`, stepLimit(4)));
+  await clickAt(tab, hit.x, hit.y);
+  return hit.rows;
 };
 /** A person's search: the page's own, typed into, its row titled `title`
  * pressed. */
@@ -644,6 +643,8 @@ try {
     manual: document.getElementById('first-screen-manual-toggle')?.textContent?.trim() ?? null,
   })`);
   if (!report.firstScreen.skip) await fail('the first screen offers no way past it for a person without an agent');
+  // The first press asks for the setup ticket. Once its prompt is visible, the next press copies it.
+  await pressId(stranger.tab, 'first-screen-agent');
   await until(stranger.tab, `document.getElementById('first-screen')?.dataset.setup === 'ready'`, 'the setup prompt made', stepLimit(6));
   const beforeCopy = await stranger.tab.evaluate(`navigator.clipboard.readText().catch(() => '')`).catch(() => '');
   await stranger.tab.send('Browser.grantPermissions', {origin: siteOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});

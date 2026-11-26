@@ -379,6 +379,66 @@ async fn a_page_finds_actions_on_members_of_its_workspace() {
 }
 
 #[tokio::test]
+async fn a_page_shows_people_awaiting_invitations_only_to_inviters() {
+    use tilo_server_protocol::page::PageActionAnswer;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, id, _) = governed(workspaces).await;
+    let member = admit(workspaces, &workspace, &owner, 1).await;
+    let inviter = caller(&owner);
+    let contact = "bo@example.org";
+    let confirm = [0x1b; 32];
+    let secrets = crate::workspaces::WaitListSecrets {
+        removal: [0x0b; 32],
+        confirm: Some(confirm),
+    };
+    workspaces
+        .wait(&workspace, contact, secrets, "en", 10)
+        .await
+        .unwrap();
+
+    let card = async || {
+        let reply = workspaces.page_waiting_to_join(id, &inviter).await.unwrap();
+        let PageActionAnswer::WaitList { entries, mails } = serde_json::from_value(reply).unwrap()
+        else {
+            panic!("the page opens its wait list")
+        };
+        assert!(!mails);
+        entries
+    };
+    assert!(card().await.is_empty());
+    assert!(
+        workspaces
+            .confirm_wait_list(&workspace, confirm)
+            .await
+            .unwrap()
+    );
+    assert!(
+        workspaces
+            .page_waiting_to_join(id, &caller(&member))
+            .await
+            .is_err()
+    );
+    let waiting = card().await;
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].contact, contact);
+    assert!(!waiting[0].invited);
+
+    workspaces
+        .page_invite_waiting(id, &inviter, &waiting[0].entry)
+        .await
+        .unwrap();
+    let invited = card().await;
+    assert_eq!(invited.len(), 1);
+    assert_eq!(invited[0].entry, waiting[0].entry);
+    assert!(invited[0].invited);
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
