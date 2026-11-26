@@ -7,8 +7,9 @@ use std::rc::Rc;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::runtime::Value;
 
+use crate::fixtures::Sent;
 use crate::fixtures::{control_under, labelled, set_reading};
-use crate::settings_panes::{Sent, invoke, open_window, settings};
+use crate::settings_panes::{invoke, open_window, settings};
 
 /// The Accessibility pane's hints and copies: "Teach me again" forgets the hints through the
 /// section's own verb, the hints switch edits the person's setting where it is kept, and the

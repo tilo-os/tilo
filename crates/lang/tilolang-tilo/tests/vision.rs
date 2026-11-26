@@ -2,12 +2,13 @@
 //! through the root the session publishes, and calls `describe` on it as any
 //! app's action, with a picture from the workspace's content store.
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
 use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ModuleHash, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
@@ -24,16 +25,6 @@ view model(m: vision.ImageModel) {
   }
 }
 "#;
-
-/// Records what the view invokes of the image model.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
 
 /// The image model's resource, as a view names it through its root.
 fn image_model() -> ResourceRef {

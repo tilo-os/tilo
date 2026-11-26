@@ -3,13 +3,14 @@
 //! adds that verb elsewhere. A call chooses between same-named actions by the resource it names
 //! first, and the app's own api is sent the verb alone.
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang::meta::NamedRootMeta;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::catalogue;
 use tilolang_tilo::host::Host;
@@ -104,16 +105,6 @@ view oven_view(o: k.Oven) {
   }
 }
 "#;
-
-/// Records what the view invokes of the kitchen.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
 
 #[test]
 fn a_press_reaches_the_action_of_the_type_it_names_first() {

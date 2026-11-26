@@ -7,8 +7,9 @@ use std::rc::Rc;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::runtime::Value;
 
+use crate::fixtures::Sent;
 use crate::fixtures::{drawn, set_reading};
-use crate::settings_panes::{Sent, invoke, open_window, settings};
+use crate::settings_panes::{invoke, open_window, settings};
 
 /// The picture of a PNG pixel: what the person chose, as the reading carries it.
 const PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";

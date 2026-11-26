@@ -4,8 +4,8 @@
 //! content, and a migration upgrades only what an earlier version wrote.
 
 use crate::fixtures::Workspace;
+use tilolang_runtime::Actor;
 use tilolang_runtime::value::Value;
-use tilolang_runtime::{Actor, InvokeOutcome};
 
 use crate::fixtures::{Replica, target};
 
@@ -121,23 +121,7 @@ fn person(replica: &Replica) -> Actor {
 
 /// Invoke the package's action `action` as the replica's person.
 fn call(replica: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let meta = replica.host.package(APP).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap()
-        .id
-        .clone();
-    match replica
-        .host
-        .runtime()
-        .invoke_action(&person(replica), (id.as_str(), args))
-        .unwrap()
-    {
-        InvokeOutcome::Done(value) => value,
-        other => panic!("{action}: {other:?}"),
-    }
+    replica.call(APP, action, args)
 }
 
 /// Who made each version of `at`, by which action.

@@ -5,7 +5,7 @@
 //! page it starts on, however many cards the board holds, and checks no card one by one.
 
 use crate::fixtures::Workspace;
-use tilolang_runtime::{Actor, InvokeOutcome, Value};
+use tilolang_runtime::Value;
 
 use crate::fixtures::Replica;
 
@@ -58,26 +58,7 @@ view board(b: Board) {
 const APP: &str = "so.tilo.lang.lists";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap()
-        .id
-        .clone();
-    match r
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
-            (id.as_str(), args),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 fn shown(view: &tilolang_runtime::ViewInstance) -> Vec<String> {

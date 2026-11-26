@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use tilo_doc::AttrVal;
 use tilo_doc::snapshot::BlockView;
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
+use tilolang_runtime::{ResourceRef, Value};
 
 use crate::fixtures::{Replica, target};
 
@@ -35,24 +35,7 @@ fn workspace() -> (Replica, ResourceRef) {
 
 /// What `action` of the notes app answered, run by `r`'s person.
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let id = r
-        .host
-        .package(APP)
-        .expect("the notes package")
-        .meta
-        .actions
-        .iter()
-        .find(|found| found.name == action)
-        .unwrap_or_else(|| panic!("the action `{action}`"))
-        .id
-        .clone();
-    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
-        r.name.clone(),
-    ));
-    match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
-        Ok(InvokeOutcome::Done(value)) => value,
-        other => panic!("`{action}` answered {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 /// A note made in the notebook, titled `title`.

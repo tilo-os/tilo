@@ -3,12 +3,13 @@
 //! over the reading its app publishes of the resource, and its presses reach the callee's
 //! actions as child invocations carrying the callee's module as their author.
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
 use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ModuleHash, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
@@ -72,16 +73,6 @@ view a_canvas() {
 "#;
 
 const CALLEE_APP: &str = "test.b";
-
-/// Records what the composed view invokes of the callee's app.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
 
 /// A host running the caller's package, with the callee's package loaded as another app's
 /// (its module, its documents elsewhere), and the callee's item reading `title`.

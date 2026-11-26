@@ -4,7 +4,7 @@
 use crate::fixtures::Workspace;
 use serde_json::json;
 use tilolang_runtime::value::ResourceRef;
-use tilolang_runtime::{Actor, InvokeOutcome, Value, ViewInstance};
+use tilolang_runtime::{Actor, Value, ViewInstance};
 use tilolang_tilo::host::Package;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::PlanRequest;
@@ -15,27 +15,7 @@ const LINKS: &str = include_str!("../../tilolang/tests/fixtures/links.tl");
 const APP: &str = "so.tilo.links";
 
 fn call(replica: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let package = replica.host.package(APP).unwrap();
-    let id = package
-        .meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap()
-        .id
-        .clone();
-    match replica
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&replica.name)),
-            (id.as_str(), args),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
+    replica.call(APP, action, args)
 }
 
 fn text(v: Value) -> String {

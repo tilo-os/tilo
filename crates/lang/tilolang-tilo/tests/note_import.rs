@@ -9,10 +9,10 @@ use std::rc::Rc;
 use crate::fixtures::Workspace;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
+use tilolang_runtime::{ResourceRef, Value};
 use tilolang_tilo::host::Package;
 
-use crate::fixtures::{Replica, action_id};
+use crate::fixtures::Replica;
 
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
@@ -108,17 +108,7 @@ fn notebook(device: &Device) -> (Replica, Vec<Package>) {
 
 /// What `action` of the notes app answered, on `args`.
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let id = {
-        let package = r.host.package(APP).expect("the notes package");
-        action_id(&package.meta, action)
-    };
-    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
-        r.name.clone(),
-    ));
-    match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
-        Ok(InvokeOutcome::Done(value)) => value,
-        other => panic!("`{action}` answered {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 /// The notebook's notes, in its own order.

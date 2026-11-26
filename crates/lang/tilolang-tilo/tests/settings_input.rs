@@ -12,11 +12,12 @@
     reason = "test assertions"
 )]
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{InvokeOutcome, UiNode};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::platform_apps::platform_roots;
@@ -97,16 +98,6 @@ fn control(tree: &UiNode, kind: &str, prop: &str, label: &str) -> String {
 /// The key of the button named `name` for assistive technology.
 fn button(tree: &UiNode, name: &str) -> String {
     control(tree, "ui.Button", "accessible_name", name)
-}
-
-/// One invocation as it was sent, with its arguments by name.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// What the pressed control sent, as the settings service receives it: its verb and its arguments.

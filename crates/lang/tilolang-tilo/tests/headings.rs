@@ -4,7 +4,7 @@
 
 use crate::fixtures::Workspace;
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
+use tilolang_runtime::{ResourceRef, Value};
 
 use crate::fixtures::{Replica, field_id};
 
@@ -32,24 +32,7 @@ fn workspace() -> (Replica, ResourceRef) {
 
 /// What `action` of the notes app answered, run by `r`'s person.
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let id = r
-        .host
-        .package(APP)
-        .expect("the notes package")
-        .meta
-        .actions
-        .iter()
-        .find(|held| held.name == action)
-        .unwrap_or_else(|| panic!("the action `{action}`"))
-        .id
-        .clone();
-    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
-        r.name.clone(),
-    ));
-    match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
-        Ok(InvokeOutcome::Done(value)) => value,
-        other => panic!("`{action}` answered {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 /// A note called `title` at the top of the tree, its body saying `body`.

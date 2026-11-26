@@ -2,12 +2,13 @@
 //! publishes, runs again when the reading moves, and its buttons invoke that app's verbs as
 //! child invocations of the view's own code.
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::json;
 use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{
     Actor, AmStore, EditOutcome, ModuleHash, Patch, ResourceRef, Runtime, Value, ViewInstance,
 };
@@ -51,16 +52,6 @@ const TYPE: &str = "sound#Player";
 fn service() -> tilolang_runtime::Meta {
     let surfaces = catalogue::parse_surfaces(SERVICE).expect("a surface file");
     catalogue::package_of(APP, "Sound", &surfaces)
-}
-
-/// Records what the view invokes of the app.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// A host that runs the view and knows the app only by its package, with the app's player

@@ -13,26 +13,7 @@ pub(crate) const APP: &str = "so.tilo.tasks";
 pub(crate) const PACKAGES: &[(&str, &str)] = crate::fixtures::TASKS_SET;
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"))
-        .id
-        .clone();
-    match r
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
-            (id.as_str(), args),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 /// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.

@@ -5,7 +5,7 @@
 use crate::fixtures::Workspace;
 use tilolang_runtime::store::Version;
 use tilolang_runtime::{
-    Actor, AgentBlock, InvocationEntry, InvokeOutcome, Resolution, ResourceRef, Store as _, Value,
+    Actor, AgentBlock, InvocationEntry, Resolution, ResourceRef, Store as _, Value,
 };
 use tilolang_tilo::publish::Caller;
 
@@ -14,26 +14,7 @@ use crate::fixtures::{Replica, TASKS_SET, target};
 const APP: &str = "so.tilo.tasks";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"))
-        .id
-        .clone();
-    match r
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
-            (id.as_str(), args),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 /// Ada's replica with a task and a project she filed it under, and the task.

@@ -9,11 +9,12 @@
     reason = "test assertions"
 )]
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
@@ -225,16 +226,6 @@ fn field(tree: &tilolang_runtime::UiNode, placeholder: &str) -> String {
         .unwrap_or_else(|| panic!("a text field reading {placeholder:?}"))
         .key
         .clone()
-}
-
-/// One invocation as it was sent, with its arguments by name.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// What the pane asked of the resources that keep the person's keys, from now on.

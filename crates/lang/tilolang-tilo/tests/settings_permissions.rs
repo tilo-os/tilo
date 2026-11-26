@@ -9,11 +9,12 @@
     reason = "test assertions"
 )]
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
 
@@ -87,16 +88,6 @@ fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String 
         .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
         .key
         .clone()
-}
-
-/// One invocation as it was sent, with its arguments by name.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// The form an answer's address takes: the portal's consent resource for it.

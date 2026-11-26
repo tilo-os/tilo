@@ -453,6 +453,32 @@ impl Replica {
         }
     }
 
+    /// Run `app`'s action `action` with `args` as this replica's person, and what it answered.
+    /// Panics when the action is not declared or does not finish.
+    pub fn call(&self, app: &str, action: &str, args: Vec<Value>) -> Value {
+        self.call_as(self.name.as_str(), app, action, args)
+    }
+
+    /// As [`Self::call`], with `who` acting.
+    pub fn call_as(
+        &self,
+        who: &(impl AsActor + ?Sized),
+        app: &str,
+        action: &str,
+        args: Vec<Value>,
+    ) -> Value {
+        let meta = self.host.package(app).expect("the app is loaded").meta;
+        let id = action_id(&meta, action);
+        match self
+            .host
+            .runtime()
+            .invoke_action(&who.actor(), (id.as_str(), args))
+        {
+            Ok(tilolang_runtime::InvokeOutcome::Done(value)) => value,
+            other => panic!("{action}: {other:?}"),
+        }
+    }
+
     /// Open the `main` view of `app`.
     pub fn view(&self, app: &str) -> ViewInstance {
         self.host.open_main(app).unwrap()
@@ -844,7 +870,7 @@ pub fn stage_people(host: &Host, policy: &tilo_action_policy::WorkspacePolicy) {
 /// What a window sent to other apps, in order: the invocations the shell would carry out, each
 /// answered with nothing.
 #[derive(Clone, Default)]
-pub struct Sent(Rc<std::cell::RefCell<Vec<Invocation>>>);
+pub struct Sent(pub Rc<std::cell::RefCell<Vec<Invocation>>>);
 
 impl Sent {
     fn matching(&self, action: &str) -> Vec<(String, Vec<(String, Value)>)> {

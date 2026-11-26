@@ -9,10 +9,11 @@
     reason = "test assertions"
 )]
 
+use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
@@ -129,16 +130,6 @@ fn dropdown(tree: &tilolang_runtime::UiNode, caption: &str) -> String {
         })
         .key
         .clone()
-}
-
-/// One invocation as it was sent, with its arguments by name.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// The arguments of the one invocation `sent` holds, by name, with the action it names.

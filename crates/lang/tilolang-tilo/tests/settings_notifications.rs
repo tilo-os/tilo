@@ -8,8 +8,9 @@ use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::value::same_value;
 use tilolang_tilo::runtime::Value;
 
+use crate::fixtures::Sent;
 use crate::fixtures::{control_under, labelled, set_reading};
-use crate::settings_panes::{Sent, invoke, open_window, settings};
+use crate::settings_panes::{invoke, open_window, settings};
 
 /// One app's own rules: the pane shows which kinds of notification it arrives as, and a press
 /// sets that one kind through the section's verb while the kinds it left unset stay unset.

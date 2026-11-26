@@ -15,23 +15,7 @@ fn person(name: &str) -> Actor {
 }
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    let id = meta
-        .actions
-        .iter()
-        .find(|a| a.name == action)
-        .unwrap_or_else(|| panic!("no action {action}"))
-        .id
-        .clone();
-    match r
-        .host
-        .runtime()
-        .invoke_action(&person(&r.name), (id.as_str(), args))
-        .unwrap()
-    {
-        InvokeOutcome::Done(v) => v,
-        other => panic!("{action}: {other:?}"),
-    }
+    r.call(APP, action, args)
 }
 
 /// Every text a node and its children show, rich text as written.

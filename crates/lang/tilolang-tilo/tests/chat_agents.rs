@@ -7,10 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{ResourceRef, Value, ViewInstance};
 
-use crate::fixtures::{Replica, Workspace, nodes, target};
+use crate::fixtures::{Replica, Sent, Workspace, nodes, target};
 
 const CHAT_APP: &str = "so.tilo.chat";
 const CHAT: (&str, &str) = (
@@ -159,16 +159,6 @@ fn shown(view: &ViewInstance) -> Vec<String> {
             _ => None,
         })
         .collect()
-}
-
-/// Records what the view invokes of the workspace.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 #[test]

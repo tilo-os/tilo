@@ -12,9 +12,9 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use crate::fixtures::labelled;
+use crate::fixtures::{Sent, labelled};
 use tilo_action_policy::MemberAccess;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
@@ -197,16 +197,6 @@ fn limits(host: &Host) {
         refusals: Vec::new(),
         host_person: None,
     });
-}
-
-/// One invocation as it was sent, with its arguments by name.
-pub(crate) struct Sent(pub(crate) Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// What a host keeps of the workspace's content reads in mebibytes, the unit its owners set the

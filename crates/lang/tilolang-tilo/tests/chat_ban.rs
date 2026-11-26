@@ -5,24 +5,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value};
 
-use crate::fixtures::{Replica, Workspace};
+use crate::fixtures::{Replica, Sent, Workspace};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
-
-/// Every call the app makes into another package, as it was sent.
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
 
 /// The workspace verbs sent, each with the person it names.
 fn workspace_calls(sent: &Rc<RefCell<Vec<Invocation>>>) -> Vec<(String, Option<Value>)> {
