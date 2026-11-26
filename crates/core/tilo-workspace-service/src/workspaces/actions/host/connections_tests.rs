@@ -5,12 +5,12 @@
 //! and calls what only reads, and its changes ask its member; and a server
 //! asks no address inside its own network unless its operator lets it.
 
+use crate::person_connections::{
+    self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, REFRESH, REMOVE, USES,
+};
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::person_connections::{
-    self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, REFRESH, REMOVE, USES,
-};
 use tilo_actions::remote::{
     ActionCallError as Refused, ActionProvider as _, Caller, CatalogueQuery, InvokeArgument,
     InvokeRequest,

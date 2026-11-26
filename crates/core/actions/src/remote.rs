@@ -73,7 +73,6 @@ pub mod formats;
 mod nodes;
 pub mod own_device;
 mod pending;
-pub mod person_connections;
 pub mod person_telling;
 pub mod person_vault;
 pub mod press_points;
@@ -554,9 +553,9 @@ fn account_steps(action: &str) -> Vec<crate::ActionEffect> {
         })
 }
 
-/// [`MODEL_VAULT_STEPS`] of the model provider action `action`.
-fn model_vault_steps(action: &str) -> Vec<crate::ActionEffect> {
-    MODEL_VAULT_STEPS
+/// The steps of `table` the action `action` takes, as effects.
+fn vault_steps(table: &[(&str, &[&str])], action: &str) -> Vec<crate::ActionEffect> {
+    table
         .iter()
         .find(|(id, _)| *id == action)
         .map_or_else(Vec::new, |(_, steps)| {
@@ -566,6 +565,32 @@ fn model_vault_steps(action: &str) -> Vec<crate::ActionEffect> {
                 .collect()
         })
 }
+
+/// The provider a person's connected services answer under. Their provider declares their
+/// actions (`tilo_workspace_service::person_connections`); what this crate knows of them is
+/// that a workspace's host keeps them ([`WORKSPACE_KEPT_PROVIDERS`]), what each writes in the
+/// workspace's vault ([`CONNECTION_VAULT_STEPS`]) and whose answers carry the service's own
+/// words ([`CONNECTION_SAID_ACTIONS`]).
+pub const CONNECTIONS_PROVIDER: &str = "tilo.connections";
+
+/// What each connection action writes in the workspace's vault, as the host answering it takes
+/// it: a service's sign-in tokens are kept, a removed connection's go, and a call made with
+/// them writes down that use. An action not named writes nothing there.
+pub const CONNECTION_VAULT_STEPS: [(&str, &[&str]); 6] = {
+    use person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
+    const KEEPS: &[&str] = &[KEEP_SEALED, KEEP_USES];
+    [
+        ("add", &[KEEP_SEALED]),
+        ("propose", &[KEEP_SEALED]),
+        ("remove", &[REMOVE_SEALED]),
+        ("refresh", KEEPS),
+        ("call", KEEPS),
+        ("finish-sign-in", KEEPS),
+    ]
+};
+
+/// The connection actions whose answers carry the service's own words: data from outside.
+pub const CONNECTION_SAID_ACTIONS: [&str; 4] = ["list", "look", "refresh", "call"];
 
 /// What the action `target` names declares it writes besides its own resource
 /// ([`crate::ActionContract::effects`]), from its declaration: a device reading a record checks
@@ -608,8 +633,8 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
             action => action,
         }),
         ACCOUNTS_PROVIDER if address.resource == "accounts" => account_steps(&address.action),
-        MODELS_PROVIDER => model_vault_steps(&address.action),
-        person_connections::PROVIDER => person_connections::effects(&address.action),
+        MODELS_PROVIDER => vault_steps(&MODEL_VAULT_STEPS, &address.action),
+        CONNECTIONS_PROVIDER => vault_steps(&CONNECTION_VAULT_STEPS, &address.action),
         // A moderation undo takes a person's changes back in the chat's record.
         MODERATION_PROVIDER
             if address.resource == MODERATION_HISTORY && address.action == MODERATION_UNDO =>
@@ -1445,7 +1470,7 @@ pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
     MODELS_PROVIDER,
     person_vault::PROVIDER,
     person_telling::PROVIDER,
-    person_connections::PROVIDER,
+    CONNECTIONS_PROVIDER,
     formats::PROVIDER,
 ];
 

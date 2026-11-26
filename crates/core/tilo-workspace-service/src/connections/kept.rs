@@ -9,11 +9,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use crate::person_connections::{Command, Connection, Ended, Leave, SignIn, State, Use};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_actions::remote::person_connections::{
-    Command, Connection, Ended, Leave, SignIn, State, Use,
-};
 use tilo_lock::MutexRecover as _;
 
 use super::said::Offered;

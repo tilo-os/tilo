@@ -62,8 +62,8 @@ impl Store {
     };
     /// The services the workspace connected.
     pub const CONNECTIONS: Self = Self {
-        app: tilo_actions::remote::person_connections::PROVIDER,
-        kind: tilo_actions::remote::person_connections::KIND,
+        app: crate::person_connections::PROVIDER,
+        kind: crate::person_connections::KIND,
     };
     /// What the workspace's agents learned.
     pub const LEARNED: Self = Self {

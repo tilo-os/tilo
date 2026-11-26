@@ -84,6 +84,9 @@ pub mod models;
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
+/// The services a person connected: their actions, declared once, and what they read as.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod person_connections;
 /// What a state directory's workspaces hold where their types' readers are not: counts an
 /// operator reads, without writing or repairing anything.
 #[cfg(not(target_arch = "wasm32"))]

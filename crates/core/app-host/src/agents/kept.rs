@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
-    ActionCallError, Caller, CatalogueProvider, CatalogueQuery, InvokeRequest, RemoteActionTarget,
-    person_connections,
+    ActionCallError, CONNECTION_SAID_ACTIONS, CONNECTIONS_PROVIDER, Caller, CatalogueProvider,
+    CatalogueQuery, InvokeRequest, RemoteActionTarget,
 };
 
 use super::turn_provider::{Ending, Rows};
@@ -103,16 +103,8 @@ impl TurnProvider for TurnKept {
 
     /// What a connected service answers or says of itself was written by that service.
     fn carries_untrusted(&self, target: &RemoteActionTarget) -> bool {
-        if target.provider != person_connections::PROVIDER {
-            return false;
-        }
-        matches!(
-            target.address.action.as_str(),
-            person_connections::CALL
-                | person_connections::LIST
-                | person_connections::LOOK
-                | person_connections::REFRESH
-        )
+        target.provider == CONNECTIONS_PROVIDER
+            && CONNECTION_SAID_ACTIONS.contains(&target.address.action.as_str())
     }
 
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {

@@ -48,6 +48,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::models as model_providers;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::person_connections;
 use crate::workspace_accounts;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
@@ -59,7 +61,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, person_connections,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server,
     person_telling, person_vault, server_account, workspace_app, workspace_app_named,
     workspace_governance_address, workspace_governance_child, workspace_governance_operation,
     workspace_governance_resource, workspace_member, workspace_person,
@@ -1293,15 +1295,16 @@ impl Verb {
 /// provider the workspace answers lists its actions as it declares them rather than from a table.
 #[cfg(not(target_arch = "wasm32"))]
 trait DeclaredRow {
-    /// The row of this action of the workspace's own, at `resource`, labelled `label`.
-    fn row(&self, resource: &str, label: &str) -> CatalogueRow;
+    /// The row of this action, published by `publisher` at `resource`, a resource labelled
+    /// `label`.
+    fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl DeclaredRow for tilo_resource::EffectDecl {
-    fn row(&self, resource: &str, label: &str) -> CatalogueRow {
+    fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow {
         action_row(
-            GOVERNANCE,
+            publisher,
             (resource, label),
             (self.id, &self.label.read(), self.action_kind),
             self.params.clone(),

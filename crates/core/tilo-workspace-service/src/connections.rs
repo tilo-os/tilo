@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde_json::{Map, Value};
-use tilo_actions::remote::person_connections::{
+use crate::person_connections::{
     Call, Called, Connection, Connections, Ended, Leave, Looked, SignIn, SignInStep, Uses,
 };
+use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 
 mod address;

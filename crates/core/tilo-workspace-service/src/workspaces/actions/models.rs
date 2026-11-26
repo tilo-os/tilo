@@ -73,7 +73,7 @@ impl crate::workspaces::Workspaces {
                 .await
                 .is_ok()
             {
-                let mut row = verb.row(&resource, "Model providers");
+                let mut row = verb.row(super::GOVERNANCE, &resource, "Model providers");
                 row.parent_resource.clone_from(&root);
                 // Reading `workspace/models` lists the providers.
                 if verb.id == model_providers::LIST

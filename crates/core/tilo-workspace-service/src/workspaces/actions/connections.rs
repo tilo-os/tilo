@@ -14,17 +14,16 @@
 //! command that changes something asks its person, and a connection is
 //! proposed to them.
 
-use serde_json::Value;
-use tilo_actions::remote::person_connections::{
-    self, AtAddress, BeginSignIn, Call, FinishSignIn, Named,
-};
+use serde_json::{Map, Value};
+use tilo_actions::ActionKind;
 use tilo_actions::remote::{
     ActionCallError as Refused, CatalogueRow, InvokeArgument, InvokeRequest,
 };
-use tilo_actions::{ActionKind, ActionParam, ParamType};
+use tilo_resource::{Effect as _, EffectDecl};
 
-use super::{Asked, Publisher, Verb};
+use super::{Asked, DeclaredRow as _, Publisher};
 use crate::connections::{self, Calling, Reach};
+use crate::person_connections::{self, ConnectionsAction};
 use crate::workspaces::Workspaces;
 use crate::workspaces::workspace_stores::Store;
 
@@ -36,88 +35,72 @@ pub(super) const CONNECTIONS: Publisher = Publisher {
     kind: person_connections::KIND,
 };
 
-/// What an agent is offered of the workspace's connections. Each reads:
-/// none of them adds a connection or changes what a service keeps.
-const AGENT_VERBS: [Verb; 4] = [
-    reads(person_connections::LIST, "List connections", Vec::new),
-    reads(
-        person_connections::LOOK,
-        "Look at a service",
-        address_params,
-    ),
-    reads(
-        person_connections::REFRESH,
-        "Read a connection's commands again",
-        connection_params,
-    ),
-    reads(person_connections::CALL, "Call a command", call_params),
-];
-
-/// The action `id` as one that reads, offered by who is asking and by no
-/// governance action of a workspace.
-const fn reads(id: &'static str, label: &'static str, params: fn() -> Vec<ActionParam>) -> Verb {
-    Verb {
+/// Whether an agent is offered the action `id` of the workspace's connections in its listing:
+/// the reads an agent does, and a proposal its person answers. Adding, removing, signing in and
+/// what a connection was used for are the person's own.
+pub(super) fn offered_to_agents(id: &str) -> bool {
+    matches!(
         id,
-        label,
-        check: "",
-        kind: ActionKind::Read,
-        params,
-    }
-}
-
-fn address_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "address",
-        ParamType::Text,
-        "The service's address, such as https://service.example/mcp. The server connects there and answers the name the service gives itself, whether it wants a sign-in, and its commands. Nothing is kept.",
-    )]
-}
-
-fn connection_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "connection",
-        ParamType::Text,
-        "The connection, by its id.",
-    )]
-}
-
-fn call_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required("connection", ParamType::Text, "The connection, by its id."),
-        ActionParam::required(
-            "command",
-            ParamType::Text,
-            "The command's name, as the connection lists it. One the service marks as only reading is called; any other asks your person first.",
-        ),
-        ActionParam::optional(
-            "arguments",
-            ParamType::Object,
-            "The command's arguments, as its schema describes them. They are sent to the service as given.",
-        ),
-    ]
+        person_connections::LIST
+            | person_connections::LOOK
+            | person_connections::REFRESH
+            | person_connections::CALL
+    )
 }
 
 /// What an agent is offered of the workspace's connections.
 pub(super) fn agent_rows() -> Vec<CatalogueRow> {
-    AGENT_VERBS
+    ConnectionsAction::declarations()
         .iter()
-        .map(|verb| verb.row(CONNECTIONS, person_connections::RESOURCE, "Connections"))
+        .filter(|decl| offered_to_agents(decl.id))
+        .map(|decl| decl.row(CONNECTIONS, person_connections::RESOURCE, "Connections"))
         .collect()
 }
 
-/// What a request's arguments name, or `what` they should have named. The
-/// reason never quotes the arguments.
-fn argument<T: serde::de::DeserializeOwned>(
-    request: &InvokeRequest,
-    what: &str,
-) -> Result<T, Refused> {
-    let invalid = || Refused::InvalidRequest {
-        reason: what.to_owned(),
+/// Whether this server answers the declared action `decl` for the person: every connection
+/// action but a proposal, which only an agent's turn makes to its person.
+fn answered(decl: &EffectDecl) -> bool {
+    decl.id != person_connections::PROPOSE
+}
+
+/// The action `request` asks, its arguments read as the declaration names them.
+fn asked_of(request: &InvokeRequest) -> Result<ConnectionsAction, Refused> {
+    let arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => Map::new(),
     };
-    let InvokeArgument::Json(argument) = &request.argument else {
-        return Err(invalid());
+    ConnectionsAction::decode(&request.target.address.action, &arguments).map_err(|error| {
+        match error {
+            tilo_resource::EffectDecodeError::Unknown(_) => Refused::UnknownAction,
+            tilo_resource::EffectDecodeError::Argument { name, .. } => {
+                Refused::invalid_request(format!("The `{name}` argument is not readable"))
+            }
+            other => Refused::invalid_request(other.to_string()),
+        }
+    })
+}
+
+/// The call the declaration's `arguments` make of `command` of `connection`, or the refusal of
+/// arguments that are no object.
+fn call_made(
+    connection: String,
+    command: String,
+    arguments: Option<Value>,
+) -> Result<person_connections::Call, Refused> {
+    let arguments = match arguments {
+        None => Map::new(),
+        Some(Value::Object(arguments)) => arguments,
+        Some(_) => {
+            return Err(Refused::invalid_request(
+                "The `arguments` argument is not readable",
+            ));
+        }
     };
-    serde_json::from_value(Value::Object(argument.clone())).map_err(|_| invalid())
+    Ok(person_connections::Call {
+        connection,
+        command,
+        arguments,
+    })
 }
 
 /// What the caller reads of an outcome, or the reason it was refused.
@@ -166,24 +149,15 @@ impl Workspaces {
         let action = target.address.action.as_str();
         // Decided before the request is read. A command the service marks as only reading is
         // called as one; any other asks the agent's person first ([`connections::call`]).
-        let effect = match action {
-            person_connections::LIST
-            | person_connections::LOOK
-            | person_connections::REFRESH
-            | person_connections::USES
-            | person_connections::CALL => ActionKind::Read,
-            person_connections::ADD
-            | person_connections::REMOVE
-            | person_connections::BEGIN_SIGN_IN
-            | person_connections::FINISH_SIGN_IN => ActionKind::Undoable,
-            _ => return Err(Refused::UnknownAction),
+        let Some(decl) = ConnectionsAction::declaration(action).filter(answered) else {
+            return Err(Refused::UnknownAction);
         };
         let reach = workspaces
             .reaching_allowed(
                 (workspace_id, caller, certificate),
                 Store::CONNECTIONS,
                 action,
-                effect,
+                decl.action_kind,
                 request,
             )
             .await?;
@@ -199,53 +173,45 @@ impl Workspaces {
             .vault_for(&workspace, &reach.acting)
             .serving(request);
         let reach = workspaces.connections_reach();
-        let by_address = "a service is named by its address";
-        let by_id = "a connection is named by its id";
-        match action {
-            person_connections::LIST => said(connections::list(&root)),
-            person_connections::LOOK => {
-                let at: AtAddress = argument(request, by_address)?;
-                said(connections::look(&root, &reach, &at.address).await)
+        let asked = asked_of(request)?;
+        match asked {
+            ConnectionsAction::List => said(connections::list(&root)),
+            ConnectionsAction::Look { address } => {
+                said(connections::look(&root, &reach, &address).await)
             }
-            person_connections::ADD => {
-                let at: AtAddress = argument(request, by_address)?;
-                said(connections::add(&root, &reach, &at.address).await)
+            ConnectionsAction::Add { address } => {
+                said(connections::add(&root, &reach, &address).await)
             }
-            person_connections::REMOVE => {
-                let named: Named = argument(request, by_id)?;
-                said(connections::remove((&root, vault), &named.connection).await)
+            ConnectionsAction::Remove { connection } => {
+                said(connections::remove((&root, vault), &connection).await)
             }
-            person_connections::USES => {
-                let named: Named = argument(request, by_id)?;
-                said(connections::uses(&root, &named.connection))
-            }
-            person_connections::BEGIN_SIGN_IN => {
-                let begin: BeginSignIn = argument(
-                    request,
-                    "a sign-in to begin names its connection and where the browser comes back to",
-                )?;
-                let (id, back) = (&begin.connection, &begin.return_to);
-                said(connections::begin_sign_in(&root, &reach, id, back).await)
-            }
-            person_connections::FINISH_SIGN_IN => {
-                let finish: FinishSignIn = argument(
-                    request,
-                    "a sign-in to finish names its connection and the address the browser came back to",
-                )?;
-                let (id, back) = (&finish.connection, &finish.returned);
-                said(connections::finish_sign_in((&root, vault), &reach, id, back).await)
-            }
-            person_connections::CALL => {
-                let call: Call = argument(
-                    request,
-                    "a call names its connection, a command of it and the command's arguments",
-                )?;
+            ConnectionsAction::Uses { connection } => said(connections::uses(&root, &connection)),
+            ConnectionsAction::BeginSignIn {
+                connection,
+                return_to,
+            } => said(connections::begin_sign_in(&root, &reach, &connection, &return_to).await),
+            ConnectionsAction::FinishSignIn { sign_in } => said(
+                connections::finish_sign_in(
+                    (&root, vault),
+                    &reach,
+                    &sign_in.connection,
+                    &sign_in.returned,
+                )
+                .await,
+            ),
+            ConnectionsAction::Call {
+                connection,
+                command,
+                call_arguments,
+            } => {
+                let call = call_made(connection, command, call_arguments)?;
                 said(connections::call((&root, vault), &reach, calling, call).await)
             }
-            _ => {
-                let named: Named = argument(request, by_id)?;
-                said(connections::refresh((&root, vault), &reach, &named.connection, calling).await)
+            ConnectionsAction::Refresh { connection } => {
+                said(connections::refresh((&root, vault), &reach, &connection, calling).await)
             }
+            // A proposal is an agent's turn's, answered by [`for_turn`].
+            ConnectionsAction::Propose { .. } => Err(Refused::UnknownAction),
         }
     }
 }

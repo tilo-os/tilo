@@ -1,5 +1,5 @@
-//! The services a person connected by their address, kept on the server
-//! that serves their workspace.
+//! The services a person connected by their address, kept on the server that serves their
+//! workspace, and the actions a page, a window or an agent asks of them: [`ConnectionsAction`].
 //!
 //! A person gives a service's address. Their server connects to it, reads the
 //! name the service gives itself and the commands it offers, and keeps that
@@ -24,15 +24,16 @@
 //! What a service says of itself is data from outside: its name, a
 //! command's title and its description are the service's own words, shown as
 //! such and never an instruction to anyone. A sign-in's tokens are items of
-//! the person's vault ([`super::person_vault`]); nothing here carries one.
+//! the person's vault ([`tilo_actions::remote::person_vault`]); nothing here
+//! carries one.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::RemoteActionTarget;
 
-use super::{ActionAddress, RemoteActionTarget};
-
-/// The provider the server answers a person's connections under.
-pub const PROVIDER: &str = "tilo.connections";
+/// The provider that answers a person's connections under.
+pub const PROVIDER: &str = <ConnectionsAction as tilo_resource::Effect>::OPERATION;
 /// The resource the connections are actions of.
 pub const RESOURCE: &str = "connections";
 /// The kind of that resource.
@@ -44,53 +45,101 @@ pub const CONNECTION_KIND: &str = "connections.connection";
 /// gave to stay names ([`command_resource`]).
 pub const COMMAND_KIND: &str = "connections.command";
 
-/// Every connection of the person, as a [`Connections`].
-pub const LIST: &str = "list";
-/// What the service at an address says it is ([`AtAddress`]), as a
-/// [`Looked`]. The server connects and keeps nothing.
-pub const LOOK: &str = "look";
-/// Connect the service at an address ([`AtAddress`]), answering it as a
-/// [`Connection`]. The person's alone.
-pub const ADD: &str = "add";
-/// Remove a connection ([`Named`]), answering the ones that remain as a
-/// [`Connections`]. The person's alone.
-pub const REMOVE: &str = "remove";
-/// Read a connection's commands again ([`Named`]), answering it as a
-/// [`Connection`].
-pub const REFRESH: &str = "refresh";
-/// Call one command of a connection ([`Call`]), answering what the service
-/// answered as a [`Called`].
-pub const CALL: &str = "call";
-/// What a connection was used for ([`Named`]), as a [`Uses`]. The person's
-/// alone.
-pub const USES: &str = "uses";
-/// Begin signing in to a connection ([`BeginSignIn`]), answering where the
-/// person's browser goes as a [`SignInStep`]. The person's alone.
-pub const BEGIN_SIGN_IN: &str = "begin-sign-in";
-/// Finish signing in ([`FinishSignIn`]), answering the connection as a
-/// [`Connection`]. The person's alone.
-pub const FINISH_SIGN_IN: &str = "finish-sign-in";
-/// Ask the person whether to connect the service at an address
-/// ([`AtAddress`]): it waits for their yes, shown the service's [`Card`], and
-/// answers the [`Connection`] their yes added.
-pub const PROPOSE: &str = "propose";
+/// The connections' actions, each with the parameters its argument carries.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.connections")]
+pub enum ConnectionsAction {
+    /// List connections
+    #[effect(kind = "read")]
+    List,
+    /// Look at a service
+    #[effect(kind = "read")]
+    Look {
+        #[param(
+            "The service's address, such as https://service.example/mcp. The server connects there and answers the name the service gives itself, whether it wants a sign-in, and its commands. Nothing is kept."
+        )]
+        address: String,
+    },
+    /// Connect the service at an address
+    #[effect(kind = "undoable")]
+    Add {
+        #[param(
+            "The service's address: `https://`, a name, and a path when it has one. An address that carries a name and password or a query is refused."
+        )]
+        address: String,
+    },
+    /// Remove a connection
+    #[effect(kind = "undoable")]
+    Remove {
+        #[param("The connection, by its id.")]
+        connection: String,
+    },
+    /// Read a connection's commands again
+    #[effect(kind = "read")]
+    Refresh {
+        #[param("The connection, by its id.")]
+        connection: String,
+    },
+    /// Call a command
+    #[effect(kind = "read")]
+    Call {
+        #[param("The connection, by its id.")]
+        connection: String,
+        #[param(
+            "The command's name, as the connection lists it. One the service marks as only reading is called; any other asks your person first."
+        )]
+        command: String,
+        #[param(
+            "The command's arguments, as its schema describes them. They are sent to the service as given.",
+            name = "arguments"
+        )]
+        call_arguments: Option<Value>,
+    },
+    /// What a connection was used for
+    #[effect(kind = "read")]
+    Uses {
+        #[param("The connection, by its id.")]
+        connection: String,
+    },
+    /// Begin signing in to a connection
+    #[effect(kind = "undoable")]
+    BeginSignIn {
+        #[param("The connection, by its id.")]
+        connection: String,
+        #[param(
+            "Where the person's browser comes back to when the service is done: an address the person's own app catches.",
+            name = "returnTo"
+        )]
+        return_to: String,
+    },
+    /// Finish signing in to a connection
+    #[effect(kind = "undoable")]
+    FinishSignIn {
+        #[param(flatten)]
+        sign_in: FinishSignIn,
+    },
+    /// Propose a connection
+    #[effect(kind = "outside")]
+    Propose {
+        #[param(
+            "The service's address: `https://`, a name, and a path when it has one. An address that carries a name and password or a query is refused."
+        )]
+        address: String,
+    },
+}
 
-/// What the action `action` writes in the workspace's vault, as the host answering it takes it:
-/// what a service hands out at sign-in is kept, a removed connection's goes, and a call made
-/// with what the vault keeps writes down that use and keeps what the service renewed. Finishing
-/// a sign-in reads the service's commands with what it handed out, which is such a use. The
-/// action's own declaration, read wherever it is listed and wherever a device reads the vault's
-/// record.
-#[must_use]
-pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
-    use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
-    let steps: &[&str] = match action {
-        ADD | PROPOSE => &[KEEP_SEALED],
-        REMOVE => &[REMOVE_SEALED],
-        FINISH_SIGN_IN | REFRESH | CALL => &[KEEP_USES, KEEP_SEALED],
-        _ => &[],
+/// Each action's id, as its declaration in [`ConnectionsAction`] names it.
+macro_rules! ids {
+    ($($id:ident),* $(,)?) => {
+        $(
+            #[doc = concat!("The id of [`ConnectionsAction::", stringify!($id), "`].")]
+            pub const $id: &str = ConnectionsAction::$id.id();
+        )*
     };
-    steps.iter().map(|verb| vault_step(verb)).collect()
+}
+
+ids! {
+    LIST, LOOK, ADD, REMOVE, REFRESH, CALL, USES, BEGIN_SIGN_IN, FINISH_SIGN_IN, PROPOSE
 }
 
 /// The target of action `action` of [`RESOURCE`].
@@ -215,16 +264,6 @@ pub struct Connections {
     pub connections: Vec<Connection>,
 }
 
-/// A service named by its address.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AtAddress {
-    /// The service's address: `https://`, a name, and a path when it has
-    /// one. An address that carries a name and password or a query is
-    /// refused.
-    pub address: String,
-}
-
 /// What the service at an address says it is. Nothing of it is kept.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -246,13 +285,6 @@ pub struct Looked {
     /// As [`Connection::unusable`].
     #[serde(default)]
     pub unusable: u32,
-}
-
-/// A connection named by its id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Named {
-    pub connection: String,
 }
 
 /// A command to call.
@@ -334,16 +366,6 @@ pub struct Uses {
     pub uses: Vec<Use>,
 }
 
-/// A sign-in to begin.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BeginSignIn {
-    pub connection: String,
-    /// Where the person's browser comes back to when the service is done:
-    /// an address the person's own app catches.
-    pub return_to: String,
-}
-
 /// Where the person's browser goes to sign in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -355,9 +377,10 @@ pub struct SignInStep {
 }
 
 /// A sign-in to finish.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FinishSignIn {
+    /// The connection, by its id.
     pub connection: String,
     /// The whole address the person's browser came back to.
     pub returned: String,
@@ -410,6 +433,7 @@ mod tests {
     )]
 
     use serde_json::json;
+    use tilo_resource::Effect as _;
 
     use super::*;
 
@@ -425,8 +449,17 @@ mod tests {
         }
     }
 
-    /// A connection reads as the fields a client binds to, and nothing in
-    /// it has a place for a token.
+    /// The action `action` as a client writes it, decoded through the declaration.
+    fn asked(
+        action: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<ConnectionsAction, tilo_resource::EffectDecodeError> {
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        ConnectionsAction::decode(action, &arguments)
+    }
+
+    /// A connection and its commands read as the fields a client binds to, in the words their
+    /// enums are written in, and neither has a place for a token.
     #[test]
     fn a_connection_says_what_a_client_binds_to_and_carries_no_token() {
         let connection = Connection {
@@ -448,90 +481,64 @@ mod tests {
             connections: vec![connection.clone()],
         })
         .unwrap();
-        let one = &said["connections"][0];
-        let mut fields: Vec<&str> = one
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        fields.sort_unstable();
+        assert_eq!(said["connections"][0]["state"], "sign-in-ran-out");
+        assert_eq!(said["connections"][0]["signIn"], "needed");
+        assert_eq!(said["connections"][0]["commands"][0]["readOnly"], true);
+        let text = said.to_string();
+        assert!(!text.contains("token"), "{text}");
+        // A connection with a field of its own making is not one.
+        let mut forged = said["connections"][0].clone();
+        forged["token"] = json!("secret");
+        assert!(serde_json::from_value::<Connection>(forged).is_err());
         assert_eq!(
-            fields,
-            [
-                "addedAtMs",
-                "address",
-                "commands",
-                "commandsReadAtMs",
-                "id",
-                "name",
-                "signIn",
-                "signInAt",
-                "state",
-                "stateSinceMs",
-                "stateWhy",
-                "unusable",
-            ]
-        );
-        assert_eq!(one["state"], "sign-in-ran-out");
-        assert_eq!(one["signIn"], "needed");
-        let mut command: Vec<&str> = one["commands"][0]
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        command.sort_unstable();
-        assert_eq!(
-            command,
-            [
-                "asks",
-                "changed",
-                "description",
-                "name",
-                "readOnly",
-                "schema",
-                "title"
-            ]
-        );
-        assert_eq!(
-            serde_json::from_value::<Connections>(said.clone())
+            serde_json::from_value::<Connections>(said)
                 .unwrap()
                 .connections,
             vec![connection]
         );
-        // A connection with a field of its own making is not one.
-        let mut forged = one.clone();
-        forged["token"] = json!("secret");
-        assert!(serde_json::from_value::<Connection>(forged).is_err());
     }
 
-    /// What an action takes reads from the names a client writes, and a
-    /// field nobody defined is refused.
+    /// What an action takes reads from the names a client writes, and an
+    /// action whose argument is missing is refused.
     #[test]
     fn what_an_action_takes_reads_from_a_clients_names() {
-        let call: Call = serde_json::from_value(json!({
-            "connection": "0123456789abcdef0123456789abcdef",
-            "command": "find_trees",
-            "arguments": {"orchard": "north"},
-        }))
+        let call = asked(
+            CALL,
+            &json!({
+                "connection": "0123456789abcdef0123456789abcdef",
+                "command": "find_trees",
+                "arguments": {"orchard": "north"},
+            }),
+        )
         .unwrap();
-        assert_eq!(call.arguments["orchard"], "north");
-        let bare: Call =
-            serde_json::from_value(json!({"connection": "c", "command": "count"})).unwrap();
-        assert!(bare.arguments.is_empty());
-        assert!(
-            serde_json::from_value::<AtAddress>(
-                json!({"address": "https://a.example", "name": "A"})
-            )
-            .is_err()
+        assert_eq!(
+            call,
+            ConnectionsAction::Call {
+                connection: "0123456789abcdef0123456789abcdef".into(),
+                command: "find_trees".into(),
+                call_arguments: Some(json!({"orchard": "north"})),
+            }
         );
-        let begin: BeginSignIn = serde_json::from_value(json!({
-            "connection": "c",
-            "returnTo": "https://app.example/signed-in",
-        }))
-        .unwrap();
-        assert_eq!(begin.return_to, "https://app.example/signed-in");
+        assert_eq!(
+            asked(CALL, &json!({"connection": "c", "command": "count"})).unwrap(),
+            ConnectionsAction::Call {
+                connection: "c".into(),
+                command: "count".into(),
+                call_arguments: None,
+            }
+        );
+        assert!(asked(LOOK, &json!({})).is_err());
+        assert_eq!(
+            asked(
+                BEGIN_SIGN_IN,
+                &json!({"connection": "c", "returnTo": "https://app.example/signed-in"}),
+            )
+            .unwrap(),
+            ConnectionsAction::BeginSignIn {
+                connection: "c".into(),
+                return_to: "https://app.example/signed-in".into(),
+            }
+        );
         let used = serde_json::to_value(Use {
             at_ms: 1,
             command: "find_trees".into(),
@@ -551,10 +558,13 @@ mod tests {
     /// of a connection and a command are spelled one way.
     #[test]
     fn a_finished_sign_in_is_not_printed_and_resources_are_spelled_one_way() {
-        let finish: FinishSignIn = serde_json::from_value(json!({
-            "connection": "c1",
-            "returned": "https://app.example/signed-in?code=once-only&state=s",
-        }))
+        let finish = asked(
+            FINISH_SIGN_IN,
+            &json!({
+                "connection": "c1",
+                "returned": "https://app.example/signed-in?code=once-only&state=s",
+            }),
+        )
         .unwrap();
         let printed = format!("{finish:?}");
         assert!(
@@ -568,5 +578,18 @@ mod tests {
         );
         assert_eq!(target(LIST).provider, PROVIDER);
         assert_eq!(target(LIST).address, ActionAddress::new(RESOURCE, LIST));
+    }
+
+    /// What the registry knows of the connections without this crate names the actions they
+    /// declare: the provider they answer under, and the vault steps they take.
+    #[test]
+    fn the_registry_names_the_declared_actions() {
+        assert_eq!(PROVIDER, tilo_actions::remote::CONNECTIONS_PROVIDER);
+        for (action, _) in tilo_actions::remote::CONNECTION_VAULT_STEPS {
+            assert!(
+                ConnectionsAction::declaration(action).is_some(),
+                "{action} is declared nowhere"
+            );
+        }
     }
 }

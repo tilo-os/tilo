@@ -9,12 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use accounts::vault_items::{ItemError, ItemId, ItemKind, Place};
 
+use crate::person_connections::{Call, Command, Connection, Ended, Leave, SignIn, State, Use};
 use crate::workspaces::vault::VaultAt;
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
-use tilo_actions::remote::person_connections::{
-    Call, Command, Connection, Ended, Leave, SignIn, State, Use,
-};
 
 use super::stand_in::{SESSION, StandIn};
 use super::{

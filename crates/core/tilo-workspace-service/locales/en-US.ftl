@@ -206,3 +206,15 @@ tilo-accounts-submit-sign-in-code = Finish signing in with a code
 tilo-accounts-connect-account = Connect an account at an app's issuer
 tilo-accounts-finish-connect-account = Wait for a connected account
 tilo-accounts-forget-connected-account = Forget a connected account
+
+# A person's connected services, kept by the host that keeps their workspace.
+tilo-connections-list = List connections
+tilo-connections-look = Look at a service
+tilo-connections-add = Connect the service at an address
+tilo-connections-remove = Remove a connection
+tilo-connections-refresh = Read a connection's commands again
+tilo-connections-call = Call a command
+tilo-connections-uses = What a connection was used for
+tilo-connections-begin-sign-in = Begin signing in to a connection
+tilo-connections-finish-sign-in = Finish signing in to a connection
+tilo-connections-propose = Propose a connection

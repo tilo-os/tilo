@@ -68,6 +68,7 @@
 use std::path::Path;
 
 use crate::models::{self as model_providers, SetKeyFromItem};
+use crate::person_connections;
 use crate::workspace_accounts::{self, AddMailWithItem};
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
@@ -79,9 +80,7 @@ use tilo_actions::remote::asked::{AskedFacts, Fact};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::person_vault::FillPage;
 use tilo_actions::remote::person_vault::{self, ItemRef};
-use tilo_actions::remote::{
-    Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, person_connections,
-};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
 use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};

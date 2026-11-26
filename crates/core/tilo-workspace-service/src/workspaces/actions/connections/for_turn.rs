@@ -27,27 +27,26 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use crate::person_connections::{self, Call, ConnectionsAction, Leave};
+#[cfg(feature = "agents")]
+use crate::person_connections::{Command, Connection, Connections};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_action_policy::{Answer, TreePath};
+#[cfg(feature = "agents")]
+use tilo_actions::remote::CatalogueRow;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::person_connections::{self, AtAddress, Call, Leave, Named};
-#[cfg(feature = "agents")]
-use tilo_actions::remote::person_connections::{Command, Connection, Connections};
-#[cfg(feature = "agents")]
-use tilo_actions::remote::{CatalogueResource, CatalogueRow};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 #[cfg(feature = "agents")]
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
-    InputSpec, OperationKind, ParamType, RiskLevel,
-};
+use tilo_actions::{ActionKind, ActionParam, ParamType};
+#[cfg(feature = "agents")]
+use tilo_resource::Effect as _;
 
 #[cfg(feature = "agents")]
-use super::super::Verb;
+use super::super::{DeclaredRow as _, Publisher, action_row};
 #[cfg(feature = "agents")]
-use super::{AGENT_VERBS, CONNECTIONS, address_params};
-use super::{Refused, argument};
+use super::CONNECTIONS;
+use super::{Refused, call_made};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
@@ -68,17 +67,6 @@ const MAX_ARGUMENT_NAME_BYTES: usize = 64;
 const POLICY_DENIES: &str = "The workspace policy denies this action for the agent";
 const TOO_LARGE_TO_ASK: &str = "Those arguments are larger than a question shows whole, so your person cannot be asked about this call";
 const CONNECTED: &str = "That service is connected already: it is in the list of connections";
-
-#[cfg(feature = "agents")]
-/// Proposing a connection: its person is asked, and nothing is added by the
-/// call.
-const PROPOSES: Verb = Verb {
-    id: person_connections::PROPOSE,
-    label: "Propose a connection",
-    check: "",
-    kind: ActionKind::Outside,
-    params: address_params,
-};
 
 fn refused(reason: String) -> Refused {
     Refused::Refused { reason }
@@ -206,12 +194,18 @@ fn params_of(schema: &Value) -> Vec<ActionParam> {
 }
 
 #[cfg(feature = "agents")]
+/// A connection's commands, published as the connection they belong to.
+const COMMANDS: Publisher = Publisher {
+    provider: person_connections::PROVIDER,
+    kind: person_connections::CONNECTION_KIND,
+};
+
+#[cfg(feature = "agents")]
 /// The row of one command of `connection`, whose service is at `site`: what
 /// an agent's listing shows of it, with whether it asks first. What the
 /// service says of the command follows the system's own words, marked as
 /// the service's.
 fn command_row(connection: &Connection, site: &str, command: &Command) -> CatalogueRow {
-    let resource = person_connections::connection_resource(&connection.id);
     let label = if connection.name.is_empty() {
         site.to_owned()
     } else {
@@ -230,54 +224,28 @@ fn command_row(connection: &Connection, site: &str, command: &Command) -> Catalo
             one_line(&command.description)
         );
     }
-    CatalogueRow {
-        offered: None,
-        provider: person_connections::PROVIDER.into(),
-        app_id: person_connections::PROVIDER.into(),
-        parent_resource: String::new(),
-        resource: CatalogueResource {
-            id: resource.clone(),
-            kind: person_connections::CONNECTION_KIND.into(),
-            label: label.clone(),
-            presentation: None,
-        },
-        action: Some(ActionDescriptor {
-            did: None,
-            state: tilo_actions::ActionState::default(),
-            semantic_identity: None,
-            address: ActionAddress::new(resource, command.name.clone()),
-            resource_kind: person_connections::CONNECTION_KIND.into(),
-            resource_label: label,
-            action_label: command
-                .title
-                .clone()
-                .unwrap_or_else(|| command.name.clone()),
-            keywords: Vec::new(),
-            icon: None,
-            description: Some(description),
-            locus: ExecutionLocus::ServerPreferred,
-            kind: OperationKind::Effect,
-            contract: ActionContract {
-                kind: if command.asks {
-                    ActionKind::Outside
-                } else {
-                    ActionKind::Read
-                },
-                risk: if command.asks {
-                    RiskLevel::Privileged
-                } else {
-                    RiskLevel::None
-                },
-                ..ActionContract::default()
-            },
-            input: InputSpec::None,
-            params: params_of(&command.schema),
-            view: None,
-        }),
-        has_children: false,
-        visibility: None,
-        surface: None,
+    let kind = if command.asks {
+        ActionKind::Outside
+    } else {
+        ActionKind::Read
+    };
+    let action_label = command
+        .title
+        .clone()
+        .unwrap_or_else(|| command.name.clone());
+    let resource = person_connections::connection_resource(&connection.id);
+    let mut row = action_row(
+        COMMANDS,
+        (&resource, &label),
+        (&command.name, &action_label, kind),
+        params_of(&command.schema),
+    );
+    if let Some(action) = row.action.as_mut() {
+        action.description = Some(description);
+        // The service's own command is no verb of the workspace's: nothing of ours is tagged.
+        action.contract.tags.clear();
     }
+    row
 }
 
 impl Workspaces {
@@ -338,7 +306,6 @@ impl Workspaces {
         if resource != person_connections::RESOURCE {
             return Err(Refused::UnknownAction);
         }
-        let by_address = "a service is named by its address";
         let narrowed = |target: &RemoteActionTarget| {
             if turn.may_take(&using.workspace, target) {
                 Ok(())
@@ -346,25 +313,23 @@ impl Workspaces {
                 Err(Refused::NotPermitted)
             }
         };
-        match action {
-            person_connections::LIST => {
+        match super::asked_of(request) {
+            Ok(ConnectionsAction::List) => {
                 let mut kept = connections::list(&root).map_err(refused)?;
                 kept.connections
                     .retain(|kept| names(turn, &using.workspace, &kept.id));
                 done(kept)
             }
-            person_connections::LOOK => {
+            Ok(ConnectionsAction::Look { address }) => {
                 narrowed(target)?;
-                let looked: AtAddress = argument(request, by_address)?;
                 done(
-                    connections::look(&root, &reach, &looked.address)
+                    connections::look(&root, &reach, &address)
                         .await
                         .map_err(refused)?,
                 )
             }
-            person_connections::REFRESH => {
-                let named: Named = argument(request, "a connection is named by its id")?;
-                if !names(turn, &using.workspace, &named.connection) {
+            Ok(ConnectionsAction::Refresh { connection }) => {
+                if !names(turn, &using.workspace, &connection) {
                     return Err(Refused::NotPermitted);
                 }
                 let by = Calling::Agent(&using.name);
@@ -375,26 +340,26 @@ impl Workspaces {
                             self.vault_for(&using.workspace, &asker).serving(request),
                         ),
                         &reach,
-                        &named.connection,
+                        &connection,
                         by,
                     )
                     .await
                     .map_err(refused)?,
                 )
             }
-            person_connections::CALL => {
-                let call: Call = argument(
-                    request,
-                    "a call names its connection, a command of it and the command's arguments",
-                )?;
+            Ok(ConnectionsAction::Call {
+                connection,
+                command,
+                call_arguments,
+            }) => {
+                let call = call_made(connection, command, call_arguments)?;
                 self.call_for_turn((turn, request), &using, at, call).await
             }
-            person_connections::PROPOSE => {
+            Ok(ConnectionsAction::Propose { address }) => {
                 narrowed(target)?;
-                let proposed: AtAddress = argument(request, by_address)?;
-                Self::propose_for_turn((turn, request), at, &proposed.address).await
+                Self::propose_for_turn((turn, request), at, &address).await
             }
-            _ => Err(Refused::UnknownAction),
+            Ok(_) | Err(_) => Err(Refused::UnknownAction),
         }
     }
 
@@ -545,9 +510,9 @@ impl Workspaces {
             .into_iter()
             .filter(|kept| names(turn, &using.workspace, &kept.id))
             .collect();
-        let offered = |verb: &&Verb| {
-            let target = person_connections::target(verb.id);
-            match verb.id {
+        let offered = |decl: &&tilo_resource::EffectDecl| {
+            let target = person_connections::target(decl.id);
+            match decl.id {
                 person_connections::LOOK | person_connections::PROPOSE => {
                     turn.may_take(&using.workspace, &target)
                 }
@@ -556,11 +521,13 @@ impl Workspaces {
                 _ => turn.policy.is_none() || !reached.is_empty(),
             }
         };
-        let mut rows: Vec<CatalogueRow> = AGENT_VERBS
+        let mut rows: Vec<CatalogueRow> = ConnectionsAction::declarations()
             .iter()
-            .chain(std::iter::once(&PROPOSES))
+            .filter(|decl| {
+                super::offered_to_agents(decl.id) || decl.id == person_connections::PROPOSE
+            })
             .filter(offered)
-            .map(|verb| verb.row(CONNECTIONS, person_connections::RESOURCE, "Connections"))
+            .map(|decl| decl.row(CONNECTIONS, person_connections::RESOURCE, "Connections"))
             .collect();
         for connection in &reached {
             let site = connections::site(&reach, &connection.address).unwrap_or_default();
