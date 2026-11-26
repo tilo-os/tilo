@@ -975,7 +975,7 @@ struct PageAsking {
     workspaces: Workspaces,
     browser: Endpoint,
     channel: Record,
-    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    store: Arc<tilo_remote_actions::asked::AskedStore>,
     person: tilo_actions::remote::Caller,
 }
 
@@ -1049,7 +1049,7 @@ fn raise_prompt<'a>(
     'a,
     (
         tilo_actions::InvocationId,
-        tilo_actions::remote::asked::Waiting,
+        tilo_remote_actions::asked::Waiting,
     ),
 > {
     Box::pin(async move {
@@ -1245,7 +1245,7 @@ struct PressedAsking {
     workspaces: Workspaces,
     browser: Endpoint,
     channel: Record,
-    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    store: Arc<tilo_remote_actions::asked::AskedStore>,
     window: u64,
     point: PressPoint,
 }
@@ -1322,7 +1322,7 @@ fn pressed_prompt<'a>(
     browser: &'a mut Endpoint,
     channel: &'a Record,
     host: &'a Device,
-    store: &'a tilo_actions::remote::asked::AskedStore,
+    store: &'a tilo_remote_actions::asked::AskedStore,
     prompt: (u32, &'a str, &'a str),
     press: (Option<u32>, Option<PressPoint>),
 ) -> Driven<'a, Option<Pressed>> {

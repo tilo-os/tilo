@@ -146,6 +146,7 @@ members = [
     # Collab
     "crates/core/action-policy",
     "crates/core/actions",
+    "crates/core/remote-actions",
     "crates/core/invocations",
     "crates/core/automation",
     "crates/core/key-group",

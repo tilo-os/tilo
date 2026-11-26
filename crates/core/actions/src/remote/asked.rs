@@ -14,8 +14,8 @@
 //! The reading of a workspace's invocations carries each asked record a person may answer as
 //! an [`Asked`] row.
 //!
-//! The person answers with `<record>#`[`RESOLVE`] ([`Resolve`]), which [`AskedStore`] admits:
-//! only the person the record asks, only while it is asked, and at most once. An approve hands
+//! The person answers with `<record>#`[`RESOLVE`] ([`Resolve`]), which tilo-remote-actions'
+//! `AskedStore` admits: only the person the record asks, only while it is asked, and at most once. An approve hands
 //! the call back to the dispatch that keeps it ([`AskedDispatch`]), which admits it again under
 //! its id for its original caller, checking that caller's grants as they stand then.
 
@@ -24,34 +24,9 @@ use zeroize::Zeroizing;
 
 use super::RemoteActionTarget;
 
-mod store;
-pub use store::{
-    ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, ON_YOUR_DEVICE,
-    SECRET_GONE, TOO_MANY_WAIT, Waiting, asked_grant,
-};
-
-/// What a frame carrying an approve no resolve handed back is refused with
-/// ([`AskedStore::admits_approval`]).
+/// What a frame carrying an approve no resolve handed back is refused with (tilo-remote-actions'
+/// `AskedStore::admits_approval`).
 pub const FORGED: &str = "This call carries an approve its person did not give";
-
-/// Admit `request`, a caller's frame, as its approve stands: refused where it carries an
-/// approve `store` did not hand back ([`AskedStore::admits_approval`]), or any approve where no
-/// store keeps asked records here.
-///
-/// # Errors
-/// [`FORGED`], refused.
-pub fn admit_frame(
-    store: Option<&AskedStore>,
-    request: &super::InvokeRequest,
-) -> Result<(), super::ActionCallError> {
-    if request.approval().is_none() || store.is_some_and(|store| store.admits_approval(request)) {
-        Ok(())
-    } else {
-        Err(super::ActionCallError::Refused {
-            reason: FORGED.to_owned(),
-        })
-    }
-}
 
 /// What a resolve from anything but the system's own confirmation is refused with: the
 /// person's shell asks them, and the CLI asks them at its own prompt.
@@ -756,7 +731,7 @@ pub trait AskedDispatch: Send + Sync {
     }
 
     /// End `invocation`, which `caller` asked for, withdrawn by whoever asked it before its
-    /// person answered ([`AskedStore::withdraw`]): it ends cancelled, saying `message`.
+    /// person answered (tilo-remote-actions' `AskedStore::withdraw`): it ends cancelled, saying `message`.
     fn withdrawn(&self, caller: &super::Caller, invocation: super::InvocationId, message: &str) {
         let _ = (caller, invocation, message);
     }
@@ -825,7 +800,7 @@ pub struct KeptAsk {
 
 /// Where a host keeps the asked records that wait, across its restarts: each kept once it is
 /// written, and forgotten once it is answered, in that order. The host reads what it kept back
-/// when it starts ([`AskedStore::keep_through`]).
+/// when it starts (tilo-remote-actions' `AskedStore::keep_through`).
 pub trait AskedKeeping: Send + Sync {
     /// Keep `ask`, in place of the one kept under its record.
     fn keep(&self, ask: &KeptAsk);

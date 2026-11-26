@@ -17,13 +17,14 @@ use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{
-    AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords, AskedStore,
-    KeptAsk, Named, Offer, RecordRef, Resolve,
+    AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords, KeptAsk, Named,
+    Offer, RecordRef, Resolve,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, Pending,
     RemoteActionTarget,
 };
+use tilo_remote_actions::asked::{AskedStore, admit_frame};
 
 const ADA: [u8; 32] = [1; 32];
 const BO: [u8; 32] = [2; 32];
@@ -265,7 +266,7 @@ fn an_approve_hands_the_call_back_once() {
     for again in [Offer::Approve, Offer::Decline] {
         assert_eq!(
             refusal(resolve(&host, &at, &ada(), again, None)),
-            tilo_actions::remote::asked::ANSWERED
+            tilo_remote_actions::asked::ANSWERED
         );
     }
     assert!(
@@ -290,7 +291,7 @@ fn a_decline_ends_the_call_for_its_caller() {
     );
     assert_eq!(
         refusal(resolve(&host, &at, &ada(), Offer::Approve, None)),
-        tilo_actions::remote::asked::ANSWERED
+        tilo_remote_actions::asked::ANSWERED
     );
 }
 
@@ -315,7 +316,7 @@ fn nobody_but_the_person_asked_answers() {
     ] {
         assert_eq!(
             refusal(resolve(&host, &at, &by, Offer::Approve, None)),
-            tilo_actions::remote::asked::NOT_YOURS,
+            tilo_remote_actions::asked::NOT_YOURS,
             "{who} cannot answer"
         );
     }
@@ -460,7 +461,7 @@ fn a_device_question_offers_no_grant() {
 /// call a resolve handed back is admitted once as a frame, and only byte for byte.
 #[test]
 fn a_forged_approve_is_refused() {
-    use tilo_actions::remote::asked::{Approval, FORGED, admit_frame};
+    use tilo_actions::remote::asked::{Approval, FORGED};
     let host = host();
     let call = set_alarm();
     let at = host
@@ -558,7 +559,7 @@ fn a_call_waits_in_its_record_across_a_restart() {
     );
     assert_eq!(
         refusal(resolve(&after, &at, &ada(), Offer::Approve, None)),
-        tilo_actions::remote::asked::ANSWERED
+        tilo_remote_actions::asked::ANSWERED
     );
     assert!(after.dispatch.0.lock().unwrap().is_empty(), "it ran once");
 }
@@ -582,7 +583,7 @@ fn a_call_is_kept_once_and_a_person_has_a_bounded_number_waiting() {
         "kept again under its id, the one record stands"
     );
     assert_eq!(host.records.asked_of(&ADA).len(), 1);
-    for _ in 1..tilo_actions::remote::asked::MOST_WAITING {
+    for _ in 1..tilo_remote_actions::asked::MOST_WAITING {
         host.records
             .write_asked(WORKSPACE, &scout(), &set_alarm(), &facts())
             .unwrap();
@@ -591,7 +592,7 @@ fn a_call_is_kept_once_and_a_person_has_a_bounded_number_waiting() {
         host.records
             .write_asked(WORKSPACE, &scout(), &set_alarm(), &facts())
             .unwrap_err(),
-        tilo_actions::remote::asked::TOO_MANY_WAIT
+        tilo_remote_actions::asked::TOO_MANY_WAIT
     );
     let bos_agent = Caller::delegated_agent("scout", BO, [8; 32]).in_workspace(WORKSPACE);
     host.records
@@ -610,7 +611,7 @@ fn a_call_is_kept_once_and_a_person_has_a_bounded_number_waiting() {
 /// offer, and the record stays asked for her to answer.
 #[test]
 fn an_approve_runs_the_call_as_its_person_changed_it() {
-    use tilo_actions::remote::asked::{FORGED, admit_frame};
+    use tilo_actions::remote::asked::FORGED;
     use tilo_actions::{DraftEdit, DraftField, DraftValue};
     let host = host();
     let call = set_alarm();
@@ -736,7 +737,7 @@ fn the_foreign_device_that_asked_cannot_answer_for_its_person() {
     for resolution in [Offer::Approve, Offer::Decline] {
         assert_eq!(
             refusal(resolve(&host, &at, &foreign, resolution, None)),
-            tilo_actions::remote::asked::ON_YOUR_DEVICE
+            tilo_remote_actions::asked::ON_YOUR_DEVICE
         );
     }
     assert!(
@@ -849,7 +850,7 @@ fn a_call_of_an_undescribed_action_keeps_no_argument_with_its_record() {
     let after = describing(&state);
     let refused = refusal(resolve(&after, &later_at, &ada(), Offer::Approve, None));
     assert!(
-        refused.contains(tilo_actions::remote::asked::SECRET_GONE),
+        refused.contains(tilo_remote_actions::asked::SECRET_GONE),
         "{refused}"
     );
     assert!(after.dispatch.0.lock().unwrap().is_empty(), "nothing ran");

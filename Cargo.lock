@@ -2160,6 +2160,7 @@ dependencies = [
  "tilo-actions",
  "tilo-files",
  "tilo-paths",
+ "tilo-remote-actions",
  "tilo-test-env",
  "tracing",
  "workspace-hack",
@@ -15141,6 +15142,7 @@ dependencies = [
  "tilo-recurrence",
  "tilo-reference",
  "tilo-registry-types",
+ "tilo-remote-actions",
  "tilo-resource",
  "tilo-resource-store",
  "tilo-rt",
@@ -16659,6 +16661,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-power-mgmt",
+ "tilo-remote-actions",
  "tilo-resource",
  "tilo-resource-store",
  "tilo-runtime",
@@ -19033,6 +19036,7 @@ dependencies = [
  "tilo-neighbour-wire",
  "tilo-net",
  "tilo-registry-types",
+ "tilo-remote-actions",
  "tilo-server",
  "tilo-server-client",
  "tilo-server-protocol",
@@ -19426,6 +19430,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-remote-actions"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-lock",
+ "tilo-socket",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-remote-engine"
 version = "0.1.0"
 dependencies = [
@@ -19703,6 +19724,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-reference",
  "tilo-registry-types",
+ "tilo-remote-actions",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-resource-store",
@@ -20140,6 +20162,7 @@ dependencies = [
  "tilo-package-store",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-remote-actions",
  "tilo-resource",
  "tilo-rollback",
  "tilo-rt",
@@ -20415,6 +20438,7 @@ dependencies = [
  "tilo-process",
  "tilo-projector",
  "tilo-reference",
+ "tilo-remote-actions",
  "tilo-render-protocol",
  "tilo-render-service",
  "tilo-resource",
@@ -21308,6 +21332,7 @@ dependencies = [
  "tilo-process-services",
  "tilo-reference",
  "tilo-registry-types",
+ "tilo-remote-actions",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-rich-edit",
@@ -22257,6 +22282,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-reference",
+ "tilo-remote-actions",
  "tilo-resource",
  "tilo-resource-store",
  "tilo-rt",
@@ -22347,6 +22373,7 @@ dependencies = [
  "tilo-formats",
  "tilo-net",
  "tilo-recurrence",
+ "tilo-remote-actions",
  "tilo-resource",
  "tilo-runtime-portal",
  "tilo-socket",
@@ -22456,6 +22483,7 @@ dependencies = [
  "tilo-content-device",
  "tilo-doc-codecs",
  "tilo-net",
+ "tilo-remote-actions",
  "tilo-resource-macros",
  "tilo-runtime-portal",
  "tilo-socket",
@@ -22553,6 +22581,7 @@ dependencies = [
  "tilo-pdf-reader",
  "tilo-printing",
  "tilo-recurrence",
+ "tilo-remote-actions",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-resource-store",

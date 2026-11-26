@@ -5,10 +5,9 @@ mod external_moderation_rpc_tests {
     use super::*;
     use registry_types::{ExternalModerationOperation, ModerationDestination, ModerationMutation};
     use runtime_collab::external_moderation::{PROTOCOL, Request};
-    use tilo_actions::remote::asked::{
-        AskedDispatch, AskedFacts, AskedStore, Offer, RecordRef, Resolve,
-    };
+    use tilo_actions::remote::asked::{AskedDispatch, AskedFacts, Offer, RecordRef, Resolve};
     use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
+    use tilo_remote_actions::asked::AskedStore;
 
     struct ExactLaunch {
         app: String,

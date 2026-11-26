@@ -1,5 +1,5 @@
 //! The workspace's mail accounts, and the password each signs in with, as the connector reads
-//! them through the device's one dispatch ([`tilo_actions::remote::signing_in`]).
+//! them through the device's one dispatch ([`tilo_remote_actions::signing_in`]).
 //!
 //! The accounts are the workspace's: an enabled email account of them is one the connector
 //! signs in to. Its password is the vault entry it names (`passwordItem`), which the device
@@ -20,7 +20,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_actions::remote::signing_in::{NOT_ANSWERED, SigningIn};
+use tilo_remote_actions::signing_in::{NOT_ANSWERED, SigningIn};
 
 /// The workspace's accounts, as the service that keeps them publishes their actions.
 mod workspace_accounts {

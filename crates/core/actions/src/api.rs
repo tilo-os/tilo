@@ -881,7 +881,7 @@ pub fn encode_json(
 /// a provider serving that tree answers a caller: resolved, available, confirmed as its contract
 /// asks of these arguments by `confirmation` (the phrase the caller typed, or the person's
 /// approve of the asked record the call was kept as, which only the dispatch hands back and every
-/// frame entry refuses otherwise, [`asked::admit_frame`](crate::remote::asked::admit_frame)), and
+/// frame entry refuses otherwise, tilo-remote-actions' `admit_frame`), and
 /// bound strictly into the action's own encoded form. Nothing a caller writes is a yes.
 ///
 /// # Errors

@@ -337,7 +337,7 @@ struct Inner {
     certificate: Mutex<Option<tilo_user_identity::DeviceCert>>,
     /// Where the approves its people gave are kept: a request carrying one admits only where
     /// this store handed it back ([`ActionService::admit_approvals_from`]).
-    asked: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
+    asked: std::sync::OnceLock<Arc<tilo_remote_actions::asked::AskedStore>>,
     replay: Mutex<ActionReplayWindow>,
     /// The calls visitors made, per client address ([`visitors`]).
     visitors: Mutex<visitors::VisitorWindows>,
@@ -388,7 +388,7 @@ impl ActionService {
 
     /// Admit the approves `store` hands back from now on: until it is named, a request carrying
     /// an approve is refused. The first store named stays.
-    pub fn admit_approvals_from(&self, store: Arc<tilo_actions::remote::asked::AskedStore>) {
+    pub fn admit_approvals_from(&self, store: Arc<tilo_remote_actions::asked::AskedStore>) {
         let _ = self.0.asked.set(store);
     }
 
@@ -866,10 +866,8 @@ impl ActionService {
         // carries is that device's to vouch for, not this one's to check.
         if remote.is_some()
             && let RemoteActionMessage::Invoke(invoke) = request
-            && let Err(error) = tilo_actions::remote::asked::admit_frame(
-                self.0.asked.get().map(Arc::as_ref),
-                invoke,
-            )
+            && let Err(error) =
+                tilo_remote_actions::asked::admit_frame(self.0.asked.get().map(Arc::as_ref), invoke)
         {
             return tilo_actions::remote::refuse(request, error);
         }
@@ -2186,7 +2184,9 @@ impl Device {
             .upgrade()
             .and_then(|answers| answers.certificate.lock_recover().clone())
             .ok_or_else(|| {
-                unavailable("this device answers under no certificate, so it cannot sign as its person")
+                unavailable(
+                    "this device answers under no certificate, so it cannot sign as its person",
+                )
             })?;
         let signed = tilo_server_protocol::invocation::sign_invocation_now(
             &self.workspace,
@@ -2195,7 +2195,11 @@ impl Device {
             self.key.as_ref(),
             now_ns(),
         )
-        .map_err(|error| unavailable(&format!("the call could not be signed for its person: {error}")))?;
+        .map_err(|error| {
+            unavailable(&format!(
+                "the call could not be signed for its person: {error}"
+            ))
+        })?;
         request.signed = Some(Box::new(signed));
         Ok(request)
     }

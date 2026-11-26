@@ -4407,7 +4407,7 @@ impl InWorkspace {
         // A person's approve is set only where their answer admits the call again
         // ([`HostAsked::readmit`]): a frame carrying one no resolve handed back is refused whole.
         if let Err(error) =
-            tilo_actions::remote::asked::admit_frame(workspaces.asked_store().as_deref(), &request)
+            tilo_remote_actions::asked::admit_frame(workspaces.asked_store().as_deref(), &request)
         {
             return Pending::ready(Err(error));
         }

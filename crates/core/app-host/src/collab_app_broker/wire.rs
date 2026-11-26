@@ -640,7 +640,7 @@ impl JoinedChannel {
         // dispatch that admits it again in this process: never on a connection's frame, where an
         // app would confirm by its own word what its person was asked.
         if let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = &request.message
-            && let Err(forged) = tilo_actions::remote::asked::admit_frame(None, invoke)
+            && let Err(forged) = tilo_remote_actions::asked::admit_frame(None, invoke)
         {
             return refusal(&request.message, forged);
         }

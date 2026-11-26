@@ -1213,7 +1213,7 @@ struct WorkspacesInner {
     /// ([`Workspaces::asked_store`]).
     asked_records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
     /// The store those records are kept in, which admits a person's answer to one.
-    asked_store: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
+    asked_store: std::sync::OnceLock<Arc<tilo_remote_actions::asked::AskedStore>>,
     /// This host's dispatch, as that store hands it back the calls it keeps.
     asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
     /// The dispatch an app's asked use of a vault item is kept under, and the records they are

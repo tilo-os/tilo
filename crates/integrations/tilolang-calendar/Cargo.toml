@@ -13,6 +13,7 @@ ignored = ["calendar-test-support"]
 [dependencies]
 # The one dispatch the connector reaches: the vault's logins and an item's release.
 tilo-actions = { path = "../../core/actions", optional = true }
+tilo-remote-actions = { version = "0.1.0", path = "../../core/remote-actions" }
 # The descriptors the session hands the connector: one per instance that attaches.
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", optional = true }
 tilo-dav = { path = "../tilo-dav", default-features = false, features = ["client"], optional = true }

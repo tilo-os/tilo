@@ -447,7 +447,7 @@ fn taken_back_and_declined(
     at: &crate::seats::AppAt,
     session: &crate::device::live_call::CallSession,
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    store: &tilo_actions::remote::asked::AskedStore,
+    store: &tilo_remote_actions::asked::AskedStore,
     person: &tilo_actions::remote::Caller,
     workspace: &str,
 ) {
@@ -511,7 +511,7 @@ struct Asking {
     live: Arc<crate::device::live_relay::Live>,
     session: Arc<crate::device::live_call::CallSession>,
     workspaces: tilo_workspace_service::workspaces::Workspaces,
-    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    store: Arc<tilo_remote_actions::asked::AskedStore>,
     person: tilo_actions::remote::Caller,
     at: crate::seats::AppAt,
 }
@@ -563,7 +563,7 @@ fn a_join(daemon: &Arc<Daemon>, at: &crate::seats::AppAt, correlation: u64) -> s
 /// The person's answer `offer` to the one question waiting in `workspace`, taken as `person`.
 fn the_persons_answer(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
-    store: &tilo_actions::remote::asked::AskedStore,
+    store: &tilo_remote_actions::asked::AskedStore,
     person: &tilo_actions::remote::Caller,
     workspace: &str,
     offer: tilo_actions::remote::asked::Offer,

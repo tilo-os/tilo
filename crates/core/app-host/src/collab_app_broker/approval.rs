@@ -56,7 +56,7 @@ pub(super) fn store_disclosure(
 /// Whether the person answered `caller`'s call already: `confirmation` is their approve of the
 /// asked record it was kept as, which only the dispatch that admits it again on their answer
 /// carries (where a frame enters the device it is refused unless the store that kept the record
-/// handed it back, [`tilo_actions::remote::asked::admit_frame`]), or the call is a step of their
+/// handed it back, [`tilo_remote_actions::asked::admit_frame`]), or the call is a step of their
 /// Shortcut whose saved rules consent to it in advance
 /// ([`Caller::is_consented_in_advance`]).
 pub(super) fn approved_by_person(

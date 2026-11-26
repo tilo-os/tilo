@@ -3146,7 +3146,7 @@ impl ActionProvider for AdmittedAgain {
 /// workspaces here, which write the grant an approve gives.
 fn asked_store(
     workspaces: &Arc<ServiceWorkspaces>,
-) -> io::Result<Arc<tilo_actions::remote::asked::AskedStore>> {
+) -> io::Result<Arc<tilo_remote_actions::asked::AskedStore>> {
     workspaces.copies().asked_store().ok_or_else(|| {
         io::Error::other("the workspaces this device serves keep no calls that wait")
     })
@@ -6647,7 +6647,7 @@ impl ActionProvider for RuntimeActionProvider {
         }
         // An approve only the device hands back: one a caller writes into its own call is
         // refused whole, nothing of it run.
-        if let Err(forged) = tilo_actions::remote::asked::admit_frame(
+        if let Err(forged) = tilo_remote_actions::asked::admit_frame(
             self.asked.as_ref().map(|asked| asked.store()),
             &request,
         ) {

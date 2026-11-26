@@ -958,7 +958,7 @@ impl Workspaces {
         // Their decline is the refusal it wrote, under the id an approve and grant writes: it
         // stands, unasked, until they change it where the workspace's app permissions are.
         let person = caller.acting_for_person().unwrap_or_default().to_owned();
-        let refusal = tilo_actions::remote::asked::asked_grant(
+        let refusal = tilo_remote_actions::asked::asked_grant(
             workspace,
             request,
             &asked,
@@ -1005,7 +1005,7 @@ impl Workspaces {
     pub(super) fn vault_asks(
         &self,
     ) -> Option<(
-        Arc<tilo_actions::remote::asked::AskedStore>,
+        Arc<tilo_remote_actions::asked::AskedStore>,
         Arc<dyn AskedRecords>,
     )> {
         let store = self.asked_store()?;
@@ -1014,7 +1014,7 @@ impl Workspaces {
     }
 
     /// Write an app's asks into `store`, answered through [`VaultAsks`].
-    pub(super) fn keep_vault_asks_in(&self, store: &Arc<tilo_actions::remote::asked::AskedStore>) {
+    pub(super) fn keep_vault_asks_in(&self, store: &Arc<tilo_remote_actions::asked::AskedStore>) {
         let dispatch: Arc<dyn AskedDispatch> = Arc::new(VaultAsks(self.downgrade()));
         let records = self.told(store.for_dispatch(VAULT_ASKS, Arc::downgrade(&dispatch)));
         let _ = self.inner.vault_asks.set((dispatch, records));

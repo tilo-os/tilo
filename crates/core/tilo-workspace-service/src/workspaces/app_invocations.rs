@@ -6,11 +6,10 @@
 //! this trait goes and those reads go to the store like any other.
 
 use tilo_actions::remote::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
-use tilo_actions::remote::{
-    ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceWake, asked::Waiting,
-};
+use tilo_actions::remote::{ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceWake};
 use tilo_broker_core::actor::BrokerActor;
 use tilo_desktop_model::Workspace;
+use tilo_remote_actions::asked::Waiting;
 
 /// A store read's answer, once the app host has it ([`AppInvocations::store_read_record`]).
 pub type StoreReading<'a> = std::pin::Pin<

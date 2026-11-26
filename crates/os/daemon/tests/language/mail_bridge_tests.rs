@@ -365,7 +365,7 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
         // What the dispatch answers Mail's own connection: the logins of its workspace, each
         // with the account it signs in for.
         {
-            let probe = tilo_actions::remote::signing_in::SigningIn::over(
+            let probe = tilo_remote_actions::signing_in::SigningIn::over(
                 host.daemon()
                     .app_connection_for_test(MAIL, &workspace)
                     .expect("the daemon hands Mail's connection"),
@@ -436,7 +436,7 @@ fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
 
         // Mail's own connection answers the accounts action.
         {
-            let probe = tilo_actions::remote::signing_in::SigningIn::over(
+            let probe = tilo_remote_actions::signing_in::SigningIn::over(
                 host.daemon()
                     .app_connection_for_test(MAIL, &workspace)
                     .expect("the daemon hands Mail's connection"),
@@ -516,7 +516,7 @@ fn an_app_that_does_not_sign_in_is_refused_the_logins() {
         // A login the vault keeps, whose account names it: an app that signs in would read it.
         let workspaces = host.daemon().workspaces().clone();
         add_mail_account(&workspaces, &workspace, ADA).await;
-        let probe = tilo_actions::remote::signing_in::SigningIn::over(
+        let probe = tilo_remote_actions::signing_in::SigningIn::over(
             host.daemon()
                 .app_connection_for_test(NOTES, &workspace)
                 .expect("the daemon hands Notes' connection"),

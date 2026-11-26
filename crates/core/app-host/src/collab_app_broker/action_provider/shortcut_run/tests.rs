@@ -1047,7 +1047,7 @@ impl tilo_actions::remote::asked::AskedDispatch for Carried {
 /// kept as its asked record the way the dispatch that carried it keeps it.
 struct Asked {
     fixture: Fixture,
-    store: Arc<tilo_actions::remote::asked::AskedStore>,
+    store: Arc<tilo_remote_actions::asked::AskedStore>,
     carried: Arc<Carried>,
     record: tilo_actions::remote::asked::RecordRef,
     facts: tilo_actions::remote::asked::AskedFacts,
@@ -1064,7 +1064,7 @@ impl Asked {
         let Err(ActionCallError::ConfirmationRequired(facts)) = fixture.invoke().await else {
             panic!("a run whose step the grant leaves to the person asks before it starts");
         };
-        let store = tilo_actions::remote::asked::AskedStore::opened(None, None, Vec::new())
+        let store = tilo_remote_actions::asked::AskedStore::opened(None, None, Vec::new())
             .expect("the store keeps the call");
         let carried = Arc::new(Carried::default());
         let dispatch: Arc<dyn tilo_actions::remote::asked::AskedDispatch> = carried.clone();

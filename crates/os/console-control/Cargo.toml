@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-paths.workspace = true
 tilo-actions = { path = "../../core/actions" }
+tilo-remote-actions = { version = "0.1.0", path = "../../core/remote-actions" }
 serde_json.workspace = true
 tracing.workspace = true
 rustix = { workspace = true, features = ["process"] }

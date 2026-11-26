@@ -81,6 +81,7 @@ tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 # The wake a followed platform resource rouses its view with.
 tilo-rt.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../core/actions", features = ["answer-reads"] }
+tilo-remote-actions = { version = "0.1.0", path = "../../core/remote-actions" }
 # A released vault item is wiped from this process's heap where it is dropped.
 zeroize.workspace = true
 # The engines this process opens from its runtime bundle instead of linking: an app's typesetting

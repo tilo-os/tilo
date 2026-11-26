@@ -93,10 +93,6 @@ pub mod secret_arguments;
 pub mod server_account;
 pub mod session_actions;
 mod session_state;
-/// An app's own reading of the workspace's accounts and their secrets, over its connection to
-/// the device's dispatch.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod signing_in;
 mod store_commands;
 mod surfaces;
 pub use session_state::{SessionState, SyncState, WorkspaceState};

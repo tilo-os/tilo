@@ -653,7 +653,8 @@ mod tests {
     )]
     fn an_agents_program_that_deletes_waits_for_its_persons_yes_here() {
         use super::super::asked::{Admits, DeviceAsked, Run};
-        use tilo_actions::remote::asked::{self, AskedStore, Fact, Offer, Resolve};
+        use tilo_actions::remote::asked::{self, Fact, Offer, Resolve};
+        use tilo_remote_actions::asked::AskedStore;
 
         const ADA: [u8; 32] = [1; 32];
         let wait = std::time::Duration::from_secs(20);
@@ -770,7 +771,7 @@ mod tests {
         else {
             panic!("the agent that asked answers nothing");
         };
-        assert_eq!(reason, asked::NOT_YOURS);
+        assert_eq!(reason, tilo_remote_actions::asked::NOT_YOURS);
         assert!(!so_far().contains(delete), "nothing of it ran");
 
         resolve(&deleting, &ada, Offer::Approve).expect("her approve is taken");

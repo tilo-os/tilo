@@ -15,8 +15,7 @@ use std::time::Duration;
 
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{
-    self, AskedFacts, AskedKeeping, AskedRecords as _, AskedStore, KeptAsk, Offer, RecordRef,
-    Resolve,
+    self, AskedFacts, AskedKeeping, AskedRecords as _, KeptAsk, Offer, RecordRef, Resolve,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
@@ -25,6 +24,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_invocations::{Invocations, Route};
+use tilo_remote_actions::asked::AskedStore;
 
 use super::{Admits, DeviceAsked, Run};
 use tilo_actions::remote::asked::AskedReads as _;
@@ -321,7 +321,7 @@ fn an_agents_call_waits_and_runs_once_on_the_persons_approve() {
     );
     assert_eq!(
         refusal(device.resolve(&call, &ada(), Offer::Approve)),
-        asked::ANSWERED
+        tilo_remote_actions::asked::ANSWERED
     );
     assert_eq!(
         device.workspace.ran().len(),
@@ -359,7 +359,7 @@ fn the_agent_that_asked_cannot_answer() {
     device.send(&call).unwrap();
     assert_eq!(
         refusal(device.resolve(&call, &scout(), Offer::Approve)),
-        asked::NOT_YOURS
+        tilo_remote_actions::asked::NOT_YOURS
     );
     assert!(device.workspace.ran().is_empty(), "nothing ran");
     assert_eq!(device.store.asked_of(&ADA).len(), 1, "it still asks Ada");
@@ -379,7 +379,10 @@ fn an_approve_the_agent_writes_itself_is_refused() {
     let mut forged = send_mail();
     forged.confirmation = Some(Confirmation::Asked(asked::Approval::new(at, None)));
     assert_eq!(
-        refusal(asked::admit_frame(Some(device.asked.store()), &forged)),
+        refusal(tilo_remote_actions::asked::admit_frame(
+            Some(device.asked.store()),
+            &forged
+        )),
         asked::FORGED
     );
     assert!(device.workspace.ran().is_empty(), "nothing ran");
@@ -429,7 +432,7 @@ fn stopping_a_waiting_call_withdraws_its_question() {
     ));
     assert_eq!(
         refusal(device.resolve(&call, &ada(), Offer::Approve)),
-        asked::ANSWERED
+        tilo_remote_actions::asked::ANSWERED
     );
     assert!(device.workspace.ran().is_empty(), "nothing ran");
 }
@@ -594,7 +597,10 @@ fn a_secret_is_answered_only_where_it_was_asked_and_never_kept() {
             .flatten()
             .unwrap()
     };
-    assert_eq!(refusal(typed(&ada())), asked::ANSWERED_THERE);
+    assert_eq!(
+        refusal(typed(&ada())),
+        tilo_remote_actions::asked::ANSWERED_THERE
+    );
     assert!(
         workspace.ran().is_empty(),
         "nothing ran from her other device"
@@ -833,7 +839,7 @@ fn a_programs_and_a_windows_questions_are_withdrawn_when_the_device_restarts() {
     for (what, withdrawn) in [("the program's", &program), ("the window's", &in_window)] {
         assert_eq!(
             refusal(after.resolve(withdrawn, &ada(), Offer::Approve)),
-            asked::ANSWERED,
+            tilo_remote_actions::asked::ANSWERED,
             "{what} question is withdrawn, not left waiting"
         );
     }

@@ -103,6 +103,7 @@ postcard.workspace = true
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["test-support", "agents"] }
 tilo-app-host = { path = "../../core/app-host", features = ["test-support", "agents"] }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+tilo-remote-actions = { path = "../../core/remote-actions" }
 # The catalogue an installed app's manifest is read from, as a connector's is.
 package-store = { package = "tilo-package-store", path = "../../core/package-store" }
 tilo-agent-session = { path = "../../core/agent-session" }

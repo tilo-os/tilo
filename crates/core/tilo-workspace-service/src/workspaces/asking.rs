@@ -19,13 +19,14 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::remote::asked::{
-    self, AskedBy, AskedDispatch, AskedFacts, AskedRecords, AskedStore, Named, RecordRef, Resolve,
+    self, AskedBy, AskedDispatch, AskedFacts, AskedRecords, Named, RecordRef, Resolve,
 };
 use tilo_actions::remote::person_telling::{About, Kind, Offered, OfferedTarget, Tell, Teller};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_remote_actions::asked::AskedStore;
 
 use super::{ToTell, WeakWorkspaces, Workspaces};
 
@@ -388,7 +389,7 @@ impl Workspaces {
         };
         let Some(at) = store.record(&request.target.address.resource) else {
             return Pending::ready(Err(ActionCallError::Refused {
-                reason: asked::NOTHING_ASKED.into(),
+                reason: tilo_remote_actions::asked::NOTHING_ASKED.into(),
             }));
         };
         store.resolve(&at, caller, &answer).map(move |resolved| {

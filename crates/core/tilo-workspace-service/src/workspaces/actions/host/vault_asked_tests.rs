@@ -17,8 +17,9 @@ use std::sync::Arc;
 use crate::workspace_vault;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::asked::{Offer, SECRET_GONE};
+use tilo_actions::remote::asked::Offer;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
+use tilo_remote_actions::asked::SECRET_GONE;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;

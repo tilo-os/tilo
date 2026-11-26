@@ -138,7 +138,7 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
     match origin_connector::receive(&socket) {
         Ok(Some(Handed::Actions(link))) => {
             release = Arc::new(SignInRelease(std::sync::Mutex::new(
-                tilo_actions::remote::signing_in::SigningIn::over(link)
+                tilo_remote_actions::signing_in::SigningIn::over(link)
                     .map_err(|error| format!("the {kind} connections' dispatch: {error}"))?,
             )));
         }
@@ -182,7 +182,7 @@ mod workspace_accounts {
 /// A vault item released into this process over the connection to the device's dispatch: the
 /// login whose entry the item is, released to this process alone.
 #[cfg(all(unix, feature = "app-launch"))]
-struct SignInRelease(std::sync::Mutex<tilo_actions::remote::signing_in::SigningIn>);
+struct SignInRelease(std::sync::Mutex<tilo_remote_actions::signing_in::SigningIn>);
 
 #[cfg(all(unix, feature = "app-launch"))]
 impl tilolang_tilo::held::Release for SignInRelease {

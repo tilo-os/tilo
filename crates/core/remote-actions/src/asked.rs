@@ -17,15 +17,15 @@ use tilo_action_policy::Answer;
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
 
-use super::super::secret_arguments::{
-    SecretParameters, restore, secret_arguments, without_secrets,
-};
-use super::super::{ActionCallError, Caller, Completer, InvokeRequest, Pending, pending};
-use super::{
+use tilo_actions::outcome::InvocationId;
+use tilo_actions::remote::asked::{
     Approval, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
     KeptAsk, Offer, RecordRef, Resolve, answering_person, asked_person,
 };
-use crate::outcome::InvocationId;
+use tilo_actions::remote::secret_arguments::{
+    SecretParameters, restore, secret_arguments, without_secrets,
+};
+use tilo_actions::remote::{ActionCallError, Caller, Completer, InvokeRequest, Pending, pending};
 
 /// The most answered records kept beside the asked ones; the oldest go first.
 const ANSWERED_KEPT: usize = 1024;
@@ -84,7 +84,7 @@ struct Record {
     edited: Option<serde_json::Map<String, serde_json::Value>>,
     /// The window a person's press asked it in ([`AskedDispatch::pressed`]): where its question
     /// stands.
-    pressed: Option<super::Pressed>,
+    pressed: Option<tilo_actions::remote::asked::Pressed>,
     /// The arguments the call carried that its record keeps none of, by name
     /// ([`KeptAsk::sealed`]): [`Self::request`] is the call without them.
     sealed: Vec<String>,
@@ -146,12 +146,12 @@ fn edited_arguments(
     if answer.resolution == Offer::Decline {
         return Err(refused("A decline changes no arguments"));
     }
-    let super::super::InvokeArgument::Json(arguments) = &record.request.argument else {
+    let tilo_actions::remote::InvokeArgument::Json(arguments) = &record.request.argument else {
         return Err(refused("This call takes no arguments to change"));
     };
-    let form = crate::Draft {
+    let form = tilo_actions::Draft {
         fields: record.facts.form.clone(),
-        ..crate::Draft::default()
+        ..tilo_actions::Draft::default()
     };
     form.apply_edits(arguments, &answer.edits)
         .map(Some)
@@ -317,7 +317,8 @@ impl AskedStore {
         for ask in earlier {
             // A call kept for a device that keeps the person's root is taken in where one does
             // ([`Self::take_in`]), by how it stands then.
-            if ask.dispatch == super::AT_ROOT || kept.find(&ask.at).is_some() {
+            if ask.dispatch == tilo_actions::remote::asked::AT_ROOT || kept.find(&ask.at).is_some()
+            {
                 continue;
             }
             kept.records.push(Record {
@@ -419,7 +420,9 @@ impl AskedStore {
         let mut kept = self.kept.lock_recover();
         if let Some(record) = kept.find(&at) {
             // The same call kept again (a retry under its id) is the record already kept.
-            return if record.status == Status::Asked && super::same_call(&record.request, request) {
+            return if record.status == Status::Asked
+                && tilo_actions::remote::asked::same_call(&record.request, request)
+            {
                 Ok(at)
             } else {
                 Err(ANSWERED.to_owned())
@@ -488,7 +491,7 @@ impl AskedStore {
             && record.invocation == request.invocation
             && as_changed
             && digest_of(&sealed) == record.digest
-            && super::same_call(&record.request, &call);
+            && tilo_actions::remote::asked::same_call(&record.request, &call);
         if admitted {
             record.relayed = true;
         }
@@ -513,7 +516,7 @@ impl AskedStore {
             .kept
             .lock_recover()
             .find(at)
-            .is_some_and(|record| record.dispatch == super::AT_ROOT);
+            .is_some_and(|record| record.dispatch == tilo_actions::remote::asked::AT_ROOT);
         let admitted = self.admit(at, answering, answer);
         if admitted.is_ok() && !at_root {
             self.forget(at);
@@ -644,9 +647,10 @@ impl AskedStore {
         }
         // A call only the person's root signs is answered where a device keeps it: elsewhere no
         // dispatch runs it, and the record waits on for that device.
-        if record.dispatch == super::AT_ROOT && self.dispatch(&record.dispatch).upgrade().is_none()
+        if record.dispatch == tilo_actions::remote::asked::AT_ROOT
+            && self.dispatch(&record.dispatch).upgrade().is_none()
         {
-            return Err(refused(super::ANSWERED_AT_ROOT));
+            return Err(refused(tilo_actions::remote::asked::ANSWERED_AT_ROOT));
         }
         // What is typed in secret, or picked from the device's files, reaches the asker only on
         // the device that asked: answered by the person there (a caller of no other device's).
@@ -702,7 +706,7 @@ impl AskedStore {
             // The person's arguments, where they changed them: the dispatch admits the call with
             // them as a fresh call with them would be, so the action's contract checks them.
             if let Some(arguments) = &edited {
-                request.argument = super::super::InvokeArgument::Json(arguments.clone());
+                request.argument = tilo_actions::remote::InvokeArgument::Json(arguments.clone());
             }
             if let Some(held) = held {
                 restore(&mut request, held);
@@ -711,7 +715,7 @@ impl AskedStore {
             if grant.is_none() {
                 record.held = None;
             }
-            request.confirmation = Some(super::super::Confirmation::Asked(Approval {
+            request.confirmation = Some(tilo_actions::remote::Confirmation::Asked(Approval {
                 chosen: answer.chosen.clone(),
                 typed: answer.typed.iter().cloned().map(Zeroizing::new).collect(),
                 files: answer.files.clone(),
@@ -772,7 +776,7 @@ impl AskedStore {
         name: &str,
     ) -> Vec<(
         RecordRef,
-        super::super::RemoteActionTarget,
+        tilo_actions::remote::RemoteActionTarget,
         serde_json::Value,
     )> {
         self.kept
@@ -791,7 +795,7 @@ impl AskedStore {
     }
 
     /// Take in each of `asks`, a call kept in the workspace to be run at a device that keeps the
-    /// person's root ([`super::AT_ROOT`]), that this store does not keep yet: one nobody took
+    /// person's root ([`tilo_actions::remote::asked::AT_ROOT`]), that this store does not keep yet: one nobody took
     /// waits here for the person's answer, as one written here does; one this device took before
     /// it started again is run again, as the person answered it.
     pub fn take_in(&self, asks: Vec<KeptAsk>) {
@@ -803,7 +807,7 @@ impl AskedStore {
         let mut kept = self.kept.lock_recover();
         let before = kept.records.len();
         for ask in asks {
-            if ask.dispatch != super::AT_ROOT
+            if ask.dispatch != tilo_actions::remote::asked::AT_ROOT
                 || ask.outcome.is_some()
                 || kept.find(&ask.at).is_some()
             {
@@ -822,7 +826,8 @@ impl AskedStore {
                 // As its person answered it: with the arguments they changed, where they did.
                 let mut request = ask.request.clone();
                 if let Some(arguments) = &ask.edited {
-                    request.argument = super::super::InvokeArgument::Json(arguments.clone());
+                    request.argument =
+                        tilo_actions::remote::InvokeArgument::Json(arguments.clone());
                 }
                 resumed.push((caller.clone(), request, ask.context.clone()));
             }
@@ -852,15 +857,15 @@ impl AskedStore {
         for invocation in gone {
             self.settle_for(invocation, secret_gone(invocation));
         }
-        let dispatch = self.dispatch(super::AT_ROOT);
+        let dispatch = self.dispatch(tilo_actions::remote::asked::AT_ROOT);
         for (caller, request, context) in resumed {
             let invocation = request.invocation;
             if let Err(error) = readmit(&dispatch, &caller, request, &context) {
                 self.settle_for(
                     invocation,
-                    crate::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: crate::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "not_resumed".into(),
                             message: format!(
                                 "It was answered, and could not be run again after this device \
@@ -886,20 +891,20 @@ impl AskedStore {
     /// Write how the call `invocation` ended where it ran, `outcome`, into its record in the
     /// workspace: what the device that asked it follows ([`KeptAsk::outcome`]). This device keeps
     /// it no longer.
-    pub fn settle_for(&self, invocation: InvocationId, outcome: crate::InvocationUpdate) {
+    pub fn settle_for(&self, invocation: InvocationId, outcome: tilo_actions::InvocationUpdate) {
         let Some(mut ask) = self.kept_of(invocation) else {
             return;
         };
         ask.taken = self.here.get().cloned();
-        // An action whose answer is a secret ([`crate::SECRET_ANSWER_TAG`]) keeps only that it
+        // An action whose answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]) keeps only that it
         // was given, here as in the device's record of the call: the workspace's record of this
         // question is one others may read.
-        let secret = super::super::answers_secret(&ask.request);
+        let secret = tilo_actions::remote::answers_secret(&ask.request);
         ask.outcome = Some(match outcome {
-            crate::InvocationUpdate::Succeeded { invocation, .. } if secret => {
-                crate::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if secret => {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: crate::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({ "given": true })),
                         resources: Vec::new(),
                     },
@@ -1053,10 +1058,10 @@ fn admits_what_it_takes(facts: &AskedFacts, answer: &Resolve) -> Result<(), Acti
 }
 
 /// How a call ends whose secret this device no longer holds ([`SECRET_GONE`]).
-fn secret_gone(invocation: InvocationId) -> crate::InvocationUpdate {
-    crate::InvocationUpdate::Failed {
+fn secret_gone(invocation: InvocationId) -> tilo_actions::InvocationUpdate {
+    tilo_actions::InvocationUpdate::Failed {
         invocation,
-        error: crate::ActionFailure {
+        error: tilo_actions::ActionFailure {
             code: "not_resumed".into(),
             message: SECRET_GONE.to_owned(),
             details: None,
@@ -1092,12 +1097,12 @@ fn readmit(
 /// The app a call's target names: a record's app, an app's own provider, or the provider.
 fn app_of(provider: &str) -> &str {
     if let Some(rest) = provider
-        .strip_prefix(super::super::RESOURCE_PROVIDER)
+        .strip_prefix(tilo_actions::remote::RESOURCE_PROVIDER)
         .and_then(|rest| rest.strip_prefix(':'))
     {
         return rest.split_once(':').map_or(rest, |(app, _)| app);
     }
-    super::super::application_provider(provider).map_or(provider, |(_, app)| app)
+    tilo_actions::remote::application_provider(provider).map_or(provider, |(_, app)| app)
 }
 
 /// The grant an approve and grant of `record` gives: its asker the asked action on every
@@ -1199,10 +1204,13 @@ pub struct Waiting {
 
 impl AskedStore {
     /// Whether a record is asked of its person here: a call kept for a device that keeps their
-    /// root ([`super::AT_ROOT`]) is asked only there, and is under way everywhere else.
+    /// root ([`tilo_actions::remote::asked::AT_ROOT`]) is asked only there, and is under way everywhere else.
     fn answered_here(&self) -> impl Fn(&Record) -> bool {
-        let serves_root = self.dispatch(super::AT_ROOT).upgrade().is_some();
-        move |record| serves_root || record.dispatch != super::AT_ROOT
+        let serves_root = self
+            .dispatch(tilo_actions::remote::asked::AT_ROOT)
+            .upgrade()
+            .is_some();
+        move |record| serves_root || record.dispatch != tilo_actions::remote::asked::AT_ROOT
     }
 
     /// Every call that waits for its person's answer in `workspace`, oldest first: what the
@@ -1286,5 +1294,24 @@ impl AskedRecords for DispatchRecords {
 
     fn changed(&self) -> Pending<()> {
         self.store.changed()
+    }
+}
+
+/// Admit `request`, a caller's frame, as its approve stands: refused where it carries an
+/// approve `store` did not hand back ([`AskedStore::admits_approval`]), or any approve where no
+/// store keeps asked records here.
+///
+/// # Errors
+/// [`FORGED`](tilo_actions::remote::asked::FORGED), refused.
+pub fn admit_frame(
+    store: Option<&AskedStore>,
+    request: &tilo_actions::remote::InvokeRequest,
+) -> Result<(), tilo_actions::remote::ActionCallError> {
+    if request.approval().is_none() || store.is_some_and(|store| store.admits_approval(request)) {
+        Ok(())
+    } else {
+        Err(tilo_actions::remote::ActionCallError::Refused {
+            reason: tilo_actions::remote::asked::FORGED.to_owned(),
+        })
     }
 }

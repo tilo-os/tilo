@@ -624,6 +624,7 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # The action host a test's answering device runs its actions through, and the
 # certified workspace two of one person's devices ask each other in.
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+tilo-remote-actions = { path = "../../core/remote-actions" }
 tilo-peer-state = { path = "../../core/tilo-peer-state", features = ["test-support"] }
 # A change another device's app wrote, read back into a record: a receiver's
 # way of taking changes, which the session's own code uses too.

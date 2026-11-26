@@ -241,7 +241,7 @@ impl tilo_actions::remote::asked::AskedDispatch for Handed {
 /// finds it: the call is listed by the id its asked record names, with its own `resolve`.
 #[cfg(feature = "apps")]
 fn listed_answer(
-    store: &tilo_actions::remote::asked::AskedStore,
+    store: &tilo_remote_actions::asked::AskedStore,
     workspace: &str,
     record: &str,
 ) -> tilo_actions::ActionAddress {
@@ -347,18 +347,18 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
 
     let another = Caller::authenticated([2; 32], [5; 32]).in_workspace(workspace.clone());
     assert!(
-        refusal(answer(&another)).contains(asked::NOT_YOURS),
+        refusal(answer(&another)).contains(tilo_remote_actions::asked::NOT_YOURS),
         "another person's device answers nothing"
     );
     assert!(
-        refusal(answer(&agent)).contains(asked::NOT_YOURS),
+        refusal(answer(&agent)).contains(tilo_remote_actions::asked::NOT_YOURS),
         "the agent that asked answers nothing for its person"
     );
     let foreign = Caller::authenticated(cert.user_public_key, cert.device_public_key)
         .in_workspace(workspace.clone())
         .from_foreign_device(true);
     assert!(
-        refusal(answer(&foreign)).contains(asked::ON_YOUR_DEVICE),
+        refusal(answer(&foreign)).contains(tilo_remote_actions::asked::ON_YOUR_DEVICE),
         "a foreign device answers nothing for its person"
     );
     assert!(

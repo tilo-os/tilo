@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use super::{
+use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeRequest, ItemRef, LineClient, ReceiptStatus,
     RemoteActionTarget, VAULT_RELEASE,
 };

@@ -206,7 +206,7 @@ impl AppBrokerState {
         workspace: &str,
         caller: &Caller,
         query: &CatalogueQuery,
-        waiting: &[tilo_actions::remote::asked::Waiting],
+        waiting: &[tilo_remote_actions::asked::Waiting],
     ) -> Result<CataloguePage, ActionCallError> {
         let wanted = query
             .offset()
@@ -459,7 +459,7 @@ impl tilo_workspace_service::workspaces::app_invocations::AppInvocations for App
         caller: &Caller,
         workspace: &str,
         record: &str,
-        asked: Vec<tilo_actions::remote::asked::Waiting>,
+        asked: Vec<tilo_remote_actions::asked::Waiting>,
     ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
         super::action_provider::check_execution(caller)?;
         let one = (!record.is_empty()).then(|| record.to_owned());

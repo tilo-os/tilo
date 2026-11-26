@@ -243,7 +243,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     };
     // The person's own shell runs a call they pressed at a point of a window, and the call waits
     // for their yes: its question keeps the window, and where in it they pressed.
-    let store = tilo_actions::remote::asked::AskedStore::opened(None, None, Vec::new()).unwrap();
+    let store = tilo_remote_actions::asked::AskedStore::opened(None, None, Vec::new()).unwrap();
     let asked_here = super::super::asked::DeviceAsked::new(
         Arc::clone(&store),
         Arc::default(),

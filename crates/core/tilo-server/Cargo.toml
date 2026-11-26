@@ -64,6 +64,7 @@ tilo-automerge-isolate.workspace = true
 # Remote-action vocabulary: the server routes these frames between devices and,
 # only when an app action server is supplied, answers them through ActionProvider.
 tilo-actions = { path = "../actions" }
+tilo-remote-actions = { version = "0.1.0", path = "../remote-actions" }
 # Handshake and wire messages plus the mesh, configuration, registry and
 # metrics records shared with the server's clients; re-exported so the daemon's
 # own module paths stay unchanged.

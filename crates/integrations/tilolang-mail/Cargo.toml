@@ -19,6 +19,7 @@ accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
 # The app's own reading of the workspace's accounts and their secrets, over its connection to
 # the device's dispatch.
 tilo-actions = { path = "../../core/actions", optional = true }
+tilo-remote-actions = { version = "0.1.0", path = "../../core/remote-actions" }
 # The calls the connector makes of the workspace's accounts, bound at build time to the surface
 # their service publishes.
 tilo-resource-macros = { path = "../../core/tilo-resource-macros", optional = true }

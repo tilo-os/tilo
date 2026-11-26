@@ -2075,7 +2075,7 @@ struct RevokeAtRoot {
     /// The device that does not keep the root, its one dispatch, and the call it asked.
     rootless_key: [u8; 32],
     rootless: Tickets,
-    rootless_store: Arc<tilo_actions::remote::asked::AskedStore>,
+    rootless_store: Arc<tilo_remote_actions::asked::AskedStore>,
     rootless_invocations: Arc<tilo_invocations::Invocations>,
     rootless_asked: Arc<super::asked::DeviceAsked>,
     person: tilo_actions::remote::Caller,
@@ -2083,7 +2083,7 @@ struct RevokeAtRoot {
     revoke: InvokeRequest,
     /// The device that keeps the root, and its one dispatch.
     holder: Tickets,
-    holder_store: Arc<tilo_actions::remote::asked::AskedStore>,
+    holder_store: Arc<tilo_remote_actions::asked::AskedStore>,
     holder_asked: Arc<super::asked::DeviceAsked>,
     /// The call's record as the workspace keeps it, and as the device that keeps the root
     /// reads it.
@@ -2121,11 +2121,12 @@ impl RevokeAtRoot {
         copies: &tilo_workspace_service::workspaces::Workspaces,
         key: [u8; 32],
     ) -> (
-        Arc<tilo_actions::remote::asked::AskedStore>,
+        Arc<tilo_remote_actions::asked::AskedStore>,
         Arc<tilo_invocations::Invocations>,
         Arc<super::asked::DeviceAsked>,
     ) {
-        use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
+        use tilo_actions::remote::asked::AskedKeeping;
+        use tilo_remote_actions::asked::AskedStore;
 
         let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
         let store = AskedStore::opened(None, Some(keeping), Vec::new()).unwrap();
@@ -2539,8 +2540,9 @@ fn the_device_is_listed(
     reason = "one founding read top to bottom: the launches that found nothing, the one that founds, and the device listed"
 )]
 async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed() {
-    use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
+    use tilo_actions::remote::asked::AskedKeeping;
     use tilo_identity::sources::PersonResourceTypes as _;
+    use tilo_remote_actions::asked::AskedStore;
 
     const APP: &str = "dev.tilo.first";
     // Helper role: a process of its own that connects as an app, and stays until told to go.
