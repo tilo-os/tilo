@@ -12,6 +12,7 @@ import io
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -83,6 +84,7 @@ class Install(unittest.TestCase):
             env={
                 "PATH": os.environ["PATH"],
                 "HOME": str(self.home),
+                "XDG_RUNTIME_DIR": str(self.home),
                 "TILO_RELEASES": f"file://{self.release.parent}",
                 "TILO_RELEASE_KEY": str(self.pub),
                 **env,
@@ -270,7 +272,9 @@ class Install(unittest.TestCase):
         self.archive = self.release / machine()
         login_dir = (self.home / ("Library/Application Support" if os.uname().sysname == "Darwin" else ".local/state")) / "tilo/device"
         login = login_dir / "login.json"
-        keys = self.home / "keys"
+        # macOS keeps state and data in the same place. Asking for CLI help makes
+        # the real, empty device directory before the person's first login.
+        keys = login_dir.parent
         user = "ad" * 32
         settings.update({"TILO_IDENTITY_ROOT": str(keys), "FIXTURE_LOGIN": str(login), "FIXTURE_USER": user})
         self.publish(b'''#!/bin/sh
@@ -296,8 +300,42 @@ printf "%s %s" "$0" "$*"
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("openssl", missing.stderr)
         self.assertFalse(target.exists())
+        for name in (".unknown", "\n", "holder.lock", "login.json"):
+            entry = login_dir / name
+            entry.write_bytes(b"")
+            refused = self.install("login", "ticket", **settings)
+            self.assertNotEqual(refused.returncode, 0, name)
+            entry.unlink()
+        (login_dir / "certs").mkdir()
+        self.assertNotEqual(self.install("login", "ticket", **settings).returncode, 0)
+        (login_dir / "certs").rmdir()
+        (login_dir / ".dangling").symlink_to(self.home / "missing")
+        self.assertNotEqual(self.install("login", "ticket", **settings).returncode, 0)
+        (login_dir / ".dangling").unlink()
+        login_dir.rmdir()
+        empty = self.home / "empty"
+        empty.mkdir()
+        login_dir.symlink_to(empty, target_is_directory=True)
+        self.assertNotEqual(self.install("login", "ticket", **settings).returncode, 0)
+        login_dir.unlink()
+        login_dir.mkdir()
+        with tempfile.TemporaryDirectory(dir="/tmp") as runtime:
+            sockets = pathlib.Path(runtime) / "tilo"
+            sockets.mkdir()
+            with socket.socket(socket.AF_UNIX) as peer:
+                peer.bind(str(sockets / "session-0000000000000001.api.sock"))
+                refused = self.install("login", "ticket", **settings, XDG_RUNTIME_DIR=runtime)
+                self.assertNotEqual(refused.returncode, 0, refused.stderr)
+                self.assertIn("fresh agent account", refused.stderr)
+        manager = self.home / ("launchctl" if os.uname().sysname == "Darwin" else "systemctl")
+        manager.write_text('#!/bin/sh\ncase "$*" in *so.tilo.peer|*tilo-peer.service) exit 0;; *) exit 1;; esac\n')
+        manager.chmod(0o755)
+        active = self.install("login", "ticket", **settings, PATH=f"{self.home}:{os.environ['PATH']}")
+        self.assertNotEqual(active.returncode, 0, active.stderr)
+        self.assertIn("fresh agent account", active.stderr)
         # Installing identical signed files in advance cannot authorize someone else's device.
-        self.assertEqual(self.install(**settings).returncode, 0)
+        empty_scaffold = self.install(**settings)
+        self.assertEqual(empty_scaffold.returncode, 0, empty_scaffold.stderr)
         login.write_text("another installation's login")
         denied = self.install("login", "ticket", **settings)
         self.assertNotEqual(denied.returncode, 0)
@@ -309,6 +347,7 @@ printf "%s %s" "$0" "$*"
         private.write_bytes(b"another device key")
         self.assertNotEqual(self.install("login", "ticket", **settings).returncode, 0)
         private.unlink()
+        private.parent.rmdir()
         for args in (("login", "ticket"), ("device", "add", "another-ticket")):
             ok = self.install(*args, **settings)
             self.assertEqual(ok.returncode, 0, ok.stderr)

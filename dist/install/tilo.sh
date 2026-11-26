@@ -112,17 +112,39 @@ main() {
     if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
       identity=$(hosted_identity) && [ "$identity" = "$(sed -n '1p' "$receipt")" ] || fail "$other_profile"
     else
-      if [ -e "$receipt" ] || [ -L "$receipt" ] || [ -e "$login" ] || [ -e "$holder" ] ||
-         [ -d "$keys/device" ] || [ -e "$keys/device-private/keypair.bin" ] ||
-         [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" ] || [ "${1:-}" = device ]; then
-        fail "$other_profile"
-      fi
+      # Even --help prepares the login directory. On macOS this is also the device
+      # key directory. No entry, including a hidden file or dangling link, belongs
+      # to that scaffold. -q makes a name consisting of newlines visible to sh.
+      unused_device_dir() {
+        [ ! -L "$1" ] || return 1
+        [ -e "$1" ] || return 0
+        [ -d "$1" ] && [ -x "$1" ] && entries=$(LC_ALL=C ls -Aq "$1") && [ -z "$entries" ]
+      }
+      [ ! -L "$state/tilo" ] && [ ! -L "$keys" ] && unused_device_dir "$state/tilo/device" &&
+        unused_device_dir "$keys/device" || fail "$other_profile"
+      for path in "$keys/device-private" "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity"; do
+        [ ! -e "$path" ] && [ ! -L "$path" ] || fail "$other_profile"
+      done
+      [ "${1:-}" != device ] || fail "$other_profile"
+      runtime=${TMPDIR:-/tmp}/tilo-$(id -u)
+      case ${XDG_RUNTIME_DIR:-} in /*) [ ! -d "$XDG_RUNTIME_DIR" ] || runtime=$XDG_RUNTIME_DIR/tilo ;; esac
+      [ ! -L "$runtime" ] || fail "$other_profile"
+      if [ -e "$runtime" ]; then [ -d "$runtime" ] && [ -r "$runtime" ] && [ -x "$runtime" ] || fail "$other_profile"; fi
+      for socket in "$runtime"/session-*.api.sock; do
+        [ ! -e "$socket" ] && [ ! -L "$socket" ] || fail "$other_profile"
+      done
     fi
     if [ "$os" = linux ]; then
       service=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/tilo-peer.service
     else
       service=$HOME/Library/LaunchAgents/so.tilo.peer.plist
       if launchctl print "gui/$(id -u)/so.tilo.runtime" >/dev/null 2>&1; then fail "$other_profile"; fi
+    fi
+    if [ ! -f "$receipt" ]; then
+      [ ! -e "$service" ] && [ ! -L "$service" ] || fail "$other_profile"
+      if [ "$os" = linux ]; then
+        if systemctl --user is-active --quiet tilo-peer.service 2>/dev/null; then fail "$other_profile"; fi
+      elif launchctl print "gui/$(id -u)/so.tilo.peer" >/dev/null 2>&1; then fail "$other_profile"; fi
     fi
     if [ -e "$service" ] && ! grep -Fq "$dir/tilo-runtime" "$service"; then fail "$other_profile"; fi
   fi
