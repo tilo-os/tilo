@@ -423,7 +423,7 @@ impl Person {
     pub fn new(identity: impl Into<tilo_actions::Actor>, name: impl Into<String>) -> Self {
         let identity = identity.into();
         Self {
-            hue: crate::tokens::PresenceHue::of_actor(&identity),
+            hue: crate::tokens::PresenceHue::of_member(&identity),
             identity,
             name: name.into(),
             picture: None,
@@ -496,7 +496,7 @@ impl PropType for Person {
                 picture,
             } => Ok(Self {
                 hue: hue.map_or_else(
-                    || crate::tokens::PresenceHue::of_actor(identity),
+                    || crate::tokens::PresenceHue::of_member(identity),
                     |slot| crate::tokens::PresenceHue::from_slot(usize::from(slot)),
                 ),
                 picture: picture.clone(),
@@ -839,7 +839,7 @@ pub struct Bound<T> {
     pub name: String,
     /// Where the bound value lives, for presence: members at the same path see each other's
     /// carets and selections in it.
-    pub path: Vec<tilo_action_policy::presence::PathSegment>,
+    pub path: Vec<tilo_presence::PathSegment>,
     /// What the value edits, as the identity anyone looks it up by: the kind of record, the one
     /// record and the declared id of the field. `None` for a view's own state, and for a host whose
     /// values answer to nothing but their names.

@@ -7,7 +7,7 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Who may invoke which action: grants over the published tree and the one function that decides them, and where a person's presence is and the colour they wear."
+description = "Who may invoke which action: grants over the published tree and the one function that decides them."
 
 [lib]
 name = "tilo_action_policy"
@@ -23,12 +23,10 @@ hex = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 # A direct conversation's id names its members as JSON.
 serde_json.workspace = true
-# A presence key's digest is the postcard encoding of the key, hashed.
-postcard = { workspace = true, features = ["alloc"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
-# The hue someone wears until they choose one, as every surface derives it.
-tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
+# A member says who wears its presence colour.
+tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
 # The record kinds the apps' manifests declare private (`[resources] private`).
 app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../desktop/app-fleet" }
 uuid.workspace = true

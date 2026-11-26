@@ -32,6 +32,8 @@ fnv.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
+# The presence values the wire carries.
+tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
 # A capability names the app whose sandbox it is.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }

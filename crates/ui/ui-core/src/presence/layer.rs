@@ -44,12 +44,12 @@ pub struct WidgetPresence {
     carets: HashMap<PresenceKey, Vec<(MemberId, usize)>>,
     color_overrides: HashMap<MemberId, (u8, u8, u8)>,
     names: HashMap<MemberId, String>,
-    statuses: HashMap<MemberId, tilo_action_policy::presence::LiveStatus>,
+    statuses: HashMap<MemberId, tilo_presence::LiveStatus>,
     typing: HashMap<(MemberId, PresenceKey), Vec<TypingMark>>,
     /// Who is composing a message where, as the host last pruned it
     /// ([`PresenceCtx::prune_composing`]): a conversation's "… is typing".
     composing: HashSet<(PresenceKey, MemberId)>,
-    views: HashMap<MemberId, tilo_action_policy::presence::ViewSubset>,
+    views: HashMap<MemberId, tilo_presence::ViewSubset>,
     own: HashSet<MemberId>,
     self_member: Option<(MemberId, String)>,
     surface: Option<String>,

@@ -100,9 +100,9 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-pub use tilo_action_policy::presence::{
-    PEER_PALETTE, agent_client, agent_identity, identity_color, identity_rgb, member_color,
-    user_color,
+pub use tilo_action_policy::identity_color;
+pub use tilo_presence::{
+    PEER_PALETTE, agent_client, agent_identity, identity_rgb, member_color, user_color,
 };
 
 /// A presence colour as the surfaces paint it: the `(r, g, b)` a person's
@@ -455,7 +455,7 @@ pub struct PresenceCtx {
     acting_for: HashMap<MemberId, MemberId>,
     /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
-    statuses: HashMap<MemberId, tilo_action_policy::presence::LiveStatus>,
+    statuses: HashMap<MemberId, tilo_presence::LiveStatus>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -502,10 +502,10 @@ pub struct PresenceCtx {
     /// what a guarded widget paints follows permissions that moved with
     /// nothing in the tree marking it.
     paint_permissions: std::cell::Cell<u64>,
-    /// Each peer's last broadcast [`ViewSubset`](tilo_action_policy::presence::ViewSubset) —
+    /// Each peer's last broadcast [`ViewSubset`](tilo_presence::ViewSubset) —
     /// where they're looking, distinct from their cursor. Read by
     /// **attach/follow** to bind the local viewport to a chosen peer.
-    views: HashMap<MemberId, tilo_action_policy::presence::ViewSubset>,
+    views: HashMap<MemberId, tilo_presence::ViewSubset>,
     /// Identities this session publishes its own presence under — what a
     /// frame it sent comes back stamped with. Empty means "unknown", which
     /// suppresses nobody. See [`Self::set_own_identity`].
@@ -1389,13 +1389,13 @@ impl PresenceCtx {
     pub fn set_peer_view(
         &mut self,
         user: MemberId,
-        view: tilo_action_policy::presence::ViewSubset,
+        view: tilo_presence::ViewSubset,
     ) {
         self.views.insert(user, view);
     }
 
     /// What **attach/follow** binds the local viewport to.
-    pub fn peer_view(&self, user: &MemberId) -> Option<&tilo_action_policy::presence::ViewSubset> {
+    pub fn peer_view(&self, user: &MemberId) -> Option<&tilo_presence::ViewSubset> {
         self.views.get(user)
     }
 
@@ -1715,14 +1715,14 @@ impl PresenceCtx {
                     } else if text.chars().count() <= crate::MAX_STATUS_CHARS {
                         self.statuses.insert(
                             uid,
-                            tilo_action_policy::presence::LiveStatus {
+                            tilo_presence::LiveStatus {
                                 text,
                                 origin: if automatic {
-                                    tilo_action_policy::presence::StatusOrigin::Inferred {
+                                    tilo_presence::StatusOrigin::Inferred {
                                         generator: "remote-local-model".into(),
                                     }
                                 } else {
-                                    tilo_action_policy::presence::StatusOrigin::Manual
+                                    tilo_presence::StatusOrigin::Manual
                                 },
                                 updated_at: crate::time::wall(),
                             },
@@ -1803,18 +1803,18 @@ impl PresenceCtx {
         &self,
         user: &MemberId,
         now: SystemTime,
-    ) -> Option<&tilo_action_policy::presence::LiveStatus> {
+    ) -> Option<&tilo_presence::LiveStatus> {
         let status = self.statuses.get(user)?;
         match status.origin {
-            tilo_action_policy::presence::StatusOrigin::Manual => Some(status),
-            tilo_action_policy::presence::StatusOrigin::Inferred { .. }
+            tilo_presence::StatusOrigin::Manual => Some(status),
+            tilo_presence::StatusOrigin::Inferred { .. }
                 if now
                     .duration_since(status.updated_at)
                     .is_ok_and(|age| age <= crate::INFERRED_STATUS_TTL) =>
             {
                 Some(status)
             }
-            tilo_action_policy::presence::StatusOrigin::Inferred { .. } => None,
+            tilo_presence::StatusOrigin::Inferred { .. } => None,
         }
     }
 }
@@ -2719,7 +2719,7 @@ mod own_identity_tests {
             // as a reason to move the viewport.
             {
                 let mut ctx = mine();
-                let subset = tilo_action_policy::presence::ViewSubset {
+                let subset = tilo_presence::ViewSubset {
                     scroll: vec![10.0],
                     open_resource: None,
                     viewport: crate::view::ViewRect {

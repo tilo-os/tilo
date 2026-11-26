@@ -1,8 +1,6 @@
-//! Presence keys are wire types and live in `tilo_action_policy::presence`.
+//! Presence keys are wire types and live in `tilo_presence`.
 
-pub use tilo_action_policy::presence::{
-    DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange,
-};
+pub use tilo_presence::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 
 #[cfg(test)]
 #[cfg(feature = "model")]

@@ -12,8 +12,8 @@ mod status;
 pub use availability::{Availability, IDLE_AFTER};
 
 pub use hue::{
-    PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, agent_client, agent_identity,
-    identity_color, identity_rgb, member_color, user_color,
+    PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PresenceHue, Wearer, WearsHue, agent_client,
+    agent_identity, identity_rgb, member_color, user_color,
 };
 pub use key::{
     AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, ViewRect,

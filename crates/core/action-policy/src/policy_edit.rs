@@ -612,7 +612,7 @@ mod tests {
     /// One file of the workspace's tree, as a chosen file's node is named.
     fn file_node() -> TreePath {
         TreePath::workspace("ws")
-            .app(crate::roles::FILES_APP)
+            .app(tilo_app_id::apps::FILE_EXPLORER)
             .kind("file")
             .resource("record")
     }

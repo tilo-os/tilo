@@ -17,13 +17,12 @@ pub use bridged::{Bridged, MAX_ACCOUNT_CHARS, MAX_BRIDGED_NAME_CHARS};
 pub use call::CallPresence;
 pub use payload::PresencePayload;
 pub use said::{DESKTOP_APP, Presence, stand_in};
-pub use tilo_action_policy::PersonId;
-pub use tilo_action_policy::presence::{
+pub use tilo_action_policy::{PersonId, identity_color};
+pub use tilo_presence::{
     AppKind, Availability, DIGEST_KEY_FIELD, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus,
     MAX_STATUS_CHARS, PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PathSegment, PointerSpace,
     PresenceHue, PresenceKey, PresenceVisibility, SelectionRange, StatusOrigin, StatusSharing,
-    ViewRect, ViewSubset, agent_client, agent_identity, identity_color, identity_rgb, member_color,
-    user_color,
+    ViewRect, ViewSubset, agent_client, agent_identity, identity_rgb, member_color, user_color,
 };
 
 /// What a member says in one presence frame: the semantics every

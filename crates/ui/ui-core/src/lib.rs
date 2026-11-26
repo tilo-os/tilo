@@ -597,7 +597,7 @@ pub use history_source::{
     HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
     deterministic_narrative, heads_for_entry, validate_narrative, version_index_for_entry,
 };
-pub use tilo_action_policy::presence::{
+pub use tilo_presence::{
     Availability, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
     PresenceVisibility, StatusOrigin, StatusSharing,
 };

@@ -1095,7 +1095,7 @@ fn a_person_wears_the_colour_that_travels_with_them() {
         .hue
     };
     assert_eq!(worn(Some(1)), crate::tokens::PresenceHue::Orange);
-    assert_eq!(worn(None), crate::tokens::PresenceHue::of_actor(&identity));
+    assert_eq!(worn(None), crate::tokens::PresenceHue::of_member(&identity));
 }
 
 /// A component whose press is bound to an action says why it cannot be pressed now. The runtime

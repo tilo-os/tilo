@@ -155,6 +155,7 @@ workspace-members = [
     "tilo-sort",
     "tilo-canonical-json",
     "tilo-face",
+    "tilo-presence",
     "tilo-content",
     "tilo-desktop-model",
     "tilo-wire-frame",

@@ -223,14 +223,14 @@ mod tests {
         }
 
         phase every_restored_grant_is_narrowed_on_read;
-        // Every grant a read restores (the roles', the session app's, the
-        // device panel's) is narrowed again, so an app's launch reads back
+        // Every grant a read restores (the roles', and those of apps the
+        // session shows its own state in) is narrowed again, so an app's launch reads back
         // the projection its host wrote, also for a workspace no one owns yet.
         {
             let owned = WorkspacePolicy::new("workspace-a", "person-a");
             let unowned = WorkspacePolicy::unowned("workspace-a", &Grantee::role(Role::Owner));
             for workspace in [owned, unowned.with_current_roles()] {
-                for app in ["so.tilo.notes", roles::SESSION_APP, roles::DEVICE_PANEL] {
+                for app in ["so.tilo.notes", "shell", "so.tilo.quick-settings"] {
                     let written =
                         AppActionAuthorityProjection::project(&workspace, app, "person-a", false);
                     written.validate().unwrap();

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// understand rather than mis-reading it.
 pub const FROZEN_VERSION: u32 = 1;
 
-pub use tilo_action_policy::presence::{ViewRect, ViewSubset};
+pub use tilo_presence::{ViewRect, ViewSubset};
 
 /// The focused widget's ephemeral presentation state, captured through the same mechanism
 /// the undo path uses to restore a caret across a rebuild.

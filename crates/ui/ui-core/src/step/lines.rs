@@ -3,10 +3,10 @@
 //! [`searching`], [`doing`]), cut where a person stops reading.
 
 use serde_json::Value;
-use tilo_action_policy::presence::MAX_ACTIVITY_BYTES;
 use tilo_actions::StepKind;
 use tilo_actions::app_label;
 use tilo_actions::step::{COMMAND_PARAMS, Step};
+use tilo_presence::MAX_ACTIVITY_BYTES;
 
 /// The longest line said beside a run's face, the ellipsis included: what a
 /// person reads at a glance where the roster draws it.

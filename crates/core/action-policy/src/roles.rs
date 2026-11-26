@@ -347,14 +347,12 @@ pub mod governance {
         CALL,
     ];
 
-    /// Actions that exercise authority over the workspace or others in it. The
-    /// person's own grants must allow them: an Ask there is no authority the
+    /// Whether `action` exercises authority over the workspace or others in it. The
+    /// person's own grants must allow it: an Ask there is no authority the
     /// person's confirmation could supply.
-    pub const PRIVILEGED: [&str; 1] = [INSTALL_APP];
-
     #[must_use]
     pub fn is_privileged(action: &str) -> bool {
-        PRIVILEGED.contains(&action)
+        action == INSTALL_APP
     }
 }
 
@@ -1314,22 +1312,6 @@ pub fn certified_agent(workspace: &str, agent: (&str, &str), person: &str) -> Ve
     agent_preset(workspace, agent, person)
 }
 
-/// The app a person's desktop session publishes its own functions as (the
-/// shell's actions: windows, workspaces, its settings), on their device.
-pub const SESSION_APP: &str = "shell";
-
-/// The app a person's device shows the session's own state in: quick
-/// settings, which is a panel of the session's rather than an app of its own.
-pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
-
-/// The app a workspace's files are the resource of: the tree every device
-/// holding the workspace mounts or mirrors, published as this app's resource.
-pub use tilo_app_id::apps::FILE_EXPLORER as FILES_APP;
-
-/// The kind the session publishes its own resources under: the compositor's
-/// state, the clipboard, the lock.
-pub const SESSION_KIND: &str = "session";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1350,12 +1332,8 @@ mod tests {
     /// stops the app's whole outside reach.
     #[test]
     fn an_outside_capabilitys_denial_names_the_one_it_stops() {
-        let denial = outside_capability_denial(
-            "w",
-            "so.tilo.mail",
-            "smtp.send",
-            Grantee::person("ada"),
-        );
+        let denial =
+            outside_capability_denial("w", "so.tilo.mail", "smtp.send", Grantee::person("ada"));
         assert_eq!(
             outside_capability_of(denial.id.as_str()),
             Some(("so.tilo.mail", "smtp.send"))

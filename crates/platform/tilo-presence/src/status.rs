@@ -88,26 +88,6 @@ impl PresenceVisibility {
         }
     }
 
-    /// Whether others may see where this person is: which window, their pointer, caret and selection,
-    /// what they say beside the pointer.
-    #[must_use]
-    pub const fn shows_where(self) -> bool {
-        matches!(self, Self::WhereIAm)
-    }
-
-    /// Whether others may see this person at all.
-    #[must_use]
-    pub const fn shows_presence(self) -> bool {
-        !matches!(self, Self::Nothing)
-    }
-
-    /// Whether this person sees others' pointers: someone who shows nothing sees nothing of where
-    /// others are, which is fair.
-    #[must_use]
-    pub const fn sees_pointers(self) -> bool {
-        !matches!(self, Self::Nothing)
-    }
-
     /// The stored word.
     #[must_use]
     pub const fn id(self) -> &'static str {
@@ -133,14 +113,14 @@ impl PresenceVisibility {
 #[cfg(test)]
 mod presence_choice_tests {
     use super::*;
-    use crate::presence::{Availability, IDLE_AFTER};
+    use crate::{Availability, IDLE_AFTER};
 
     tilo_test_env::scenario! {
         fn presence_and_availability_follow_the_workspace_and_the_person;
 
         phase what_people_see_defaults_by_workspace_and_round_trips;
-        // A public workspace shows strangers a face and nothing of where it is; a private one shows where;
-        // Nothing shows nothing and sees no pointers.
+        // A public workspace shows strangers a face and nothing of where it is; a private one shows
+        // where.
         {
             assert_eq!(
                 PresenceVisibility::default_for(true),
@@ -150,10 +130,6 @@ mod presence_choice_tests {
                 PresenceVisibility::default_for(false),
                 PresenceVisibility::WhereIAm
             );
-            assert!(!PresenceVisibility::ThatImHere.shows_where());
-            assert!(PresenceVisibility::ThatImHere.shows_presence());
-            assert!(!PresenceVisibility::Nothing.shows_presence());
-            assert!(!PresenceVisibility::Nothing.sees_pointers());
             for choice in [
                 PresenceVisibility::WhereIAm,
                 PresenceVisibility::ThatImHere,

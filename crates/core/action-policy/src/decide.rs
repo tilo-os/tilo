@@ -322,15 +322,6 @@ impl<'g> Party<'g> {
         self
     }
 
-    /// The same party, known as `grantee` too: an agent's run of an issue
-    /// is the agent and the issue, so grants naming either decide for it,
-    /// the most specific first.
-    #[must_use]
-    pub fn also_as(mut self, grantee: Grantee) -> Self {
-        self.grantees.push(grantee);
-        self
-    }
-
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         let held = self.decide_grants(node, kind, cx);
@@ -477,28 +468,6 @@ struct EffectiveParty {
     narrowing: Vec<Grant>,
 }
 
-impl Effective {
-    /// Whether a grant it decides by stops being live after `from_ms` and by
-    /// `to_ms` (Unix milliseconds): the one way time alone changes its answers.
-    #[must_use]
-    pub fn lapses_between(&self, from_ms: u64, to_ms: u64) -> bool {
-        self.parties
-            .iter()
-            .flat_map(|party| {
-                party
-                    .grants
-                    .iter()
-                    .chain(&party.held_off)
-                    .chain(&party.delegated)
-                    .chain(&party.narrowing)
-            })
-            .any(|grant| match grant.lifetime {
-                Lifetime::Until(at) => from_ms < at && at <= to_ms,
-                _ => false,
-            })
-    }
-}
-
 /// Who is acting: a person, and the delegations bounding them (an agent, a
 /// task, a Shortcut, a foreign device).
 #[derive(Clone, Debug, Default)]
@@ -532,13 +501,6 @@ impl<'g> Authority<'g> {
     #[must_use]
     pub fn in_app(mut self, kinds: &'g [String]) -> Self {
         self.app_kinds = Some(kinds);
-        self
-    }
-
-    /// The same authority, bounded by `party` too.
-    #[must_use]
-    pub fn also_as(mut self, party: Party<'g>) -> Self {
-        self.bounds.push(party);
         self
     }
 

@@ -316,7 +316,7 @@ pub struct Intents {
     pub selection_tint: Color,
 }
 
-pub use tilo_action_policy::presence::{PRESENCE_HUES, PRESENCE_LEN, PresenceHue};
+pub use tilo_presence::{PRESENCE_HUES, PRESENCE_LEN, PresenceHue};
 
 /// The presence hue nearest to `colour`'s, for a colour that arrives from outside (a
 /// host's accent, a roster's packed colour).

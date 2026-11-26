@@ -14897,7 +14897,7 @@ dependencies = [
  "tilo-app-fleet",
  "tilo-app-id",
  "tilo-clock",
- "tilo-face",
+ "tilo-presence",
  "tilo-test-env",
  "uuid",
 ]
@@ -16342,6 +16342,7 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
+ "tilo-presence",
  "tilo-resource",
  "tilo-sort",
  "tilo-surface-compile",
@@ -19316,6 +19317,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-presence"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tilo-clock",
+ "tilo-face",
+ "tilo-test-env",
+]
+
+[[package]]
 name = "tilo-presentation"
 version = "0.1.0"
 dependencies = [
@@ -21349,6 +21364,7 @@ dependencies = [
  "tilo-paint-strokes",
  "tilo-paths",
  "tilo-platform-caps",
+ "tilo-presence",
  "tilo-presentation",
  "tilo-process",
  "tilo-process-services",

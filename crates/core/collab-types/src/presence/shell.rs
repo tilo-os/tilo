@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use tilo_action_policy::presence::MAX_ACTIVITY_BYTES;
+pub use tilo_presence::MAX_ACTIVITY_BYTES;
 
 /// One window a shell shows: the app and document it draws, its edges, and
 /// whether it is the one the person works in.
