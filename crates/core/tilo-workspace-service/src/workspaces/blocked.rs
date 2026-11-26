@@ -272,13 +272,35 @@ impl Workspaces {
         &self,
         action: tilo_resource::Invoke<Blocked>,
     ) -> Result<(), String> {
+        // The write reads the record again as it lands ([`Self::read_wrote`]).
         person_workspace::apply::<Blocked>(self, BLOCKED, action).await?;
-        self.refresh_blocked().await;
         // A block narrows what admission reads even when the record already
         // said so on another device: the announcement is what ends the links
         // and sessions of a key it now refuses.
         crate::authority_epoch::bump();
         Ok(())
+    }
+
+    /// Whether `app`'s record `record` in `workspace` is one the keys this host refuses and the
+    /// person's devices are read from: their own workspace's two records.
+    ///
+    /// A write of one, this device's own or admitted from another, is a write of what admission
+    /// holds, so it is read again as it lands.
+    pub(crate) fn reads_blocked(&self, workspace: &str, app: &str, record: &str) -> bool {
+        workspace == person_workspace::workspace_id(self)
+            && [BLOCKED, DEVICES]
+                .iter()
+                .any(|(kept, name)| *kept == app && *name == record)
+    }
+
+    /// Read the keys this host refuses again when this device just wrote `app`'s record `record`
+    /// in `workspace` ([`Self::reads_blocked`]): the follower reads an admitted one, this reads
+    /// the device's own, so a device the record now lists is admitted without waiting for the
+    /// follower to wake.
+    pub(crate) async fn read_wrote(&self, workspace: &str, app: &str, record: &str) {
+        if self.reads_blocked(workspace, app, record) {
+            self.refresh_blocked().await;
+        }
     }
 
     /// Read the blocked-keys record and the record of the operator's devices
@@ -321,7 +343,7 @@ impl Workspaces {
     /// read them once as the host opens, then again whenever this host takes a
     /// write of either and whenever the operator's workspace settles.
     pub(super) fn follow_blocked(&self) {
-        let workspaces = self.downgrade();
+        let following = self.downgrade();
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -330,7 +352,7 @@ impl Workspaces {
         let mut governance = self.governance_changes();
         runtime.spawn(async move {
             loop {
-                let Some(workspaces) = workspaces.upgrade() else {
+                let Some(workspaces) = following.upgrade() else {
                     return;
                 };
                 workspaces.refresh_blocked().await;
@@ -339,9 +361,13 @@ impl Workspaces {
                     write = writes.recv() => match write {
                         // The records name the keys; a change to any other says
                         // nothing about them.
-                        Ok(write) if write.workspace == admin
-                            && [BLOCKED, DEVICES].iter().any(|(app, record)| {
-                                write.app == *app && write.record == *record
+                        Ok(write)
+                            if following.upgrade().is_some_and(|workspaces| {
+                                workspaces.reads_blocked(
+                                    &write.workspace,
+                                    &write.app,
+                                    &write.record,
+                                )
                             }) => {}
                         Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

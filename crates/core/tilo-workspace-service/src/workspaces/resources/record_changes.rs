@@ -747,6 +747,10 @@ impl Workspaces {
         .await?;
         // Whoever follows the record hears of it by its id, as of a member's write.
         self.wrote(workspace, app, record);
+        // The keys this host refuses and the person's devices are read from two records of their
+        // own workspace, and admission reads them now: this device's write is read again before
+        // it answers, as the follower reads one admitted from another device.
+        self.read_wrote(workspace, app, record).await;
         Ok(result)
     }
 

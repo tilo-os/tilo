@@ -74,21 +74,20 @@ impl Home {
     /// and so is the one that writes it: the workspace its login named, as the server keeps it,
     /// and every workspace its copy records them in. A server that keeps their own workspace
     /// cannot write the list, so their other devices would read none.
+    ///
+    /// The list is kept in the person's own workspace, and only a device holding a copy of it
+    /// writes it: one is taken in from the server the login names first, where the server keeps
+    /// it. That is a workspace's copy, so it runs beside the answer this home gives, as the copy
+    /// of any workspace a login enters is taken in: a caller waiting on this device is never held
+    /// behind it.
     async fn list_here(&self, device: &Device) {
         if !self.cert.capabilities.can_admit_devices || self.listed.set(()).is_err() {
             return;
         }
-        let copies = self.workspaces.copies();
-        let person = self.cert.user_public_key;
-        let name = device
-            .workspace_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty());
-        if let Some(name) = name {
-            copies.list_for(&person, &device.workspace, name).await;
-        }
-        copies.list_known_for(&person).await;
+        let workspaces = Arc::clone(&self.workspaces);
+        let cert = self.cert.clone();
+        let device = device.clone();
+        tokio::spawn(async move { list_the_persons_workspaces(workspaces, cert, device).await });
     }
 
     /// [`Self::get`] for a thread that does not drive the app runtime: it waits on the copy's
@@ -161,6 +160,68 @@ impl Home {
     async fn named(&self) -> Option<Device> {
         named_in(&self.workspaces, &self.cert).await
     }
+}
+
+/// Write the person's list of their workspaces here, once this device holds a copy of their own
+/// workspace: the workspace its login named, as the server keeps it, and every workspace its copy
+/// records them in.
+async fn list_the_persons_workspaces(
+    workspaces: Arc<ServiceWorkspaces>,
+    cert: DeviceCert,
+    device: Device,
+) {
+    let copies = workspaces.copies();
+    let person = cert.user_public_key;
+    let own = tilo_server_protocol::servers::person_workspace_id(&person);
+    if copies.state(&own).await.is_none() && !taken_in(&workspaces, &device, &own).await {
+        return;
+    }
+    let name = device
+        .workspace_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    if let Some(name) = name {
+        copies.list_for(&person, &device.workspace, name).await;
+    }
+    copies.list_known_for(&person).await;
+}
+
+/// Take the person's own workspace `own` in from the server `device` names, where this device
+/// holds no copy of it: the one that keeps their root writes their list there, and a server that
+/// keeps the workspace without that root writes none of it itself. The copy is a member copy,
+/// synced with the server as the copy of any workspace its login entered is. Whether it is held
+/// here now.
+async fn taken_in(workspaces: &Arc<ServiceWorkspaces>, device: &Device, own: &str) -> bool {
+    let entered = match tilo_api::daemon::enter::connect_signed(
+        workspaces.signer(),
+        device,
+        Some(workspaces.lent()),
+    )
+    .await
+    {
+        Ok(entered) => entered,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                workspace = %own,
+                "the person's own workspace is not taken in from their server"
+            );
+            return false;
+        }
+    };
+    // Entered by its id at the device the login names, which admits this device as its person's:
+    // the address its host keeps it at is what the member copy is taken in by.
+    if let Err(error) = entered.join(own).await {
+        tracing::warn!(
+            %error,
+            workspace = %own,
+            "the person's own workspace did not let this device in"
+        );
+    }
+    workspaces.hold(&entered).await;
+    entered.close();
+    workspaces.copies().state(own).await.is_some()
 }
 
 /// The device `cert` certifies as `own`'s copy of the person's workspace names its server: a

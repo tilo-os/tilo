@@ -1941,20 +1941,36 @@ pub async fn of(workspaces: &super::Workspaces, person: &[u8; 32]) -> Devices {
 /// Mark this device, `cert`'s, in the record of the person's own workspace `workspaces` holds, as
 /// one that keeps their root `root`, signed by that root: kept there first where it is not yet.
 ///
+/// The entry that lists the device and the mark are one write of one document, so a record they
+/// found is founded once, at one author's first number. A mark this device cannot sign, or the
+/// record refuses, leaves the entry that lists the device all the same: the certificate their
+/// root signed is what lists it, and the mark only says it keeps that root.
+///
 /// # Errors
-/// The root did not sign, or the record refused the device or the mark.
+/// The root did not sign, the record refused the device, or it refused the mark (and lists the
+/// device anyway).
 pub async fn mark_root_holder(
     workspaces: &super::Workspaces,
     root: &(dyn tilo_user_identity::StatementSigner + Sync),
     cert: &DeviceCert,
 ) -> Result<(), String> {
     let device = cert.device_public_key;
-    let signature = root
-        .sign_digest(&root_holder_digest(&device))
-        .map_err(|error| error.to_string())?;
-    // The entry that lists this device and the mark that it keeps the root are one write: two
-    // founded the record again from what each read before the other was carried, at one author's
-    // first number.
+    let signature = match root.sign_digest(&root_holder_digest(&device)) {
+        Ok(signature) => signature,
+        // A root this device holds only part of signs nothing with it: the entry that lists the
+        // device is written on its own then, as the certificate their root signed is what lists
+        // it. That write is the first one, so the record is still founded once.
+        Err(error) => {
+            let listed = keep(workspaces, cert).await;
+            return match listed {
+                Ok(()) => Err(error.to_string()),
+                Err(refused) => Err(format!("{error}; {refused}")),
+            };
+        }
+    };
+    // The entry that lists this device and the mark that it keeps the root are one write, and a
+    // mark the record refuses keeps the entry all the same: the certificate their root signed is
+    // what lists it, and the mark only says it keeps that root.
     super::apply_actions_on(
         workspaces,
         &super::workspace_id(workspaces),
@@ -1963,6 +1979,7 @@ pub async fn mark_root_holder(
             Devices::keeping(cert)?,
             Devices::MARK_ROOT_HOLDER.with((hex::encode(device), hex::encode(signature))),
         ],
+        Some(1),
     )
     .await
 }
