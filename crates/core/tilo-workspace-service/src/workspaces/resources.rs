@@ -1948,7 +1948,7 @@ fn read_from(
     use collab_types::store::wire::{Command, Reply};
     use tilo_lock::MutexRecover as _;
     use tilo_resource_store::wire::read;
-    let may_read = may_read(reader.to_owned());
+    let may_read = may_read_in(reading, reader);
     let mut store = reading.store.lock_recover();
     let answer = match command {
         Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
@@ -3545,6 +3545,30 @@ fn origin_places<'a>(
 /// Whether the reader set `readers` names `reader` ([`tilo_resource_store::wire::reads_as`]).
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
     move |readers| tilo_resource_store::wire::reads_as(&reader)(readers)
+}
+
+/// Whether `reader`, the person this service reads as, reads what the reader set `readers` names,
+/// as `reading`'s governance has the workspace now: one of its people, or a member whose role
+/// includes the set's ([`collab_types::NamedReaders::includes`]). A set naming a role is read by
+/// its holders, never by who held it when the record was written.
+pub(super) fn may_read_in(
+    reading: &super::readings::Reading,
+    reader: &str,
+) -> impl Fn(&str) -> bool {
+    let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
+    let person = person_bytes(reader);
+    let now = tilo_clock::wall();
+    move |readers| {
+        let (Some(person), Some(set)) = (person, collab_types::Readers::parse(readers)) else {
+            return false;
+        };
+        match set {
+            collab_types::Readers::EveryMember => true,
+            set => set
+                .named()
+                .is_some_and(|named| peer.governance().reads_named(&named, &person, now)),
+        }
+    }
 }
 
 #[cfg(any(feature = "apps", feature = "agents"))]

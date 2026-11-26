@@ -86,7 +86,7 @@ impl Workspaces {
             return Ok(None);
         };
         let reader = hex::encode(self.device_cert().user_public_key);
-        let may_read = tilo_resource_store::wire::reads_as(&reader);
+        let may_read = super::resources::may_read_in(&held, &reader);
         let mut store = held.store.lock_recover();
         stored_read_in(
             &mut store,
