@@ -95,6 +95,8 @@ tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support", "
 # The workspaces' accounts, as the tests keep one of their own.
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 zeroize.workspace = true
+# The signed revocation entry a test hands the devices record, as the root signs it.
+postcard.workspace = true
 # The workspace service with the agents that read and change the built-in apps' records. Those
 # records are the language runtime's, so the tests that drive them run here, beside the daemon
 # that links the runtime and mounts it.

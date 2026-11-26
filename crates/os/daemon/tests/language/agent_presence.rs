@@ -537,5 +537,58 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             .await
             .expect("the person reads their MCP server");
         assert_eq!(still.grants[0].sessions.len(), 1, "{still:?}");
+        // The person revokes the key their agent runs under: its run ends, it leaves the
+        // listing, and its key is refused from then on.
+        let grant = still.grants[0].id.clone();
+        let device: [u8; 32] = hex::decode(&grant)
+            .expect("a grant names its key")
+            .try_into()
+            .expect("a key is 32 bytes");
+        let entry = host.revoke(device).await;
+        let revocation = hex::encode(postcard::to_allocvec(&entry).expect("the entry encodes"));
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::workspace_provider(&host.workspace()),
+                address: tilo_actions::ActionAddress::new("devices", "revoke_device"),
+            },
+            argument: mcp_server::argument(&(grant, revocation)),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let revoked = host
+            .dispatch()
+            .invoke(&host.caller(), request)
+            .await
+            .expect("the dispatch answers")
+            .expect("the person revokes their agent's key");
+        assert!(
+            matches!(
+                revoked.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "{revoked:?}"
+        );
+        let until = Instant::now() + COMES_BACK_WITHIN;
+        loop {
+            let listed = mcp_server(&host, &host.caller())
+                .await
+                .expect("the person reads their MCP server");
+            if listed.grants.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "the revoked agent leaves the listing: {listed:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let (_, refused) = ls(&again, None).await;
+        assert!(refused, "a revoked agent's key is refused every call");
     });
 }

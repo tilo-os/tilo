@@ -16647,6 +16647,7 @@ dependencies = [
  "libc",
  "os-actions",
  "package-actions",
+ "postcard",
  "rand 0.10.3",
  "serde_json",
  "tempfile",

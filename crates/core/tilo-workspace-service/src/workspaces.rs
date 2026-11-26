@@ -3294,6 +3294,11 @@ impl Workspaces {
         // What the workspace keeps as keys its person revoked: refused with how to approve another,
         // and dropped from its access, so every caller is told what to do.
         let revoked = collaboration::revoked_keys(workspace);
+        // An agent whose key its person revoked leaves their MCP server's listing: its runs end
+        // with the key, which every call of its is refused from now on.
+        for device in &revoked {
+            self.inner.mcp_server.forget(device);
+        }
         host.access
             .settle(workspace.workspace_id(), access, revoked, device_access)
             .await
