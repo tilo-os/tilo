@@ -426,12 +426,19 @@ impl SankeyMarks {
             if spare <= 0.0 || room + 0.5 < line {
                 continue;
             }
-            // Whole over two lines where a break fits, otherwise whole words around one ellipsis.
-            let mut lines = crate::widget::chart_labels::wrapped_labels(tr, &spec.label, &style)
-                .into_iter()
-                .find(|wrapped| wrapped.width <= spare && wrapped.height <= room + 0.5)
-                .map(|wrapped| wrapped.lines)
-                .unwrap_or_default();
+            // Whole on one line where it fits, whole over two lines where a break fits, otherwise
+            // whole words around one ellipsis.
+            let (whole_width, whole_height) = tr.measure_style(&spec.label, None, &style);
+            let (whole_width, whole_height) = (f64::from(whole_width), f64::from(whole_height));
+            let mut lines = if whole_width <= spare && whole_height <= room + 0.5 {
+                vec![(spec.label.clone(), whole_width, whole_height)]
+            } else {
+                crate::widget::chart_labels::wrapped_labels(tr, &spec.label, &style)
+                    .into_iter()
+                    .find(|wrapped| wrapped.width <= spare && wrapped.height <= room + 0.5)
+                    .map(|wrapped| wrapped.lines)
+                    .unwrap_or_default()
+            };
             if lines.is_empty() {
                 lines = crate::widget::chart_labels::shortened_labels(tr, &spec.label, &style)
                     .into_iter()
@@ -915,6 +922,49 @@ mod tests {
                 if width > 500.0 {
                     assert_eq!(shown, 4, "{width}: every node of the flow is named");
                 }
+            }
+        }
+    }
+
+    /// A name that fits beside its node reads whole on one line, a one-word name included: the
+    /// breaks and the shortening are for names that do not fit, never for the ones that do.
+    #[test]
+    fn short_names_read_whole_on_one_line() {
+        let nodes = vec![
+            ChartNode::new("visits", "Visits"),
+            ChartNode::new("signups", "Sign-ups"),
+            ChartNode::new("trials", "Trials"),
+            ChartNode::new("paid", "Paid"),
+            ChartNode::new("churned", "Churned"),
+        ];
+        let links = vec![
+            ChartLink::new("a", "visits", "signups", 72.0),
+            ChartLink::new("b", "signups", "trials", 54.0),
+            ChartLink::new("c", "trials", "paid", 31.0),
+            ChartLink::new("d", "trials", "churned", 23.0),
+        ];
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            for width in [1000.0, 358.0] {
+                let mut chart = SankeyChart::new(nodes.clone(), links.clone());
+                let height = chart.marks.natural_height(&mut tr, &theme, width);
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, height);
+                chart.marks.place(&mut tr, &theme);
+                let (boxes, _) = chart.marks.geometry();
+                let labels = chart.marks.label_layout(&boxes, &mut tr, &theme);
+                let mut named: Vec<String> = labels
+                    .iter()
+                    .map(|label| {
+                        assert_eq!(label.lines.len(), 1, "{width}: a short name takes one line");
+                        label.lines.first().map(|(text, _)| text.clone()).unwrap_or_default()
+                    })
+                    .collect();
+                named.sort();
+                assert_eq!(
+                    named,
+                    ["Churned", "Paid", "Sign-ups", "Trials", "Visits"],
+                    "{width}: every node reads its whole name"
+                );
             }
         }
     }

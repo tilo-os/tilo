@@ -680,12 +680,16 @@ fn wrapped_label(
     let turn = tangent_turn(mid);
     let (sin, cos) = mid.sin_cos();
     let radius = ring.inner.midpoint(ring.outer);
+    // The first line stands above the second as the words are read: away from the centre where
+    // the turned words' up points outward (the upper half), towards it where it points inward.
+    let outward_is_up = (turn - mid).sin() > 0.0;
+    let down = if outward_is_up { -1.0 } else { 1.0 };
     for block in crate::widget::chart_labels::wrapped_labels(tr, label, style) {
         let mut top = -block.height / 2.0;
         let mut lines = Vec::with_capacity(block.lines.len());
         let mut fits = true;
         for (text, w, h) in block.lines {
-            let across = top + h / 2.0;
+            let across = down * (top + h / 2.0);
             let centre = Point::new(
                 ring.center.x + (radius + across) * cos,
                 ring.center.y + (radius + across) * sin,
@@ -783,6 +787,46 @@ mod tests {
             assert!(
                 ring.holds(*at, shown.turn, air),
                 "{at:?} lies outside the band"
+            );
+        }
+    }
+
+    /// A label over two lines reads in order wherever its segment stands round the ring: the
+    /// first line stands above the second as the turned words are read, on the upper half of the
+    /// ring as on the lower.
+    #[test]
+    fn a_wrapped_label_reads_its_lines_in_order_all_round_the_ring() {
+        use std::f64::consts::{FRAC_PI_4, PI};
+        let theme = Theme::light();
+        let mut tr = TextRenderer::new();
+        let air = f64::from(theme.tokens.spacing.s1);
+        // Half a ring at a time: the top, each side, the bottom.
+        for start in [-PI, -PI / 2.0 - FRAC_PI_4, -FRAC_PI_4, 0.0, PI / 2.0 - FRAC_PI_4] {
+            let ring = Ring {
+                center: Point::new(0.0, 0.0),
+                inner: 200.0,
+                outer: 400.0,
+                start,
+                end: start + PI,
+            };
+            let shown = wrapped_label(
+                &mut tr,
+                "Interviews with the support team",
+                &ring,
+                &label_style(&theme),
+                air,
+            )
+            .expect("a band this tall holds two lines");
+            assert_eq!(shown.text(), "Interviews with the support team");
+            let [(_, first), (_, second)] = shown.lines.as_slice() else {
+                panic!("two lines: {:?}", shown.text());
+            };
+            // The turned words' up, and how far each line's centre stands along it.
+            let up = (shown.turn.sin(), -shown.turn.cos());
+            let along_up = |at: &Rect| at.center().x * up.0 + at.center().y * up.1;
+            assert!(
+                along_up(first) > along_up(second),
+                "at {start:.2} the first line {first:?} stands below the second {second:?}"
             );
         }
     }

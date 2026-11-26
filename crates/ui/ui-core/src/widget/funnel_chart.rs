@@ -72,6 +72,9 @@ struct StageLabel {
     lines: Vec<(String, Rect)>,
     value: Option<(String, Rect)>,
     ink: Color,
+    /// The value's ink: the name's on a band, where only an ink chosen against the band's
+    /// colour reads, and the theme's secondary text beside the funnel, on the chart's ground.
+    value_ink: Color,
 }
 
 pub struct FunnelMarks {
@@ -280,6 +283,7 @@ impl FunnelMarks {
                 lines: vec![(stage.label.clone(), name)],
                 value,
                 ink: inside_ink,
+                value_ink: inside_ink,
             });
         }
         // Beside the funnel: broken over the lines the row holds so the name reads whole, then
@@ -332,6 +336,7 @@ impl FunnelMarks {
             lines: shown,
             value,
             ink: theme.tokens.colors.text_primary,
+            value_ink: theme.tokens.colors.text_dim,
         })
     }
 
@@ -365,11 +370,7 @@ impl FunnelMarks {
             tr.draw_style(
                 scene,
                 &text,
-                if label.ink == theme.tokens.colors.text_primary {
-                    theme.tokens.colors.text_dim
-                } else {
-                    label.ink
-                },
+                label.value_ink,
                 transform * Affine::translate((rect.x0, rect.y0)),
                 None,
                 &value_style,
@@ -647,6 +648,45 @@ mod tests {
                 let least = if width > 500.0 { 4 } else { 1 };
                 assert!(shown >= least, "{width}: only {shown} stages are named");
             }
+        }
+    }
+
+    /// A value read on its band is as legible as the name above it, in either theme: on every
+    /// band colour the theme gives a stage, it clears the text floor against that colour.
+    #[test]
+    fn a_value_on_its_band_reads_against_the_band() {
+        let stages = ["Visits", "Sign-ups", "Trials", "Paid", "Kept", "Upgraded"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| ChartItem::new(*name, *name, 1000.0 / (i as f64 + 1.0)))
+            .collect::<Vec<_>>();
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            let mut chart = FunnelChart::new(stages.clone());
+            chart.marks.frame.rect = Rect::new(0.0, 0.0, 1000.0, 380.0);
+            chart.marks.place(&mut tr, &theme);
+            let mut on_band = 0;
+            for stage in chart.marks.geometry() {
+                let fill = FunnelMarks::palette(&theme, stage.index);
+                let Some(label) = chart.marks.stage_label(&mut tr, &theme, &stage, fill) else {
+                    continue;
+                };
+                let (Some((_, name)), Some((value, _))) = (label.lines.first(), &label.value)
+                else {
+                    continue;
+                };
+                if (name.center().x - stage.bounds.center().x).abs() > 1.0 {
+                    continue;
+                }
+                on_band += 1;
+                let ratio = crate::a11y::contrast_ratio(label.value_ink, fill);
+                assert!(
+                    ratio >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    "{value:?} on stage {} reads at {ratio:.2}:1",
+                    stage.index
+                );
+            }
+            assert!(on_band >= 3, "short names stand on their bands: {on_band}");
         }
     }
 
