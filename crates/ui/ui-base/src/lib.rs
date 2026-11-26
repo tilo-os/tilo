@@ -77,8 +77,8 @@
     )
 )]
 pub mod a11y;
-pub(crate) mod a11y_child_route;
-pub(crate) mod a11y_walk;
+pub mod a11y_child_route;
+pub mod a11y_walk;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
@@ -131,7 +131,7 @@ pub mod fullscreen;
 pub mod gesture;
 pub mod gpu;
 #[cfg(feature = "native")]
-mod host_appearance;
+pub mod host_appearance;
 pub mod host_data;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
@@ -199,7 +199,7 @@ pub mod host_operation {
     };
 }
 pub mod draw;
-pub(crate) mod draw_cull;
+pub mod draw_cull;
 #[cfg(feature = "model")]
 pub mod mentions;
 pub mod own_paint;
@@ -233,7 +233,7 @@ pub mod text_render;
 pub mod text_selection;
 pub mod theme;
 pub mod theme_bundle;
-mod theme_document;
+pub mod theme_document;
 mod theme_layers;
 #[cfg(feature = "model")]
 mod theme_record;

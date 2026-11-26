@@ -145,7 +145,7 @@ pub trait PropType: Sized {
 
 /// The field `name` of a case's `fields`, read as a `T`: `None` when the case leaves it out or holds
 /// nothing there, so a field with a default reads as its default.
-pub(crate) fn case_field<T: PropType>(
+pub fn case_field<T: PropType>(
     fields: &[(String, Value)],
     name: &str,
 ) -> Result<Option<T>, String> {
@@ -158,7 +158,7 @@ pub(crate) fn case_field<T: PropType>(
 }
 
 /// A field of a case as its set's description lists it.
-pub(crate) fn case_field_description(
+pub fn case_field_description(
     name: &str,
     ty: Type,
     default: Option<Value>,
@@ -172,7 +172,7 @@ pub(crate) fn case_field_description(
     }
 }
 
-pub(crate) fn wrong(want: &Type, found: &Value) -> String {
+pub fn wrong(want: &Type, found: &Value) -> String {
     format!("takes {}, not {}", want.show(), found.kind())
 }
 
@@ -661,7 +661,7 @@ macro_rules! part_type {
     };
 }
 
-pub(crate) use part_type;
+pub use part_type;
 
 choice!(crate::tokens::TextRole, "TextRole", {
     Display => "display",

@@ -2475,7 +2475,7 @@ impl Widget for ModalDialog<dyn Widget> {
             .children
             .get(*index)?
             .bounds
-            .map(super::super::a11y::AccessBounds::to_rect)
+            .map(tilo_ui_base::a11y::AccessBounds::to_rect)
     }
 }
 

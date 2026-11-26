@@ -60,3 +60,29 @@ impl ContentKind {
         matches!(self, Self::Document | Self::Canvas)
     }
 }
+
+impl crate::component::PropType for ContentKind {
+    fn ty() -> crate::component::Type {
+        crate::component::Type::Choice {
+            name: "ContentKind".into(),
+            cases: ["list", "reading", "page", "grid", "document", "canvas"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
+
+    fn from_value(value: &crate::component::Value) -> Result<Self, String> {
+        let (crate::component::Value::Choice(case) | crate::component::Value::Text(case)) = value else {
+            return Err(format!("takes ContentKind, not {}", value.kind()));
+        };
+        Ok(match case.as_str() {
+            "list" => Self::List,
+            "reading" => Self::Reading,
+            "page" => Self::Page,
+            "grid" => Self::Grid,
+            "document" => Self::Document,
+            "canvas" => Self::Canvas,
+            other => return Err(format!("has no case `{other}`")),
+        })
+    }
+}

@@ -334,13 +334,13 @@ pub fn font_files_read() -> Vec<PathBuf> {
 
 /// How many font files text on this thread has read so far ([`font_files_read`]).
 #[cfg(feature = "native")]
-pub(crate) fn font_files_read_count() -> usize {
+pub fn font_files_read_count() -> usize {
     FILES_READ.with(|read| read.borrow().len())
 }
 
 /// The names of the font files text on this thread read after the first `count` of them.
 #[cfg(feature = "native")]
-pub(crate) fn font_files_read_after(count: usize) -> Vec<String> {
+pub fn font_files_read_after(count: usize) -> Vec<String> {
     FILES_READ.with(|read| {
         read.borrow()
             .iter()
@@ -360,7 +360,7 @@ fn loaded_roots() -> &'static Mutex<HashSet<PathBuf>> {
 /// process set text from: what names the file to another process, which finds the catalog at
 /// a path of its own.
 #[cfg(all(feature = "native", target_os = "linux"))]
-pub(crate) fn catalog_digest(path: &Path) -> Option<&'static str> {
+pub fn catalog_digest(path: &Path) -> Option<&'static str> {
     let manifest = tilo_font_catalog::manifest().ok()?;
     let roots = loaded_roots().lock_recover();
     let relative = roots.iter().find_map(|root| path.strip_prefix(root).ok())?;

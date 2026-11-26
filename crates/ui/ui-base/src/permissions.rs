@@ -31,7 +31,7 @@ impl WidgetAuthority for PermissionContext {
 /// Wake `wake` whenever an outside authority permissions follow changes, for as long as its scope
 /// is open.
 #[cfg(all(feature = "native", feature = "model"))]
-pub(crate) fn wake_loop_on_outside_change(wake: crate::wake::WakeHandle) {
+pub fn wake_loop_on_outside_change(wake: crate::wake::WakeHandle) {
     ::collaboration::permissions::wake_on_outside_change(move || {
         if !wake.is_active() {
             return false;

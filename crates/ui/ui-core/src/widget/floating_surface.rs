@@ -64,18 +64,6 @@ pub fn card_ground(theme: &Theme) -> Color {
     tilo_ui_base::chrome::panel_ground(theme)
 }
 
-impl tilo_ui_base::theme::Theme {
-    /// This theme in a window floating over the shell as a card
-    /// ([`crate::window_toolbar::floats`]): its ground is the card's, so the app under
-    /// the card's header draws on the same surface as the header and every other card in
-    /// the column, not on a window's darker ground.
-    #[must_use]
-    pub fn as_card(mut self) -> Self {
-        self.tokens.colors.surfaces.content = card_ground(&self);
-        self
-    }
-}
-
 /// Paint a floating card's shadow, `alpha` of its strength (a card that is still arriving).
 pub fn paint_card_shadow(
     scene: &mut Scene,

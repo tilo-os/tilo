@@ -66,7 +66,7 @@ impl Widget for PageBody {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    retained_parts!(lifecycle: parts);
+    tilo_ui_base::retained_parts!(lifecycle: parts);
     fn name(&self) -> &'static str {
         self.name
     }
@@ -148,7 +148,7 @@ struct PinnedActions {
 }
 
 impl Widget for PinnedActions {
-    retained_parts!(lifecycle: parts);
+    tilo_ui_base::retained_parts!(lifecycle: parts);
     fn name(&self) -> &'static str {
         "PinnedActions"
     }
@@ -567,7 +567,7 @@ macro_rules! framed_page {
             fn layout_info(&self) -> Option<LayoutInfo> {
                 self.effective_layout().map(LayoutInfo::Page)
             }
-            retained_parts!(lifecycle: frame.parts);
+            tilo_ui_base::retained_parts!(lifecycle: frame.parts);
             fn name(&self) -> &'static str {
                 $name
             }

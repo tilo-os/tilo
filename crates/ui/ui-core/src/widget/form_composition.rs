@@ -9,7 +9,7 @@ use super::{Actions, FormControl, Scrollable, Text};
 use tilo_ui_base::{widget::Element, widget::Widget};
 use taffy::style_helpers::{line, span};
 
-use tilo_ui_base::{widget::composition_parts::Parts, widget::composition_parts::retained_parts};
+use tilo_ui_base::widget::composition_parts::Parts;
 mod label;
 mod page;
 use label::FieldLabel;
@@ -737,7 +737,7 @@ impl Widget for Form {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Form)
     }
-    retained_parts!("Form");
+    tilo_ui_base::retained_parts!("Form");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -847,7 +847,7 @@ impl Widget for FormSection {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Section)
     }
-    retained_parts!("FormSection", custom_apply_layout);
+    tilo_ui_base::retained_parts!("FormSection", custom_apply_layout);
     fn is_layout_dirty(&self) -> bool {
         // A collapsed section can contain no rows. It is still a layout
         // container, whose intrinsic size changes only with its children.
@@ -1046,7 +1046,7 @@ impl Widget for Field {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Field)
     }
-    retained_parts!("Field", custom_apply_layout);
+    tilo_ui_base::retained_parts!("Field", custom_apply_layout);
     fn set_interaction_environment(
         &mut self,
         environment: tilo_ui_base::interaction::InteractionEnvironment,
@@ -1290,7 +1290,7 @@ impl Widget for FieldBody {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    retained_parts!("FieldBody");
+    tilo_ui_base::retained_parts!("FieldBody");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

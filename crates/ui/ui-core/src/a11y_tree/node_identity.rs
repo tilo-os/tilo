@@ -1,20 +1,6 @@
 //! Correlates live traversal with inert layout registrations. Raw pointers are compared only; even an
 //! unavailable public-map entry is never dereferenced.
-use super::{HashMap, TaffyNodeId, Widget};
-
-#[derive(Default)]
-pub(crate) struct AdmittedNodeNames {
-    names: HashMap<TaffyNodeId, (*mut dyn Widget, String)>,
-}
-impl AdmittedNodeNames {
-    pub(crate) fn insert(&mut self, node: TaffyNodeId, pointer: *mut dyn Widget, name: String) {
-        self.names.insert(node, (pointer, name));
-    }
-    fn get(&self, node: TaffyNodeId, pointer: *mut dyn Widget) -> Option<&str> {
-        let (admitted, name) = self.names.get(&node)?;
-        std::ptr::eq(*admitted, pointer).then_some(name)
-    }
-}
+use super::{AdmittedNodeNames, HashMap, TaffyNodeId, Widget};
 
 struct Registration<'a> {
     id: TaffyNodeId,

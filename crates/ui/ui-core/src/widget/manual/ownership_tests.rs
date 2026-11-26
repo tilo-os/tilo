@@ -23,7 +23,7 @@ impl Widget for BoundRoot {
         dyn crate::bound_dispatch::BoundWidget,
         dyn tilo_ui_base::widget::component_walk::ComponentBoundary
     );
-    retained_parts!("BoundRoot");
+    tilo_ui_base::retained_parts!("BoundRoot");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

@@ -13,10 +13,17 @@ use crate::widget::MediaArt;
 use tilo_ui_base::widget::AvatarFace;
 use tilo_ui_base::{widget::RowLeadingShape, widget::RowShape};
 
-impl RowShape {
+/// What a row of a kind shows, as a list row's face.
+pub trait RowShapeFace {
     /// A face of this kind that says nothing: the geometry of the row.
-    #[must_use]
-    pub fn face(&self) -> ListRowFace<'static> {
+    fn face(&self) -> ListRowFace<'static>;
+
+    /// The height a row of this kind takes.
+    fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64;
+}
+
+impl RowShapeFace for RowShape {
+    fn face(&self) -> ListRowFace<'static> {
         let mut face = ListRowFace::new(" ");
         if self.title_lines > 1 {
             face = face.two_line_title();
@@ -43,8 +50,7 @@ impl RowShape {
         }
     }
 
-    /// The height a row of this kind takes.
-    pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+    fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         self.face().height(text, theme)
     }
 }

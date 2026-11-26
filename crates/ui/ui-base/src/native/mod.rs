@@ -12,5 +12,5 @@ pub use tilo_process_services::native::{capture, mpris, services};
 #[doc(inline)]
 pub use tilo_process_services::notify::windows_toasts as host_notifications;
 pub(crate) mod gpu_backends;
-pub(crate) mod standalone_instance;
+pub mod standalone_instance;
 pub mod warmup;

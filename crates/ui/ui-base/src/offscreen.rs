@@ -119,11 +119,11 @@ fn env_enabled_by_default(name: &str) -> bool {
     !matches!(crate::env::var(name).as_deref(), Ok("0"))
 }
 
-pub(crate) fn damage_geometric_capacity_enabled() -> bool {
+pub fn damage_geometric_capacity_enabled() -> bool {
     env_enabled_by_default("TILO_UI_DAMAGE_GEOMETRIC")
 }
 
-pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
+pub fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
     required
         .div_ceil(DAMAGE_TEXTURE_GRANULARITY)
         .saturating_mul(DAMAGE_TEXTURE_GRANULARITY)
@@ -133,7 +133,7 @@ pub(crate) fn damage_texture_extent(required: u32, device_limit: u32) -> u32 {
 
 /// Prefix targets are sampled/copied on Vello's 16px vertical tile grid, so their height can use the
 /// smaller quantum without changing rendered pixels.
-pub(crate) fn damage_texture_height_extent(required: u32, device_limit: u32) -> u32 {
+pub fn damage_texture_height_extent(required: u32, device_limit: u32) -> u32 {
     required
         .div_ceil(DAMAGE_TEXTURE_HEIGHT_GRANULARITY)
         .saturating_mul(DAMAGE_TEXTURE_HEIGHT_GRANULARITY)
@@ -141,7 +141,7 @@ pub(crate) fn damage_texture_height_extent(required: u32, device_limit: u32) -> 
         .max(required)
 }
 
-pub(crate) fn damage_texture_geometric_width_extent(
+pub fn damage_texture_geometric_width_extent(
     required: u32,
     viewport_width: u32,
     device_limit: u32,
@@ -155,7 +155,7 @@ pub(crate) fn damage_texture_geometric_width_extent(
         .max(required)
 }
 
-pub(crate) fn damage_texture_geometric_needs_replacement(
+pub fn damage_texture_geometric_needs_replacement(
     allocated_width: u32,
     allocated_height: u32,
     required_width: u32,
@@ -174,7 +174,7 @@ pub(crate) fn damage_texture_geometric_needs_replacement(
             && desired_height.saturating_mul(4) <= allocated_height)
 }
 
-pub(crate) fn damage_texture_needs_replacement(
+pub fn damage_texture_needs_replacement(
     allocated_width: u32,
     allocated_height: u32,
     required_width: u32,

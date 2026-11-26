@@ -104,11 +104,11 @@ pub fn has_separate_document_owner<W: Widget + ?Sized>(widget: &W) -> bool {
 }
 
 /// The scope of a component a walk is inside, held while the answer is.
-pub(crate) struct Entry(#[expect(dead_code, reason = "held for its drop")] Option<ScopeEntry>);
+pub struct Entry(#[expect(dead_code, reason = "held for its drop")] Option<ScopeEntry>);
 
 /// Enter `binding`'s component for the calls about to run. `None` when the
 /// component has closed, so the walk leaves its widgets alone.
-pub(crate) fn enter(binding: Option<&Binding>) -> Option<Entry> {
+pub fn enter(binding: Option<&Binding>) -> Option<Entry> {
     binding
         .map(|binding| binding.enter())
         .transpose()
@@ -125,7 +125,7 @@ pub(crate) fn node_binding(
 }
 
 /// Note that input reached node `node`: its component then counts it as the person's.
-pub(crate) fn note_input(bindings: &super::bound_nodes::BoundNodeMap, node: taffy::NodeId) {
+pub fn note_input(bindings: &super::bound_nodes::BoundNodeMap, node: taffy::NodeId) {
     if let Some(binding) = bindings.binding_ref(node) {
         binding.note_input();
     }

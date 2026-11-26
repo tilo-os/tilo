@@ -6,7 +6,7 @@ use vello::peniko::ImageData;
 use crate::image_store::DecodedImage;
 
 /// A page image's encoded bytes to RGBA, at the size it was encoded.
-pub(crate) fn page(bytes: &[u8]) -> Option<ImageData> {
+pub fn page(bytes: &[u8]) -> Option<ImageData> {
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (width, height) = img.dimensions();
     Some(crate::raster::rgba8(img.into_raw(), width, height))

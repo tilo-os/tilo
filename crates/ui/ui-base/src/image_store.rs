@@ -506,7 +506,7 @@ fn serving_of(window: &WakeHandle) -> Option<(HostImageFactory, ServedWindow)> {
 
 /// `window` is built, reading its record's content from `content`: the pictures its host loads for it
 /// are read, and asked for, there.
-pub(crate) fn window_built(window: &WakeHandle, content: Option<tilo_content::ContentStore>) {
+pub fn window_built(window: &WakeHandle, content: Option<tilo_content::ContentStore>) {
     if let Some((_, served)) = serving_of(window) {
         *served.content.borrow_mut() = content;
     }

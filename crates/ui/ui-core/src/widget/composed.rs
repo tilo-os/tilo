@@ -193,23 +193,23 @@ macro_rules! forward_to_composed {
             self.$field.apply_layout(taffy, node, origin);
         }
 
-        fn draw(&mut self, ctx: &mut $tilo_ui_base::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>) {
             self.$field.draw(ctx);
         }
 
         fn handle_event(
             &mut self,
             event: &$crate::winit::event::WindowEvent,
-            ctx: &mut $tilo_ui_base::widget::EventCtx<'_>,
+            ctx: &mut ::tilo_ui_base::widget::EventCtx<'_>,
         ) {
             self.$field.handle_event(event, ctx);
         }
 
-        fn children(&self) -> Vec<&dyn $tilo_ui_base::widget::Widget> {
+        fn children(&self) -> Vec<&dyn ::tilo_ui_base::widget::Widget> {
             self.$field.children()
         }
 
-        fn children_mut(&mut self) -> Vec<&mut (dyn $tilo_ui_base::widget::Widget + '_)> {
+        fn children_mut(&mut self) -> Vec<&mut (dyn ::tilo_ui_base::widget::Widget + '_)> {
             self.$field.children_mut()
         }
 

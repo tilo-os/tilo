@@ -19,7 +19,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     let mut visited = std::collections::HashSet::new();
     for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
         // SAFETY: see the function's safety note; the pointer is live.
-        if !visited.insert(unsafe { crate::widget::node_sweep_identity(w_ptr) }) {
+        if !visited.insert(unsafe { tilo_ui_base::widget::node_sweep_identity(w_ptr) }) {
             continue;
         }
         // SAFETY: see the function's safety note. The reference is created and
@@ -61,7 +61,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     }
     let mut visited = std::collections::HashSet::new();
     // SAFETY: the root and every node pointer are live for this exclusive sweep.
-    visited.insert(unsafe { crate::widget::node_sweep_identity(root) });
+    visited.insert(unsafe { tilo_ui_base::widget::node_sweep_identity(root) });
     let mut bound_changed = false;
     // A row per item: the sweep visits many widgets of the same component, whose scope is held
     // across them instead of opened and closed for each.
@@ -71,7 +71,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             continue;
         };
         // SAFETY: as above; no other borrow of this node is live.
-        if !visited.insert(unsafe { crate::widget::node_sweep_identity(pointer) }) {
+        if !visited.insert(unsafe { tilo_ui_base::widget::node_sweep_identity(pointer) }) {
             continue;
         }
         let binding = bindings

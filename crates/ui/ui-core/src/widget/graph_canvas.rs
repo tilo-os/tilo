@@ -1,5 +1,5 @@
 //! Retained graph composition: real controls on Manual, decorative themed edges.
-use tilo_ui_base::{widget::composition_parts::Parts, widget::composition_parts::retained_parts};
+use tilo_ui_base::widget::composition_parts::Parts;
 use tilo_ui_base::{widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget};
 use tilo_ui_base::Theme;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
@@ -178,7 +178,7 @@ fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
 impl Widget for GraphCanvas {
     tilo_ui_base::described!();
 
-    retained_parts!("GraphCanvas");
+    tilo_ui_base::retained_parts!("GraphCanvas");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

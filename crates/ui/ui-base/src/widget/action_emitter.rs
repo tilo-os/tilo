@@ -128,7 +128,7 @@ impl<I> ActionEmitter<I> {
 /// does not move, and the value the press points at is sent, to be refused with why
 /// ([`ActionEmitter::emit`]), never dropped unseen.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RefusedPress {
+pub struct RefusedPress {
     over: Option<vello::kurbo::Point>,
 }
 

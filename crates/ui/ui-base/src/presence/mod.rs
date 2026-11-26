@@ -25,7 +25,7 @@ mod mark;
 mod members;
 mod overlay;
 mod placed;
-pub(crate) mod render;
+pub mod render;
 pub use caret_tag::{
     CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, overlaps, tag_gap, tags_crowd,
 };
@@ -56,7 +56,7 @@ pub use render::{
     layout_peer_pills, paint_follow_frame, paint_followed_pointer, paint_own_chat_bubble,
     paint_reaction, paint_speaking_ring,
 };
-pub(crate) use written::written_under;
+pub use written::written_under;
 
 /// The scope this process should publish its presence under — the workspace
 /// it collaborates in, or `None` when it has no workspace. Read from

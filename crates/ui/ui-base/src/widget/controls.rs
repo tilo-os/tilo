@@ -157,7 +157,7 @@ pub use crate::optional_emitter_controls;
 
 /// A value control's binding: its action, else the collaborative document key it writes, else its
 /// semantic action.
-pub(crate) fn value_control_bindings<I>(
+pub fn value_control_bindings<I>(
     control_id: &str,
     action: Option<&super::ActionEmitter<I>>,
     document_key: Option<&str>,
@@ -176,7 +176,7 @@ pub(crate) fn value_control_bindings<I>(
     }]
 }
 
-pub(crate) fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
+pub fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
     // Read a widget's kept rows where it keeps them, not a copy of each.
     let mut bindings = Vec::new();
     if let Some(shared) = widget.accessibility_shared() {

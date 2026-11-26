@@ -356,7 +356,7 @@ impl InteractionEnvironment {
 
 /// The navigation a mouse side button asks for: Back and Forward go back and forward through whatever
 /// history the view under them owns, as in every shell browser and file manager.
-pub(crate) fn mouse_nav_direction(
+pub fn mouse_nav_direction(
     event: &winit::event::WindowEvent,
 ) -> Option<crate::gesture::NavDirection> {
     use crate::gesture::NavDirection;
@@ -379,7 +379,7 @@ pub(crate) fn mouse_nav_direction(
 /// Android's Back key as the Escape the toolkit dismisses with; what Escape leaves unconsumed falls
 /// through to back navigation, then to closing.
 #[cfg(any(feature = "native", test))]
-pub(crate) fn back_key_as_escape(
+pub fn back_key_as_escape(
     event: &winit::event::WindowEvent,
 ) -> Option<winit::event::WindowEvent> {
     use winit::keyboard::{Key, NamedKey};

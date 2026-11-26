@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use std::any::Any;
 
 /// Where `doc` is, to tell whether a settle pass changed it.
-pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+pub fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
     (doc.base_heads(), doc.pending_ops())
 }
 

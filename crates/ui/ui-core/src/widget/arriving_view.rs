@@ -1095,9 +1095,14 @@ impl Widget for ArrivingView {
     }
 }
 
-impl<T: 'static, E: std::fmt::Display + 'static> Arriving<T, E> {
+/// The view of a read that is arriving.
+pub trait ArrivingViewOf<T> {
     /// The view of this read: `build`'s content once the answer is there.
-    pub fn view(&self, build: impl FnMut(&T) -> Element + 'static) -> ArrivingView {
+    fn view(&self, build: impl FnMut(&T) -> Element + 'static) -> ArrivingView;
+}
+
+impl<T: 'static, E: std::fmt::Display + 'static> ArrivingViewOf<T> for Arriving<T, E> {
+    fn view(&self, build: impl FnMut(&T) -> Element + 'static) -> ArrivingView {
         ArrivingView::new(self, build)
     }
 }

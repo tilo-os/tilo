@@ -222,7 +222,7 @@ pub fn published_action(
 /// The resource roots a walk holds: a widget answering for the widget below it and that widget
 /// itself publish the same resource, which belongs in the tree once.
 #[derive(Default)]
-pub(crate) struct TakenResources(std::collections::HashSet<String>);
+pub struct TakenResources(std::collections::HashSet<String>);
 
 impl TakenResources {
     /// Whether this walk holds resource root `id` already.

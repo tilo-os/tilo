@@ -53,7 +53,7 @@ pub struct ControlCoverage {
 #[derive(Clone)]
 pub struct ControlDomain(Rc<RefCell<DomainState>>);
 #[derive(Clone, Default)]
-pub(crate) struct WeakControlDomain(Weak<RefCell<DomainState>>);
+pub struct WeakControlDomain(Weak<RefCell<DomainState>>);
 struct DomainState {
     id: uuid::Uuid,
     incarnation: uuid::Uuid,
@@ -70,7 +70,7 @@ struct DomainState {
 }
 /// Who registered a control a domain holds: the window's own root, or one of its components.
 #[derive(Clone)]
-pub(crate) enum PendingControlOrigin {
+pub enum PendingControlOrigin {
     Outer {
         root_lifetime: uuid::Uuid,
     },
@@ -82,14 +82,14 @@ pub(crate) enum PendingControlOrigin {
 /// and the input that produced it.
 #[cfg(feature = "model")]
 #[derive(Clone)]
-pub(crate) struct ComponentControl {
+pub struct ComponentControl {
     pub(crate) input: crate::widget::input_provenance::Input,
     pub(crate) binding: crate::widget::component_walk::Binding,
     pub(crate) address: tilo_actions::ActionAddress,
 }
 
 #[derive(Clone)]
-pub(crate) enum ControlOwner {
+pub enum ControlOwner {
     Outer(uuid::Uuid),
     #[cfg(feature = "model")]
     Component(crate::widget::component_walk::Binding),
@@ -129,14 +129,14 @@ pub struct ControlOutbox {
     domain: WeakControlDomain,
     producer: Rc<RefCell<Producer>>,
 }
-pub(crate) struct OwnedControl {
+pub struct OwnedControl {
     pub(crate) origin: PendingControlOrigin,
     pub(crate) invocation: ControlInvocation,
     pub(crate) domain: WeakControlDomain,
 }
 /// Exact surface incarnation/generation. Removing one lease cannot remove any
 /// overlapping surface's lease. New descendants observe ancestors immediately.
-pub(crate) struct SuspensionLease {
+pub struct SuspensionLease {
     domain: WeakControlDomain,
     key: uuid::Uuid,
 }
@@ -672,7 +672,7 @@ impl RawControlSlot {
     }
 }
 #[derive(Default)]
-pub(crate) struct RegisteredControls {
+pub struct RegisteredControls {
     pub(crate) outer: VecDeque<ControlInvocation>,
     #[cfg(feature = "model")]
     pub(crate) components: Vec<(ComponentControl, ControlInvocation)>,
@@ -695,7 +695,7 @@ impl ControlDomain {
 
 /// The life of what owns a control domain (a mounted component, an open record): while it is
 /// active its controls run, and dropping it closes the domain.
-pub(crate) struct ResourceOwnerLifetime {
+pub struct ResourceOwnerLifetime {
     pub(crate) active: std::cell::Cell<bool>,
     pub(crate) id: uuid::Uuid,
     pub(crate) control_domain: ControlDomain,

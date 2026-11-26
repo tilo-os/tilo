@@ -22,7 +22,7 @@ pub fn find_mut<T: Widget + 'static>(root: &mut dyn Widget) -> Option<&mut T> {
 }
 
 /// [`find_mut`], to read.
-pub(crate) fn find<T: Widget + 'static>(root: &dyn Widget) -> Option<&T> {
+pub fn find<T: Widget + 'static>(root: &dyn Widget) -> Option<&T> {
     if let Some(found) = root.as_any().and_then(|any| any.downcast_ref::<T>()) {
         return Some(found);
     }

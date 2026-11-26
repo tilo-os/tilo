@@ -16,7 +16,7 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 mod cache;
 pub use cache::PreparedText;
 #[cfg(feature = "native")]
-pub(crate) mod font_origins;
+pub mod font_origins;
 mod presentation;
 pub use presentation::present_text;
 use presentation::{epoch as presentation_epoch, presents_text};
@@ -593,7 +593,7 @@ pub enum TextKind {
 }
 
 /// The features that pick a figure style: spacing and form.
-pub(crate) const FIGURE_TAGS: [OpenTypeTag; 4] = [
+pub const FIGURE_TAGS: [OpenTypeTag; 4] = [
     OpenTypeTag::TABULAR_NUMERALS,
     OpenTypeTag::PROPORTIONAL_NUMERALS,
     OpenTypeTag::OLDSTYLE_NUMERALS,

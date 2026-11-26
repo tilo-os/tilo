@@ -448,7 +448,7 @@ pub fn before_first_sync() -> bool {
 /// What an empty state shows in place of the app's own while the workspace has not
 /// synced.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Waiting {
+pub struct Waiting {
     pub title: String,
     pub message: Option<String>,
     pub spinner_since: Option<Instant>,
@@ -464,7 +464,7 @@ impl Waiting {
 
 /// What an empty state shows instead of the app's own, while the workspace has not
 /// synced; `None` once it has (or outside a workspace that syncs).
-pub(crate) fn waiting() -> Option<Waiting> {
+pub fn waiting() -> Option<Waiting> {
     TOLD.with(|told| {
         let told = told.borrow();
         let told = told.as_ref().filter(|told| told.sync.before_first_sync())?;
@@ -533,7 +533,7 @@ pub(crate) fn waiting() -> Option<Waiting> {
 /// its next pose at `next` while it turns: the window redraws then ([`next_pose`]), and
 /// the new pose damages that slot alone. A turning spinner costs one small frame per
 /// pose, never a frame per refresh, a sync or a layout.
-pub(crate) fn spinner_painted(step: u64, next: Option<Instant>, scene_rect: vello::kurbo::Rect) {
+pub fn spinner_painted(step: u64, next: Option<Instant>, scene_rect: vello::kurbo::Rect) {
     SPINNER.with(|spinner| {
         let (last, pending) = spinner.get();
         let pending = if last == Some(step) {
@@ -551,21 +551,21 @@ pub(crate) fn spinner_painted(step: u64, next: Option<Instant>, scene_rect: vell
 /// A frame starts drawing: what it paints says again whether a spinner turns
 /// ([`spinner_painted`]).
 #[cfg(any(test, feature = "native"))]
-pub(crate) fn frame_drawing() {
+pub fn frame_drawing() {
     NEXT_POSE.with(|pose| pose.set(None));
 }
 
 /// When the turning spinner the last drawn frame painted takes its next pose; `None` when
 /// no spinner turns.
 #[cfg(any(test, feature = "native"))]
-pub(crate) fn next_pose() -> Option<Instant> {
+pub fn next_pose() -> Option<Instant> {
     NEXT_POSE.with(Cell::get)
 }
 
 /// Where the waiting spinner painted a new pose since the last frame, in scene (physical)
 /// pixels: it paints outside any widget's box, so the frame damages that slot.
 #[cfg(any(test, feature = "native"))]
-pub(crate) fn take_spinner_damage() -> Option<vello::kurbo::Rect> {
+pub fn take_spinner_damage() -> Option<vello::kurbo::Rect> {
     SPINNER.with(|spinner| {
         let (last, pending) = spinner.get();
         spinner.set((last, None));

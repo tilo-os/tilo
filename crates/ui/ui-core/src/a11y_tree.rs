@@ -46,7 +46,7 @@ type ComponentSnapshot = std::convert::Infallible;
 use tilo_ui_base::a11y::SemanticId;
 use tilo_ui_base::{a11y_walk::A11yVisitor, a11y_walk::HostedByIndex, a11y_walk::HostedWidget, a11y_walk::Visit, a11y_walk::walk, a11y_walk::walk_synthetic, a11y_walk::with_slot_words};
 pub(crate) use component_nodes::component_resource;
-pub(crate) use node_identity::AdmittedNodeNames;
+pub(crate) use tilo_ui_base::widget::bound_nodes::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
 

@@ -10,7 +10,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{widget::composition_parts::Parts, widget::composition_parts::retained_parts};
+use tilo_ui_base::widget::composition_parts::Parts;
 use tilo_ui_base::paint::PaintCtx;
 
 use tilo_ui_base::text_render::TextRenderer;
@@ -251,7 +251,7 @@ struct CardHeader {
 }
 
 impl Widget for CardHeader {
-    retained_parts!("CardHeader");
+    tilo_ui_base::retained_parts!("CardHeader");
 
     fn build_layout(
         &mut self,
@@ -809,7 +809,7 @@ impl Actions {
 }
 
 impl Widget for Actions {
-    retained_parts!("Actions");
+    tilo_ui_base::retained_parts!("Actions");
 
     fn build_layout(
         &mut self,

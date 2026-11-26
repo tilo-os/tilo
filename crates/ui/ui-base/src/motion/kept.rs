@@ -70,7 +70,7 @@ pub fn take_kept_at<T: 'static>(at: Rect) -> Option<T> {
 
 /// Whether a widget of `T`'s kind left anything a widget built now could take up.
 #[must_use]
-pub(crate) fn kept_any<T: 'static>() -> bool {
+pub fn kept_any<T: 'static>() -> bool {
     let kind = TypeId::of::<T>();
     KEPT.with(|kept| kept.borrow().iter().any(|entry| entry.kind == kind))
 }
@@ -188,7 +188,7 @@ impl<T: 'static> HandOn<T> {
 const KEPT_FRAMES: u8 = 2;
 
 /// A frame's layout and drawing ended: what nothing took up in the frames since it was left is let go.
-pub(crate) fn frame_ended() {
+pub fn frame_ended() {
     KEPT.with(|kept| {
         let mut kept = kept.borrow_mut();
         if kept.is_empty() {
@@ -217,7 +217,7 @@ pub fn laying_out_window(shown: bool) -> LayingOutWindow {
 
 /// While the guard lives, a window is dropping its widgets as it closes: they leave nothing ([`keep`]),
 /// since no rebuild of theirs follows.
-pub(crate) fn closing_window() -> ClosingWindow {
+pub fn closing_window() -> ClosingWindow {
     CLOSING.with(|closing| closing.set(closing.get() + 1));
     ClosingWindow(())
 }

@@ -260,23 +260,6 @@ impl From<UiButtonRole> for ButtonRole {
     }
 }
 
-impl From<UiTextRole> for TextRole {
-    fn from(value: UiTextRole) -> Self {
-        match value {
-            UiTextRole::Display => Self::Display,
-            UiTextRole::LargeTitle => Self::LargeTitle,
-            UiTextRole::Title => Self::Title,
-            UiTextRole::Heading => Self::Heading,
-            UiTextRole::Subheading => Self::Subheading,
-            UiTextRole::Body => Self::Body,
-            UiTextRole::Label => Self::Label,
-            UiTextRole::Caption => Self::Caption,
-            UiTextRole::Reading => Self::Reading,
-            UiTextRole::Code => Self::Code,
-        }
-    }
-}
-
 /// Compile a validated serialized graph into ordinary Tilo widgets.
 pub trait UiDocumentExt {
     /// Build the retained widget subtree represented by this graph.

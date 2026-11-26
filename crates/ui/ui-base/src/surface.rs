@@ -911,7 +911,7 @@ pub enum ContentEdge {
 }
 
 /// How far a [`content_edge_fade`] reaches into the viewport, at most a third of it.
-pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
+pub const CONTENT_FADE_PX: f64 = 24.0;
 
 /// Where [`content_edge_fade`] paints over the viewport `rect` toward `edge`: what a
 /// scroller copies under it is not what the fade shows.

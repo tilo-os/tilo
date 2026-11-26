@@ -194,7 +194,7 @@ pub fn registers_readers(widget: &dyn crate::widget::Widget) -> bool {
 }
 
 /// The reader registered anywhere in `widget`'s retained tree for `type_id`.
-pub(crate) fn registered_in_tree(
+pub fn registered_in_tree(
     widget: &dyn crate::widget::Widget,
     type_id: &str,
 ) -> Option<&'static [RegisteredSemanticReader]> {

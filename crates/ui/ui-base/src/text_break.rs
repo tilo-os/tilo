@@ -64,7 +64,7 @@ pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
 /// `old[start..old_end]` became `new[start..new_end]`; both end before a line feed or at
 /// the end.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct LineEdit {
+pub struct LineEdit {
     pub(crate) start: usize,
     pub(crate) old_end: usize,
     pub(crate) new_end: usize,
@@ -363,7 +363,7 @@ pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 /// Extended grapheme clusters (UAX #29) of `text`, in order.
-pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
+pub fn graphemes(text: &str) -> impl Iterator<Item = &str> {
     grapheme_indices(text).map(|(_, cluster)| cluster)
 }
 

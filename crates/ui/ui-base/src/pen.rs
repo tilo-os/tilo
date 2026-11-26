@@ -44,7 +44,7 @@ thread_local! {
 
 /// The stylus behind the pointer event being dispatched, if a stylus made it.
 #[must_use]
-pub(crate) fn current() -> Option<PenSample> {
+pub fn current() -> Option<PenSample> {
     CURRENT.with(Cell::get)
 }
 

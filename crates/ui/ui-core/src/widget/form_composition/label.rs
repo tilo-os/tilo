@@ -12,7 +12,7 @@ impl Widget for FieldLabel {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    retained_parts!("FieldLabel");
+    tilo_ui_base::retained_parts!("FieldLabel");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

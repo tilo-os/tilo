@@ -9,14 +9,14 @@ macro_rules! inert_widget_methods {
         fn build_layout(
             &mut self,
             tree: &mut ::taffy::TaffyTree<()>,
-            _: &$tilo_ui_base::theme::Theme,
+            _: &::tilo_ui_base::theme::Theme,
             nodes: &mut ::std::collections::HashMap<
                 ::taffy::NodeId,
-                *mut dyn $tilo_ui_base::widget::Widget,
+                *mut dyn ::tilo_ui_base::widget::Widget,
             >,
         ) -> ::taffy::NodeId {
             let node = tree.new_leaf(::taffy::Style::default()).unwrap();
-            nodes.insert(node, ::std::ptr::from_mut::<dyn $tilo_ui_base::widget::Widget>(self));
+            nodes.insert(node, ::std::ptr::from_mut::<dyn ::tilo_ui_base::widget::Widget>(self));
             node
         }
     };
@@ -24,8 +24,8 @@ macro_rules! inert_widget_methods {
         fn build_layout(
             &mut self,
             tree: &mut ::taffy::TaffyTree<()>,
-            _: &$tilo_ui_base::theme::Theme,
-            _: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn $tilo_ui_base::widget::Widget>,
+            _: &::tilo_ui_base::theme::Theme,
+            _: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn ::tilo_ui_base::widget::Widget>,
         ) -> ::taffy::NodeId {
             tree.new_leaf(::taffy::Style::default()).unwrap()
         }
@@ -47,7 +47,7 @@ macro_rules! inert_widget_methods {
 
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
-        fn sync(&mut self, doc: &$tilo_ui_base::widget::AppModel, path: &$tilo_ui_base::widget::ModelPath) {
+        fn sync(&mut self, doc: &::tilo_ui_base::widget::AppModel, path: &::tilo_ui_base::widget::ModelPath) {
             self.$field.sync(doc, path);
         }
     };
@@ -55,10 +55,10 @@ macro_rules! delegate_widget_methods {
         fn build_layout(
             &mut self,
             tree: &mut ::taffy::TaffyTree<()>,
-            theme: &$tilo_ui_base::theme::Theme,
+            theme: &::tilo_ui_base::theme::Theme,
             nodes: &mut ::std::collections::HashMap<
                 ::taffy::NodeId,
-                *mut dyn $tilo_ui_base::widget::Widget,
+                *mut dyn ::tilo_ui_base::widget::Widget,
             >,
         ) -> ::taffy::NodeId {
             self.$field.build_layout(tree, theme, nodes)
@@ -75,7 +75,7 @@ macro_rules! delegate_widget_methods {
         }
     };
     (@ $field:tt draw) => {
-        fn draw(&mut self, ctx: &mut $tilo_ui_base::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>) {
             self.$field.draw(ctx);
         }
     };
@@ -83,7 +83,7 @@ macro_rules! delegate_widget_methods {
         fn handle_event(
             &mut self,
             event: &::winit::event::WindowEvent,
-            ctx: &mut $tilo_ui_base::widget::EventCtx<'_>,
+            ctx: &mut ::tilo_ui_base::widget::EventCtx<'_>,
         ) {
             self.$field.handle_event(event, ctx);
         }

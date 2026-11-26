@@ -306,7 +306,7 @@ thread_local! {
 
 /// The styles a widget reads and sets of its own node and its children's: in a tree before or after
 /// a solve, or within one as the node is solved ([`taffy::Restyle`]).
-pub(crate) trait Styles {
+pub trait Styles {
     fn style_of(&self, node: NodeId) -> Option<&taffy::Style>;
     /// Give `node` `style`; whether it took.
     fn set_style_of(&mut self, node: NodeId, style: taffy::Style) -> bool;
@@ -345,7 +345,7 @@ impl Styles for taffy::Restyle<'_> {
 /// A layout tree by address, to name it to [`placing_again_in`] while the tree's owner is
 /// borrowed to place its widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TreeId(*const ());
+pub struct TreeId(*const ());
 
 impl TreeId {
     pub(crate) fn of(taffy: &TaffyTree<()>) -> Self {
@@ -359,7 +359,7 @@ impl TreeId {
 /// so every box stands where it stood relative to its parent. A long
 /// collection then places only what is near its [`layout_clip`]
 /// ([`placing_again`]).
-pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T {
+pub fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T {
     struct Restore(Option<*const ()>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -372,7 +372,7 @@ pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T 
 
 /// Maximum `rect.y1` across a widget subtree, for finding the true bottom edge when taffy's
 /// `content_size` under-reports.
-pub(crate) fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
+pub fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
     let mut deepest = w.get_rect().y1;
     if w.child_clip_rect().is_some() {
         return deepest;
@@ -385,7 +385,7 @@ pub(crate) fn max_bottom_edge(w: &dyn super::Widget) -> f64 {
 
 /// Whether `event` happens at a place in the window (a pointer, a touch),
 /// so only what stands there may take it.
-pub(crate) fn at_a_place(event: &winit::event::WindowEvent) -> bool {
+pub fn at_a_place(event: &winit::event::WindowEvent) -> bool {
     use winit::event::WindowEvent;
     matches!(
         event,
@@ -549,7 +549,7 @@ pub(crate) type MeasureNode<'a> =
 
 /// Solve `taffy` from `root`, measuring leaves with `measure`.
 #[inline(never)]
-pub(crate) fn solve_layout(
+pub fn solve_layout(
     taffy: &mut TaffyTree<()>,
     root: NodeId,
     available: Size<AvailableSpace>,
@@ -956,7 +956,7 @@ unsafe fn widget_name(
 /// chrome rebuilds its own bar in place when the window crosses the width
 /// class it presents in (`set_width`), and the refresh that does it asks for
 /// the tree rebuilt around the controls it replaced.
-pub(crate) fn tree_composition_follows_allocation(root: &(impl Widget + ?Sized)) -> bool {
+pub fn tree_composition_follows_allocation(root: &(impl Widget + ?Sized)) -> bool {
     root.composition_follows_allocation() || {
         let mut found = false;
         root.for_each_child(&mut |child| {
@@ -969,7 +969,7 @@ pub(crate) fn tree_composition_follows_allocation(root: &(impl Widget + ?Sized))
 /// A solved tree in traversal order, independent of allocated `NodeId`s. Include
 /// topology as well as geometry: equal root rectangles alone do not prove that
 /// a geometry-dependent child's composition has caught up with its allocation.
-pub(crate) fn composition_geometry(
+pub fn composition_geometry(
     taffy: &TaffyTree<()>,
     root: NodeId,
 ) -> Result<CompositionGeometry, WidgetLayoutError> {
@@ -992,7 +992,7 @@ type CompositionGeometry = Vec<(usize, taffy::Point<f32>, Size<f32>)>;
 /// `None` means sync replaced delegates: their stale maps must not be measured.
 /// Eight passes bound both that case and oscillating composition. An error must
 /// prevent paint; callers must not mark the new viewport successfully laid out.
-pub(crate) fn settle_widget_composition(
+pub fn settle_widget_composition(
     viewport_changed: bool,
     mut pass: impl FnMut(bool) -> Result<(Option<CompositionGeometry>, bool), WidgetLayoutError>,
 ) -> Result<(), WidgetLayoutError> {
@@ -1014,7 +1014,7 @@ pub(crate) fn settle_widget_composition(
 /// Focus state for a rebuild, matched by a unique semantic or named widget
 /// identity rather than a traversal ordinal. Anonymous controls can retain focus on their existing
 /// instance; ambiguity/removal deliberately leaves no restoration target.
-pub(crate) struct CompositionFocus {
+pub struct CompositionFocus {
     ambiguous: bool,
     key: Option<String>,
     semantic_key: Option<String>,
@@ -1569,7 +1569,7 @@ pub(super) fn allocation_or_content_size(
 /// A linear container's `(rect, paint_rect)` at `origin`: the rect spans
 /// [`allocation_or_content_size`], the paint rect the laid-out box grown to fit its
 /// content.
-pub(super) fn flow_rects(
+pub fn flow_rects(
     tree: &TaffyTree<()>,
     node: NodeId,
     origin: vello::kurbo::Point,
@@ -1605,7 +1605,7 @@ pub(super) fn flow_rects(
     clippy::cast_possible_truncation,
     reason = "window-space layout dimensions narrowed for taffy; never near f32::MAX"
 )]
-pub(crate) fn lay_out_detached(
+pub fn lay_out_detached(
     widget: &mut dyn Widget,
     rect: vello::kurbo::Rect,
     theme: &Theme,
@@ -1685,7 +1685,7 @@ pub(crate) fn solve_built(
 }
 
 /// The style of a widget that takes no place in its parent's flow.
-pub(crate) fn removed_from_flow() -> taffy::Style {
+pub fn removed_from_flow() -> taffy::Style {
     taffy::Style {
         display: taffy::Display::None,
         ..taffy::Style::default()

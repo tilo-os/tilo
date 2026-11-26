@@ -230,12 +230,6 @@ pub(crate) fn compare_optional_bool(
     }
 }
 
-impl From<tilo_ui_base::a11y::Role> for String {
-    fn from(role: tilo_ui_base::a11y::Role) -> Self {
-        role_name(role).to_owned()
-    }
-}
-
 pub(super) use tilo_ui_base::a11y::role_name;
 
 pub(crate) fn collect_targets(

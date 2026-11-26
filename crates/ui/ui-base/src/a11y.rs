@@ -273,7 +273,7 @@ pub enum Action {
 /// Whether activating a control of `role` has a meaning of it, so an assistive technology is offered
 /// the activation: the roles a person presses.
 #[must_use]
-pub(crate) fn activation_role(role: Role) -> bool {
+pub fn activation_role(role: Role) -> bool {
     pressable_role(crate::accesskit_bridge::map_role(role))
 }
 
@@ -285,7 +285,7 @@ pub(crate) fn activation_role(role: Role) -> bool {
 /// box is one too: the closed chooser is pressed to open the list, and what a person, a screen
 /// reader or an agent presses by its name is the control itself, never the row it stands on.
 #[must_use]
-pub(crate) const fn pressable_role(role: crate::accesskit::Role) -> bool {
+pub const fn pressable_role(role: crate::accesskit::Role) -> bool {
     matches!(
         role,
         crate::accesskit::Role::Button
@@ -915,7 +915,7 @@ impl From<Rect> for AccessBounds {
 
 /// Where a synthetic node (one of `owner`'s accessibility children, at `path` below its node) is drawn:
 /// its bounds, else the rect the owner reports for it.
-pub(crate) fn synthetic_bounds(
+pub fn synthetic_bounds(
     access: &AccessNode,
     owner: &dyn crate::widget::Widget,
     path: &[usize],
@@ -932,7 +932,7 @@ pub(crate) fn synthetic_bounds(
 /// geometry filled in by [`synthetic_bounds`], as the native accessibility
 /// tree reads it: a node exported without bounds would otherwise be placed
 /// over its owner's whole rect, and a pointer sent to its centre would miss.
-pub(crate) fn with_synthetic_bounds(
+pub fn with_synthetic_bounds(
     mut access: AccessNode,
     owner: &dyn crate::widget::Widget,
 ) -> AccessNode {
@@ -950,13 +950,13 @@ pub(crate) fn with_synthetic_bounds(
 
 /// Whether layout gave `widget` a place with an area on the window: one it never placed (a
 /// list's row it did not lay out) reads as a box at the origin.
-pub(crate) fn is_placed(widget: &dyn crate::widget::Widget) -> bool {
+pub fn is_placed(widget: &dyn crate::widget::Widget) -> bool {
     widget.get_rect().area() > 0.0
 }
 
 /// `node` and everything under it as published by a widget nothing laid out ([`is_placed`]): no
 /// bounds anywhere, so nothing in it is a place to press.
-pub(crate) fn unplace(node: &mut AccessNode) {
+pub fn unplace(node: &mut AccessNode) {
     node.bounds = None;
     node.children.iter_mut().for_each(unplace);
 }
@@ -987,7 +987,7 @@ pub use crate::color::{contrast_ratio, relative_luminance};
 
 /// The node `widget` states, and what a row of one is called: its, or the first node a widget it wraps
 /// names itself with.
-pub(crate) fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNode> {
+pub fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNode> {
     if let Some(node) = widget.accessibility()
         && node.name.is_some()
     {
@@ -1001,7 +1001,7 @@ pub(crate) fn stated_node(widget: &dyn crate::widget::Widget) -> Option<AccessNo
 
 /// The widget that states `widget`'s row ([`stated_node`]), to act on: the one whose node an owner
 /// publishing the row hands over, so the one an action on that node reaches.
-pub(crate) fn stated_widget_mut(
+pub fn stated_widget_mut(
     widget: &mut dyn crate::widget::Widget,
 ) -> Option<&mut dyn crate::widget::Widget> {
     if widget
@@ -1212,5 +1212,11 @@ impl SemanticId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl From<Role> for String {
+    fn from(role: Role) -> Self {
+        role_name(role).to_owned()
     }
 }

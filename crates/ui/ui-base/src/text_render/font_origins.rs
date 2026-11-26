@@ -15,7 +15,7 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Frames go to a render service from here on.
 #[cfg(target_os = "linux")]
-pub(crate) fn mark_active() {
+pub fn mark_active() {
     ACTIVE.store(true, Ordering::Release);
 }
 
@@ -41,6 +41,6 @@ pub(crate) fn note_font_file(font: &FontData, path: &Path) {
 
 /// The file `font` was loaded from, when the text renderer noted it.
 #[cfg(target_os = "linux")]
-pub(crate) fn font_file(font: &FontData) -> Option<PathBuf> {
+pub fn font_file(font: &FontData) -> Option<PathBuf> {
     font_files().lock_recover().get(&font.data.id()).cloned()
 }

@@ -1,7 +1,7 @@
 //! The undo a widget sees and asks for: the capabilities a widget implements to report its
 //! own history, the status it shows and the request it makes, and the access field that
 //! holds them. The host drives undo itself ([`crate::undo`]).
-pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
+pub const EDIT_OPERATION: &str = "tilo.host.edit";
 
 pub use tilo_webview::{UndoRequest, UndoStatus};
 
@@ -185,7 +185,7 @@ pub fn local_undo_status(widget: &dyn crate::widget::Widget) -> Option<LocalUndo
     widget.children().into_iter().find_map(local_undo_status)
 }
 
-pub(crate) fn local_undo_is_deferred(widget: &dyn crate::widget::Widget) -> bool {
+pub fn local_undo_is_deferred(widget: &dyn crate::widget::Widget) -> bool {
     if let Some(local) = crate::widget::capability::capability::<dyn LocalUndo>(widget) {
         return local.local_undo_status().is_some() && local.local_undo_is_deferred();
     }

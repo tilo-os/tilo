@@ -31,7 +31,7 @@ struct State {
 
 /// Where a frame keeps the pixels of a scroller's content, in scene pixels.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Keep {
+pub struct Keep {
     /// Where the content shows: what it paints anywhere else is clipped away.
     clip: Rect,
     /// Where the pixels stay, or land after the copy.
@@ -137,7 +137,7 @@ impl Keep {
 
 /// What a host that culls its frames keeps from one to the next.
 #[derive(Default)]
-pub(crate) struct Culling {
+pub struct Culling {
     /// The scenes a culled frame draws into.
     pub(crate) scenes: Scenes,
     /// Where the last frame that copied repainted, in scene pixels.
@@ -152,7 +152,7 @@ pub(crate) struct Culling {
 /// The scenes of a culled frame: the widgets', and what is painted over them, apart, so the widgets can
 /// be drawn again in full before the two are composed.
 #[derive(Default)]
-pub(crate) struct Scenes {
+pub struct Scenes {
     pub(crate) widgets: Scene,
     pub(crate) layers: Scene,
 }
@@ -198,7 +198,7 @@ impl Culling {
 }
 
 /// Culling one frame's draw; ends when dropped.
-pub(crate) struct Frame {
+pub struct Frame {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
@@ -257,7 +257,7 @@ impl Drop for Frame {
 }
 
 /// The frame being culled draws its widgets into `scene` from now on.
-pub(crate) fn bind(scene: &Scene) {
+pub fn bind(scene: &Scene) {
     FRAME.with_borrow_mut(|frame| {
         if let Some(state) = frame.as_mut() {
             state.scene = Some(std::ptr::from_ref(scene));
@@ -266,7 +266,7 @@ pub(crate) fn bind(scene: &Scene) {
 }
 
 /// The frame being culled is done drawing its widgets.
-pub(crate) fn unbind() {
+pub fn unbind() {
     FRAME.with_borrow_mut(|frame| {
         if let Some(state) = frame.as_mut() {
             state.scene = None;
@@ -276,7 +276,7 @@ pub(crate) fn unbind() {
 
 /// Whether a frame being culled draws its widgets into `scene`: a cache recorded around them then would
 /// hold what the frame leaves out.
-pub(crate) fn culls_into(scene: &Scene) -> bool {
+pub fn culls_into(scene: &Scene) -> bool {
     FRAME.with_borrow(|frame| frame.as_ref().is_some_and(|state| bound_to(state, scene)))
 }
 
@@ -287,7 +287,7 @@ fn bound_to(state: &State, scene: &Scene) -> bool {
 
 /// Draw a scroller's content (`draw`) into `scene` with the frame keeping its pixels where `keep` says
 /// (`None`: nowhere, its content repaints).
-pub(crate) fn keeping<T>(
+pub fn keeping<T>(
     scene: &mut Scene,
     keep: Option<Keep>,
     draw: impl FnOnce(&mut Scene) -> T,
@@ -299,7 +299,7 @@ pub(crate) fn keeping<T>(
 /// [`keeping`] for a scroller that draws its content itself: what it draws into `scene` while the
 /// returned scope lives.
 #[must_use]
-pub(crate) fn keep_scope(scene: &Scene, keep: Option<Keep>) -> Option<KeepScope> {
+pub fn keep_scope(scene: &Scene, keep: Option<Keep>) -> Option<KeepScope> {
     FRAME.with_borrow_mut(|frame| {
         let state = frame.as_mut().filter(|state| bound_to(state, scene))?;
         let keep = match state.keeps.last() {
@@ -330,7 +330,7 @@ impl Drop for KeepScope {
 /// `transform` into `scene`) is kept on screen by the frame being culled:
 /// if so, it is noted as left out and must not be drawn. Only a widget with
 /// nothing new to paint may ask.
-pub(crate) fn kept(scene: &Scene, transform: Affine, bounds: Rect) -> bool {
+pub fn kept(scene: &Scene, transform: Affine, bounds: Rect) -> bool {
     FRAME.with_borrow_mut(|frame| {
         let Some(state) = frame.as_mut().filter(|state| bound_to(state, scene)) else {
             return false;
@@ -353,7 +353,7 @@ pub(crate) fn kept(scene: &Scene, transform: Affine, bounds: Rect) -> bool {
 /// Where the frame being culled keeps the pixels of what `scene` is being drawn with `transform` inside
 /// `visible` (logical pixels), as the logical rectangle a widget that paints its rows may leave
 /// them out in, asking for each run it leaves out ([`kept`]).
-pub(crate) fn kept_band(scene: &Scene, transform: Affine, visible: Rect) -> Option<Rect> {
+pub fn kept_band(scene: &Scene, transform: Affine, visible: Rect) -> Option<Rect> {
     FRAME.with_borrow(|frame| {
         let state = frame.as_ref().filter(|state| bound_to(state, scene))?;
         let keep = state.keeps.last()?.as_ref()?;

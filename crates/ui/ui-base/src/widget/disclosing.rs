@@ -88,7 +88,7 @@ impl Disclosing {
 /// widgets after a band on its way move with its edge, `gap(i)` being the
 /// space the column keeps above child `i`. `None` when nothing in the column
 /// is moving, which is every frame but a band's few.
-pub(crate) fn follower_shifts<'a>(
+pub fn follower_shifts<'a>(
     children: impl IntoIterator<Item = &'a dyn Widget> + Clone,
     gap: impl Fn(usize) -> f64,
 ) -> Option<Vec<f64>> {
@@ -119,7 +119,7 @@ pub(crate) fn follower_shifts<'a>(
 /// layout) in its slot: `gap(i)` below the last child above it the layout
 /// placed, or at the top of `content` when none is, across `content`'s
 /// width. A hidden child (laid out nowhere) places nothing.
-pub(crate) fn place_bands<'a>(
+pub fn place_bands<'a>(
     children: impl IntoIterator<Item = &'a mut Box<dyn Widget>>,
     content: vello::kurbo::Rect,
     gap: impl Fn(usize) -> f64,
@@ -139,7 +139,7 @@ pub(crate) fn place_bands<'a>(
 }
 
 /// A laid-out node's content box: its box less its padding.
-pub(crate) fn content_box(
+pub fn content_box(
     taffy: &taffy::TaffyTree<()>,
     node: NodeId,
     rect: vello::kurbo::Rect,
@@ -158,7 +158,7 @@ pub(crate) fn content_box(
 
 /// [`route_to_children`] for a column whose children may be drawn shifted (`shifts`, from
 /// [`follower_shifts`]): each child is hit where it is drawn.
-pub(crate) fn route_to_shifted_children(
+pub fn route_to_shifted_children(
     children: &mut [Box<dyn Widget>],
     nodes: &[NodeId],
     shifts: Option<&[f64]>,
@@ -269,7 +269,7 @@ enum Carry {
 ///
 /// `visible` is whether the band's owner shows it now; a band that is only
 /// there while it shows passes `true`.
-pub(crate) struct BandMotion {
+pub struct BandMotion {
     pub disclosure: crate::motion::Disclosure,
     pub motion: crate::tokens::EffectiveMotion,
     pub laid_rect: vello::kurbo::Rect,
@@ -598,7 +598,7 @@ impl Ghost {
 
 /// The bands a container's view stopped building, drawn leaving.
 #[derive(Default)]
-pub(crate) struct Ghosts(Vec<Ghost>);
+pub struct Ghosts(Vec<Ghost>);
 
 impl Ghosts {
     pub fn is_empty(&self) -> bool {

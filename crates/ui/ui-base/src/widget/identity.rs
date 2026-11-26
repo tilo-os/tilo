@@ -119,7 +119,7 @@ pub fn register_node<W: Widget + 'static, S: std::hash::BuildHasher>(
     node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
 }
 
-pub(super) fn stand_in(
+pub fn stand_in(
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     node: NodeId,
     inner: (*const (), &'static str),
@@ -231,18 +231,20 @@ macro_rules! decorator_trait {
             }
         }
 
+        #[doc(hidden)]
+        #[macro_export]
         macro_rules! concrete_decorator_widget {
             ([$d ($d generic:tt)*] $d ty:ty) => {
                 const _: () = {
-                    use crate::widget::identity::concrete::Decorator;
+                    use ::tilo_ui_base::widget::identity::concrete::Decorator;
 
-                    impl<$d ($d generic)*> crate::widget::identity::Decorated for $d ty {
+                    impl<$d ($d generic)*> ::tilo_ui_base::widget::identity::Decorated for $d ty {
                         fn decorated(&self) -> &dyn Widget {
                             Decorator::inner(self).as_dyn_widget()
                         }
                     }
 
-                    impl<$d ($d generic)*> crate::widget::identity::DecoratedMut for $d ty {
+                    impl<$d ($d generic)*> ::tilo_ui_base::widget::identity::DecoratedMut for $d ty {
                         fn decorated_mut(&mut self) -> &mut dyn Widget {
                             Decorator::inner_mut(self).as_dyn_widget_mut()
                         }
@@ -267,7 +269,7 @@ macro_rules! decorator_trait {
                 };
             };
             ($d ty:ty) => {
-                concrete_decorator_widget!([] $d ty);
+                $d crate::concrete_decorator_widget!([] $d ty);
             };
         }
     };
@@ -297,7 +299,7 @@ decorator_trait! {
             clippy::disallowed_methods,
             reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
         )]
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>) {
             self.inner_mut().draw(ctx);
         }
 
@@ -354,12 +356,12 @@ decorator_trait! {
             Some(self)
         }
 
-        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-            crate::widget::StructureChange::of(Decorator::take_structure_dirty(self))
+        fn take_structure_change(&mut self) -> ::tilo_ui_base::widget::StructureChange {
+            ::tilo_ui_base::widget::StructureChange::of(Decorator::take_structure_dirty(self))
         }
 
         fn composition_follows_allocation(&self) -> bool {
-            crate::widget::layout::tree_composition_follows_allocation(self.inner())
+            ::tilo_ui_base::widget::layout::tree_composition_follows_allocation(self.inner())
         }
 
         /// Decorators must opt in themselves: an outer handler can change what
@@ -372,7 +374,7 @@ decorator_trait! {
             Decorator::accessibility(self).is_some_and(|node| node.state.hidden)
         }
 
-        fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        fn accessibility_shared(&self) -> Option<::tilo_ui_base::a11y::SharedAccessNode> {
             None
         }
 
@@ -380,7 +382,7 @@ decorator_trait! {
         /// decorator that rewrites `accessibility` would otherwise answer
         /// with its inner widget's root. One that only adds children may
         /// forward to its inner widget's root itself.
-        fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        fn accessibility_root(&self) -> Option<::tilo_ui_base::a11y::AccessNode> {
             Decorator::accessibility(self).map(|mut node| {
                 node.children.clear();
                 node
@@ -388,7 +390,7 @@ decorator_trait! {
         }
 
         fn mark_children_drawn(&mut self) {
-            crate::widget::defaults::mark_drawn(self.children_mut())
+            ::tilo_ui_base::widget::defaults::mark_drawn(self.children_mut())
         }
     }
 
@@ -403,9 +405,9 @@ decorator_trait! {
 
         /// [`Widget::draw`], noting the paint as a secret's when
         /// [`Decorator::withholds_captures`] says so.
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>) {
             if Decorator::withholds_captures(self) {
-                crate::secret_paint::note_secret_painted();
+                ::tilo_ui_base::secret_paint::note_secret_painted();
             }
             Decorator::draw(self, ctx);
         }
@@ -449,7 +451,7 @@ decorator_trait! {
             Decorator::as_any_mut(self)
         }
 
-        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        fn take_structure_change(&mut self) -> ::tilo_ui_base::widget::StructureChange {
             Decorator::take_structure_change(self)
         }
 
@@ -465,11 +467,11 @@ decorator_trait! {
             Decorator::accessibility_hidden(self)
         }
 
-        fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        fn accessibility_shared(&self) -> Option<::tilo_ui_base::a11y::SharedAccessNode> {
             Decorator::accessibility_shared(self)
         }
 
-        fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        fn accessibility_root(&self) -> Option<::tilo_ui_base::a11y::AccessNode> {
             Decorator::accessibility_root(self)
         }
 
@@ -480,7 +482,7 @@ decorator_trait! {
 
     ref {
         fn focus_reveal_context() -> Option<vello::kurbo::Rect>;
-        fn own_actions() -> Vec<crate::widget::OwnAction>;
+        fn own_actions() -> Vec<::tilo_ui_base::widget::OwnAction>;
         #[doc(hidden)]
         fn resets_binding_inheritance() -> bool;
         #[doc(hidden)]
@@ -496,7 +498,7 @@ decorator_trait! {
         fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn for_each_hosted_child(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
-        fn readable_column() -> Option<crate::widget::Length>;
+        fn readable_column() -> Option<::tilo_ui_base::widget::Length>;
         fn test_id() -> Option<&str>;
         fn kept_in_view() -> Option<&str>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
@@ -508,12 +510,12 @@ decorator_trait! {
         fn own_page_title() -> Option<String>;
         fn is_item_opened_in_place() -> bool;
         fn page_title_is_heading() -> bool;
-        fn snap_points(axis: crate::widget::ScrollAxis, out: &mut Vec<f32>);
+        fn snap_points(axis: ::tilo_ui_base::widget::ScrollAxis, out: &mut Vec<f32>);
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
-        fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
+        fn touch_claim(point: vello::kurbo::Point) -> ::tilo_ui_base::interaction::TouchClaim;
         fn tooltip() -> Option<std::borrow::Cow<'_, str>>;
-        fn tooltip_side() -> crate::widget::TooltipSide;
+        fn tooltip_side() -> ::tilo_ui_base::widget::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
         fn is_focused() -> bool;
@@ -522,7 +524,7 @@ decorator_trait! {
         fn ime_cursor_rect() -> Option<vello::kurbo::Rect>;
         fn traps_focus() -> bool;
         fn scopes_keyboard_focus() -> bool;
-        fn accessibility() -> Option<crate::a11y::AccessNode>;
+        fn accessibility() -> Option<::tilo_ui_base::a11y::AccessNode>;
         fn live_picture() -> Option<String>;
         fn pressable_child() -> Option<usize>;
         fn synthetic_accessibility_rect(path: &[usize]) -> Option<vello::kurbo::Rect>;
@@ -538,22 +540,22 @@ decorator_trait! {
         fn ime_requires_deferred_ack() -> bool;
         fn ime_refuses_ordinary_commits() -> bool;
         fn ime_edit_fingerprint(key: &[u8; 32]) -> Option<[u8; 32]>;
-        fn ime_content() -> Option<crate::ime::InputContent>;
+        fn ime_content() -> Option<::tilo_ui_base::ime::InputContent>;
         fn ime_multiline() -> bool;
-        fn ime_field() -> Option<crate::ime::ImeWindowState>;
+        fn ime_field() -> Option<::tilo_ui_base::ime::ImeWindowState>;
         fn presented() -> bool;
-        fn arrives_from() -> crate::arriving::Source;
-        fn arrival_progress() -> Option<crate::arriving::Progress>;
-        fn arrival_shape() -> crate::widget::SkeletonShape;
+        fn arrives_from() -> ::tilo_ui_base::arriving::Source;
+        fn arrival_progress() -> Option<::tilo_ui_base::arriving::Progress>;
+        fn arrival_shape() -> ::tilo_ui_base::widget::SkeletonShape;
         fn text_review() -> Option<(usize, String)>;
-        fn nav_availability() -> crate::gesture::NavAvailability;
-        fn dev_route() -> Option<crate::widget::router::RouteSnapshot>;
-        fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
+        fn nav_availability() -> ::tilo_ui_base::gesture::NavAvailability;
+        fn dev_route() -> Option<::tilo_ui_base::widget::router::RouteSnapshot>;
+        fn appearance_intent() -> Option<::tilo_ui_base::theme::AppearanceIntent>;
         fn minimum_window_width() -> Option<f64>;
         fn preferred_window_size() -> Option<(f64, f64)>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
-        fn disclosing() -> Option<crate::widget::Disclosing>;
+        fn disclosing() -> Option<::tilo_ui_base::widget::Disclosing>;
         fn is_band() -> bool;
         fn keeps_its_words() -> bool;
         fn keeps_its_items() -> bool;
@@ -578,20 +580,20 @@ decorator_trait! {
     }
 
     mut {
-        /// What the control inside says it does ([`crate::widget::Identified`]): an outer decorator
+        /// What the control inside says it does ([`::tilo_ui_base::widget::Identified`]): an outer decorator
         /// reaches it, so a window's report of what a control does moves with it.
         fn identify(identity: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
-        fn note_placement(placement: crate::widget::Placement);
+        fn note_placement(placement: ::tilo_ui_base::widget::Placement);
         fn retained_children_mut() -> Vec<&mut (dyn Widget + '_)>;
-        fn set_platform_conventions(conventions: crate::platform::PlatformConventions);
-        fn set_interaction_environment(environment: crate::interaction::InteractionEnvironment);
+        fn set_platform_conventions(conventions: ::tilo_ui_base::platform::PlatformConventions);
+        fn set_interaction_environment(environment: ::tilo_ui_base::interaction::InteractionEnvironment);
         fn set_window_bar_control(in_bar: bool);
         fn sync(state: &AppModel, path: &ModelPath);
         fn update(state: &AppModel, path: &ModelPath) -> bool;
         fn serve_deadline(now: Instant) -> bool;
-        fn settle(edits: &mut crate::widget::Edits<'_>, path: &automerge::ObjId);
+        fn settle(edits: &mut ::tilo_ui_base::widget::Edits<'_>, path: &automerge::ObjId);
         fn measure(
             known: taffy::Size<Option<f32>>,
             available: taffy::Size<taffy::AvailableSpace>,
@@ -610,7 +612,7 @@ decorator_trait! {
             text: &mut TextRenderer,
         ) -> bool;
         fn apply_layout(taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
-        fn observe_physical_input(input: crate::widget::PhysicalInput);
+        fn observe_physical_input(input: ::tilo_ui_base::widget::PhysicalInput);
         fn handle_event(event: &WindowEvent, ctx: &mut EventCtx<'_>);
         fn children_mut() -> Vec<&mut (dyn Widget + '_)>;
         fn reveal_descendant(target: *const dyn Widget, rect: vello::kurbo::Rect) -> bool;
@@ -620,48 +622,48 @@ decorator_trait! {
         fn set_invalid(invalid: bool);
         fn focus_synthetic_accessibility(path: &[usize]) -> bool;
         fn perform_action(
-            action: &crate::a11y::Action,
+            action: &::tilo_ui_base::a11y::Action,
             key_path: &[u64],
-            state: &mut crate::widget::Edits<'_>,
+            state: &mut ::tilo_ui_base::widget::Edits<'_>,
             path: &ModelPath,
         ) -> bool;
         fn perform_semantic_action(
             target: &str,
-            action: &crate::a11y::Action,
-            state: &mut crate::widget::Edits<'_>,
+            action: &::tilo_ui_base::a11y::Action,
+            state: &mut ::tilo_ui_base::widget::Edits<'_>,
             path: &ModelPath,
         ) -> bool;
         fn start_deferred_text() -> Option<tilo_webview::text_input::Receipt>;
         fn commit_deferred_text(text: &str) -> Option<tilo_webview::text_input::Receipt>;
-        fn on_external_event(payload: &str, state: &mut crate::widget::Edits<'_>, root: &ModelPath);
+        fn on_external_event(payload: &str, state: &mut ::tilo_ui_base::widget::Edits<'_>, root: &ModelPath);
         fn on_nav_gesture(
-            dir: crate::gesture::NavDirection,
+            dir: ::tilo_ui_base::gesture::NavDirection,
             state: &AppModel,
             path: &ModelPath,
         ) -> bool;
         fn take_focus_reset() -> bool;
-        fn take_accessibility_request() -> Option<crate::a11y::AccessibilityRequest>;
+        fn take_accessibility_request() -> Option<::tilo_ui_base::a11y::AccessibilityRequest>;
         #[cfg(feature = "model")]
-        fn take_app_activation(ready: bool) -> Option<crate::widget::AppActivation>;
+        fn take_app_activation(ready: bool) -> Option<::tilo_ui_base::widget::AppActivation>;
         fn take_focus_request() -> Option<String>;
-        fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
+        fn restore_dev_route(route: &::tilo_ui_base::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn take_structure_dirty() -> bool;
         fn dismiss_presented_modal() -> bool;
-        fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
+        fn remount_children(remount: &mut ::tilo_ui_base::widget::Remount<'_>) -> bool;
         fn mark_drawn();
         fn layout_measured();
         fn release_scene_cache();
-        fn draw_overlay(ctx: &mut crate::draw::DrawCtx<'_>);
+        fn draw_overlay(ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>);
         fn apply_primary_vertical_scroll(action: PrimaryScrollAction) -> PrimaryScrollResult;
         fn focus_requested(target: Option<NodeId>, tree: &TaffyTree<()>);
-        fn mount_native_views(host: &crate::widget::native_view::NativeViewHost<'_>);
+        fn mount_native_views(host: &::tilo_ui_base::widget::native_view::NativeViewHost<'_>);
         fn native_view_frame_start();
         fn unmount_native_views();
     }
 }
 
-#[crate::component::not_a_component(framework, "the host names what a view's control does")]
+#[::tilo_ui_base::component::not_a_component(framework, "the host names what a view's control does")]
 pub struct Identified {
     content: Element,
     identity: String,
@@ -732,14 +734,14 @@ impl Decorator for Identified {
     }
 
     /// The content's change: an identity adds no structure of its own.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> ::tilo_ui_base::widget::StructureChange {
         self.content.take_structure_change()
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &::tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let node = self.content.build_layout(taffy, theme, node_map);
@@ -748,8 +750,3 @@ impl Decorator for Identified {
     }
 }
 
-#[allow(
-    unused_imports,
-    reason = "the toolkit's own decorators are instantiated where their widgets are in scope"
-)]
-pub(crate) use concrete_decorator_widget;

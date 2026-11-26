@@ -2,7 +2,7 @@
 //! executable.
 
 /// Start another process of this executable showing `target`.
-pub(crate) fn open(target: Option<&str>) -> Result<(), String> {
+pub fn open(target: Option<&str>) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut command = instance_command(&executable, target, std::env::vars_os())?;
     let mut child = command

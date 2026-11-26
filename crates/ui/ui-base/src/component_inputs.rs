@@ -38,7 +38,7 @@ struct Probe {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Key {
+pub enum Key {
     Detached,
     Scope(usize),
     #[cfg(feature = "model")]
@@ -59,7 +59,7 @@ thread_local! {
 
 /// Run `pass` as the pass of the component `owner` names, gathering what it reads outside the
 /// component.
-pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
+pub fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
     let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
     let result = pass();
@@ -140,7 +140,7 @@ impl Drop for PassReading {
     }
 }
 
-pub(crate) fn probe(
+pub fn probe(
     make_key: impl FnOnce() -> Key,
     make: impl FnOnce() -> (Option<u64>, Box<dyn Fn() -> Option<u64>>),
 ) {
@@ -194,7 +194,7 @@ pub(crate) fn read_owned_by(owner: &WakeHandle) {
 
 /// `bytes` folded into `folded` (FNV-1a): a key or a frontier as one number,
 /// with no hasher instantiated for each type folded.
-pub(crate) fn fold(folded: u64, bytes: &[u8]) -> u64 {
+pub fn fold(folded: u64, bytes: &[u8]) -> u64 {
     bytes
         .iter()
         .fold(folded ^ 0xcbf2_9ce4_8422_2325, |folded, byte| {
@@ -297,7 +297,7 @@ impl Drop for Forcing {
 
 /// Whether passes run regardless of their observation ([`forcing`]).
 #[inline(never)]
-pub(crate) fn forced() -> bool {
+pub fn forced() -> bool {
     FORCED.with(Cell::get)
 }
 
@@ -323,7 +323,7 @@ pub fn is_proving() -> bool {
 }
 
 /// What a pass read outside its component ([`reading`]).
-pub(crate) struct Reads {
+pub struct Reads {
     probes: Vec<Probe>,
     untracked: Option<&'static str>,
 }

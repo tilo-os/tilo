@@ -20,8 +20,8 @@ use crate::widget::Widget;
 
 mod floating_surface;
 #[cfg(feature = "native")]
-pub(crate) use floating_surface::surface_tree_update;
-pub(crate) use floating_surface::{publish_host_part, surface_action_target};
+pub use floating_surface::surface_tree_update;
+pub use floating_surface::{publish_host_part, surface_action_target};
 
 /// Reserved so no widget can collide with it: widget ids are offset by +1
 /// from their taffy node id, and structural fallback ids are large offsets
@@ -362,7 +362,7 @@ pub fn resolve_node_id<S: BuildHasher>(
     resolve_node_id_impl::<S, false>(root, node_map, id)
 }
 /// Host traversal retaining the originating component through every callback.
-pub(crate) fn resolve_node_id_bound<S: BuildHasher>(
+pub fn resolve_node_id_bound<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
@@ -627,7 +627,7 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
 /// disclosing their text, length, selection, or whether they contain anything.
 /// The shared semantic tree continues to carry no password value at all.
 #[cfg(feature = "native")]
-pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
+pub fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
     #[cfg(windows)]
     {
         let mut update = update;
@@ -644,7 +644,7 @@ pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {
     }
 }
 /// Host traversal retaining the originating component through every callback.
-pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
+pub fn build_tree_update_with_resources_bound<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
@@ -654,7 +654,7 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources).0
 }
 
-pub(crate) fn build_tree_update_bound<S: BuildHasher>(
+pub fn build_tree_update_bound<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
@@ -663,7 +663,7 @@ pub(crate) fn build_tree_update_bound<S: BuildHasher>(
     build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, &[]).0
 }
 
-pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
+pub fn build_presentation_tree_bound<S: BuildHasher>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
@@ -674,7 +674,7 @@ pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
 
 /// [`build_tree_update_bound`] with each node's [`AccessNode::title`] beside
 /// its id: how a test finds a row by the line it is titled with.
-pub(crate) fn build_tree_update_with_titles_bound<S: BuildHasher>(
+pub fn build_tree_update_with_titles_bound<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
@@ -685,7 +685,7 @@ pub(crate) fn build_tree_update_with_titles_bound<S: BuildHasher>(
 
 /// [`build_presentation_tree_bound`] with each node's
 /// [`AccessNode::title`] beside its id.
-pub(crate) fn build_presentation_tree_with_titles_bound<S: BuildHasher>(
+pub fn build_presentation_tree_with_titles_bound<S: BuildHasher>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
@@ -696,7 +696,7 @@ pub(crate) fn build_presentation_tree_with_titles_bound<S: BuildHasher>(
 
 /// Multiple presentation roots retain ordinary live resource nodes when their
 /// owner is interactive; callers supply only currently presented resources.
-pub(crate) fn build_presentation_with_resources_bound<S: BuildHasher>(
+pub fn build_presentation_with_resources_bound<S: BuildHasher>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,

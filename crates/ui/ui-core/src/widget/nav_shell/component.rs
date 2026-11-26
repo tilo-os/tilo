@@ -89,32 +89,6 @@ pub struct NavShellProps {
     pub drop: Event,
 }
 
-impl PropType for ContentKind {
-    fn ty() -> Type {
-        Type::Choice {
-            name: "ContentKind".into(),
-            cases: ["list", "reading", "page", "grid", "document", "canvas"]
-                .map(String::from)
-                .to_vec(),
-        }
-    }
-
-    fn from_value(value: &Value) -> Result<Self, String> {
-        let (Value::Choice(case) | Value::Text(case)) = value else {
-            return Err(format!("takes ContentKind, not {}", value.kind()));
-        };
-        Ok(match case.as_str() {
-            "list" => Self::List,
-            "reading" => Self::Reading,
-            "page" => Self::Page,
-            "grid" => Self::Grid,
-            "document" => Self::Document,
-            "canvas" => Self::Canvas,
-            other => return Err(format!("has no case `{other}`")),
-        })
-    }
-}
-
 impl PropType for NavPane {
     fn ty() -> Type {
         Type::Choice {

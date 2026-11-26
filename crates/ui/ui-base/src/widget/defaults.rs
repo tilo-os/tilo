@@ -45,7 +45,7 @@ pub(super) fn set_platform_conventions(
     }
 }
 
-pub(super) fn set_interaction_environment(
+pub fn set_interaction_environment(
     children: ChildrenMut<'_>,
     environment: crate::interaction::InteractionEnvironment,
 ) {
@@ -66,7 +66,7 @@ pub(super) fn sync(children: ChildrenMut<'_>, state: &AppModel, path: &ModelPath
     }
 }
 
-pub(super) fn update(children: ChildrenMut<'_>, state: &AppModel, path: &ModelPath) -> bool {
+pub fn update(children: ChildrenMut<'_>, state: &AppModel, path: &ModelPath) -> bool {
     let mut changed = false;
     for child in children {
         changed |= child.update(state, path);
@@ -240,7 +240,7 @@ pub(super) fn ime_edit_fingerprint(
     ))
 }
 
-pub(super) fn on_nav_gesture(
+pub fn on_nav_gesture(
     children: ChildrenMut<'_>,
     dir: crate::gesture::NavDirection,
     state: &AppModel,
@@ -251,7 +251,7 @@ pub(super) fn on_nav_gesture(
         .any(|child| child.on_nav_gesture(dir, state, path))
 }
 
-pub(super) fn nav_availability(children: Vec<&dyn Widget>) -> crate::gesture::NavAvailability {
+pub fn nav_availability(children: Vec<&dyn Widget>) -> crate::gesture::NavAvailability {
     children
         .into_iter()
         .fold(crate::gesture::NavAvailability::default(), |seen, child| {
@@ -302,7 +302,7 @@ pub(super) fn set_motion_reduced(children: ChildrenMut<'_>, reduced: bool) {
     }
 }
 
-pub(super) fn needs_animation_frame(each: EachChild<'_>) -> bool {
+pub fn needs_animation_frame(each: EachChild<'_>) -> bool {
     let mut needed = false;
     each(&mut |child| {
         if !needed {
@@ -312,7 +312,7 @@ pub(super) fn needs_animation_frame(each: EachChild<'_>) -> bool {
     needed
 }
 
-pub(super) fn next_wake_deadline(each: EachChild<'_>) -> Option<Instant> {
+pub fn next_wake_deadline(each: EachChild<'_>) -> Option<Instant> {
     let mut earliest = None;
     each(&mut |child| {
         if let Some(deadline) = child.next_wake_deadline() {
@@ -322,7 +322,7 @@ pub(super) fn next_wake_deadline(each: EachChild<'_>) -> Option<Instant> {
     earliest
 }
 
-pub(super) fn holds_frame_until(each: EachChild<'_>, now: Instant) -> Option<Instant> {
+pub fn holds_frame_until(each: EachChild<'_>, now: Instant) -> Option<Instant> {
     let mut latest = None;
     each(&mut |child| {
         if let Some(until) = child.holds_frame_until(now) {
@@ -367,7 +367,7 @@ pub(super) fn presents_modal(capture: Option<Rect>, each: EachChild<'_>) -> bool
     presented
 }
 
-pub(super) fn take_structure_dirty(children: ChildrenMut<'_>) -> bool {
+pub fn take_structure_dirty(children: ChildrenMut<'_>) -> bool {
     let mut dirty = false;
     for child in children {
         dirty |= child.take_structure_dirty();
@@ -375,7 +375,7 @@ pub(super) fn take_structure_dirty(children: ChildrenMut<'_>) -> bool {
     dirty
 }
 
-pub(super) fn has_pending_visual_work(each: EachChild<'_>) -> bool {
+pub fn has_pending_visual_work(each: EachChild<'_>) -> bool {
     let mut pending = false;
     each(&mut |child| pending |= child.has_pending_visual_work());
     pending
@@ -402,23 +402,23 @@ fn any_child(each: EachChild<'_>, dirty: fn(&dyn Widget) -> bool) -> Option<bool
 /// Whether a container must draw again: a child is dirty, or one of them is
 /// on its way (`needs_animation_frame`) and paints other pixels this frame.
 /// A cache is only as fresh as the child that can repaint itself.
-pub(super) fn needs_redraw(each: EachChild<'_>) -> bool {
+pub fn needs_redraw(each: EachChild<'_>) -> bool {
     any_child(each, |child| {
         child.needs_redraw() || child.needs_animation_frame()
     })
     .unwrap_or(false)
 }
 
-pub(super) fn is_layout_dirty(each: EachChild<'_>) -> bool {
+pub fn is_layout_dirty(each: EachChild<'_>) -> bool {
     any_child(each, |child| child.is_layout_dirty()).unwrap_or(true)
 }
 
 /// [`Widget::layout_needs_measure`] of the children; `None` without any.
-pub(super) fn layout_needs_measure(each: EachChild<'_>) -> Option<bool> {
+pub fn layout_needs_measure(each: EachChild<'_>) -> Option<bool> {
     any_child(each, |child| child.layout_needs_measure())
 }
 
-pub(super) fn mark_drawn(children: ChildrenMut<'_>) {
+pub fn mark_drawn(children: ChildrenMut<'_>) {
     for child in children {
         child.mark_drawn();
     }
@@ -430,7 +430,7 @@ pub(super) fn release_scene_cache(children: ChildrenMut<'_>) {
     }
 }
 
-pub(super) fn draw_overlay(children: ChildrenMut<'_>, ctx: &mut crate::draw::DrawCtx<'_>) {
+pub fn draw_overlay(children: ChildrenMut<'_>, ctx: &mut crate::draw::DrawCtx<'_>) {
     for child in children {
         child.draw_overlay(ctx);
     }

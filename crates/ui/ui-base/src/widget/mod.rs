@@ -5,40 +5,40 @@ pub use {contract::COMPACT_BELOW, contract::EXPANDED_BELOW, contract::FIT_EPS, c
 mod action_directory_identity;
 pub mod bound_nodes;
 pub mod component_walk;
-pub(crate) mod input_provenance;
+pub mod input_provenance;
 pub mod undo_access;
 pub mod undo_points;
-mod wheel;
+pub mod wheel;
 pub use {wheel::PhaselessWheel, wheel::WHEEL_GESTURE_GAP, wheel::line_of_wheel, wheel::sideways_travel};
-mod action_emitter;
-mod disclosing;
+pub mod action_emitter;
+pub mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
 pub use action_emitter::ActionEmitter;
-pub(crate) use {disclosing::BandMotion, disclosing::Ghosts, disclosing::content_box, disclosing::follower_shifts, disclosing::place_bands, disclosing::route_to_shifted_children};
+pub use {disclosing::BandMotion, disclosing::Ghosts, disclosing::content_box, disclosing::follower_shifts, disclosing::place_bands, disclosing::route_to_shifted_children};
 pub use {disclosing::Disclosing, disclosing::Placement, disclosing::event_offset};
-pub(crate) mod resource_operation;
+pub mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
 pub use resource_operation::resource_operation_handlers;
 #[cfg(feature = "model")]
-pub(crate) use resource_operation::start_operation_refused;
-pub(crate) use {resource_operation::ResourceOperation, resource_operation::ResourceOperationStart, resource_operation::ResourceOperations, resource_operation::local_resource_operation_handlers, resource_operation::poll_resource_operation, resource_operation::start_in_children, resource_operation::start_operation};
+pub use resource_operation::start_operation_refused;
+pub use {resource_operation::ResourceOperation, resource_operation::ResourceOperationStart, resource_operation::ResourceOperations, resource_operation::local_resource_operation_handlers, resource_operation::poll_resource_operation, resource_operation::start_in_children, resource_operation::start_operation};
 
-use {crate::draw::DrawCtx, crate::draw::DrawEnv};
+pub use {crate::draw::DrawCtx, crate::draw::DrawEnv};
 #[cfg(feature = "model")]
-use crate::presence::PresenceKey;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use {automerge::AutoCommit, automerge::ObjId};
-use {taffy::NodeId, taffy::TaffyTree};
-use vello::Scene;
-use vello::kurbo::Affine;
-use winit::event::WindowEvent;
+pub use crate::presence::PresenceKey;
+pub use crate::text_render::TextRenderer;
+pub use crate::theme::Theme;
+pub use {automerge::AutoCommit, automerge::ObjId};
+pub use {taffy::NodeId, taffy::TaffyTree};
+pub use vello::Scene;
+pub use vello::kurbo::Affine;
+pub use winit::event::WindowEvent;
 
 use crate::time::Instant;
-use std::collections::HashMap;
+pub use std::collections::HashMap;
 #[cfg(feature = "model")]
-use std::collections::HashSet;
+pub use std::collections::HashSet;
 
 /// Private foreground feedback, stripped of logical keys and typed text.
 /// Observers cannot consume the input or obtain a document edit context.
@@ -162,7 +162,7 @@ pub(crate) fn semantic_action_bindings_into(
 /// ([`Widget::child_path_name`]), else its kind numbered among the siblings of that kind before it.
 /// With its kind and that number, which a path's bare form (`parent/Kind`, the first of its kind)
 /// reads. `counts` holds the numbering of one parent's children.
-pub(crate) fn widget_path(
+pub fn widget_path(
     widget: &dyn Widget,
     parent_path: &str,
     called: Option<String>,
@@ -186,7 +186,7 @@ pub(crate) fn widget_path(
 /// its default keyboard control first (`Some(0)`), else the main answer of the panel it stands in
 /// beside one that takes typing — a field, an editor, a terminal (`Some(1)`) — never a button merely
 /// for being first (`None`): Enter would press it.
-pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
+pub fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
     if widget.is_default_keyboard_focus() {
         return Some(0);
     }
@@ -213,7 +213,7 @@ pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
 /// (`buttons_only`) only when it is a button; whether it took it. A surface that holds the
 /// keyboard itself — a dialog, a panel — presses the answer the keyboard is on with this, as the
 /// window would otherwise do behind it.
-pub(crate) fn activate_focused(
+pub fn activate_focused(
     widget: &mut dyn Widget,
     state: &mut crate::widget::Edits<'_>,
     path: &ModelPath,
@@ -243,7 +243,7 @@ pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kur
     )
 }
 
-pub(crate) const SETTLE_FRAMES: usize = 3;
+pub const SETTLE_FRAMES: usize = 3;
 
 /// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a leaf's rect.
 pub fn layout_rect(
@@ -429,7 +429,7 @@ pub fn draw_child(
 /// Draw `paint` at `opacity`, in a layer only while it is part-way, and draw nothing at all once
 /// it is gone: the one way a view drawn translucent (one fading in or out over another) reaches
 /// the scene.
-pub(crate) fn in_opacity_layer(
+pub fn in_opacity_layer(
     scene: &mut Scene,
     transform: Affine,
     clip: vello::kurbo::Rect,
@@ -630,7 +630,7 @@ pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
 /// Hand `event` to the widgets a virtualizing container has mounted: the
 /// first one holding pointer capture gets it alone, otherwise each laid-out
 /// widget sees it, topmost first, until one handles it.
-pub(crate) fn route_to_mounted<T>(
+pub fn route_to_mounted<T>(
     mounted: &mut [T],
     parts: fn(&mut T) -> (&mut Element, Option<NodeId>),
     event: &WindowEvent,
@@ -687,7 +687,7 @@ pub struct ActionDirectoryResourcePage {
 /// requires a stable id. Explicit localized names remain preferable, but a
 /// standard control should never become silent merely because an author did
 /// not repeat the same short label twice.
-pub(crate) fn humanize_control_id(id: &str) -> String {
+pub fn humanize_control_id(id: &str) -> String {
     let tail = id.rsplit('.').next().unwrap_or(id);
     crate::format::capitalize_first(&tail.replace(['_', '-'], " "))
 }
@@ -1036,7 +1036,7 @@ pub fn note_resource_presentation_changed() {
 }
 
 /// How many times [`note_resource_presentation_changed`] ran on this thread.
-pub(crate) fn resource_presentation_epoch() -> u64 {
+pub fn resource_presentation_epoch() -> u64 {
     RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
 }
 
@@ -1057,7 +1057,7 @@ pub fn note_view_only_pan() {
 }
 
 /// Whether [`note_view_only_pan`] ran since the last call, clearing it.
-pub(crate) fn take_view_only_pan() -> bool {
+pub fn take_view_only_pan() -> bool {
     VIEW_ONLY_PAN.with(|pan| pan.replace(false))
 }
 
@@ -1177,7 +1177,7 @@ pub struct ViewPresence {
 ///
 /// # Safety
 /// `pointer` must be live and not mutably borrowed for the duration of the call.
-pub(crate) unsafe fn node_sweep_identity(pointer: *const dyn Widget) -> (*const (), &'static str) {
+pub unsafe fn node_sweep_identity(pointer: *const dyn Widget) -> (*const (), &'static str) {
     // SAFETY: the caller guarantees a live, unaliased-for-writes widget.
     let concrete = unsafe { (*pointer).concrete_type_name() };
     (pointer.cast::<()>(), concrete)
@@ -1305,7 +1305,7 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
 
 /// Drain collaboration capabilities throughout a retained widget tree.
 #[cfg(feature = "model")]
-pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
+pub fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
     let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return Vec::new();
     };
@@ -1320,7 +1320,7 @@ pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaborati
 /// Deliver one session event to each explicit collaboration capability once.
 /// Bound callback context remains entered for the complete descendant walk.
 #[cfg(feature = "model")]
-pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
+pub fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
     let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
@@ -1333,7 +1333,7 @@ pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaborati
 }
 
 /// Mount native views through each owner's retained lifecycle topology.
-pub(crate) fn mount_native_views(
+pub fn mount_native_views(
     widget: &mut dyn Widget,
     host: &crate::widget::native_view::NativeViewHost<'_>,
 ) {
@@ -1341,12 +1341,12 @@ pub(crate) fn mount_native_views(
 }
 
 /// Unmount native views through each owner's retained lifecycle topology.
-pub(crate) fn unmount_native_views(widget: &mut dyn Widget) {
+pub fn unmount_native_views(widget: &mut dyn Widget) {
     widget.unmount_native_views();
 }
 
 /// Begin a frame through each owner's retained lifecycle topology.
-pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
+pub fn native_view_frame_start(widget: &mut dyn Widget) {
     widget.native_view_frame_start();
 }
 
@@ -1444,19 +1444,19 @@ pub mod presence_topology;
 pub mod resources;
 pub use content_kind::ContentKind;
 pub mod controls;
-mod defaults;
+pub mod defaults;
 pub mod document_effects;
 pub mod identity;
 pub use crate::pen::PenSample;
 pub use {identity::Decorated, identity::DecoratedMut, identity::Decorator, identity::Identified, identity::register_node};
 
-pub(crate) mod layout;
+pub mod layout;
 mod offered;
 pub use offered::offered_room;
 pub mod remount;
 pub use remount::Remount;
 mod reach;
-pub(crate) use reach::find;
+pub use reach::find;
 pub use reach::find_mut;
 #[cfg(debug_assertions)]
 mod paint_pass;
@@ -1467,10 +1467,10 @@ pub use paint_pass::painting;
 
 mod cached_paint;
 pub use cached_paint::CachedPaint;
-mod composition_parts;
-mod layout_info;
+pub mod composition_parts;
+pub mod layout_info;
 pub use {layout_info::Density, layout_info::Effective, layout_info::FieldLayout, layout_info::FormLayout, layout_info::HeaderRowLayout, layout_info::HeaderRows, layout_info::LabelPlacement, layout_info::LayoutInfo, layout_info::LayoutOrigin, layout_info::ListLayout, layout_info::ListPillLayout, layout_info::ManualConflict, layout_info::ManualLayout, layout_info::PageLayout, layout_info::RowLayout, layout_info::ScrollDirection, layout_info::ScrollLayout, layout_info::SectionLayout, layout_info::ShellLayout, layout_info::SidebarPosition, layout_info::TextLayout};
-mod manual;
+pub mod manual;
 pub use {manual::ChildMeasurement, manual::Manual, manual::ManualContext, manual::ManualInvalidation, manual::ManualPolicy, manual::MeasureConstraint};
 mod router;
 pub use {router::RouteError, router::RouteHandle, router::RouteSnapshot, router::Router};
@@ -1517,7 +1517,7 @@ mod spacer;
 pub use spacer::Spacer;
 pub mod aim;
 pub use aim::Trajectory;
-mod hover_intent;
+pub mod hover_intent;
 pub use hover_intent::EdgeAim;
 pub mod panic_scope;
 pub mod cursor;

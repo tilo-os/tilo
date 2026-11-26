@@ -1,5 +1,5 @@
 //! Explicit logical rectangles for ordinary retained children.
-use super::composition_parts::{Parts, retained_parts};
+use super::composition_parts::Parts;
 use super::layout_info::ManualLayout;
 use super::{Element, LayoutInfo, Widget, WidgetLayoutError};
 use crate::{Theme, text_render::TextRenderer, widget::bound_nodes::BoundNodeMap};
@@ -58,7 +58,7 @@ impl ManualInvalidation {
     }
 }
 
-pub(crate) type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
+pub type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
 /// An owned descriptor.
 #[doc(hidden)]
 #[derive(Clone)]
@@ -191,7 +191,7 @@ impl Manual {
     }
 }
 impl Widget for Manual {
-    retained_parts!("Manual", custom_apply_layout);
+    crate::retained_parts!("Manual", custom_apply_layout);
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
         // Probes may solve policies, but only actual placement acknowledges

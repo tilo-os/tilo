@@ -134,7 +134,7 @@ impl<T> LocalState<T> {
 }
 
 /// Revision-aware widget-side half of a [`LocalState`] binding.
-pub(crate) struct LocalBinding<T> {
+pub struct LocalBinding<T> {
     state: LocalState<T>,
     observed_revision: u64,
 }

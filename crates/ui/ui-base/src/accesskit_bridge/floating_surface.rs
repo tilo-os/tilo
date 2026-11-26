@@ -59,7 +59,7 @@ impl SurfaceWalk {
 }
 
 #[cfg(any(feature = "native", test))]
-pub(crate) fn surface_tree_update(
+pub fn surface_tree_update(
     access: Option<&AccessNode>,
     origin: Point,
     scale: f64,
@@ -89,7 +89,7 @@ pub(crate) fn surface_tree_update(
 /// Publish `part`, a part of the window its host draws rather than any widget (a window of it's
 /// row of slots), in the window's `update`: first among the window's children, in logical pixels times
 /// `scale`.
-pub(crate) fn publish_host_part(update: &mut TreeUpdate, part: &AccessNode, scale: f64) {
+pub fn publish_host_part(update: &mut TreeUpdate, part: &AccessNode, scale: f64) {
     let mut walk = SurfaceWalk {
         nodes: Vec::new(),
         focus: None,
@@ -110,7 +110,7 @@ pub(crate) fn publish_host_part(update: &mut TreeUpdate, part: &AccessNode, scal
     }
 }
 
-pub(crate) fn surface_action_target(access: &AccessNode, requested: AkNodeId) -> Option<&str> {
+pub fn surface_action_target(access: &AccessNode, requested: AkNodeId) -> Option<&str> {
     fn find(
         access: &AccessNode,
         parent: AkNodeId,

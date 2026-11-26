@@ -17,7 +17,7 @@ thread_local! {
 
 /// The window is handling a press delivered with `serial`: an invocation made while it handles
 /// it names it. Every other event leaves the press it follows where it was.
-pub(crate) fn note_event(event: &winit::event::WindowEvent, serial: u32) {
+pub fn note_event(event: &winit::event::WindowEvent, serial: u32) {
     use winit::event::{ElementState, TouchPhase, WindowEvent};
     let press = match event {
         WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,

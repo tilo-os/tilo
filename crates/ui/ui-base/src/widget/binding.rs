@@ -50,7 +50,7 @@ impl<T: Clone + PartialEq> ValueBinding<T> for crate::local_state::LocalBinding<
 pub type BoxedBinding<T> = Box<dyn ValueBinding<T>>;
 
 /// The process-local binding for `state`, with the value it holds now.
-pub(crate) fn local<T: Clone + PartialEq + 'static>(
+pub fn local<T: Clone + PartialEq + 'static>(
     state: &crate::LocalState<T>,
 ) -> (T, BoxedBinding<T>) {
     let (value, binding) = crate::local_state::LocalBinding::new(state);
@@ -59,7 +59,7 @@ pub(crate) fn local<T: Clone + PartialEq + 'static>(
 
 /// What `derive` makes of `state` ("the draft parses"), followed as `state` changes: the value now,
 /// and its binding.
-pub(crate) fn derived<S: Clone + 'static, T: 'static>(
+pub fn derived<S: Clone + 'static, T: 'static>(
     state: &crate::LocalState<S>,
     derive: impl Fn(&S) -> T + 'static,
 ) -> (T, BoxedBinding<T>) {

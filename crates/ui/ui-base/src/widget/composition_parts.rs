@@ -7,7 +7,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 #[derive(Default)]
-pub(super) struct Parts {
+pub struct Parts {
     pub(super) children: Vec<Element>,
     pub(super) nodes: Vec<NodeId>,
     pub(super) rect: Rect,
@@ -58,30 +58,32 @@ impl Parts {
     }
 }
 
+#[doc(hidden)]
+#[macro_export]
 macro_rules! retained_parts {
     ($name:literal) => {
-        retained_parts!(lifecycle: parts);
+        $crate::retained_parts!(lifecycle: parts);
         fn name(&self) -> &'static str {
             $name
         }
     };
     ($name:literal, custom_apply_layout) => {
-        retained_parts!(children: parts);
+        $crate::retained_parts!(children: parts);
         fn name(&self) -> &'static str {
             $name
         }
     };
     (lifecycle: $($path:ident).+) => {
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        fn apply_layout(&mut self, taffy: &$crate::taffy::TaffyTree<()>, node: $crate::taffy::NodeId, origin: $crate::kurbo::Point) {
             self.$($path).+.apply_layout(taffy, node, origin);
         }
-        retained_parts!(children: $($path).+);
+        $crate::retained_parts!(children: $($path).+);
     };
     (children: $($path:ident).+) => {
         fn update(
             &mut self,
-            state: &crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
+            state: &$crate::widget::AppModel,
+            path: &$crate::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
             for child in &mut self.$($path).+.children {
@@ -89,15 +91,15 @@ macro_rules! retained_parts {
             }
             changed
         }
-        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, state: &$crate::widget::AppModel, path: &$crate::widget::ModelPath) {
             for child in &mut self.$($path).+.children {
                 child.sync(state, path);
             }
         }
         fn handle_event(
             &mut self,
-            event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
+            event: &$crate::winit::event::WindowEvent,
+            ctx: &mut $crate::widget::EventCtx<'_>,
         ) {
             let parts = &mut self.$($path).+;
             for (child, &node) in parts.children.iter_mut().zip(&parts.nodes) {
@@ -108,23 +110,23 @@ macro_rules! retained_parts {
                 }
             }
         }
-        fn children(&self) -> Vec<&dyn Widget> {
+        fn children(&self) -> Vec<&dyn $crate::widget::Widget> {
             self.$($path).+
                 .children
                 .iter()
                 .map(|child| child.as_ref())
                 .collect()
         }
-        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn $crate::widget::Widget)) {
             for child in &self.$($path).+.children {
                 visitor(child.as_ref());
             }
         }
-        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        fn children_mut(&mut self) -> Vec<&mut (dyn $crate::widget::Widget +  '_)> {
             self.$($path).+
                 .children
                 .iter_mut()
-                .map(|child| child.as_mut() as &mut (dyn Widget + '_))
+                .map(|child| child.as_mut() as &mut (dyn $crate::widget::Widget +  '_))
                 .collect()
         }
         fn mark_drawn(&mut self) {
@@ -135,7 +137,7 @@ macro_rules! retained_parts {
         // A pure layout container: what changed is what its parts changed,
         // not the whole box, so a hover or a caret elsewhere on the page
         // does not repaint the page.
-        fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        fn collect_damage(&self, regions: &mut Vec<$crate::kurbo::Rect>) {
             for child in &self.$($path).+.children {
                 child.collect_damage(regions);
             }
@@ -147,8 +149,8 @@ macro_rules! retained_parts {
             }
             dirty
         }
-        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-            let mut change = crate::widget::StructureChange::None;
+        fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
+            let mut change = $crate::widget::StructureChange::None;
             for child in &mut self.$($path).+.children {
                 change = change.join(child.take_structure_change());
             }
@@ -160,10 +162,9 @@ macro_rules! retained_parts {
                 .iter()
                 .any(|child| child.wants_pointer_capture())
         }
-        fn get_rect(&self) -> Rect {
+        fn get_rect(&self) -> $crate::kurbo::Rect {
             self.$($path).+.rect
         }
     };
 }
 
-pub(super) use retained_parts;

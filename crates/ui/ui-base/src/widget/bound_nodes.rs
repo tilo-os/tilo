@@ -2,6 +2,7 @@
 //! deliver a callback to one admitted node.
 use super::Widget;
 use super::component_walk::{Binding, ComponentScope, ScopeEntry, WalkError, binding_of};
+use crate::accesskit_bridge::A11yTarget;
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 
@@ -270,7 +271,7 @@ impl BoundNodeMap {
 }
 
 /// Enter a retained boundary for the complete duration of a tree walk.
-pub(crate) fn enter_widget(widget: &dyn Widget) -> Result<NodeEntry, WalkError> {
+pub fn enter_widget(widget: &dyn Widget) -> Result<NodeEntry, WalkError> {
     let scope = binding_of(widget)
         .map(|binding| binding.enter())
         .transpose()?;
@@ -296,7 +297,7 @@ impl BoundNodeMap {
 /// # Safety
 /// Same live-tree and stable-topology requirements as `invoke_bound_node`;
 /// only shared target references may overlap and none may escape.
-pub(crate) unsafe fn inspect_bound_node<R>(
+pub unsafe fn inspect_bound_node<R>(
     bindings: &BoundNodeMap,
     nodes: &HashMap<NodeId, *mut dyn Widget>,
     node: NodeId,
@@ -323,7 +324,7 @@ pub(crate) unsafe fn layout_bound_node<R>(
 
 /// One walk over many admitted nodes, asking each a question that reads or settles only the widget
 /// itself (a flag, a measurement, a layout style).
-pub(crate) struct NodeSweep<'m> {
+pub struct NodeSweep<'m> {
     bindings: &'m BoundNodeMap,
     nodes: &'m HashMap<NodeId, *mut dyn Widget>,
     held: Option<(&'m dyn ComponentScope, ScopeEntry)>,
@@ -385,7 +386,7 @@ impl<'m> NodeSweep<'m> {
 }
 
 /// Non-document mutations (focus/measurement) enter the same lifetime.
-pub(crate) unsafe fn mutate_bound_node<R>(
+pub unsafe fn mutate_bound_node<R>(
     bindings: &BoundNodeMap,
     nodes: &HashMap<NodeId, *mut dyn Widget>,
     node: NodeId,
@@ -402,12 +403,88 @@ pub(crate) unsafe fn mutate_bound_node<R>(
 
 /// Explicit compatibility mode for retained helpers; component adapters still
 /// enforce their own entry when called by an unbound legacy traversal.
-pub(crate) fn enter_traversal<const BOUND: bool>(
+pub fn enter_traversal<const BOUND: bool>(
     widget: &dyn Widget,
 ) -> Result<NodeEntry, WalkError> {
     if BOUND {
         enter_widget(widget)
     } else {
         Ok(NodeEntry { _scope: None })
+    }
+}
+
+/// The names of the admitted nodes the accessibility bridge may address.
+#[derive(Default)]
+pub struct AdmittedNodeNames {
+    names: HashMap<NodeId, (*mut dyn Widget, String)>,
+}
+impl AdmittedNodeNames {
+    pub fn insert(&mut self, node: NodeId, pointer: *mut dyn Widget, name: String) {
+        self.names.insert(node, (pointer, name));
+    }
+    pub fn get(&self, node: NodeId, pointer: *mut dyn Widget) -> Option<&str> {
+        let (admitted, name) = self.names.get(&node)?;
+        std::ptr::eq(*admitted, pointer).then_some(name)
+    }
+}
+
+/// The live, admitted nodes exported to the AT bridge.
+pub struct ExportedNodes {
+    pub nodes: HashMap<NodeId, *mut dyn Widget>,
+    pub names: AdmittedNodeNames,
+}
+impl ExportedNodes {
+    pub fn focus(&self, node: Option<NodeId>) -> Option<NodeId> {
+        node.filter(|node| self.nodes.contains_key(node))
+    }
+    pub fn resolve(&self, root: &dyn Widget, id: accesskit::NodeId) -> Option<A11yTarget> {
+        let target = crate::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id)?;
+        let exported = |node: &NodeId| self.nodes.contains_key(node);
+        match &target {
+            A11yTarget::Root => {}
+            A11yTarget::Widget(node) | A11yTarget::Synthetic { owner: node, .. } => {
+                if !exported(node) {
+                    return None;
+                }
+            }
+        }
+        Some(target)
+    }
+}
+impl BoundNodeMap {
+    pub fn semantic_node_names(
+        &self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+    ) -> AdmittedNodeNames {
+        let mut names = AdmittedNodeNames::default();
+        for (&node, &pointer) in nodes {
+            let Some(admitted) = self.nodes.get(&node) else {
+                continue;
+            };
+            if !std::ptr::eq(admitted.pointer, pointer) || admitted.inactive {
+                continue;
+            }
+            names.insert(node, pointer, admitted.semantic_name.clone());
+        }
+        names
+    }
+    pub fn exported_nodes(&self, nodes: &HashMap<NodeId, *mut dyn Widget>) -> ExportedNodes {
+        let mut exported = ExportedNodes {
+            nodes: HashMap::new(),
+            names: AdmittedNodeNames::default(),
+        };
+        for (&node, &pointer) in nodes {
+            let Some(admitted) = self.nodes.get(&node) else {
+                continue;
+            };
+            if !std::ptr::eq(admitted.pointer, pointer) || admitted.inactive {
+                continue;
+            }
+            exported.nodes.insert(node, pointer);
+            exported
+                .names
+                .insert(node, pointer, admitted.semantic_name.clone());
+        }
+        exported
     }
 }

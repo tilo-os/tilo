@@ -9,7 +9,7 @@ use tilo_actions::ResourceSpec;
 
 /// What filtering one node or one list of children for one permission context (`token`) gave, kept on
 /// the input so the same input is filtered once.
-pub(crate) enum Filtered<T> {
+pub enum Filtered<T> {
     /// Every action is permitted; the input stands as it is.
     Same,
     /// Nothing in it is permitted: dropped from the tree.
@@ -199,7 +199,7 @@ pub fn to_resources(forest: &[SharedResource]) -> Vec<ResourceSpec> {
 }
 
 /// One step of [`diff`]: how the next forest differs from the last.
-pub(crate) enum Change<'a> {
+pub enum Change<'a> {
     /// A subtree only the last forest has.
     Removed(&'a SharedResource),
     /// A subtree only the next forest has.
@@ -215,7 +215,7 @@ pub(crate) enum Change<'a> {
 }
 
 /// Walk what differs from `last` to `next`, skipping every subtree both share by pointer.
-pub(crate) fn diff<'a>(
+pub fn diff<'a>(
     last: &'a [SharedResource],
     next: &'a [SharedResource],
     visit: &mut dyn FnMut(Change<'a>),
@@ -341,7 +341,7 @@ thread_local! {
 
 /// A permission context's token no other context had: the key a filtered result is kept under on its
 /// input (see [`SharedResource::filtered`]).
-pub(crate) fn fresh_token() -> u64 {
+pub fn fresh_token() -> u64 {
     NEXT_TOKEN.with(|next| {
         let token = next.get();
         next.set(token.wrapping_add(1).max(1));

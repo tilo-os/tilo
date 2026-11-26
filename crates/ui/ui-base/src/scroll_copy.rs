@@ -228,7 +228,7 @@ pub(crate) struct Moves {
 /// by exactly that scroller's delta is the copy's, and one that stayed put (a pinned
 /// title above a scrolled body, a sticky header over it) is damage where it is and where
 /// the copy took its pixels. The scroller itself must not move.
-pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[ScrollOffer]) -> Moves {
+pub fn moves_besides(before: &[Placed], after: &[Placed], offers: &[ScrollOffer]) -> Moves {
     let old_roles = roles(before, offers);
     let new_roles = roles(after, offers);
     let old: std::collections::HashMap<_, _> = before

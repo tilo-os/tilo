@@ -2262,3 +2262,15 @@ mod configured_theme {
         }
     }
 }
+
+impl Theme {
+    /// This theme in a window floating over the shell as a card
+    /// (a window toolbar that floats): its ground is the card's, so the app under
+    /// the card's header draws on the same surface as the header and every other card in
+    /// the column, not on a window's darker ground.
+    #[must_use]
+    pub fn as_card(mut self) -> Self {
+        self.tokens.colors.surfaces.content = crate::chrome::panel_ground(&self);
+        self
+    }
+}

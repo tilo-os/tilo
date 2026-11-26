@@ -47,12 +47,12 @@ mod tests;
 pub use appearing::{Appearance, Appearing};
 pub use beckon::{Arrival, Beckon, Completion};
 #[cfg(test)]
-pub(crate) use clock::forget_frames_for_tests;
-pub(crate) use clock::laying_out_frame;
-pub(crate) use clock::own;
-pub(crate) use clock::pin_frame;
+pub use clock::forget_frames_for_tests;
+pub use clock::laying_out_frame;
+pub use clock::own;
+pub use clock::pin_frame;
 #[cfg(test)]
-pub(crate) use clock::pin_frame_at;
+pub use clock::pin_frame_at;
 pub use clock::{
     MotionSurface, frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted,
     frames_wanted_by, on_surface, testing, want_frames_until,
@@ -64,7 +64,7 @@ pub use kept::{
     Found, HandOn, LayingOutWindow, keep, laying_out_window, take_kept, take_kept_at,
     take_kept_where, window_has_shown,
 };
-pub(crate) use kept::{closing_window, frame_ended, kept_any};
+pub use kept::{closing_window, frame_ended, kept_any};
 pub use named::{
     Ambient, Appear, Attention, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill, DrillDepth,
     Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, SWAP, Snap, Speaking,

@@ -43,7 +43,7 @@ const VALUE_FILL_STEP: f32 = 0.1;
 /// the accent's own brightness, so a slider, a progress bar and a finished step read as the
 /// same blue as the primary button. Where that misses the non-text contrast floor against
 /// either, a step the other way, stepped on until it clears it.
-pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> Color {
+pub fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> Color {
     use crate::a11y::contrast_ratio;
     let ink = Oklch::from_color(accent_ink);
     let away = if Oklch::from_color(ground).l > 0.5 {
@@ -99,7 +99,7 @@ const VALUE_TRACK_ALPHA: u8 = 40;
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says nothing about how
 /// it reads (`white/20` differs over black vs white), so every derivation below measures
 /// the composite, never the token.
-pub(crate) fn composite(over: Color, ground: Color) -> Color {
+pub fn composite(over: Color, ground: Color) -> Color {
     let a = f32::from(over.a()) / 255.0;
     #[allow(
         clippy::cast_possible_truncation,

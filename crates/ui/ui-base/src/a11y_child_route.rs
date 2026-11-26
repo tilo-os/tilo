@@ -15,7 +15,7 @@ const PREFIX: &str = "tilo.child:";
 
 /// The target that reaches the widget at child `path` below a node, and within it `inner` (a semantic
 /// target, or `#` and a key path).
-pub(crate) fn encode(path: &[usize], inner: Option<&str>) -> String {
+pub fn encode(path: &[usize], inner: Option<&str>) -> String {
     let path = path
         .iter()
         .map(usize::to_string)
@@ -90,7 +90,7 @@ fn descend_ref<'w>(widget: &'w dyn Widget, path: &[usize]) -> Option<&'w dyn Wid
 /// A named element the reached child leaves to the widget that laid it out is offered there: a
 /// context menu's row is its owner's command, which the owner keeps, so a tool activating the row
 /// reaches the action behind it and never a press where the row is drawn.
-pub(crate) fn perform(
+pub fn perform(
     owner: &mut dyn Widget,
     target: &str,
     action: &crate::a11y::Action,
@@ -118,14 +118,14 @@ pub(crate) fn perform(
 }
 
 /// Where the widget a child route reaches is, for an activation it declines to be pressed there.
-pub(crate) fn rect(owner: &dyn Widget, target: &str) -> Option<Rect> {
+pub fn rect(owner: &dyn Widget, target: &str) -> Option<Rect> {
     let (route, _) = decode(target)?;
     descend_ref(owner, &route).map(Widget::get_rect)
 }
 
 /// How a widget with no layout node of it is reached: the nearest laid-out ancestor and the child
 /// indices from it.
-pub(crate) type ChildRoute = (TaffyNodeId, Vec<usize>);
+pub type ChildRoute = (TaffyNodeId, Vec<usize>);
 
 /// The route of `w`'s child at `index`, from `w`'s own layout node `own` when it lays that child out,
 /// else extending `w`'s own `route`.
@@ -145,7 +145,7 @@ pub(crate) fn child_route(
 /// The routes an accessibility walk hands down: each widget's is set by its parent before the widget is
 /// visited.
 #[derive(Default)]
-pub(crate) struct Routes(HashMap<*const (), ChildRoute>);
+pub struct Routes(HashMap<*const (), ChildRoute>);
 
 impl Routes {
     /// `w`'s own route when it has no layout node (`own`), after routing every child from it, hosted

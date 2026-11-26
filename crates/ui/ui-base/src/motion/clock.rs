@@ -44,7 +44,7 @@ thread_local! {
 /// While the guard lives, a frame is built, laid out and drawn on this thread: its composition passes
 /// settle against the state of the app its model pass took in, as they read their motions at one
 /// instant ([`pin_frame`]).
-pub(crate) fn laying_out_frame() -> LayingOutFrame {
+pub fn laying_out_frame() -> LayingOutFrame {
     LAYING_OUT.with(|count| count.set(count.get().saturating_add(1)));
     LayingOutFrame(())
 }
@@ -74,7 +74,7 @@ pub fn frame_now() -> Instant {
 }
 
 /// While the guard lives, motions on this thread read at the instant it was taken ([`frame_now`]).
-pub(crate) fn pin_frame() -> PinnedFrame {
+pub fn pin_frame() -> PinnedFrame {
     let at = frame_now();
     PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
 }
@@ -167,7 +167,7 @@ fn wish(key: Option<u64>, caller: &'static Location<'static>, until: Instant) {
 }
 
 /// Run `f` on behalf of the surface `owner` on this thread ([`owning`]).
-pub(crate) fn own<T>(owner: usize, f: impl FnOnce() -> T) -> T {
+pub fn own<T>(owner: usize, f: impl FnOnce() -> T) -> T {
     let _owning = owning(owner);
     f()
 }

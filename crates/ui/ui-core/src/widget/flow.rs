@@ -710,7 +710,7 @@ fn paint_reach(child: &dyn Widget) -> f64 {
 macro_rules! flow_builders {
     () => {
         #[must_use]
-        pub fn push(mut self, child: Box<dyn $tilo_ui_base::widget::Widget>) -> Self {
+        pub fn push(mut self, child: Box<dyn ::tilo_ui_base::widget::Widget>) -> Self {
             self.flow.children.push(child);
             self
         }
@@ -723,12 +723,12 @@ macro_rules! flow_builders {
         }
 
         /// Take ownership of the child list for identity-preserving reconcile.
-        pub fn take_children(&mut self) -> Vec<Box<dyn $tilo_ui_base::widget::Widget>> {
+        pub fn take_children(&mut self) -> Vec<Box<dyn ::tilo_ui_base::widget::Widget>> {
             self.flow.take_children()
         }
 
         /// Replace the child list after a graph reconcile pass.
-        pub fn set_children(&mut self, children: Vec<Box<dyn $tilo_ui_base::widget::Widget>>) {
+        pub fn set_children(&mut self, children: Vec<Box<dyn ::tilo_ui_base::widget::Widget>>) {
             self.flow.set_children(children);
         }
 
@@ -737,7 +737,7 @@ macro_rules! flow_builders {
         /// `Sibling` for items of equal weight, `Section` between sections, `Group` between
         /// groups of sections.
         #[must_use]
-        pub fn with_rhythm(mut self, rhythm: $tilo_ui_base::tokens::Rhythm) -> Self {
+        pub fn with_rhythm(mut self, rhythm: ::tilo_ui_base::tokens::Rhythm) -> Self {
             self.flow.rhythm = Some(rhythm);
             self.flow.gap_override = None;
             self
@@ -748,8 +748,8 @@ macro_rules! flow_builders {
         #[must_use]
         pub fn with_padding_rhythm(
             mut self,
-            horizontal: impl Into<Option<$tilo_ui_base::tokens::Rhythm>>,
-            vertical: impl Into<Option<$tilo_ui_base::tokens::Rhythm>>,
+            horizontal: impl Into<Option<::tilo_ui_base::tokens::Rhythm>>,
+            vertical: impl Into<Option<::tilo_ui_base::tokens::Rhythm>>,
         ) -> Self {
             self.flow.padding_rhythm = Some((horizontal.into(), vertical.into()));
             self
@@ -757,7 +757,7 @@ macro_rules! flow_builders {
 
         /// Opt this layout into presence tracking by binding it to a CRDT-style path.
         #[must_use]
-        pub fn with_presence(mut self, path: Vec<$tilo_ui_base::presence::PathSegment>) -> Self {
+        pub fn with_presence(mut self, path: Vec<::tilo_ui_base::presence::PathSegment>) -> Self {
             self.flow.presence_path = path;
             self
         }
@@ -778,8 +778,8 @@ macro_rules! flow_widget_methods {
 
         fn update(
             &mut self,
-            state: &$tilo_ui_base::widget::AppModel,
-            path: &$tilo_ui_base::widget::ModelPath,
+            state: &::tilo_ui_base::widget::AppModel,
+            path: &::tilo_ui_base::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
             for child in &mut self.flow.children {
@@ -798,18 +798,18 @@ macro_rules! flow_widget_methods {
             self.flow.apply_layout(taffy, node, origin);
         }
 
-        fn draw(&mut self, ctx: &mut $tilo_ui_base::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>) {
             let (scene, transform, text_renderer, theme, env) = ctx.parts();
-            if self.flow.draw_cached(&mut $tilo_ui_base::draw::DrawCtx::new(
+            if self.flow.draw_cached(&mut ::tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 env.clone(),
             )) {
-                $tilo_ui_base::widget::draw_over(
+                ::tilo_ui_base::widget::draw_over(
                     self,
-                    &mut $tilo_ui_base::draw::DrawCtx::new(
+                    &mut ::tilo_ui_base::draw::DrawCtx::new(
                         scene,
                         transform,
                         text_renderer,
@@ -823,12 +823,12 @@ macro_rules! flow_widget_methods {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            ctx: &mut $tilo_ui_base::widget::EventCtx<'_>,
+            ctx: &mut ::tilo_ui_base::widget::EventCtx<'_>,
         ) {
             let shifts = self.flow.follower_shifts();
             let reached = self.flow.children_reached(event);
             if reached.len() == self.flow.children.len() {
-                $tilo_ui_base::widget::route_to_shifted_children(
+                ::tilo_ui_base::widget::route_to_shifted_children(
                     &mut self.flow.children,
                     &self.flow.child_nodes,
                     shifts.as_deref(),
@@ -841,7 +841,7 @@ macro_rules! flow_widget_methods {
             ) {
                 // Only the children near the view stand where they are
                 // drawn; none is moving (`Flow::children_reached`).
-                $tilo_ui_base::widget::route_to_children(children, nodes, event, ctx);
+                ::tilo_ui_base::widget::route_to_children(children, nodes, event, ctx);
             }
         }
 
@@ -859,7 +859,7 @@ macro_rules! flow_widget_methods {
 
         fn needs_animation_frame(&self) -> bool {
             self.flow.has_ghosts()
-                || $tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                || ::tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
                     self.for_each_child(visit)
                 })
         }
@@ -868,7 +868,7 @@ macro_rules! flow_widget_methods {
             self.flow.children.iter().any(|c| c.is_layout_dirty())
         }
 
-        fn children(&self) -> Vec<&dyn $tilo_ui_base::widget::Widget> {
+        fn children(&self) -> Vec<&dyn ::tilo_ui_base::widget::Widget> {
             self.flow
                 .children
                 .iter()
@@ -876,24 +876,24 @@ macro_rules! flow_widget_methods {
                 .collect()
         }
 
-        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn $tilo_ui_base::widget::Widget)) {
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn ::tilo_ui_base::widget::Widget)) {
             for child in &self.flow.children {
                 visitor(child.as_ref());
             }
         }
 
-        fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn $tilo_ui_base::widget::Widget)) {
-            let near = self.flow.children_placed_near($tilo_ui_base::widget::layout_clip());
+        fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn ::tilo_ui_base::widget::Widget)) {
+            let near = self.flow.children_placed_near(::tilo_ui_base::widget::layout_clip());
             for child in self.flow.children.get(near).unwrap_or_default() {
                 visitor(child.as_ref());
             }
         }
 
-        fn children_mut(&mut self) -> Vec<&mut (dyn $tilo_ui_base::widget::Widget + '_)> {
+        fn children_mut(&mut self) -> Vec<&mut (dyn ::tilo_ui_base::widget::Widget + '_)> {
             self.flow
                 .children
                 .iter_mut()
-                .map(|c| c.as_mut() as &mut (dyn $tilo_ui_base::widget::Widget + '_))
+                .map(|c| c.as_mut() as &mut (dyn ::tilo_ui_base::widget::Widget + '_))
                 .collect()
         }
 
@@ -903,11 +903,11 @@ macro_rules! flow_widget_methods {
             }
         }
 
-        fn take_structure_change(&mut self) -> $tilo_ui_base::widget::StructureChange {
+        fn take_structure_change(&mut self) -> ::tilo_ui_base::widget::StructureChange {
             let mut change = if std::mem::take(&mut self.flow.style_dirty) {
-                $tilo_ui_base::widget::StructureChange::Rebuild
+                ::tilo_ui_base::widget::StructureChange::Rebuild
             } else {
-                $tilo_ui_base::widget::StructureChange::None
+                ::tilo_ui_base::widget::StructureChange::None
             };
             for child in &mut self.flow.children {
                 change = change.join(child.take_structure_change());
@@ -949,14 +949,14 @@ pub(super) use flow_widget_methods;
 
 macro_rules! flow_capabilities {
     ($ty:ty) => {
-        impl $tilo_ui_base::presence::capability::PublishesPresence for $ty {
-            fn presence_key(&self) -> Option<$tilo_ui_base::presence::PresenceKey> {
-                $tilo_ui_base::presence::PresenceKey::widget(&self.flow.presence_path)
+        impl ::tilo_ui_base::presence::capability::PublishesPresence for $ty {
+            fn presence_key(&self) -> Option<::tilo_ui_base::presence::PresenceKey> {
+                ::tilo_ui_base::presence::PresenceKey::widget(&self.flow.presence_path)
             }
         }
 
         #[cfg(feature = "model")]
-        impl $tilo_ui_base::widget::permission::PermissionGuarded for $ty {
+        impl ::tilo_ui_base::widget::permission::PermissionGuarded for $ty {
             fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
                 self.flow.permission_scope.clone()
             }

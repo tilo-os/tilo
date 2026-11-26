@@ -469,7 +469,7 @@ std::thread_local! {
 }
 
 /// How far apart two presses may land and still count as one multi-click.
-pub(crate) const MULTI_CLICK_DIST: f64 = 4.0;
+pub const MULTI_CLICK_DIST: f64 = 4.0;
 
 /// The current multi-click window.
 pub fn multi_click_interval() -> Duration {
@@ -480,7 +480,7 @@ pub fn multi_click_interval() -> Duration {
 
 /// Override capture timing synchronously on this thread, restoring it even
 /// when a frame panics. Ordinary hosts keep the session preference.
-pub(crate) fn with_capture_multi_click_interval<T>(
+pub fn with_capture_multi_click_interval<T>(
     interval: Duration,
     capture: impl FnOnce() -> T,
 ) -> T {

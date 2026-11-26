@@ -10,14 +10,14 @@ use std::collections::HashMap;
 /// parent publishes the widget's semantics itself ([`Widget::accessibility_represents_child`]), so the
 /// walk attaches the widget's children to the synthetic node and exports no second node of the widget's
 /// own.
-pub(crate) struct HostedWidget<'a> {
+pub struct HostedWidget<'a> {
     pub path: Vec<usize>,
     pub widget: &'a dyn Widget,
     pub as_node: bool,
 }
 
 /// Hosted widgets by the index of the synthetic child they hang off.
-pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+pub type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
 /// How a widget's children enter the accessibility walk.
 pub(crate) struct ExportedChildren<'a> {
@@ -87,7 +87,7 @@ pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedHere<'_> {
 }
 
 /// What a view makes of one widget.
-pub(crate) enum Visit<P, S> {
+pub enum Visit<P, S> {
     /// No node of it (`accessibility() == None`, ARIA's `role="presentation"`): its children attach
     /// where it would have.
     Collapse,
@@ -99,7 +99,7 @@ pub(crate) enum Visit<P, S> {
 }
 
 /// One view of the walk.
-pub(crate) trait A11yVisitor: Sized {
+pub trait A11yVisitor: Sized {
     /// Where nodes attach: a parent and the children gathered under it.
     type Scope;
     /// A widget's node opened but not yet closed.
@@ -153,7 +153,7 @@ pub(crate) trait A11yVisitor: Sized {
 /// ([`Widget::accessibility_child_name`], [`Widget::accessibility_child_description`]), said of
 /// `access`: its name where the child has none of it (or only found one, the value it shows), its
 /// description where the child describes nothing.
-pub(crate) fn with_slot_words(access: &mut AccessNode, slot: Option<&(&dyn Widget, usize)>) {
+pub fn with_slot_words(access: &mut AccessNode, slot: Option<&(&dyn Widget, usize)>) {
     let Some((parent, index)) = slot else {
         return;
     };
@@ -169,7 +169,7 @@ pub(crate) fn with_slot_words(access: &mut AccessNode, slot: Option<&(&dyn Widge
 }
 
 /// Walk `w` and everything under it into `parent`.
-pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
+pub fn walk<const BOUND: bool, V: A11yVisitor>(
     v: &mut V,
     w: &dyn Widget,
     slot: Option<(&dyn Widget, usize)>,
@@ -211,7 +211,7 @@ pub(crate) fn walk<const BOUND: bool, V: A11yVisitor>(
 
 /// Walk `owner`'s synthetic `node` at `path`, its synthetic children and the widgets `hosted` in them,
 /// into `parent`.
-pub(crate) fn walk_synthetic<const BOUND: bool, V: A11yVisitor>(
+pub fn walk_synthetic<const BOUND: bool, V: A11yVisitor>(
     v: &mut V,
     owner: &dyn Widget,
     path: &mut Vec<usize>,
@@ -270,7 +270,7 @@ fn walk_below<const BOUND: bool, V: A11yVisitor>(
 
 /// Walk `owner`'s synthetic `children`, in order, with the widgets `hosted` in them, into `scope`: what
 /// a visitor does with its node in [`A11yVisitor::close`], the ordinal being the child.
-pub(crate) fn walk_synthetic_children<'a, const BOUND: bool, V: A11yVisitor, C>(
+pub fn walk_synthetic_children<'a, const BOUND: bool, V: A11yVisitor, C>(
     v: &mut V,
     owner: &dyn Widget,
     children: C,

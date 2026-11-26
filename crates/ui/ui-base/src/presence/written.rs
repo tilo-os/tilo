@@ -266,7 +266,7 @@ impl PresenceCtx {
 /// The item the words a write names stand under, where they are an item of its own inside it (a
 /// comment in an issue's thread, its block `<issue>/<comment>`) or the item it wrote in (a note it
 /// made): a view showing the item but not the words shows the write on the item.
-pub(crate) fn written_under(interaction: &SemanticInteraction) -> Option<String> {
+pub fn written_under(interaction: &SemanticInteraction) -> Option<String> {
     let tilo_actions::InteractionAnchor::Text { ranges, .. } = &interaction.anchor else {
         return None;
     };

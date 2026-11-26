@@ -627,7 +627,7 @@ impl App {
                 continue;
             };
             // SAFETY: this layout is unchanged, so every node pointer is live.
-            if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
+            if !visited.insert(unsafe { tilo_ui_base::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             let binding = self

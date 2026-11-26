@@ -6,10 +6,10 @@
 
 use crate::theme::Theme;
 
-pub(crate) use tilo_appearance::{Appearance as HostAppearance, Scheme};
+pub use tilo_appearance::{Appearance as HostAppearance, Scheme};
 
 /// The colour theme only; the App layers contrast and motion on top.
-pub(crate) fn theme(host: HostAppearance) -> Theme {
+pub fn theme(host: HostAppearance) -> Theme {
     let base = match host.scheme {
         Some(Scheme::Light) => Theme::light(),
         Some(Scheme::Dark) | None => Theme::dark(),
@@ -34,7 +34,7 @@ fn scheme(theme: winit::window::Theme) -> Scheme {
 /// the theme the shell chrome already paints from. Sandboxes clear `XDG_CURRENT_DESKTOP` and may not
 /// expose the host Settings portal; its unset scheme must not paint the dark fallback over the shell's
 /// configured theme.
-pub(crate) fn session_document_owns_appearance() -> bool {
+pub fn session_document_owns_appearance() -> bool {
     crate::settings_source::installed_source().is_some()
 }
 
@@ -48,7 +48,7 @@ pub(crate) fn host_owns_appearance(desktop: Option<&str>) -> bool {
 }
 
 /// The native runner's view of the host appearance, reporting each change once.
-pub(crate) struct Source {
+pub struct Source {
     window_scheme: Option<Scheme>,
     system: tilo_appearance::System,
     /// Accessibility the launcher requested; the host can add to it, never take it away.

@@ -17,7 +17,7 @@ pub(crate) const AIM_HOLD: Duration = Duration::from_millis(300);
 
 /// One item of the row, as laid out now.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Item {
+pub struct Item {
     pub(crate) idx: usize,
     pub(crate) edge: f64,
     pub(crate) controls: Rect,
@@ -31,7 +31,7 @@ impl Item {
 
 /// What the host knows about one pointer sample.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Sample<'a> {
+pub struct Sample<'a> {
     pub(crate) p: Point,
     pub(crate) under: Option<Item>,
     pub(crate) open: Option<Item>,
@@ -55,7 +55,7 @@ struct Last {
 
 /// Menu-aim and dwell state for one row of hover-opening items.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct HoverIntent {
+pub struct HoverIntent {
     open: Option<usize>,
     /// The item that opens at the given instant, unless the pointer is
     /// aiming at a control the opening would move by then.

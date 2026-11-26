@@ -44,7 +44,7 @@ fn pending() -> bool {
 
 /// The window starts dispatching `event`: a key press starts a record, or joins the one waiting for its
 /// frame.
-pub(crate) fn key_dispatched(event: &winit::event::WindowEvent) {
+pub fn key_dispatched(event: &winit::event::WindowEvent) {
     use winit::event::{ElementState, Ime, WindowEvent};
     let is_key = matches!(event,
         WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed)
@@ -74,7 +74,7 @@ pub(crate) fn key_dispatched(event: &winit::event::WindowEvent) {
 }
 
 /// The window has handled the event it started dispatching.
-pub(crate) fn event_handled() {
+pub fn event_handled() {
     if !pending() {
         return;
     }
@@ -88,7 +88,7 @@ pub(crate) fn event_handled() {
 }
 
 /// A frame starts: the first after a key answers it.
-pub(crate) fn frame_started() {
+pub fn frame_started() {
     if !pending() {
         return;
     }
@@ -106,7 +106,7 @@ pub(crate) fn frame_started() {
 /// The frame that started after a key is handed to the render thread: what to call once the render
 /// thread presented it, which writes the record. What a frame repaints: the whole window, and why, or
 /// the pixels its damage covers.
-pub(crate) enum Repaint<'a> {
+pub enum Repaint<'a> {
     Full(RepaintWhy),
     /// The damage's rectangles, in the frame's pixels.
     Damage(&'a [vello::kurbo::Rect]),
@@ -114,7 +114,7 @@ pub(crate) enum Repaint<'a> {
 
 /// Why a frame repaints its whole window: each reason the frame found, by name.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct RepaintWhy(u32);
+pub struct RepaintWhy(u32);
 
 const REASONS: [&str; 14] = [
     "structure",
@@ -158,7 +158,7 @@ impl RepaintWhy {
 }
 
 /// `repaint` says what the frame repaints.
-pub(crate) fn submitted(repaint: Repaint<'_>) -> Option<Box<dyn FnOnce() + Send>> {
+pub fn submitted(repaint: Repaint<'_>) -> Option<Box<dyn FnOnce() + Send>> {
     if !pending() {
         return None;
     }

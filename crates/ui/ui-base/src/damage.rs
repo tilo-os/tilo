@@ -14,7 +14,7 @@ fn bottom(rect: FineDamageRect) -> u32 {
     rect.y.saturating_add(rect.height)
 }
 
-pub(crate) fn area(rect: FineDamageRect) -> u64 {
+pub fn area(rect: FineDamageRect) -> u64 {
     u64::from(rect.width).saturating_mul(u64::from(rect.height))
 }
 
@@ -25,7 +25,7 @@ fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
         && bottom(outer) >= bottom(inner)
 }
 
-pub(crate) fn damage_union(a: FineDamageRect, b: FineDamageRect) -> FineDamageRect {
+pub fn damage_union(a: FineDamageRect, b: FineDamageRect) -> FineDamageRect {
     let x = a.x.min(b.x);
     let y = a.y.min(b.y);
     FineDamageRect {
@@ -300,7 +300,7 @@ pub fn coalesce_regions(regions: Vec<FineDamageRect>) -> Vec<FineDamageRect> {
     reason = "the bounded two-index scan checks i < j < len before every access"
 )]
 #[inline(never)]
-pub(crate) fn merge_regions(mut regions: Vec<FineDamageRect>, slack: u64) -> Vec<FineDamageRect> {
+pub fn merge_regions(mut regions: Vec<FineDamageRect>, slack: u64) -> Vec<FineDamageRect> {
     if regions.len() > 128 {
         return regions;
     }
@@ -349,7 +349,7 @@ pub fn pixel_rect(rect: Rect, width: u32, height: u32) -> Option<FineDamageRect>
 /// The pixels `damage` covers in a `width` × `height` target, as regions a presentation can copy, or
 /// `None` when the list is empty, absurdly long or has a rectangle no pixel grid can take: a host
 /// then repaints whole.
-pub(crate) fn bounded_present_damage(
+pub fn bounded_present_damage(
     width: u32,
     height: u32,
     damage: &[Rect],
@@ -382,13 +382,13 @@ pub(crate) fn bounded_present_damage(
 
 /// A widget's identity within one tree walk: its address and its depth (a widget held at the start of
 /// its parent shares the parent's address).
-pub(crate) type WidgetIdentity = (*const (), usize);
+pub type WidgetIdentity = (*const (), usize);
 
 /// Every widget that may paint in view, in tree order, by identity, with its layout box: in a long
 /// scrolled collection only the children near its viewport
 /// ([`crate::widget::Widget::for_each_child_in_clip`]), so the walk costs what is shown, not what is
 /// held.
-pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdentity, Rect)> {
+pub fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdentity, Rect)> {
     fn walk(
         widget: &dyn crate::widget::Widget,
         depth: usize,
@@ -407,7 +407,7 @@ pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdent
 
 /// Every widget whose own damage covers a change to its box this frame
 /// ([`crate::widget::Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
-pub(crate) fn boxes_covered_by_own_damage(
+pub fn boxes_covered_by_own_damage(
     root: &dyn crate::widget::Widget,
 ) -> std::collections::HashSet<WidgetIdentity> {
     fn walk(
@@ -428,7 +428,7 @@ pub(crate) fn boxes_covered_by_own_damage(
 /// The old and new box of every widget that a relayout (and any rebuild) moved, and the box of every
 /// widget that came or went, matched by identity: a row a scroll brought near the view comes, one it
 /// took away goes.
-pub(crate) fn changed_boxes(
+pub fn changed_boxes(
     before: &[(WidgetIdentity, Rect)],
     after: &[(WidgetIdentity, Rect)],
 ) -> Vec<Rect> {
@@ -453,7 +453,7 @@ pub(crate) fn changed_boxes(
 
 /// [`changed_boxes`], leaving the box of a widget whose own damage this draw covers where its box was
 /// and is (a block editor that grew by a paragraph) to that damage; its children's boxes still count.
-pub(crate) fn changed_boxes_besides_own_damage(
+pub fn changed_boxes_besides_own_damage(
     root: &dyn crate::widget::Widget,
     before: &[(WidgetIdentity, Rect)],
     after: &[(WidgetIdentity, Rect)],

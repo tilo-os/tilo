@@ -670,7 +670,7 @@ pub fn local_surface_id() -> String {
     resolve_app_id(app_id.as_deref(), binary.as_deref())
 }
 
-pub(crate) fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
+pub fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
     let non_blank = |s: &str| {
         let t = s.trim();
         (!t.is_empty()).then(|| t.to_string())

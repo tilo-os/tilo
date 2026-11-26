@@ -746,3 +746,20 @@ mod tests {
         }
     }
 }
+
+impl From<tilo_ui_graph::UiTextRole> for TextRole {
+    fn from(value: tilo_ui_graph::UiTextRole) -> Self {
+        match value {
+            tilo_ui_graph::UiTextRole::Display => Self::Display,
+            tilo_ui_graph::UiTextRole::LargeTitle => Self::LargeTitle,
+            tilo_ui_graph::UiTextRole::Title => Self::Title,
+            tilo_ui_graph::UiTextRole::Heading => Self::Heading,
+            tilo_ui_graph::UiTextRole::Subheading => Self::Subheading,
+            tilo_ui_graph::UiTextRole::Body => Self::Body,
+            tilo_ui_graph::UiTextRole::Label => Self::Label,
+            tilo_ui_graph::UiTextRole::Caption => Self::Caption,
+            tilo_ui_graph::UiTextRole::Reading => Self::Reading,
+            tilo_ui_graph::UiTextRole::Code => Self::Code,
+        }
+    }
+}

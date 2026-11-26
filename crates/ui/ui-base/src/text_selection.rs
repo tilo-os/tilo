@@ -279,7 +279,7 @@ pub fn clipboard_available() -> bool {
     !crate::clipboard::is_unavailable(&*clipboard())
 }
 
-pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<String>> {
+pub fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<String>> {
     clipboard().request_text(ClipboardTarget::Clipboard)
 }
 

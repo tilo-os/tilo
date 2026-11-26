@@ -506,7 +506,7 @@ impl PresenceCtx {
 
 /// How strong the wash under a presence outline stands: light enough that what the object says
 /// stays legible through it, strong enough that the colour reads as the person's.
-pub(crate) const OUTLINE_FILL: f32 = 0.18;
+pub const OUTLINE_FILL: f32 = 0.18;
 
 const DOT_R: f64 = 6.5;
 /// Outer edge including the contrast ring — the clearance pill placement
