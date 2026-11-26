@@ -131,10 +131,6 @@ pub(super) struct LayoutRuntime {
     /// stands where an earlier placement put it until the next full one
     /// (`App::place_all`).
     pub(super) placed_partly: bool,
-    /// The device pixels per logical pixel the last placement was laid out on: a full placement
-    /// that follows outside a frame (`App::place_all`) places on the same grid, so a widget that
-    /// snaps its own parts there stands them where the frame drew them.
-    pub(super) placed_scale: f64,
     /// What a host that draws only its frames' damage keeps from frame to
     /// frame ([`crate::draw_cull`]).
     pub(super) cull: crate::draw_cull::Culling,
@@ -212,7 +208,6 @@ impl LayoutRuntime {
             skipped_frames: crate::widget::SkippedFrames::default(),
             placed_all: None,
             placed_partly: false,
-            placed_scale: 1.0,
             cull: crate::draw_cull::Culling::default(),
             walks: TreeWalks::default(),
             last_pass: LayoutPass::default(),

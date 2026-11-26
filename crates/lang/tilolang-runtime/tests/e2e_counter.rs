@@ -126,6 +126,39 @@ mod cases {
         }
     }
 
+    #[test]
+    fn a_replica_view_follows_incoming_changes() {
+        let app = App::compile(SOURCE, &[]);
+        let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
+        let rt_a = Runtime::new(store_a.clone(), TestAuthority::new()).unwrap();
+        let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
+        app.load(&rt_a);
+        app.load(&rt_b);
+        let me = me();
+        let c = rt_a.create("Counter").unwrap();
+        store_a.sync_with(&mut store_b).unwrap();
+        let mut view_b = rt_b
+            .open_view(&me, &app.view("counter"), vec![Value::resource(&c)])
+            .unwrap();
+        rt_a.invoke_action(
+            &me,
+            (app.action("increment").as_str(), vec![Value::resource(&c)]),
+        )
+        .unwrap();
+        store_a.sync_with(&mut store_b).unwrap();
+        let patches = view_b.poll_patches().unwrap();
+        assert!(
+            matches!(
+                patches.as_slice(),
+                [Patch::SetProp {
+                    value: Some(Value::Text(shown)),
+                    ..
+                }] if shown == "1"
+            ),
+            "{patches:?}"
+        );
+    }
+
     /// A second version of the counter: the same declarations under the same ids, a new
     /// action, and the button labelled differently.
     fn counter_v2() -> String {
@@ -137,109 +170,72 @@ mod cases {
             )
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_counter_1;
-
-        phase a_replica_view_follows_incoming_changes;
-        {
-            let app = App::compile(SOURCE, &[]);
-            let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
-            let rt_a = Runtime::new(store_a.clone(), TestAuthority::new()).unwrap();
-            let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
-            app.load(&rt_a);
-            app.load(&rt_b);
-            let me = me();
-            let c = rt_a.create("Counter").unwrap();
-            store_a.sync_with(&mut store_b).unwrap();
-            let mut view_b = rt_b
-                .open_view(&me, &app.view("counter"), vec![Value::resource(&c)])
-                .unwrap();
-            rt_a.invoke_action(
-                &me,
-                (app.action("increment").as_str(), vec![Value::resource(&c)]),
-            )
-            .unwrap();
-            store_a.sync_with(&mut store_b).unwrap();
-            let patches = view_b.poll_patches().unwrap();
-            assert!(
-                matches!(
-                    patches.as_slice(),
-                    [Patch::SetProp {
-                        value: Some(Value::Text(shown)),
-                        ..
-                    }] if shown == "1"
-                ),
-                "{patches:?}"
-            );
-        }
-
-        phase a_reloaded_version_keeps_the_state_and_its_views_show_the_new_code;
-        {
-            let v1 = App::compile(SOURCE, &[]);
-            let v2 = App {
-                compiled: tilolang::compile_package(&counter_v2(), &v1.compiled.ids, &[])
-                    .unwrap_or_else(|d| panic!("{d:#?}")),
-                platform: Vec::new(),
-            };
-            assert_eq!(
-                v1.action("increment"),
-                v2.action("increment"),
-                "the lock keeps ids"
-            );
-            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-            let old = v1.load(&rt);
-            let me = me();
-            let c = rt.create("Counter").unwrap();
-            for _ in 0..2 {
-                rt.invoke_action(
-                    &me,
-                    (v1.action("increment").as_str(), vec![Value::resource(&c)]),
-                )
-                .unwrap();
-            }
-            // Loading it beside the old version is refused: they declare the same ids.
-            assert!(rt.load_compiled(&v2.compiled).is_err());
-            let new = rt
-                .reload_package(&v2.compiled.wasm, v2.compiled.meta.clone())
-                .unwrap();
-            assert_ne!(new, old);
-            assert_eq!(
-                rt.read(&c, "value").unwrap(),
-                Value::Int(2),
-                "state survives"
-            );
+    #[test]
+    fn a_reloaded_version_keeps_the_state_and_its_views_show_the_new_code() {
+        let v1 = App::compile(SOURCE, &[]);
+        let v2 = App {
+            compiled: tilolang::compile_package(&counter_v2(), &v1.compiled.ids, &[])
+                .unwrap_or_else(|d| panic!("{d:#?}")),
+            platform: Vec::new(),
+        };
+        assert_eq!(
+            v1.action("increment"),
+            v2.action("increment"),
+            "the lock keeps ids"
+        );
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+        let old = v1.load(&rt);
+        let me = me();
+        let c = rt.create("Counter").unwrap();
+        for _ in 0..2 {
             rt.invoke_action(
                 &me,
-                (v2.action("decrement").as_str(), vec![Value::resource(&c)]),
+                (v1.action("increment").as_str(), vec![Value::resource(&c)]),
             )
             .unwrap();
-            assert_eq!(rt.read(&c, "value").unwrap(), Value::Int(1));
-            let view = rt
-                .open_view(&me, &v2.view("counter"), vec![Value::resource(&c)])
-                .unwrap();
-            let labels: Vec<Value> = of_kind(view.tree(), "ui.Button")
-                .iter()
-                .map(|b| b.props["label"].clone())
-                .collect();
-            assert_eq!(labels, vec![Value::text("Add one")]);
         }
+        // Loading it beside the old version is refused: they declare the same ids.
+        assert!(rt.load_compiled(&v2.compiled).is_err());
+        let new = rt
+            .reload_package(&v2.compiled.wasm, v2.compiled.meta.clone())
+            .unwrap();
+        assert_ne!(new, old);
+        assert_eq!(
+            rt.read(&c, "value").unwrap(),
+            Value::Int(2),
+            "state survives"
+        );
+        rt.invoke_action(
+            &me,
+            (v2.action("decrement").as_str(), vec![Value::resource(&c)]),
+        )
+        .unwrap();
+        assert_eq!(rt.read(&c, "value").unwrap(), Value::Int(1));
+        let view = rt
+            .open_view(&me, &v2.view("counter"), vec![Value::resource(&c)])
+            .unwrap();
+        let labels: Vec<Value> = of_kind(view.tree(), "ui.Button")
+            .iter()
+            .map(|b| b.props["label"].clone())
+            .collect();
+        assert_eq!(labels, vec![Value::text("Add one")]);
+    }
 
-        phase a_refused_reload_leaves_the_old_version_running;
-        {
-            let v1 = App::compile(SOURCE, &[]);
-            let v2 = tilolang::compile_package(&counter_v2(), &v1.compiled.ids, &[]).unwrap();
-            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-            v1.load(&rt);
-            // The old module with the new metadata lacks the new action's export.
-            assert!(rt.reload_package(&v1.compiled.wasm, v2.meta).is_err());
-            let c = rt.create("Counter").unwrap();
-            let out = rt
-                .invoke_action(
-                    &me(),
-                    (v1.action("increment").as_str(), vec![Value::resource(&c)]),
-                )
-                .unwrap();
-            assert_eq!(out, InvokeOutcome::Done(Value::Unit));
-        }
+    #[test]
+    fn a_refused_reload_leaves_the_old_version_running() {
+        let v1 = App::compile(SOURCE, &[]);
+        let v2 = tilolang::compile_package(&counter_v2(), &v1.compiled.ids, &[]).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+        v1.load(&rt);
+        // The old module with the new metadata lacks the new action's export.
+        assert!(rt.reload_package(&v1.compiled.wasm, v2.meta).is_err());
+        let c = rt.create("Counter").unwrap();
+        let out = rt
+            .invoke_action(
+                &me(),
+                (v1.action("increment").as_str(), vec![Value::resource(&c)]),
+            )
+            .unwrap();
+        assert_eq!(out, InvokeOutcome::Done(Value::Unit));
     }
 }

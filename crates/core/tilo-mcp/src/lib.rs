@@ -50,7 +50,7 @@ mod turns;
 mod refusal;
 #[path = "mcp_rows.rs"]
 mod rows;
-use rows::{offer_open_path, page_json, resource_list};
+use rows::resource_list;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use step::{DeclaredInvocation, STEP, STEP_INVOCATION, SURFACE_STRUCTURED};
@@ -428,54 +428,6 @@ fn may_have_opened(value: &Value) -> bool {
     )
 }
 
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListArgs {
-    after_peer: Option<u64>,
-    max_results: Option<u32>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct QueryArgs {
-    peer_id: Option<u64>,
-    app_id: Option<String>,
-    #[serde(default)]
-    workspace: bool,
-    #[serde(default)]
-    revision: String,
-    #[serde(default)]
-    cursor: Cursor,
-    #[serde(default)]
-    parent_resource: String,
-    #[serde(default)]
-    needle: String,
-    max_results: Option<u32>,
-    max_bytes: Option<u32>,
-    max_work: Option<u32>,
-    max_depth: Option<u16>,
-    detail: Option<Detail>,
-}
-/// A continuation as a page issued it: the compact page's string, or the
-/// full page's byte array.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Cursor {
-    Bytes(Vec<u8>),
-    Text(String),
-}
-impl Default for Cursor {
-    fn default() -> Self {
-        Self::Bytes(Vec::new())
-    }
-}
-impl Cursor {
-    fn into_bytes(self) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Bytes(bytes) => Ok(bytes),
-            Self::Text(text) => page::cursor_bytes(&text),
-        }
-    }
-}
 /// How much of each row a page carries.
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -986,51 +938,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None => Ok(None),
         }
     }
-    /// The resource id a query's `parent_resource` means: `name` when
-    /// something is listed under it, else the resource of `provider` whose
-    /// kind or label it is (`canvas.artwork`, `Canvas`). A name that lists
-    /// nothing and names no resource is refused with the resources there
-    /// are, not answered with an empty page that reads as "no children".
-    async fn parent_named(&self, provider: &str, name: String) -> Result<String, String> {
-        let beneath = self
-            .ask(CatalogueQuery {
-                provider: Some(provider.to_owned()),
-                parent_resource: Some(name.clone()),
-                max_results: 1,
-                ..CatalogueQuery::default()
-            })
-            .await?;
-        if !beneath.rows.is_empty() {
-            return Ok(name);
-        }
-        let rows = self.top_resources(provider).await?;
-        let workspace = tilo_actions::remote::provider_workspace(provider).is_some();
-        if rows.iter().any(|row| row.resource.id == name) {
-            return Ok(name);
-        }
-        if !workspace
-            && name.len() <= RESOURCE_NAME_BYTES
-            && let Some(found) =
-                page::resource_named(&name, &self.resources_named(provider, &name).await?)
-        {
-            return found;
-        }
-        let shown = if name.len() > RESOURCE_NAME_BYTES {
-            "that resource id"
-        } else {
-            name.as_str()
-        };
-        if page::looks_like_handle(&name) {
-            return Err(format!(
-                "{shown} is no handle of this connection (handles last one connection); name the parent by its kind or label instead: {}",
-                resource_list(&rows)
-            ));
-        }
-        Err(format!(
-            "nothing is listed under {shown}: it has no actions or children, or names no resource here (a handle, resource id, kind or label does); the resources: {}",
-            resource_list(&rows)
-        ))
-    }
     /// The first page of the resources `provider` lists at its top level,
     /// which names a few of them in a refusal. Finding one by name is
     /// [`Self::resources_named`]'s.
@@ -1256,22 +1163,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             resource_list(&rows)
         ))
     }
-    /// `page` compact, describing only its first `described` rows. An app
-    /// instance's resource ids are opaque and long, and named by handles;
-    /// the workspace's (`app.<app_id>`, its permission roles) are names that
-    /// partners' provisioning and prompts spell out.
-    fn compact_first_described(
-        &self,
-        page: &CataloguePage,
-        workspace: bool,
-        described: usize,
-    ) -> Value {
-        if workspace {
-            page::compact_first_described(page, None, described)
-        } else {
-            page::compact_first_described(page, Some(&mut self.handles()), described)
-        }
-    }
     /// `describe` false leaves each action's description out. An `open`
     /// reply is read again on every later turn, and the label with its
     /// parameters is what the next call needs.
@@ -1400,8 +1291,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools":self.tools_told()})),
             "tools/call" => self.call_tool(params, metadata.as_ref()).await,
-            "resources/list" => self.resources(params).await,
-            "resources/read" => self.read_resource(params).await,
             _ => return Some(error(&id, -32601, "Method not found")),
         };
         Some(match result {
@@ -1649,7 +1538,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert("agent".into(), json!(agent));
         }
-        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":session,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"experimental":{SURFACE:{"version":3,"session":session,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
         if let Some(fields) = answer.as_object_mut() {
             fields.insert("instructions".into(), json!(AGENT_INSTRUCTIONS));
         }
@@ -1659,19 +1548,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// ordered by instance id.
     fn seen(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, Option<String>>> {
         self.seen.lock_recover()
-    }
-    async fn apps(&self, args: ListArgs) -> Result<Value, String> {
-        let (generation, apps) = self.instances().await?;
-        let limit = usize::try_from(args.max_results.unwrap_or(128).clamp(1, 128)).unwrap_or(128);
-        let mut remaining = apps
-            .into_iter()
-            .filter(|(peer, _)| args.after_peer.is_none_or(|after| *peer > after));
-        let page = remaining.by_ref().take(limit).collect::<Vec<_>>();
-        let next_after_peer = remaining
-            .next()
-            .and_then(|_| page.last().map(|(peer, _)| *peer));
-        let apps = page.into_iter().map(|(_, app)| app).collect::<Vec<_>>();
-        Ok(json!({"apps":apps,"generation":generation,"next_after_peer":next_after_peer}))
     }
 
     /// Reuse a live default presentation through its permission-checked view action.
@@ -1748,18 +1624,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             ))
         }
     }
-    /// The provider a call addresses: one live application instance, or the
-    /// workspace itself (installed applications to open, shortcuts, …).
-    async fn provider(
-        &self,
-        peer_id: Option<u64>,
-        app_id: Option<&str>,
-        workspace: bool,
-    ) -> Result<String, String> {
-        self.addressed(peer_id, app_id, workspace)
-            .await
-            .map(|addressed| addressed.provider)
-    }
     /// [`Self::provider`], with the app of the instance it names, read from
     /// the one listing of live instances it takes.
     async fn addressed(
@@ -1806,204 +1670,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             _ => Err("name exactly one of peer_id, app_id or workspace: true".into()),
         }
-    }
-    async fn query(&self, args: QueryArgs) -> Result<Value, String> {
-        let provider = self
-            .provider(args.peer_id, args.app_id.as_deref(), args.workspace)
-            .await?;
-        let cursor = args.cursor.into_bytes()?;
-        let words = page::needle_words(&args.needle);
-        let parent = self.full_id(args.parent_resource);
-        let parent = if parent.is_empty() {
-            parent
-        } else {
-            self.parent_named(&provider, parent).await?
-        };
-        let workspace = tilo_actions::remote::provider_workspace(&provider).is_some();
-        let query = CatalogueQuery {
-            canonical_route: None,
-            view_resource: None,
-            resource_name: None,
-            provider: Some(provider),
-            app_id: None,
-            parent_resource: (!parent.is_empty()).then_some(parent),
-            // A host matches one substring; the longest word narrows most,
-            // and the rest are matched here.
-            needle: if words.len() > 1 {
-                words
-                    .iter()
-                    .max_by_key(|word| word.len())
-                    .cloned()
-                    .unwrap_or_default()
-            } else {
-                args.needle
-            },
-            target: None,
-            action: None,
-            revision: (!args.revision.is_empty()).then_some(args.revision),
-            cursor,
-            max_results: args.max_results.unwrap_or(DEFAULT_PAGE).min(128),
-            limits: Some(CatalogueLimits {
-                max_bytes: Some(args.max_bytes.unwrap_or(65536).min(65536)),
-                max_work: Some(args.max_work.unwrap_or(512).min(512)),
-                max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
-            }),
-            by_resource: false,
-            max_resources: None,
-        };
-        let detail = args.detail.unwrap_or_else(|| self.detail());
-        let mut page = match self.ask(query.clone()).await {
-            Err(BridgeError::Host(tilo_actions::remote::ActionCallError::StaleRevision))
-                if !query.revision.as_deref().unwrap_or_default().is_empty() =>
-            {
-                // A directory moves on every change the app publishes, and
-                // a caller that keeps a revision from the page it read a
-                // few calls ago is reading the directory, not asking for
-                // that snapshot back: read it as it is now, once.
-                let mut now = query.clone();
-                now.revision = None;
-                self.ask(now).await?
-            }
-            read => read?,
-        };
-        let mut partial = false;
-        if words.len() > 1 {
-            page.rows.retain(|row| page::matches_words(row, &words));
-            // A page every row of which another word ruled out would read
-            // as "nothing here"; read on a little before answering.
-            let mut pages = 1;
-            while page.rows.is_empty()
-                && !page.exhausted
-                && !page.next_cursor.is_empty()
-                && pages < WORD_FILTER_PAGES
-            {
-                let mut next = query.clone();
-                next.revision = Some(page.revision.clone());
-                next.cursor = std::mem::take(&mut page.next_cursor);
-                page = self.ask(next).await?;
-                page.rows.retain(|row| page::matches_words(row, &words));
-                pages = pages.saturating_add(1);
-            }
-            if page.rows.is_empty() && detail == Detail::Compact {
-                page.rows = self.some_words(&query, &words).await?;
-                partial = !page.rows.is_empty();
-                if partial {
-                    page.next_cursor.clear();
-                    page.exhausted = true;
-                }
-            }
-        }
-        if detail == Detail::Full {
-            return Ok(page_json(&page));
-        }
-        // The rows the needle matched are described; the rest of their
-        // resources' actions follow as signatures. A caller that set
-        // max_results asked for that many rows, not every action.
-        let matched = page.rows.len();
-        if !query.needle.is_empty() && args.max_results.is_none() {
-            self.with_every_action(&query, &mut page).await?;
-        }
-        if workspace {
-            offer_open_path(&mut page);
-        }
-        let mut value = self.compact_first_described(&page, workspace, matched);
-        if partial && let Some(fields) = value.as_object_mut() {
-            fields.insert("partial_match".into(), Value::Bool(true));
-        }
-        Ok(value)
-    }
-    /// The rows matching the most of `words`, when none matches them all: a
-    /// needle naming several actions ("open paragraph style heading") still
-    /// finds each of them.
-    async fn some_words(
-        &self,
-        query: &CatalogueQuery,
-        words: &[String],
-    ) -> Result<Vec<CatalogueRow>, String> {
-        let mut found = Vec::<(usize, CatalogueRow)>::new();
-        let searched = words
-            .iter()
-            .filter(|word| word.chars().count() >= SOME_WORDS_MIN_CHARS)
-            .take(SOME_WORDS_SEARCHED);
-        for word in searched {
-            let listed = self
-                .ask(CatalogueQuery {
-                    needle: word.clone(),
-                    revision: None,
-                    cursor: Vec::new(),
-                    ..query.clone()
-                })
-                .await?;
-            for row in listed.rows {
-                let seen = found.iter().any(|(_, seen)| {
-                    seen.resource.id == row.resource.id
-                        && seen.action.as_ref().map(|a| &a.address.action)
-                            == row.action.as_ref().map(|a| &a.address.action)
-                });
-                let score = page::word_score(&row, words);
-                if !seen && score > 0 {
-                    found.push((score, row));
-                }
-            }
-        }
-        let best = found.iter().map(|(score, _)| *score).max().unwrap_or(0);
-        Ok(found
-            .into_iter()
-            .filter(|(score, _)| *score == best)
-            .map(|(_, row)| row)
-            .collect())
-    }
-    /// Add every action of the few resources a needle matched: an agent
-    /// that found "paste" on a document also learns its "save-as" without a
-    /// second search.
-    async fn with_every_action(
-        &self,
-        query: &CatalogueQuery,
-        page: &mut CataloguePage,
-    ) -> Result<(), String> {
-        let mut matched = Vec::<String>::new();
-        for row in page.rows.iter().filter(|row| row.action.is_some()) {
-            if !matched.contains(&row.resource.id) {
-                matched.push(row.resource.id.clone());
-            }
-        }
-        if matched.len() > EXPANDED_RESOURCES {
-            return Ok(());
-        }
-        for resource in matched {
-            let mut listing = CatalogueQuery {
-                parent_resource: Some(resource.clone()),
-                needle: String::new(),
-                revision: None,
-                cursor: Vec::new(),
-                max_results: 128,
-                ..query.clone()
-            };
-            // The host's byte budget counts whole contracts, so one
-            // resource's actions can span pages its compact rows would not.
-            for _ in 0..EVERY_ACTION_PAGES {
-                let listed = self.ask(listing.clone()).await?;
-                for row in listed.rows {
-                    let new = row.resource.id == resource
-                        && row.action.as_ref().is_some_and(|action| {
-                            !page.rows.iter().any(|seen| {
-                                seen.resource.id == resource
-                                    && seen.action.as_ref().map(|a| &a.address.action)
-                                        == Some(&action.address.action)
-                            })
-                        });
-                    if new {
-                        page.rows.push(row);
-                    }
-                }
-                if listed.exhausted || listed.next_cursor.is_empty() {
-                    break;
-                }
-                listing.revision = Some(listed.revision);
-                listing.cursor = listed.next_cursor;
-            }
-        }
-        Ok(())
     }
     /// The revision `provider`'s directory is at now, for a caller that
     /// named none.
@@ -2906,73 +2572,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     fn caller(&self) -> Caller {
         self.caller.clone()
     }
-    async fn resources(&self, params: Value) -> Result<Value, String> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Args {
-            cursor: Option<String>,
-        }
-        let a: Args = parse(params)?;
-        let after_peer = a
-            .cursor
-            .map(|s| {
-                s.parse::<u64>()
-                    .map_err(|_| "Invalid resource cursor".to_string())
-            })
-            .transpose()?;
-        let apps = self
-            .apps(ListArgs {
-                after_peer,
-                max_results: None,
-            })
-            .await?;
-        let resources = apps
-            .get("apps")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(|a| {
-                json!({
-                    "uri": a.get("uri"),
-                    "name": format!(
-                        "{} ({})",
-                        a.get("app_id").and_then(Value::as_str).unwrap_or_default(),
-                        a.get("peer_id").unwrap_or(&Value::Null)
-                    ),
-                    "mimeType": "application/json"
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut result = json!({"resources":resources,"generation":apps.get("generation")});
-        if let Some(next) = apps.get("next_after_peer").and_then(Value::as_u64)
-            && let Some(fields) = result.as_object_mut()
-        {
-            fields.insert("nextCursor".to_owned(), json!(next.to_string()));
-        }
-        Ok(result)
-    }
-    async fn read_resource(&self, params: Value) -> Result<Value, String> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Args {
-            uri: String,
-        }
-        let a: Args = parse(params)?;
-        let peer = a
-            .uri
-            .strip_prefix("tilo://apps/")
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or("Invalid application URI")?;
-        if a.uri != format!("tilo://apps/{peer}") {
-            return Err("Invalid application URI".into());
-        }
-        let value = self
-            .query(parse(json!({"peer_id":peer,"detail":"full"}))?)
-            .await?;
-        Ok(
-            json!({"contents":[{"uri":a.uri,"mimeType":"application/json","text":value.to_string()}]}),
-        )
-    }
 }
 /// How long a catalogue query waits for its answer. A workspace's host
 /// reading a record whose keys are still on their way waits up to ten seconds
@@ -3013,19 +2612,8 @@ fn continued_session(session: &Value) -> Result<String, &'static str> {
         .map(str::to_owned)
         .ok_or("session must be 1 to 96 printable characters without spaces: a session id from history or the session an earlier initialize answered")
 }
-/// Rows per page when the caller names no limit.
-const DEFAULT_PAGE: u32 = 64;
-/// Resources a compact needle page lists in full; more means the needle was
-/// broad, and the matches alone are the useful answer.
-const EXPANDED_RESOURCES: usize = 3;
-/// Host pages one multi-word needle reads before answering with none.
-const WORD_FILTER_PAGES: usize = 8;
 /// The most host pages read to list every action of one found resource.
 const EVERY_ACTION_PAGES: usize = 4;
-/// Words of a needle no row matches whole that are searched one by one,
-/// and the shortest searched: "as" or "to" would match nearly everything.
-const SOME_WORDS_SEARCHED: usize = 6;
-const SOME_WORDS_MIN_CHARS: usize = 3;
 /// Largest directory an `open` answers with, in bytes of JSON, and how many
 /// resources beneath the top level it lists. A model reads it again on every
 /// later turn; beyond this, `tilo_ls` browses the rest.

@@ -301,6 +301,257 @@ mod cases {
         out
     }
 
+    #[test]
+    fn opening_a_pdf_lays_out_its_pages_and_takes_its_own_markup_over() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        assert_eq!(
+            reader.count(&doc, "pages"),
+            2,
+            "two pages stand in the file"
+        );
+        assert_eq!(reader.count(&doc, "outlines"), 1, "its contents are read");
+        reader.call("adopt_markup", vec![Value::resource(&doc)]);
+        assert!(
+            reader
+                .text(&doc, "imported_source")
+                .ends_with(&digest_of(PDF)),
+            "the source it took its markup over from is remembered; trouble={:?}",
+            reader.text(&doc, "trouble")
+        );
+        assert_eq!(
+            reader.count(&doc, "marks"),
+            1,
+            "the highlight the file carried is taken over; the reader says {:?}",
+            reader.text(&doc, "trouble")
+        );
+    }
+
+    #[test]
+    fn a_page_reads_its_words_as_runs_and_as_search_words() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let first = reader.page(&doc, 0);
+        reader.call(
+            "read_page",
+            vec![Value::resource(&doc), Value::resource(&first)],
+        );
+        assert_eq!(reader.text(&first, "words"), "Hello world");
+        assert_eq!(
+            reader.texts(&first, "run_words"),
+            ["Hello".to_owned(), "world".to_owned()],
+            "each word a run a person selects"
+        );
+        let runs = match reader.rt.read(&first, "runs").unwrap() {
+            Value::List(items) => items.len(),
+            other => panic!("runs read {other:?}"),
+        };
+        assert_eq!(runs, 8, "four numbers for each of two runs");
+        assert_eq!(
+            reader.count(&doc, "links"),
+            2,
+            "the page's two links are read"
+        );
+    }
+
+    #[test]
+    fn selecting_runs_copies_their_words() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let first = reader.page(&doc, 0);
+        reader.call(
+            "read_page",
+            vec![Value::resource(&doc), Value::resource(&first)],
+        );
+
+        reader.call(
+            "copy_selected",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::Int(0),
+                Value::Int(1),
+            ],
+        );
+        assert_eq!(reader.device.copied(), "Hello world");
+
+        reader.call(
+            "copy_selected",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::Int(1),
+                Value::Int(1),
+            ],
+        );
+        assert_eq!(reader.device.copied(), "world", "a selection of one run");
+
+        reader.call(
+            "copy_page",
+            vec![Value::resource(&doc), Value::resource(&first)],
+        );
+        assert_eq!(reader.device.copied(), "Hello world");
+    }
+
+    #[test]
+    fn finding_counts_the_pages_and_the_words_it_finds() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "read_page",
+                vec![Value::resource(&doc), Value::resource(&page)],
+            );
+        }
+        let found = reader.call("find_in", vec![Value::resource(&doc), Value::text("world")]);
+        let InvokeOutcome::Done(value) = found else {
+            panic!("find_in returns its pages");
+        };
+        let Value::List(pages) = value else {
+            panic!("find_in answers a list");
+        };
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0], Value::text("Page 1: 1"));
+    }
+
+    /// The window's search is the find in a PDF: the words the person searches for in the
+    /// window's bar are counted above the pages, with the pages they stand on, and the reader
+    /// draws no search field of its own.
+    #[test]
+    fn the_windows_search_finds_in_the_pdf() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "read_page",
+                vec![Value::resource(&doc), Value::resource(&page)],
+            );
+        }
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        assert!(
+            of_kind(window.tree(), "ui.TextInput")
+                .iter()
+                .all(|field| !matches!(
+                    field.props.get("placeholder"),
+                    Some(Value::Text(placeholder)) if placeholder.starts_with("Find")
+                )),
+            "the reader draws no search field of its own:\n{}",
+            dump(window.tree())
+        );
+        let shell = of_kind(window.tree(), "ui.NavShell")[0].key.clone();
+        window
+            .fire_with(&shell, "search", Some(&Value::text("world")))
+            .unwrap();
+        window.poll_patches().unwrap();
+        let text = reader_text(&window);
+        assert!(
+            text.contains("1 found in 1 pages") && text.contains("Page 1 (1)"),
+            "what the window searched for is counted, with the page it stands on:\n{text}"
+        );
+    }
+
+    #[test]
+    fn duplicate_and_delete_change_the_pages_the_saved_copy_holds() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let first = reader.page(&doc, 0);
+        let copy = returned_ref(reader.call(
+            "duplicate_page",
+            vec![Value::resource(&doc), Value::resource(&first)],
+        ));
+        assert_eq!(reader.count(&doc, "pages"), 3);
+        reader.call(
+            "delete_page",
+            vec![Value::resource(&doc), Value::resource(&copy)],
+        );
+        assert_eq!(reader.count(&doc, "pages"), 2);
+
+        let saved = reader.call("save_copy", vec![Value::resource(&doc)]);
+        let InvokeOutcome::Done(Value::File(file)) = saved else {
+            panic!("a save answers the file it wrote");
+        };
+        assert_eq!(file.media, "application/pdf");
+    }
+
+    #[test]
+    fn a_copy_is_saved_as_a_pdf() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let saved = reader.call("save_copy", vec![Value::resource(&doc)]);
+        let InvokeOutcome::Done(Value::File(file)) = saved else {
+            panic!("a save answers the file it wrote: {saved:?}");
+        };
+        assert_eq!(file.media, "application/pdf");
+    }
+
+    #[test]
+    fn a_file_without_markup_takes_nothing_over() {
+        let reader = Reader::new();
+        let file = reader.device.keeping("Empty.pdf", "application/pdf", b"");
+        let doc = returned_ref(reader.call(
+            "open_pdf",
+            vec![Value::resource(&reader.lib), Value::file(file)],
+        ));
+        assert!(
+            reader
+                .text(&doc, "imported_source")
+                .ends_with(&digest_of(b""))
+        );
+        assert_eq!(reader.count(&doc, "marks"), 0);
+    }
+
+    /// A second file opened while the reader already runs adds its own document, and that
+    /// document's window shows it: the same action a shell runs when a person opens another file
+    /// in the app it is already showing.
+    #[test]
+    fn a_pdf_opened_while_the_reader_runs_shows_its_own_document() {
+        let reader = Reader::new();
+        let first = reader.open();
+        let second_file = reader.device.keeping(
+            "Later.pdf",
+            "application/pdf",
+            b"%PDF-1.4 the second document",
+        );
+        let second = returned_ref(reader.call(
+            "open_pdf",
+            vec![Value::resource(&reader.lib), Value::file(second_file)],
+        ));
+        assert_ne!(
+            first.id_string(),
+            second.id_string(),
+            "each file is its own document"
+        );
+        assert_eq!(
+            reader.count(&reader.lib, "documents"),
+            2,
+            "both documents stand in the library"
+        );
+        let window = reader.window("reader", vec![Value::resource(&second)]);
+        let shown = crate::common::dump(window.tree());
+        assert!(shown.contains("Later.pdf"), "the second file:\n{shown}");
+    }
+
+    #[test]
+    fn a_locked_or_required_field_says_so() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        reader.call("read_fields", vec![Value::resource(&doc)]);
+        // The pages are rows built as they scroll into view: a test reads them all.
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        window.set_lazy_rows(false).unwrap();
+        let said = crate::common::dump(window.tree());
+        assert!(
+            said.contains("The document locks this field."),
+            "the locked field says so:\n{said}"
+        );
+        assert!(
+            said.contains("The document needs this field filled."),
+            "the field the document needs says so:\n{said}"
+        );
+    }
+
     /// The width each page stands at, in pixels, as the engine draws it.
     fn page_widths(window: &tilolang_runtime::ViewInstance) -> Vec<f64> {
         of_kind(window.tree(), "ui.Image")
@@ -324,6 +575,119 @@ mod cases {
         window.poll_patches().unwrap();
     }
 
+    #[test]
+    fn a_page_fits_the_width_it_is_given_and_stands_whole_in_the_room_it_has() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        // Both pages drawn, as the reader's own trigger draws them: a page with no picture stands
+        // as its waiting state.
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "show_page",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&page),
+                    Value::Int(800),
+                ],
+            );
+        }
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        // The pages are rows built as they scroll into view: a test reads them all.
+        window.set_lazy_rows(false).unwrap();
+        window.poll_patches().unwrap();
+        // The reader's own view reads the room the pages area has, and each page's row the width
+        // of the row it stands in: no other view asks for its size.
+        let readers = window.space_readers();
+        assert_eq!(readers.len(), 2, "the two rows of pages: {readers:?}");
+        let rem = 16.0;
+
+        // Fit width: every page fills the width of the row it stands in, at any window size.
+        press(&mut window, "Fit width");
+        for room in [30.0_f64, 50.0] {
+            window.set_space("", Space::from_rem(room, 40.0));
+            for key in &readers {
+                window.set_space(key, Space::from_rem(room, room));
+            }
+            window.poll_patches().unwrap();
+            let widths = page_widths(&window);
+            assert_eq!(widths.len(), 2, "both pages are drawn");
+            for width in widths {
+                assert!(
+                    (width - room * rem).abs() < 0.5,
+                    "a page fills the {room} rem it is given: {width} px at {rem} px a rem"
+                );
+            }
+        }
+
+        // Fit page: the whole page stands in the room the column has, at two window sizes.
+        press(&mut window, "Fit page");
+        for (room, tall) in [(30.0_f64, 30.0_f64), (50.0, 20.0)] {
+            window.set_space("", Space::from_rem(room, tall));
+            for key in &readers {
+                window.set_space(key, Space::from_rem(room, room));
+            }
+            window.poll_patches().unwrap();
+            let widths = page_widths(&window);
+            assert_eq!(widths.len(), 2);
+            // A page is 612 by 792 points: its height is its width times 792/612.
+            let fits = (tall * rem * 612.0 / 792.0).min(room * rem);
+            for width in widths {
+                assert!(
+                    (width - fits).abs() < 0.5,
+                    "the whole page stands in {room} by {tall} rem: {width} px, not {fits}"
+                );
+                assert!(
+                    width * 792.0 / 612.0 <= tall * rem + 0.5,
+                    "the page is no taller than the column: {width} px wide"
+                );
+            }
+        }
+
+        // The person's own zoom is back the moment they step it: the page is the zoom's size,
+        // whatever room it is in.
+        press(&mut window, "Fit page");
+        press(&mut window, "Zoom in");
+        let widths = page_widths(&window);
+        // A page is 612 by 792 points, and a point is four thirds of a pixel.
+        let zoomed = 612.0 * (4.0 / 3.0) * 1.25;
+        for width in widths {
+            assert!(
+                (width - zoomed).abs() < 0.5,
+                "the page is its own zoom again: {width} px, not {zoomed}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reader_opens_the_documents_window() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let window = reader.window("reader", vec![Value::resource(&doc)]);
+        let tree = window.tree();
+        let shown = crate::common::dump(tree);
+        assert!(shown.contains("Report.pdf"), "its file:\n{shown}");
+        assert!(shown.contains("Pages"), "its page rail:\n{shown}");
+        // The reader's toolbar is the page's header: it stands in the window's bar, with the
+        // actions the window offers beside it.
+        let shell = crate::common::of_kind(tree, "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the reader's window shell");
+        let bar = shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
+            })
+            .unwrap_or_else(|| panic!("the window's bar holds the page's header:\n{shown}"));
+        let bar_shown = crate::common::dump(bar);
+        assert!(
+            bar_shown.contains("Zoom in") && bar_shown.contains("Fit width"),
+            "the toolbar's controls stand in the window's bar:\n{bar_shown}"
+        );
+    }
+
     /// The addresses of the pictures a document holds, in page order.
     fn rail_pictures(reader: &Reader, doc: &ResourceRef) -> Vec<String> {
         let held = reader.rt.read(doc, "pictures").unwrap();
@@ -339,6 +703,45 @@ mod cases {
                     .to_owned()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_rail_carries_each_pages_picture() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "show_page",
+                vec![
+                    Value::resource(&doc),
+                    Value::resource(&page),
+                    Value::Int(612),
+                ],
+            );
+        }
+        let pictures = rail_pictures(&reader, &doc);
+        assert_eq!(pictures.len(), 2, "each page is drawn: {pictures:?}");
+        let window = reader.window("reader", vec![Value::resource(&doc)]);
+        let tree = window.tree();
+        let rail = crate::common::of_kind(tree, "ui.PageSidebar")
+            .into_iter()
+            .next()
+            .expect("the reader's page rail");
+        let carried = match rail.props.get("pictures") {
+            Some(Value::List(items)) => items
+                .iter()
+                .map(|item| match item {
+                    Value::Text(address) => address.clone(),
+                    other => panic!("a page's picture reads {other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("the rail's pictures read {other:?}"),
+        };
+        assert_eq!(
+            carried, pictures,
+            "the rail carries each page's picture, in page order"
+        );
     }
 
     /// A list of numbers a resource holds.
@@ -365,6 +768,63 @@ mod cases {
                 .all(|(got, want)| (got - want).abs() < 0.01)
     }
 
+    #[test]
+    fn marking_a_selection_marks_exactly_its_runs() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        let first = reader.page(&doc, 0);
+        reader.call(
+            "read_page",
+            vec![Value::resource(&doc), Value::resource(&first)],
+        );
+        let marked = returned_ref(reader.call(
+            "mark_selection",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::text("underline"),
+                Value::text("#4ade80"),
+                Value::Int(0),
+                Value::Int(1),
+            ],
+        ));
+        assert_eq!(reader.text(&marked, "style"), "underline");
+        let rects = floats(&reader, &marked, "rects");
+        assert!(
+            near(&rects, &[72.0, 72.0, 40.0, 12.0, 120.0, 72.0, 40.0, 12.0]),
+            "exactly the two runs' boxes: {rects:?}"
+        );
+        let one = returned_ref(reader.call(
+            "mark_selection",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::text("highlight"),
+                Value::text("#facc15"),
+                Value::Int(1),
+                Value::Int(1),
+            ],
+        ));
+        assert!(
+            near(&floats(&reader, &one, "rects"), &[120.0, 72.0, 40.0, 12.0]),
+            "one run marks one line"
+        );
+
+        // With lines selected, the window offers the four marks of them.
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        window.set_lazy_rows(false).unwrap();
+        window.set_view_state("sel_from", Value::Int(0));
+        window.set_view_state("sel_to", Value::Int(1));
+        window.poll_patches().expect("the window runs again");
+        let said = crate::common::dump(window.tree());
+        for label in ["Highlight", "Underline", "Strike through", "Squiggle"] {
+            assert!(
+                said.contains(label),
+                "{label} marks the selected words:\n{said}"
+            );
+        }
+    }
+
     /// A whole-number prop of a node, as the view gave it.
     fn whole(node: &UiNode, name: &str) -> i64 {
         match node.props.get(name) {
@@ -389,582 +849,114 @@ mod cases {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_pdf_1;
+    #[test]
+    fn form_fields_stand_at_their_boxes_and_a_signature_moves_through_the_view() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        reader.call("read_fields", vec![Value::resource(&doc)]);
+        reader.call(
+            "sign_as",
+            vec![Value::resource(&reader.lib), Value::text("Ada")],
+        );
+        let first = reader.page(&doc, 0);
+        let signed = returned_ref(reader.call(
+            "place_signature",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::Float(120.0),
+                Value::Float(240.0),
+            ],
+        ));
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        window.set_lazy_rows(false).unwrap();
+        let (places, stage) = {
+            let tree = window.tree();
+            let places: Vec<(String, (i64, i64, i64, i64))> =
+                crate::common::of_kind(tree, "ui.StagePin")
+                    .into_iter()
+                    .map(|node| {
+                        (
+                            words(node, "name"),
+                            (
+                                whole(node, "x"),
+                                whole(node, "y"),
+                                whole(node, "width"),
+                                whole(node, "height"),
+                            ),
+                        )
+                    })
+                    .collect();
+            let stage = crate::common::of_kind(tree, "ui.Stage")
+                .into_iter()
+                .next()
+                .map(|node| node.key.clone());
+            (places, stage)
+        };
+        assert_eq!(
+            places,
+            vec![
+                ("Signed by".to_owned(), (72, 700, 180, 14)),
+                ("Date".to_owned(), (72, 680, 120, 14)),
+                ("Ada".to_owned(), (120, 240, 218, 74)),
+            ],
+            "each field and the signature stand where the file puts them"
+        );
 
-        phase opening_a_pdf_lays_out_its_pages_and_takes_its_own_markup_over;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            assert_eq!(
-                reader.count(&doc, "pages"),
-                2,
-                "two pages stand in the file"
-            );
-            assert_eq!(reader.count(&doc, "outlines"), 1, "its contents are read");
-            reader.call("adopt_markup", vec![Value::resource(&doc)]);
-            assert!(
-                reader
-                    .text(&doc, "imported_source")
-                    .ends_with(&digest_of(PDF)),
-                "the source it took its markup over from is remembered; trouble={:?}",
-                reader.text(&doc, "trouble")
-            );
-            assert_eq!(
-                reader.count(&doc, "marks"),
-                1,
-                "the highlight the file carried is taken over; the reader says {:?}",
-                reader.text(&doc, "trouble")
-            );
-        }
-
-        phase a_page_reads_its_words_as_runs_and_as_search_words;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            let first = reader.page(&doc, 0);
-            reader.call(
-                "read_page",
-                vec![Value::resource(&doc), Value::resource(&first)],
-            );
-            assert_eq!(reader.text(&first, "words"), "Hello world");
-            assert_eq!(
-                reader.texts(&first, "run_words"),
-                ["Hello".to_owned(), "world".to_owned()],
-                "each word a run a person selects"
-            );
-            let runs = match reader.rt.read(&first, "runs").unwrap() {
-                Value::List(items) => items.len(),
-                other => panic!("runs read {other:?}"),
-            };
-            assert_eq!(runs, 8, "four numbers for each of two runs");
-            assert_eq!(
-                reader.count(&doc, "links"),
-                2,
-                "the page's two links are read"
-            );
-        }
-
-        phase selecting_runs_copies_their_words;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            let first = reader.page(&doc, 0);
-            reader.call(
-                "read_page",
-                vec![Value::resource(&doc), Value::resource(&first)],
-            );
-
-            reader.call(
-                "copy_selected",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&first),
-                    Value::Int(0),
-                    Value::Int(1),
-                ],
-            );
-            assert_eq!(reader.device.copied(), "Hello world");
-
-            reader.call(
-                "copy_selected",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&first),
-                    Value::Int(1),
-                    Value::Int(1),
-                ],
-            );
-            assert_eq!(reader.device.copied(), "world", "a selection of one run");
-
-            reader.call(
-                "copy_page",
-                vec![Value::resource(&doc), Value::resource(&first)],
-            );
-            assert_eq!(reader.device.copied(), "Hello world");
-        }
-
-        phase finding_counts_the_pages_and_the_words_it_finds;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            for at in 0..2 {
-                let page = reader.page(&doc, at);
-                reader.call(
-                    "read_page",
-                    vec![Value::resource(&doc), Value::resource(&page)],
-                );
-            }
-            let found = reader.call("find_in", vec![Value::resource(&doc), Value::text("world")]);
-            let InvokeOutcome::Done(value) = found else {
-                panic!("find_in returns its pages");
-            };
-            let Value::List(pages) = value else {
-                panic!("find_in answers a list");
-            };
-            assert_eq!(pages.len(), 1);
-            assert_eq!(pages[0], Value::text("Page 1: 1"));
-        }
-
-        phase the_windows_search_finds_in_the_pdf;
-        // The window's search is the find in a PDF: the words the person searches for in the
-        // window's bar are counted above the pages, with the pages they stand on, and the reader
-        // draws no search field of its own.
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            for at in 0..2 {
-                let page = reader.page(&doc, at);
-                reader.call(
-                    "read_page",
-                    vec![Value::resource(&doc), Value::resource(&page)],
-                );
-            }
-            let mut window = reader.window("reader", vec![Value::resource(&doc)]);
-            assert!(
-                of_kind(window.tree(), "ui.TextInput")
-                    .iter()
-                    .all(|field| !matches!(
-                        field.props.get("placeholder"),
-                        Some(Value::Text(placeholder)) if placeholder.starts_with("Find")
-                    )),
-                "the reader draws no search field of its own:\n{}",
-                dump(window.tree())
-            );
-            let shell = of_kind(window.tree(), "ui.NavShell")[0].key.clone();
-            window
-                .fire_with(&shell, "search", Some(&Value::text("world")))
-                .unwrap();
-            window.poll_patches().unwrap();
-            let text = reader_text(&window);
-            assert!(
-                text.contains("1 found in 1 pages") && text.contains("Page 1 (1)"),
-                "what the window searched for is counted, with the page it stands on:\n{text}"
-            );
-        }
-
-        phase duplicate_and_delete_change_the_pages_the_saved_copy_holds;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            let first = reader.page(&doc, 0);
-            let copy = returned_ref(reader.call(
-                "duplicate_page",
-                vec![Value::resource(&doc), Value::resource(&first)],
-            ));
-            assert_eq!(reader.count(&doc, "pages"), 3);
-            reader.call(
-                "delete_page",
-                vec![Value::resource(&doc), Value::resource(&copy)],
-            );
-            assert_eq!(reader.count(&doc, "pages"), 2);
-
-            let saved = reader.call("save_copy", vec![Value::resource(&doc)]);
-            let InvokeOutcome::Done(Value::File(file)) = saved else {
-                panic!("a save answers the file it wrote");
-            };
-            assert_eq!(file.media, "application/pdf");
-        }
-
-        phase a_copy_is_saved_as_a_pdf;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            let saved = reader.call("save_copy", vec![Value::resource(&doc)]);
-            let InvokeOutcome::Done(Value::File(file)) = saved else {
-                panic!("a save answers the file it wrote: {saved:?}");
-            };
-            assert_eq!(file.media, "application/pdf");
-        }
-
-        phase a_file_without_markup_takes_nothing_over;
-        {
-            let reader = Reader::new();
-            let file = reader.device.keeping("Empty.pdf", "application/pdf", b"");
-            let doc = returned_ref(reader.call(
-                "open_pdf",
-                vec![Value::resource(&reader.lib), Value::file(file)],
-            ));
-            assert!(
-                reader
-                    .text(&doc, "imported_source")
-                    .ends_with(&digest_of(b""))
-            );
-            assert_eq!(reader.count(&doc, "marks"), 0);
-        }
+        // Dragging the signature reports its new point to the view, whose action moves it.
+        let stage = stage.expect("the page's places stand in a stage");
+        window
+            .fire_with(
+                &stage,
+                "moved",
+                Some(&Value::List(vec![
+                    Value::text(signed.id_string()),
+                    Value::List(vec![Value::Int(300), Value::Int(400)]),
+                ])),
+            )
+            .expect("the place reports its move to the view");
+        assert!(
+            (number(&reader, &signed, "x") - 300.0).abs() < 0.01,
+            "the signature moved across its page: {}",
+            number(&reader, &signed, "x")
+        );
+        assert!((number(&reader, &signed, "y") - 400.0).abs() < 0.01);
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_pdf_2;
-
-        phase a_pdf_opened_while_the_reader_runs_shows_its_own_document;
-        // A second file opened while the reader already runs adds its own document, and that
-        // document's window shows it: the same action a shell runs when a person opens another file
-        // in the app it is already showing.
-        {
-            let reader = Reader::new();
-            let first = reader.open();
-            let second_file = reader.device.keeping(
-                "Later.pdf",
-                "application/pdf",
-                b"%PDF-1.4 the second document",
-            );
-            let second = returned_ref(reader.call(
-                "open_pdf",
-                vec![Value::resource(&reader.lib), Value::file(second_file)],
-            ));
-            assert_ne!(
-                first.id_string(),
-                second.id_string(),
-                "each file is its own document"
-            );
-            assert_eq!(
-                reader.count(&reader.lib, "documents"),
-                2,
-                "both documents stand in the library"
-            );
-            let window = reader.window("reader", vec![Value::resource(&second)]);
-            let shown = crate::common::dump(window.tree());
-            assert!(shown.contains("Later.pdf"), "the second file:\n{shown}");
-        }
-
-        phase a_locked_or_required_field_says_so;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            reader.call("read_fields", vec![Value::resource(&doc)]);
-            // The pages are rows built as they scroll into view: a test reads them all.
-            let mut window = reader.window("reader", vec![Value::resource(&doc)]);
-            window.set_lazy_rows(false).unwrap();
-            let said = crate::common::dump(window.tree());
-            assert!(
-                said.contains("The document locks this field."),
-                "the locked field says so:\n{said}"
-            );
-            assert!(
-                said.contains("The document needs this field filled."),
-                "the field the document needs says so:\n{said}"
-            );
-        }
-
-        phase a_page_fits_the_width_it_is_given_and_stands_whole_in_the_room_it_has;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            // Both pages drawn, as the reader's own trigger draws them: a page with no picture stands
-            // as its waiting state.
-            for at in 0..2 {
-                let page = reader.page(&doc, at);
-                reader.call(
-                    "show_page",
-                    vec![
-                        Value::resource(&doc),
-                        Value::resource(&page),
-                        Value::Int(800),
-                    ],
-                );
-            }
-            let mut window = reader.window("reader", vec![Value::resource(&doc)]);
-            // The pages are rows built as they scroll into view: a test reads them all.
-            window.set_lazy_rows(false).unwrap();
-            window.poll_patches().unwrap();
-            // The reader's own view reads the room the pages area has, and each page's row the width
-            // of the row it stands in: no other view asks for its size.
-            let readers = window.space_readers();
-            assert_eq!(readers.len(), 2, "the two rows of pages: {readers:?}");
-            let rem = 16.0;
-
-            // Fit width: every page fills the width of the row it stands in, at any window size.
-            press(&mut window, "Fit width");
-            for room in [30.0_f64, 50.0] {
-                window.set_space("", Space::from_rem(room, 40.0));
-                for key in &readers {
-                    window.set_space(key, Space::from_rem(room, room));
-                }
-                window.poll_patches().unwrap();
-                let widths = page_widths(&window);
-                assert_eq!(widths.len(), 2, "both pages are drawn");
-                for width in widths {
-                    assert!(
-                        (width - room * rem).abs() < 0.5,
-                        "a page fills the {room} rem it is given: {width} px at {rem} px a rem"
-                    );
-                }
-            }
-
-            // Fit page: the whole page stands in the room the column has, at two window sizes.
-            press(&mut window, "Fit page");
-            for (room, tall) in [(30.0_f64, 30.0_f64), (50.0, 20.0)] {
-                window.set_space("", Space::from_rem(room, tall));
-                for key in &readers {
-                    window.set_space(key, Space::from_rem(room, room));
-                }
-                window.poll_patches().unwrap();
-                let widths = page_widths(&window);
-                assert_eq!(widths.len(), 2);
-                // A page is 612 by 792 points: its height is its width times 792/612.
-                let fits = (tall * rem * 612.0 / 792.0).min(room * rem);
-                for width in widths {
-                    assert!(
-                        (width - fits).abs() < 0.5,
-                        "the whole page stands in {room} by {tall} rem: {width} px, not {fits}"
-                    );
-                    assert!(
-                        width * 792.0 / 612.0 <= tall * rem + 0.5,
-                        "the page is no taller than the column: {width} px wide"
-                    );
-                }
-            }
-
-            // The person's own zoom is back the moment they step it: the page is the zoom's size,
-            // whatever room it is in.
-            press(&mut window, "Fit page");
-            press(&mut window, "Zoom in");
-            let widths = page_widths(&window);
-            // A page is 612 by 792 points, and a point is four thirds of a pixel.
-            let zoomed = 612.0 * (4.0 / 3.0) * 1.25;
-            for width in widths {
-                assert!(
-                    (width - zoomed).abs() < 0.5,
-                    "the page is its own zoom again: {width} px, not {zoomed}"
-                );
-            }
-        }
-
-        phase the_reader_opens_the_documents_window;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            let window = reader.window("reader", vec![Value::resource(&doc)]);
-            let tree = window.tree();
-            let shown = crate::common::dump(tree);
-            assert!(shown.contains("Report.pdf"), "its file:\n{shown}");
-            assert!(shown.contains("Pages"), "its page rail:\n{shown}");
-            // The reader's toolbar is the page's header: it stands in the window's bar, with the
-            // actions the window offers beside it.
-            let shell = crate::common::of_kind(tree, "ui.NavShell")
-                .into_iter()
-                .next()
-                .expect("the reader's window shell");
-            let bar = shell
-                .children
-                .iter()
-                .find(|child| {
-                    child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
-                })
-                .unwrap_or_else(|| panic!("the window's bar holds the page's header:\n{shown}"));
-            let bar_shown = crate::common::dump(bar);
-            assert!(
-                bar_shown.contains("Zoom in") && bar_shown.contains("Fit width"),
-                "the toolbar's controls stand in the window's bar:\n{bar_shown}"
-            );
-        }
-
-        phase the_rail_carries_each_pages_picture;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            for at in 0..2 {
-                let page = reader.page(&doc, at);
-                reader.call(
-                    "show_page",
-                    vec![
-                        Value::resource(&doc),
-                        Value::resource(&page),
-                        Value::Int(612),
-                    ],
-                );
-            }
-            let pictures = rail_pictures(&reader, &doc);
-            assert_eq!(pictures.len(), 2, "each page is drawn: {pictures:?}");
-            let window = reader.window("reader", vec![Value::resource(&doc)]);
-            let tree = window.tree();
-            let rail = crate::common::of_kind(tree, "ui.PageSidebar")
-                .into_iter()
-                .next()
-                .expect("the reader's page rail");
-            let carried = match rail.props.get("pictures") {
-                Some(Value::List(items)) => items
-                    .iter()
-                    .map(|item| match item {
-                        Value::Text(address) => address.clone(),
-                        other => panic!("a page's picture reads {other:?}"),
-                    })
-                    .collect::<Vec<_>>(),
-                other => panic!("the rail's pictures read {other:?}"),
-            };
-            assert_eq!(
-                carried, pictures,
-                "the rail carries each page's picture, in page order"
-            );
-        }
-
-        phase marking_a_selection_marks_exactly_its_runs;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            let first = reader.page(&doc, 0);
-            reader.call(
-                "read_page",
-                vec![Value::resource(&doc), Value::resource(&first)],
-            );
-            let marked = returned_ref(reader.call(
-                "mark_selection",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&first),
-                    Value::text("underline"),
-                    Value::text("#4ade80"),
-                    Value::Int(0),
-                    Value::Int(1),
-                ],
-            ));
-            assert_eq!(reader.text(&marked, "style"), "underline");
-            let rects = floats(&reader, &marked, "rects");
-            assert!(
-                near(&rects, &[72.0, 72.0, 40.0, 12.0, 120.0, 72.0, 40.0, 12.0]),
-                "exactly the two runs' boxes: {rects:?}"
-            );
-            let one = returned_ref(reader.call(
-                "mark_selection",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&first),
-                    Value::text("highlight"),
-                    Value::text("#facc15"),
-                    Value::Int(1),
-                    Value::Int(1),
-                ],
-            ));
-            assert!(
-                near(&floats(&reader, &one, "rects"), &[120.0, 72.0, 40.0, 12.0]),
-                "one run marks one line"
-            );
-
-            // With lines selected, the window offers the four marks of them.
-            let mut window = reader.window("reader", vec![Value::resource(&doc)]);
-            window.set_lazy_rows(false).unwrap();
-            window.set_view_state("sel_from", Value::Int(0));
-            window.set_view_state("sel_to", Value::Int(1));
-            window.poll_patches().expect("the window runs again");
-            let said = crate::common::dump(window.tree());
-            for label in ["Highlight", "Underline", "Strike through", "Squiggle"] {
-                assert!(
-                    said.contains(label),
-                    "{label} marks the selected words:\n{said}"
-                );
-            }
-        }
-
-        phase form_fields_stand_at_their_boxes_and_a_signature_moves_through_the_view;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            reader.call("read_fields", vec![Value::resource(&doc)]);
-            reader.call(
-                "sign_as",
-                vec![Value::resource(&reader.lib), Value::text("Ada")],
-            );
-            let first = reader.page(&doc, 0);
-            let signed = returned_ref(reader.call(
-                "place_signature",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&first),
-                    Value::Float(120.0),
-                    Value::Float(240.0),
-                ],
-            ));
-            let mut window = reader.window("reader", vec![Value::resource(&doc)]);
-            window.set_lazy_rows(false).unwrap();
-            let (places, stage) = {
-                let tree = window.tree();
-                let places: Vec<(String, (i64, i64, i64, i64))> =
-                    crate::common::of_kind(tree, "ui.StagePin")
-                        .into_iter()
-                        .map(|node| {
-                            (
-                                words(node, "name"),
-                                (
-                                    whole(node, "x"),
-                                    whole(node, "y"),
-                                    whole(node, "width"),
-                                    whole(node, "height"),
-                                ),
-                            )
-                        })
-                        .collect();
-                let stage = crate::common::of_kind(tree, "ui.Stage")
-                    .into_iter()
-                    .next()
-                    .map(|node| node.key.clone());
-                (places, stage)
-            };
-            assert_eq!(
-                places,
-                vec![
-                    ("Signed by".to_owned(), (72, 700, 180, 14)),
-                    ("Date".to_owned(), (72, 680, 120, 14)),
-                    ("Ada".to_owned(), (120, 240, 218, 74)),
-                ],
-                "each field and the signature stand where the file puts them"
-            );
-
-            // Dragging the signature reports its new point to the view, whose action moves it.
-            let stage = stage.expect("the page's places stand in a stage");
-            window
-                .fire_with(
-                    &stage,
-                    "moved",
-                    Some(&Value::List(vec![
-                        Value::text(signed.id_string()),
-                        Value::List(vec![Value::Int(300), Value::Int(400)]),
-                    ])),
-                )
-                .expect("the place reports its move to the view");
-            assert!(
-                (number(&reader, &signed, "x") - 300.0).abs() < 0.01,
-                "the signature moved across its page: {}",
-                number(&reader, &signed, "x")
-            );
-            assert!((number(&reader, &signed, "y") - 400.0).abs() < 0.01);
-        }
-
-        phase a_signature_moves_by_fractions_of_its_page;
-        {
-            let reader = Reader::new();
-            let doc = reader.open();
-            reader.call(
-                "sign_as",
-                vec![Value::resource(&reader.lib), Value::text("Ada")],
-            );
-            let first = reader.page(&doc, 0);
-            let signed = returned_ref(reader.call(
-                "place_signature",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&first),
-                    Value::Float(0.0),
-                    Value::Float(0.0),
-                ],
-            ));
-            reader.call(
-                "move_signature",
-                vec![
-                    Value::resource(&doc),
-                    Value::resource(&signed),
-                    Value::Float(0.25),
-                    Value::Float(0.5),
-                ],
-            );
-            assert!(
-                (number(&reader, &signed, "x") - 153.0).abs() < 0.01,
-                "a quarter across"
-            );
-            assert!(
-                (number(&reader, &signed, "y") - 396.0).abs() < 0.01,
-                "halfway down"
-            );
-        }
+    #[test]
+    fn a_signature_moves_by_fractions_of_its_page() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        reader.call(
+            "sign_as",
+            vec![Value::resource(&reader.lib), Value::text("Ada")],
+        );
+        let first = reader.page(&doc, 0);
+        let signed = returned_ref(reader.call(
+            "place_signature",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::Float(0.0),
+                Value::Float(0.0),
+            ],
+        ));
+        reader.call(
+            "move_signature",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&signed),
+                Value::Float(0.25),
+                Value::Float(0.5),
+            ],
+        );
+        assert!(
+            (number(&reader, &signed, "x") - 153.0).abs() < 0.01,
+            "a quarter across"
+        );
+        assert!(
+            (number(&reader, &signed, "y") - 396.0).abs() < 0.01,
+            "halfway down"
+        );
     }
 }

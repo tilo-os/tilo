@@ -236,191 +236,187 @@ view sidebar(b: Board) {
             .collect()
     }
 
-    tilo_test_env::scenario! {
-        fn filters_1;
-
-        phase the_places_are_the_types_own_filters_and_nothing_the_root_holds;
-        {
-            let t = Tasks::new();
-            let places = t.places_of();
-            let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
-            assert_eq!(
-                &keys[..5],
-                [
-                    "is:inbox",
-                    "is:today",
-                    "is:upcoming",
-                    "is:done",
-                    "is:assigned_to_me",
-                ],
-                "the type's filters that are on or off, in the order it declares them, and nothing \
+    #[test]
+    fn the_places_are_the_types_own_filters_and_nothing_the_root_holds() {
+        let t = Tasks::new();
+        let places = t.places_of();
+        let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            &keys[..5],
+            [
+                "is:inbox",
+                "is:today",
+                "is:upcoming",
+                "is:done",
+                "is:assigned_to_me",
+            ],
+            "the type's filters that are on or off, in the order it declares them, and nothing \
              else: a filter naming a reference is a value to pick in search, not a place: {places:?}"
-            );
-            // The projects the root holds are a list the app draws of its own, and the key its item
-            // carries is the filter value it hands the list: the query that picks the project's
-            // tasks, which no app writes as text.
-            let project = format!("project:{}", t.project("Work").id_string());
-            assert_eq!(keys[5..], [project], "{places:?}");
-        }
+        );
+        // The projects the root holds are a list the app draws of its own, and the key its item
+        // carries is the filter value it hands the list: the query that picks the project's
+        // tasks, which no app writes as text.
+        let project = format!("project:{}", t.project("Work").id_string());
+        assert_eq!(keys[5..], [project], "{places:?}");
+    }
 
-        phase a_filter_naming_the_person_looking_reads_differently_for_each_of_them;
-        {
-            let t = Tasks::new();
-            stage_members(
-                &t.rt,
-                vec![
-                    Member::person("me", tilo_actions::policy::Role::Owner),
-                    Member::person("ben", tilo_actions::policy::Role::Editor),
-                ],
-                None,
-            );
-            let ben = person("ben");
-            t.assign("later", &me());
-            t.assign("today", &ben);
-            assert_eq!(
-                t.titles("is:assigned_to_me"),
-                ["later"],
-                "the filter asks which task's assignee is the person looking"
-            );
-            assert_eq!(
-                t.titles_by(&ben, "is:assigned_to_me"),
-                ["today"],
-                "and reads differently for anyone else looking: {ben:?}"
-            );
-            let places = t.places_of();
-            assert_eq!(
-                places[4],
-                ("is:assigned_to_me".to_owned(), Some(1)),
-                "the place counts what the person looking holds open: {places:?}"
-            );
-            assert_eq!(
-                t.places_of_by(&ben)[4],
-                ("is:assigned_to_me".to_owned(), Some(1)),
-                "and counts each person's own: {places:?}"
-            );
-            t.finish("later", "2026-10-30T09:00:00Z");
-            assert_eq!(
-                t.titles("is:assigned_to_me"),
-                Vec::<String>::new(),
-                "finished work leaves the place"
-            );
-            assert_eq!(t.places_of()[4].1, None, "and a count of zero says nothing");
-        }
+    #[test]
+    fn a_filter_naming_the_person_looking_reads_differently_for_each_of_them() {
+        let t = Tasks::new();
+        stage_members(
+            &t.rt,
+            vec![
+                Member::person("me", tilo_actions::policy::Role::Owner),
+                Member::person("ben", tilo_actions::policy::Role::Editor),
+            ],
+            None,
+        );
+        let ben = person("ben");
+        t.assign("later", &me());
+        t.assign("today", &ben);
+        assert_eq!(
+            t.titles("is:assigned_to_me"),
+            ["later"],
+            "the filter asks which task's assignee is the person looking"
+        );
+        assert_eq!(
+            t.titles_by(&ben, "is:assigned_to_me"),
+            ["today"],
+            "and reads differently for anyone else looking: {ben:?}"
+        );
+        let places = t.places_of();
+        assert_eq!(
+            places[4],
+            ("is:assigned_to_me".to_owned(), Some(1)),
+            "the place counts what the person looking holds open: {places:?}"
+        );
+        assert_eq!(
+            t.places_of_by(&ben)[4],
+            ("is:assigned_to_me".to_owned(), Some(1)),
+            "and counts each person's own: {places:?}"
+        );
+        t.finish("later", "2026-10-30T09:00:00Z");
+        assert_eq!(
+            t.titles("is:assigned_to_me"),
+            Vec::<String>::new(),
+            "finished work leaves the place"
+        );
+        assert_eq!(t.places_of()[4].1, None, "and a count of zero says nothing");
+    }
 
-        phase a_place_holds_what_its_filter_says_and_nothing_else;
-        {
-            let t = Tasks::new();
-            // The inbox: open, filed under nothing, for no day.
-            assert_eq!(t.titles("is:inbox"), ["undated"]);
-            // What is due: open and for a day up to today, in the order the collection holds them.
-            assert_eq!(
-                t.titles("is:today"),
-                ["overdue", "today"],
-                "a place keeps the collection's order; sorting is the app's"
-            );
-            // What is due later: open and for a day after today.
-            assert_eq!(t.titles("is:upcoming"), ["later", "filed"]);
-            // What is done, and only what is done.
-            assert_eq!(t.titles("is:done"), ["done"]);
-        }
+    #[test]
+    fn a_place_holds_what_its_filter_says_and_nothing_else() {
+        let t = Tasks::new();
+        // The inbox: open, filed under nothing, for no day.
+        assert_eq!(t.titles("is:inbox"), ["undated"]);
+        // What is due: open and for a day up to today, in the order the collection holds them.
+        assert_eq!(
+            t.titles("is:today"),
+            ["overdue", "today"],
+            "a place keeps the collection's order; sorting is the app's"
+        );
+        // What is due later: open and for a day after today.
+        assert_eq!(t.titles("is:upcoming"), ["later", "filed"]);
+        // What is done, and only what is done.
+        assert_eq!(t.titles("is:done"), ["done"]);
+    }
 
-        phase only_the_places_the_sidebar_counts_show_a_count;
-        {
-            let t = Tasks::new();
-            let places = t.places_of();
-            let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
-            assert_eq!(
-                &keys[..4],
-                ["is:inbox", "is:today", "is:upcoming", "is:done"],
-                "the type's filters make the places, in the order it declares them: {places:?}"
-            );
-            // What waits in the inbox, and what is due: the two a person counts.
-            assert_eq!(places[0].1, Some(1), "the inbox's one unsorted task");
-            assert_eq!(places[1].1, Some(2), "today's, the overdue one included");
-            // A place the sidebar does not count shows none.
-            assert_eq!(places[2].1, None, "what is due later counts nothing");
-            // A place holds what its filter says, so a counted place says it: the app's own
-            // `all_done` reads that zero, not a place's idea of what it holds.
-            assert_eq!(places[3].1, Some(1), "what is done is counted as it is");
-            assert_eq!(
-                places[4],
-                ("is:assigned_to_me".to_owned(), None),
-                "nothing is assigned to the person looking, so its badge says nothing: {places:?}"
-            );
-            // The sidebar draws the counts of the places it counts, and no others.
-            let view =
-                t.rt.open_view(
-                    &me(),
-                    &t.app.view("sidebar"),
-                    vec![Value::resource(&t.board)],
-                )
-                .unwrap();
-            let nav = |key: &str| -> &UiNode {
-                of_kind(view.tree(), "ui.NavItem")
-                    .into_iter()
-                    .find(|node| node.props.get("key") == Some(&Value::text(key)))
-                    .unwrap_or_else(|| panic!("no place {key} in\n{}", dump(view.tree())))
-            };
-            assert_eq!(
-                nav("is:inbox").props.get("count"),
-                Some(&Value::Int(1)),
-                "the inbox shows what waits to be sorted"
-            );
-            assert_eq!(
-                nav("is:today").props.get("count"),
-                Some(&Value::Int(2)),
-                "today shows what is due, the overdue one included"
-            );
-            assert_eq!(nav("is:upcoming").props.get("count"), None);
-            assert_eq!(
-                nav("is:done").props.get("count"),
-                Some(&Value::Int(1)),
-                "a place the sidebar counts shows how many it holds"
-            );
-        }
-
-        phase a_place_of_a_value_picks_what_it_names_and_the_list_answers_with_it;
-        {
-            let t = Tasks::new();
-            let project = t.project("Work");
-            let key = format!("project:{}", project.id_string());
-            let mut view = t.sidebar_by(&me());
-            assert_eq!(
-                titles_of(view.tree()),
-                ["undated"],
-                "the inbox it starts in"
-            );
-            let item = nav_items(view.tree())
+    #[test]
+    fn only_the_places_the_sidebar_counts_show_a_count() {
+        let t = Tasks::new();
+        let places = t.places_of();
+        let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            &keys[..4],
+            ["is:inbox", "is:today", "is:upcoming", "is:done"],
+            "the type's filters make the places, in the order it declares them: {places:?}"
+        );
+        // What waits in the inbox, and what is due: the two a person counts.
+        assert_eq!(places[0].1, Some(1), "the inbox's one unsorted task");
+        assert_eq!(places[1].1, Some(2), "today's, the overdue one included");
+        // A place the sidebar does not count shows none.
+        assert_eq!(places[2].1, None, "what is due later counts nothing");
+        // A place holds what its filter says, so a counted place says it: the app's own
+        // `all_done` reads that zero, not a place's idea of what it holds.
+        assert_eq!(places[3].1, Some(1), "what is done is counted as it is");
+        assert_eq!(
+            places[4],
+            ("is:assigned_to_me".to_owned(), None),
+            "nothing is assigned to the person looking, so its badge says nothing: {places:?}"
+        );
+        // The sidebar draws the counts of the places it counts, and no others.
+        let view =
+            t.rt.open_view(
+                &me(),
+                &t.app.view("sidebar"),
+                vec![Value::resource(&t.board)],
+            )
+            .unwrap();
+        let nav = |key: &str| -> &UiNode {
+            of_kind(view.tree(), "ui.NavItem")
                 .into_iter()
-                .find(|node| node.props.get("key") == Some(&Value::text(&key)))
+                .find(|node| node.props.get("key") == Some(&Value::text(key)))
                 .unwrap_or_else(|| panic!("no place {key} in\n{}", dump(view.tree())))
-                .key
-                .clone();
-            view.fire(&item, "select").unwrap();
-            view.poll_patches().unwrap();
-            // `Task.project(p)` asks the project's tasks, and the view state holds the value: the
-            // list's chosen place is its query, which the platform writes from the value.
-            assert_eq!(
-                titles_of(view.tree()),
-                ["filed"],
-                "the task filed under the project"
-            );
-            assert_eq!(
-                text_prop(of_kind(view.tree(), "ui.NavList")[0], "selected"),
-                key,
-                "the window is on the project's place"
-            );
-            // The same value names the same place: choosing a toggle and coming back reads the same
-            // filter, and the project is chosen again by the equality of what they ask.
-            let toggle = nav_items(view.tree())
-                .into_iter()
-                .find(|node| node.props.get("key") == Some(&Value::text("is:done")))
-                .expect("the Done place")
-                .key
-                .clone();
-            view.fire(&toggle, "select").unwrap();
-            view.poll_patches().unwrap();
-            assert_eq!(titles_of(view.tree()), ["done"]);
-        }
+        };
+        assert_eq!(
+            nav("is:inbox").props.get("count"),
+            Some(&Value::Int(1)),
+            "the inbox shows what waits to be sorted"
+        );
+        assert_eq!(
+            nav("is:today").props.get("count"),
+            Some(&Value::Int(2)),
+            "today shows what is due, the overdue one included"
+        );
+        assert_eq!(nav("is:upcoming").props.get("count"), None);
+        assert_eq!(
+            nav("is:done").props.get("count"),
+            Some(&Value::Int(1)),
+            "a place the sidebar counts shows how many it holds"
+        );
+    }
+
+    #[test]
+    fn a_place_of_a_value_picks_what_it_names_and_the_list_answers_with_it() {
+        let t = Tasks::new();
+        let project = t.project("Work");
+        let key = format!("project:{}", project.id_string());
+        let mut view = t.sidebar_by(&me());
+        assert_eq!(
+            titles_of(view.tree()),
+            ["undated"],
+            "the inbox it starts in"
+        );
+        let item = nav_items(view.tree())
+            .into_iter()
+            .find(|node| node.props.get("key") == Some(&Value::text(&key)))
+            .unwrap_or_else(|| panic!("no place {key} in\n{}", dump(view.tree())))
+            .key
+            .clone();
+        view.fire(&item, "select").unwrap();
+        view.poll_patches().unwrap();
+        // `Task.project(p)` asks the project's tasks, and the view state holds the value: the
+        // list's chosen place is its query, which the platform writes from the value.
+        assert_eq!(
+            titles_of(view.tree()),
+            ["filed"],
+            "the task filed under the project"
+        );
+        assert_eq!(
+            text_prop(of_kind(view.tree(), "ui.NavList")[0], "selected"),
+            key,
+            "the window is on the project's place"
+        );
+        // The same value names the same place: choosing a toggle and coming back reads the same
+        // filter, and the project is chosen again by the equality of what they ask.
+        let toggle = nav_items(view.tree())
+            .into_iter()
+            .find(|node| node.props.get("key") == Some(&Value::text("is:done")))
+            .expect("the Done place")
+            .key
+            .clone();
+        view.fire(&toggle, "select").unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(titles_of(view.tree()), ["done"]);
     }
 }

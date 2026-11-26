@@ -709,6 +709,10 @@ mod native {
             for index in 0..2 {
                 stop(cancel)?;
                 self.lease.check()?;
+                #[cfg(test)]
+                if index == 1 {
+                    super::tests::boundary("component-acquire-1")?;
+                }
                 if let Some(mut final_file) = finals[index].take() {
                     final_file.residue = !scans[index].is_empty();
                     result.push(Component::Final(final_file));
@@ -744,6 +748,8 @@ mod native {
                                 )?;
                                 held.file.sync_all().map_err(io)?;
                                 parent.sync_all().map_err(io)?;
+                                #[cfg(test)]
+                                super::tests::boundary("partial-durable")?;
                                 created = Some(held);
                                 break;
                             }
@@ -956,11 +962,17 @@ mod native {
                     held.file.metadata().map_err(io)?.len() == 0,
                     "New journal not empty",
                 )?;
+                #[cfg(test)]
+                super::tests::boundary("record-created")?;
                 held.file.write_all(bytes).map_err(io)?;
+                #[cfg(test)]
+                super::tests::boundary("record-written")?;
                 held.file.flush().map_err(io)?;
                 held.file.sync_all().map_err(io)?;
                 held.check(Some(parent))?;
                 parent.sync_all().map_err(io)?;
+                #[cfg(test)]
+                super::tests::boundary("record-durable")?;
                 self.lease.check()?;
                 self.records.push(Journal {
                     snapshot: fingerprint(&held.file.metadata().map_err(io)?),
@@ -1064,6 +1076,8 @@ mod native {
                     return Err(io(e));
                 }
                 renamed = true;
+                #[cfg(test)]
+                super::tests::boundary("final-renamed")?;
                 self.provider.payload.leaf = final_name.as_bytes().to_vec();
                 self.provider.payload.check(Some(parent))?;
                 verify_bytes(
@@ -1074,6 +1088,8 @@ mod native {
                 )?;
                 self.provider.payload.check(Some(parent))?;
                 parent.sync_all().map_err(io)?;
+                #[cfg(test)]
+                super::tests::boundary("final-durable")?;
                 stop(cancel)?;
                 self.provider.retain(&[])?;
                 let readonly = open(parent, final_name.as_bytes(), libc::O_RDONLY).map_err(io)?;
@@ -1172,4 +1188,12 @@ mod native {
             self.lease.check()
         }
     }
+    #[cfg(test)]
+    pub(super) fn fixture_acquire(path: &Path, selected: &SelectedManifest) -> Result<CacheRoot> {
+        raw_components(path.as_os_str().as_bytes())?;
+        let root = File::open(path).map_err(io)?;
+        CacheRoot::acquire_below(vec![Held::new(root, b"", true, false)?], selected)
+    }
 }
+#[cfg(test)]
+mod tests;

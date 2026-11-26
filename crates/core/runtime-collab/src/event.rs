@@ -157,6 +157,11 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         hash: String,
         state: tilo_content::ContentState,
     },
+    /// over its shell link. Kept in its place so an event a host wrote still
+    /// reads as itself.
+    RetiredNearbyTransferCommandResult { request_id: u64 },
+    /// Retired with the results above.
+    RetiredNearbyTransferChanged,
     /// The store's answer to the app's resource command `request_id`, in the store's encoding
     /// (`collab_types::store::wire::Reply`).
     ResourceCommandResult {

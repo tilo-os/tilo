@@ -39,68 +39,9 @@ pub fn cursor_text(cursor: &[u8]) -> String {
     }
 }
 
-pub fn cursor_bytes(text: &str) -> Result<Vec<u8>, String> {
-    text.strip_prefix(BASE64_CURSOR).map_or_else(
-        || Ok(text.as_bytes().to_vec()),
-        |encoded| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(encoded)
-                .map_err(|_| "cursor is not one this server issued".to_string())
-        },
-    )
-}
 
-pub fn needle_words(needle: &str) -> Vec<String> {
-    needle
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
 
-/// Whether every word begins a word of the row's names, or is one of those
-/// words in another inflection: action id, label, description and
-/// parameters, resource label and kind, app id.
-pub fn matches_words(row: &CatalogueRow, words: &[String]) -> bool {
-    word_score(row, words) == words.len()
-}
 
-/// How many of `words` begin a word of the row's names, or are one of those
-/// words in another inflection.
-pub fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
-    let mut names = vec![
-        row.resource.label.as_str(),
-        row.resource.kind.as_str(),
-        row.app_id.as_str(),
-    ];
-    if let Some(action) = &row.action {
-        names.extend([action.address.action.as_str(), action.action_label.as_str()]);
-        names.extend(action.description.as_deref());
-        for param in &action.params {
-            names.extend([param.name.as_ref(), param.description.as_ref()]);
-        }
-    }
-    let names = names
-        .iter()
-        .flat_map(|name| name.split(|c: char| !c.is_alphanumeric()))
-        .filter(|token| !token.is_empty())
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>();
-    let stems = names
-        .iter()
-        .map(|name| tilo_actions::remote::stem_word(name))
-        .collect::<Vec<_>>();
-    words
-        .iter()
-        .filter(|word| {
-            let stemmed = tilo_actions::remote::stem_word(word);
-            // A word begins a name's word, or is that word in another
-            // inflection: "drawing" and "draw" are the same word to a
-            // caller describing what it wants to do.
-            names.iter().any(|name| name.starts_with(word.as_str())) || stems.contains(&stemmed)
-        })
-        .count()
-}
 
 /// Short names for one session's long resource ids. A bound UI resource's
 /// id is about 130 characters, and an agent repeats it in every call it

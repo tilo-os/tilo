@@ -358,6 +358,274 @@ view span_label(span: Duration) {
         }
     }
 
+    /// A moment says the time of day it falls at as the person reads a clock: the host's style
+    /// where it keeps one, and a 24-hour clock where it names none.
+    #[test]
+    fn a_moment_reads_the_clock_the_person_reads() {
+        let sheet = Sheet::in_zone(0, None);
+        assert_eq!(
+            sheet.bare("clocks"),
+            ["a 10:41", "b 00:05", "c 14:05"],
+            "no host keeps a style: a 24-hour clock"
+        );
+        sheet.rt.set_shown_host(TwelveHour);
+        assert_eq!(
+            sheet.bare("clocks"),
+            ["a 10:41 AM", "b 12:05 AM", "c 2:05 PM"],
+            "the clock the host keeps for the person"
+        );
+    }
+
+    #[test]
+    fn an_action_reads_its_own_moment_and_day() {
+        let sheet = Sheet::in_zone(0, None);
+        sheet.call("soon", vec![Value::resource(&sheet.board)]);
+        assert_eq!(
+            sheet.view("read_back"),
+            ["2026-10-30T00:10:00Z 2026-11-01 79800"]
+        );
+        // The day is the moment's day: `today` is where `now` falls, not the next day of it.
+        let sheet = Sheet::in_zone(2 * 3600, None);
+        sheet.call("soon", vec![Value::resource(&sheet.board)]);
+        assert_eq!(
+            sheet.view("read_back"),
+            ["2026-10-30T00:10:00Z 2026-11-02 600"]
+        );
+        // Two moments are apart by the seconds between them, whatever the day it is then.
+        sheet.call("stamp", vec![Value::resource(&sheet.board)]);
+        assert_eq!(
+            sheet.view("read_back")[1],
+            "1970-01-01T00:00:00Z 2026-11-04 1793311800",
+            "a week ahead, two days back, then the seconds since the epoch"
+        );
+    }
+
+    #[test]
+    fn a_moment_falls_on_the_day_it_is_for_the_person() {
+        // UTC: the late evening is its own day, and midnight is the next one.
+        let utc = Sheet::in_zone(0, None);
+        utc.seed();
+        assert_eq!(
+            utc.view("edges"),
+            [
+                "a 2026-10-29",
+                "b 2026-10-29",
+                "c 2026-10-30",
+                "d 2026-10-30",
+                "e 2026-10-29 2026-10-29",
+                "f 2026-10-29",
+                "g 2026-07-01",
+            ]
+        );
+
+        // Two hours ahead: 22:00 UTC is already midnight of the next day.
+        let east = Sheet::in_zone(2 * 3600, None);
+        east.seed();
+        assert_eq!(
+            east.view("edges"),
+            [
+                "a 2026-10-29",
+                "b 2026-10-30",
+                "c 2026-10-30",
+                "d 2026-10-30",
+                "e 2026-10-30 2026-10-30",
+                "f 2026-10-30",
+                "g 2026-07-02",
+            ]
+        );
+
+        // Seven hours behind: the early morning UTC is still the evening before, and midnight of
+        // their day is 07:00 UTC.
+        let west = Sheet::in_zone(-7 * 3600, None);
+        west.seed();
+        assert_eq!(
+            west.view("edges"),
+            [
+                "a 2026-10-29",
+                "b 2026-10-29",
+                "c 2026-10-29",
+                "d 2026-10-30",
+                "e 2026-10-29 2026-10-29",
+                "f 2026-10-29",
+                "g 2026-07-01",
+            ]
+        );
+
+        // A host that names the zone reads the day the moment fell on in it: Berlin was two hours
+        // ahead in July, so 22:30 UTC that day was already the next one there, while the hour the
+        // host's offset names today would have called it the same evening.
+        let berlin = Sheet::in_zone(3600, Some("Europe/Berlin"));
+        berlin.seed();
+        assert_eq!(berlin.view("edges")[6], "g 2026-07-02");
+
+        // The day an action read with `now.day()` is the day the filter's `today` reads, in each
+        // zone: one source for the person's day.
+        for (i, sheet) in [&utc, &east, &west, &berlin].into_iter().enumerate() {
+            assert_eq!(sheet.view("agreed"), ["on today 1"], "case {i}");
+        }
+    }
+
+    /// A moment's day in a named zone is where people there were at that instant: the zone's own
+    /// rules decide it, so two people whose clocks and zones differ read it alike, and no `now`
+    /// or host zone reaches it.
+    #[test]
+    fn a_moment_reads_its_day_in_a_named_zone() {
+        let utc = Sheet::in_zone(0, None);
+        assert_eq!(
+            utc.bare("zones"),
+            [
+                // Berlin is an hour ahead in late October: 23:30Z is already the next day.
+                "a 2026-10-30",
+                // Los Angeles is seven hours behind, still in its summer time: the same evening.
+                "b 2026-10-29",
+                "c 2026-11-01",
+                // Berlin sprang forward at 01:00Z that day: a wall time after it is two hours on.
+                "d 2026-03-29",
+                // In July Berlin is two hours ahead, so 22:30Z is the next day's half past
+                // midnight.
+                "e 2026-07-02",
+                "f 2026-10-30",
+            ]
+        );
+        // The person's own zone and clock play no part in the named zones' days.
+        let west = Sheet::in_zone(-7 * 3600, Some("America/Los_Angeles"));
+        assert_eq!(west.bare("zones"), utc.bare("zones"));
+        // A floating moment's day is each reader's own.
+        assert_eq!(utc.bare("floating_day"), ["2026-10-29"]);
+        let berlin = Sheet::in_zone(3600, Some("Europe/Berlin"));
+        assert_eq!(berlin.bare("floating_day"), ["2026-10-30"]);
+    }
+
+    /// A wall-clock time reads as the named zone resolves it — the earlier instant of a fold, the
+    /// first real minute out of a gap — and two people in different zones read it alike.
+    #[test]
+    fn a_wall_clock_time_reads_as_its_zone_resolves_it() {
+        let utc = Sheet::in_zone(0, None);
+        assert_eq!(
+            utc.bare("from_walls"),
+            [
+                "a 2026-03-29T01:00:00Z",
+                "b 2026-10-25T00:30:00Z",
+                "c 2026-11-01T08:30:00Z",
+                "d 2026-11-24T09:00:00Z",
+                // A floating time is nine where the reader is, on their own clock.
+                "e 09:00",
+                // A zone this build does not know, and words that name no wall time, answer none.
+                "f none",
+                "g 2026-07-01T07:00:00Z",
+                "h none",
+            ]
+        );
+        // The person's own zone and clock play no part in it.
+        let east = Sheet::in_zone(2 * 3600, Some("Europe/Berlin"));
+        assert_eq!(east.bare("from_walls"), utc.bare("from_walls"));
+    }
+
+    /// Text a program builds by interpolation names a day or a moment the way the person reads
+    /// it, and `.iso()` is the stored text a machine reads.
+    #[test]
+    fn text_names_a_day_and_a_moment_as_the_person_reads_them() {
+        // Nothing names them: a day and a moment keep their stored text.
+        let sheet = Sheet::in_zone(0, None);
+        assert_eq!(
+            sheet.bare("named"),
+            [
+                "a 2026-06-29",
+                "b 2025-06-29",
+                "c 2026-06-29T18:00:00Z",
+                "d 2026-06-29 2026-06-29T18:00:00Z",
+            ],
+            "what the formats name, and the same text from `.iso()`"
+        );
+        // What names them for the person is handed the kind of value and its stored text, and
+        // `.iso()` still answers the stored text.
+        sheet
+            .rt
+            .set_sentence_by(|kind, value| format!("<{kind} {value}>"));
+        assert_eq!(
+            sheet.bare("named"),
+            [
+                "a <date 2026-06-29>",
+                "b <date 2025-06-29>",
+                "c <time 2026-06-29T18:00:00Z>",
+                "d 2026-06-29 2026-06-29T18:00:00Z",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_parts_of_a_day_and_the_week_it_stands_in() {
+        // Thursday the 29th of October 2026; its week starts on the Monday of it.
+        let monday = Sheet::in_zone(0, None);
+        assert_eq!(
+            monday.bare("parts"),
+            ["a thursday", "b 29 10 2026", "c 2026-10-26", "d 2026-10-26"]
+        );
+        // A region whose week starts on Sunday reads the same day as in the week that
+        // began the Sunday before it.
+        let sunday = Sheet::at(NOW, 0, None, 6);
+        assert_eq!(
+            sunday.bare("parts"),
+            ["a thursday", "b 29 10 2026", "c 2026-10-25", "d 2026-10-25"]
+        );
+    }
+
+    #[test]
+    fn words_name_a_day_or_a_moment_read_against_one() {
+        // The spring night the clocks go forward in Berlin: tomorrow at nine is an hour nearer
+        // than the day before's nine was, and the day begins an hour later in UTC than usual.
+        let spring = Sheet::at("2026-03-28T12:00:00Z", 3600, Some("Europe/Berlin"), 0);
+        spring.call(
+            "read",
+            vec![Value::resource(&spring.board), Value::text("tomorrow 9am")],
+        );
+        assert_eq!(
+            spring.view("read_back"),
+            ["2026-03-29T07:00:00Z 2026-03-29 0"]
+        );
+        spring.call(
+            "read",
+            vec![Value::resource(&spring.board), Value::text("tomorrow")],
+        );
+        // A text that names a day and no time is the moment that day starts.
+        assert_eq!(
+            spring.view("read_back")[1],
+            "2026-03-28T23:00:00Z 2026-03-29 0"
+        );
+
+        // The autumn night they go back: nine is an hour further off.
+        let autumn = Sheet::at("2026-10-24T12:00:00Z", 3600, Some("Europe/Berlin"), 0);
+        autumn.call(
+            "read",
+            vec![Value::resource(&autumn.board), Value::text("tomorrow 9am")],
+        );
+        assert_eq!(
+            autumn.view("read_back"),
+            ["2026-10-25T08:00:00Z 2026-10-25 0"]
+        );
+
+        // A time alone is today's while it is still to come, else tomorrow's; words that name
+        // nothing name no day.
+        let evening = Sheet::at("2026-10-29T22:10:00Z", 0, None, 0);
+        evening.call(
+            "read",
+            vec![Value::resource(&evening.board), Value::text("9am")],
+        );
+        assert_eq!(
+            evening.view("read_back"),
+            ["2026-10-30T09:00:00Z 2026-10-30 0"]
+        );
+        evening.call(
+            "read",
+            vec![Value::resource(&evening.board), Value::text("sometime")],
+        );
+        assert_eq!(
+            evening.view("read_back")[1],
+            "1970-01-01T00:00:00Z 1970-01-01 0",
+            "words no phrase reads name nothing"
+        );
+    }
+
     tilo_test_env::scenario! {
         fn a_length_of_time_crosses_the_wasm_boundary;
 
@@ -569,324 +837,52 @@ view span_label(span: Duration) {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn time_1;
-
-        phase a_moment_reads_the_clock_the_person_reads;
-        // A moment says the time of day it falls at as the person reads a clock: the host's style
-        // where it keeps one, and a 24-hour clock where it names none.
-        {
-            let sheet = Sheet::in_zone(0, None);
-            assert_eq!(
-                sheet.bare("clocks"),
-                ["a 10:41", "b 00:05", "c 14:05"],
-                "no host keeps a style: a 24-hour clock"
-            );
-            sheet.rt.set_shown_host(TwelveHour);
-            assert_eq!(
-                sheet.bare("clocks"),
-                ["a 10:41 AM", "b 12:05 AM", "c 2:05 PM"],
-                "the clock the host keeps for the person"
-            );
-        }
-
-        phase an_action_reads_its_own_moment_and_day;
-        {
-            let sheet = Sheet::in_zone(0, None);
-            sheet.call("soon", vec![Value::resource(&sheet.board)]);
-            assert_eq!(
-                sheet.view("read_back"),
-                ["2026-10-30T00:10:00Z 2026-11-01 79800"]
-            );
-            // The day is the moment's day: `today` is where `now` falls, not the next day of it.
-            let sheet = Sheet::in_zone(2 * 3600, None);
-            sheet.call("soon", vec![Value::resource(&sheet.board)]);
-            assert_eq!(
-                sheet.view("read_back"),
-                ["2026-10-30T00:10:00Z 2026-11-02 600"]
-            );
-            // Two moments are apart by the seconds between them, whatever the day it is then.
-            sheet.call("stamp", vec![Value::resource(&sheet.board)]);
-            assert_eq!(
-                sheet.view("read_back")[1],
-                "1970-01-01T00:00:00Z 2026-11-04 1793311800",
-                "a week ahead, two days back, then the seconds since the epoch"
-            );
-        }
-
-        phase a_moment_falls_on_the_day_it_is_for_the_person;
-        {
-            // UTC: the late evening is its own day, and midnight is the next one.
-            let utc = Sheet::in_zone(0, None);
-            utc.seed();
-            assert_eq!(
-                utc.view("edges"),
-                [
-                    "a 2026-10-29",
-                    "b 2026-10-29",
-                    "c 2026-10-30",
-                    "d 2026-10-30",
-                    "e 2026-10-29 2026-10-29",
-                    "f 2026-10-29",
-                    "g 2026-07-01",
-                ]
-            );
-
-            // Two hours ahead: 22:00 UTC is already midnight of the next day.
-            let east = Sheet::in_zone(2 * 3600, None);
-            east.seed();
-            assert_eq!(
-                east.view("edges"),
-                [
-                    "a 2026-10-29",
-                    "b 2026-10-30",
-                    "c 2026-10-30",
-                    "d 2026-10-30",
-                    "e 2026-10-30 2026-10-30",
-                    "f 2026-10-30",
-                    "g 2026-07-02",
-                ]
-            );
-
-            // Seven hours behind: the early morning UTC is still the evening before, and midnight of
-            // their day is 07:00 UTC.
-            let west = Sheet::in_zone(-7 * 3600, None);
-            west.seed();
-            assert_eq!(
-                west.view("edges"),
-                [
-                    "a 2026-10-29",
-                    "b 2026-10-29",
-                    "c 2026-10-29",
-                    "d 2026-10-30",
-                    "e 2026-10-29 2026-10-29",
-                    "f 2026-10-29",
-                    "g 2026-07-01",
-                ]
-            );
-
-            // A host that names the zone reads the day the moment fell on in it: Berlin was two hours
-            // ahead in July, so 22:30 UTC that day was already the next one there, while the hour the
-            // host's offset names today would have called it the same evening.
-            let berlin = Sheet::in_zone(3600, Some("Europe/Berlin"));
-            berlin.seed();
-            assert_eq!(berlin.view("edges")[6], "g 2026-07-02");
-
-            // The day an action read with `now.day()` is the day the filter's `today` reads, in each
-            // zone: one source for the person's day.
-            for (i, sheet) in [&utc, &east, &west, &berlin].into_iter().enumerate() {
-                assert_eq!(sheet.view("agreed"), ["on today 1"], "case {i}");
+    /// Typed dates and times read the person's language first and fall back to English when that
+    /// reading names neither a day nor a time; where both languages read the text, the person's
+    /// language wins.
+    #[test]
+    fn typed_dates_read_the_persons_language_first_and_then_english() {
+        struct GermanWords;
+        impl tilolang_runtime::Words for GermanWords {
+            fn add(&self, _catalogues: &[(String, String)]) {}
+            fn add_used(&self, _catalogues: &[(String, String)]) {}
+            fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
+                source.to_owned()
+            }
+            fn language(&self) -> String {
+                "de".to_owned()
             }
         }
 
-        phase a_moment_reads_its_day_in_a_named_zone;
-        // A moment's day in a named zone is where people there were at that instant: the zone's own
-        // rules decide it, so two people whose clocks and zones differ read it alike, and no `now`
-        // or host zone reaches it.
-        {
-            let utc = Sheet::in_zone(0, None);
-            assert_eq!(
-                utc.bare("zones"),
-                [
-                    // Berlin is an hour ahead in late October: 23:30Z is already the next day.
-                    "a 2026-10-30",
-                    // Los Angeles is seven hours behind, still in its summer time: the same evening.
-                    "b 2026-10-29",
-                    "c 2026-11-01",
-                    // Berlin sprang forward at 01:00Z that day: a wall time after it is two hours on.
-                    "d 2026-03-29",
-                    // In July Berlin is two hours ahead, so 22:30Z is the next day's half past
-                    // midnight.
-                    "e 2026-07-02",
-                    "f 2026-10-30",
-                ]
-            );
-            // The person's own zone and clock play no part in the named zones' days.
-            let west = Sheet::in_zone(-7 * 3600, Some("America/Los_Angeles"));
-            assert_eq!(west.bare("zones"), utc.bare("zones"));
-            // A floating moment's day is each reader's own.
-            assert_eq!(utc.bare("floating_day"), ["2026-10-29"]);
-            let berlin = Sheet::in_zone(3600, Some("Europe/Berlin"));
-            assert_eq!(berlin.bare("floating_day"), ["2026-10-30"]);
-        }
-
-        phase a_wall_clock_time_reads_as_its_zone_resolves_it;
-        // A wall-clock time reads as the named zone resolves it — the earlier instant of a fold, the
-        // first real minute out of a gap — and two people in different zones read it alike.
-        {
-            let utc = Sheet::in_zone(0, None);
-            assert_eq!(
-                utc.bare("from_walls"),
-                [
-                    "a 2026-03-29T01:00:00Z",
-                    "b 2026-10-25T00:30:00Z",
-                    "c 2026-11-01T08:30:00Z",
-                    "d 2026-11-24T09:00:00Z",
-                    // A floating time is nine where the reader is, on their own clock.
-                    "e 09:00",
-                    // A zone this build does not know, and words that name no wall time, answer none.
-                    "f none",
-                    "g 2026-07-01T07:00:00Z",
-                    "h none",
-                ]
-            );
-            // The person's own zone and clock play no part in it.
-            let east = Sheet::in_zone(2 * 3600, Some("Europe/Berlin"));
-            assert_eq!(east.bare("from_walls"), utc.bare("from_walls"));
-        }
-
-        phase text_names_a_day_and_a_moment_as_the_person_reads_them;
-        // Text a program builds by interpolation names a day or a moment the way the person reads
-        // it, and `.iso()` is the stored text a machine reads.
-        {
-            // Nothing names them: a day and a moment keep their stored text.
-            let sheet = Sheet::in_zone(0, None);
-            assert_eq!(
-                sheet.bare("named"),
-                [
-                    "a 2026-06-29",
-                    "b 2025-06-29",
-                    "c 2026-06-29T18:00:00Z",
-                    "d 2026-06-29 2026-06-29T18:00:00Z",
-                ],
-                "what the formats name, and the same text from `.iso()`"
-            );
-            // What names them for the person is handed the kind of value and its stored text, and
-            // `.iso()` still answers the stored text.
-            sheet
-                .rt
-                .set_sentence_by(|kind, value| format!("<{kind} {value}>"));
-            assert_eq!(
-                sheet.bare("named"),
-                [
-                    "a <date 2026-06-29>",
-                    "b <date 2025-06-29>",
-                    "c <time 2026-06-29T18:00:00Z>",
-                    "d 2026-06-29 2026-06-29T18:00:00Z",
-                ]
+        // Thursday 2026-10-29 08:00 local in Europe/Berlin (CET, UTC+1), before 09:00.
+        let berlin = Sheet::at("2026-10-29T07:00:00Z", 3600, Some("Europe/Berlin"), 0);
+        berlin.rt.set_words(std::rc::Rc::new(GermanWords));
+        for phrase in [
+            "Freitag",
+            "friday",
+            "tomorrow 9am",
+            "Montag friday",
+            "sometime",
+        ] {
+            berlin.call(
+                "read",
+                vec![Value::resource(&berlin.board), Value::text(phrase)],
             );
         }
-
-        phase the_parts_of_a_day_and_the_week_it_stands_in;
-        {
-            // Thursday the 29th of October 2026; its week starts on the Monday of it.
-            let monday = Sheet::in_zone(0, None);
-            assert_eq!(
-                monday.bare("parts"),
-                ["a thursday", "b 29 10 2026", "c 2026-10-26", "d 2026-10-26"]
-            );
-            // A region whose week starts on Sunday reads the same day as in the week that
-            // began the Sunday before it.
-            let sunday = Sheet::at(NOW, 0, None, 6);
-            assert_eq!(
-                sunday.bare("parts"),
-                ["a thursday", "b 29 10 2026", "c 2026-10-25", "d 2026-10-25"]
-            );
-        }
-
-        phase words_name_a_day_or_a_moment_read_against_one;
-        {
-            // The spring night the clocks go forward in Berlin: tomorrow at nine is an hour nearer
-            // than the day before's nine was, and the day begins an hour later in UTC than usual.
-            let spring = Sheet::at("2026-03-28T12:00:00Z", 3600, Some("Europe/Berlin"), 0);
-            spring.call(
-                "read",
-                vec![Value::resource(&spring.board), Value::text("tomorrow 9am")],
-            );
-            assert_eq!(
-                spring.view("read_back"),
-                ["2026-03-29T07:00:00Z 2026-03-29 0"]
-            );
-            spring.call(
-                "read",
-                vec![Value::resource(&spring.board), Value::text("tomorrow")],
-            );
-            // A text that names a day and no time is the moment that day starts.
-            assert_eq!(
-                spring.view("read_back")[1],
-                "2026-03-28T23:00:00Z 2026-03-29 0"
-            );
-
-            // The autumn night they go back: nine is an hour further off.
-            let autumn = Sheet::at("2026-10-24T12:00:00Z", 3600, Some("Europe/Berlin"), 0);
-            autumn.call(
-                "read",
-                vec![Value::resource(&autumn.board), Value::text("tomorrow 9am")],
-            );
-            assert_eq!(
-                autumn.view("read_back"),
-                ["2026-10-25T08:00:00Z 2026-10-25 0"]
-            );
-
-            // A time alone is today's while it is still to come, else tomorrow's; words that name
-            // nothing name no day.
-            let evening = Sheet::at("2026-10-29T22:10:00Z", 0, None, 0);
-            evening.call(
-                "read",
-                vec![Value::resource(&evening.board), Value::text("9am")],
-            );
-            assert_eq!(
-                evening.view("read_back"),
-                ["2026-10-30T09:00:00Z 2026-10-30 0"]
-            );
-            evening.call(
-                "read",
-                vec![Value::resource(&evening.board), Value::text("sometime")],
-            );
-            assert_eq!(
-                evening.view("read_back")[1],
+        assert_eq!(
+            berlin.view("read_back"),
+            [
+                // German weekday read in German.
+                "2026-10-29T23:00:00Z 2026-10-30 0",
+                // English weekday read through the English fallback.
+                "2026-10-29T23:00:00Z 2026-10-30 0",
+                // App-supplied English phrase (`mail` snooze/send_later): tomorrow 09:00 CET = 08:00Z.
+                "2026-10-30T08:00:00Z 2026-10-30 0",
+                // Both languages read the text: German `Montag` wins over English `friday`.
+                "2026-11-01T23:00:00Z 2026-11-02 0",
+                // Unknown words still parse as nothing.
                 "1970-01-01T00:00:00Z 1970-01-01 0",
-                "words no phrase reads name nothing"
-            );
-        }
-
-        phase typed_dates_read_the_persons_language_first_and_then_english;
-        // Typed dates and times read the person's language first and fall back to English when that
-        // reading names neither a day nor a time; where both languages read the text, the person's
-        // language wins.
-        {
-            struct GermanWords;
-            impl tilolang_runtime::Words for GermanWords {
-                fn add(&self, _catalogues: &[(String, String)]) {}
-                fn add_used(&self, _catalogues: &[(String, String)]) {}
-                fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
-                    source.to_owned()
-                }
-                fn language(&self) -> String {
-                    "de".to_owned()
-                }
-            }
-
-            // Thursday 2026-10-29 08:00 local in Europe/Berlin (CET, UTC+1), before 09:00.
-            let berlin = Sheet::at("2026-10-29T07:00:00Z", 3600, Some("Europe/Berlin"), 0);
-            berlin.rt.set_words(std::rc::Rc::new(GermanWords));
-            for phrase in [
-                "Freitag",
-                "friday",
-                "tomorrow 9am",
-                "Montag friday",
-                "sometime",
-            ] {
-                berlin.call(
-                    "read",
-                    vec![Value::resource(&berlin.board), Value::text(phrase)],
-                );
-            }
-            assert_eq!(
-                berlin.view("read_back"),
-                [
-                    // German weekday read in German.
-                    "2026-10-29T23:00:00Z 2026-10-30 0",
-                    // English weekday read through the English fallback.
-                    "2026-10-29T23:00:00Z 2026-10-30 0",
-                    // App-supplied English phrase (`mail` snooze/send_later): tomorrow 09:00 CET = 08:00Z.
-                    "2026-10-30T08:00:00Z 2026-10-30 0",
-                    // Both languages read the text: German `Montag` wins over English `friday`.
-                    "2026-11-01T23:00:00Z 2026-11-02 0",
-                    // Unknown words still parse as nothing.
-                    "1970-01-01T00:00:00Z 1970-01-01 0",
-                ]
-            );
-        }
+            ]
+        );
     }
 }

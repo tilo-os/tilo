@@ -113,7 +113,8 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
-        | CollabRequest::ClearContinuation => {}
+        | CollabRequest::ClearContinuation
+        | CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         CollabRequest::RemoteAction { message, .. } => serialized_bytes(message, &mut meter),
         CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
@@ -528,6 +529,10 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(verdicts, &mut meter);
             "ActionVerdicts"
         }
+        CollabEvent::RetiredNearbyTransferCommandResult { .. } => {
+            "RetiredNearbyTransferCommandResult"
+        }
+        CollabEvent::RetiredNearbyTransferChanged => "RetiredNearbyTransferChanged",
     };
     (kind, meter.finish())
 }

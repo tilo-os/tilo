@@ -264,208 +264,204 @@ action refused(p: Page) {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn engine_1;
+    #[test]
+    fn a_call_asks_the_device_by_name_and_keeps_its_json() {
+        let bench = Bench::new(true);
+        bench.call("decode");
+        assert_eq!(
+            bench.device.0.borrow().as_slice(),
+            [(
+                "so.tilo.engined".to_owned(),
+                "page.decode".to_owned(),
+                "first".to_owned()
+            )],
+            "the op, its input and the app asking reach the device"
+        );
+        assert_eq!(bench.words(), r#"{"op":"page.decode","input":"first"}"#);
+    }
 
-        phase a_call_asks_the_device_by_name_and_keeps_its_json;
-        {
-            let bench = Bench::new(true);
-            bench.call("decode");
-            assert_eq!(
-                bench.device.0.borrow().as_slice(),
-                [(
-                    "so.tilo.engined".to_owned(),
-                    "page.decode".to_owned(),
-                    "first".to_owned()
-                )],
-                "the op, its input and the app asking reach the device"
-            );
-            assert_eq!(bench.words(), r#"{"op":"page.decode","input":"first"}"#);
-        }
+    #[test]
+    fn a_job_runs_the_actions_its_start_named_as_it_moves_and_ends() {
+        let bench = Bench::new(true);
+        bench.call("paint");
+        assert_eq!(
+            bench.device.0.borrow().as_slice(),
+            [(
+                "so.tilo.engined".to_owned(),
+                "page.paint".to_owned(),
+                "second".to_owned()
+            )]
+        );
+        assert_eq!(bench.text("job"), JOB, "the start answers the job's path");
+        let kept = bench.device.1.borrow()[0].clone();
+        assert!(
+            kept.done.is_some() && kept.progress.is_some(),
+            "the device keeps both handlers with the job: {kept:?}"
+        );
 
-        phase a_job_runs_the_actions_its_start_named_as_it_moves_and_ends;
-        {
-            let bench = Bench::new(true);
-            bench.call("paint");
-            assert_eq!(
-                bench.device.0.borrow().as_slice(),
-                [(
-                    "so.tilo.engined".to_owned(),
-                    "page.paint".to_owned(),
-                    "second".to_owned()
-                )]
-            );
-            assert_eq!(bench.text("job"), JOB, "the start answers the job's path");
-            let kept = bench.device.1.borrow()[0].clone();
-            assert!(
-                kept.done.is_some() && kept.progress.is_some(),
-                "the device keeps both handlers with the job: {kept:?}"
-            );
+        bench.moves(
+            |h| h.progress.clone(),
+            &record("running", &serde_json::json!({"done": 3, "total": 5})),
+        );
+        assert_eq!(
+            bench.rt.read(&bench.page, "steps").unwrap(),
+            Value::Int(3),
+            "`progress:` is handed the job as it moved"
+        );
+        assert_eq!(bench.text("painted"), "", "nothing ended yet");
 
-            bench.moves(
-                |h| h.progress.clone(),
-                &record("running", &serde_json::json!({"done": 3, "total": 5})),
-            );
-            assert_eq!(
-                bench.rt.read(&bench.page, "steps").unwrap(),
-                Value::Int(3),
-                "`progress:` is handed the job as it moved"
-            );
-            assert_eq!(bench.text("painted"), "", "nothing ended yet");
+        bench.moves(
+            |h| h.done.clone(),
+            &record("done", &serde_json::json!({"url": "tilo-blob://painted"})),
+        );
+        assert_eq!(
+            bench.text("painted"),
+            r#"{"url":"tilo-blob://painted"}"#,
+            "`done:` is handed the job and reads what it made"
+        );
 
-            bench.moves(
-                |h| h.done.clone(),
-                &record("done", &serde_json::json!({"url": "tilo-blob://painted"})),
-            );
-            assert_eq!(
-                bench.text("painted"),
-                r#"{"url":"tilo-blob://painted"}"#,
-                "`done:` is handed the job and reads what it made"
-            );
+        bench.moves(
+            |h| h.done.clone(),
+            &record(
+                "failed",
+                &serde_json::json!({"error": "the printer is out of paper"}),
+            ),
+        );
+        assert_eq!(
+            bench.text("painted"),
+            "the printer is out of paper",
+            "a job that failed says why in its error"
+        );
+    }
 
-            bench.moves(
-                |h| h.done.clone(),
-                &record(
-                    "failed",
-                    &serde_json::json!({"error": "the printer is out of paper"}),
-                ),
-            );
-            assert_eq!(
-                bench.text("painted"),
-                "the printer is out of paper",
-                "a job that failed says why in its error"
-            );
-        }
+    #[test]
+    fn a_replayed_run_reads_the_job_it_started_and_starts_no_other() {
+        let bench = Bench::new(true);
+        let outcome = bench.call("paint_and_note");
+        assert!(
+            matches!(outcome, InvokeOutcome::Done(_)),
+            "the run ends: {outcome:?}"
+        );
+        assert_eq!(
+            bench.device.0.borrow().len(),
+            1,
+            "the device starts the job once, not again when the run replays at its call: {:?}",
+            bench.device.0.borrow()
+        );
+        assert_eq!(
+            bench.device.1.borrow().len(),
+            1,
+            "one job keeps one set of handlers"
+        );
+        assert_eq!(
+            bench.text("job"),
+            JOB,
+            "the call reads the path the start answered the first time"
+        );
+    }
 
-        phase a_replayed_run_reads_the_job_it_started_and_starts_no_other;
-        {
-            let bench = Bench::new(true);
-            let outcome = bench.call("paint_and_note");
-            assert!(
-                matches!(outcome, InvokeOutcome::Done(_)),
-                "the run ends: {outcome:?}"
-            );
-            assert_eq!(
-                bench.device.0.borrow().len(),
-                1,
-                "the device starts the job once, not again when the run replays at its call: {:?}",
-                bench.device.0.borrow()
-            );
-            assert_eq!(
-                bench.device.1.borrow().len(),
-                1,
-                "one job keeps one set of handlers"
-            );
-            assert_eq!(
-                bench.text("job"),
-                JOB,
-                "the call reads the path the start answered the first time"
-            );
-        }
+    #[test]
+    fn an_action_reads_where_a_job_stands_and_stops_it() {
+        let bench = Bench::new(true);
+        bench.call("paint");
+        bench.call("looked");
+        assert_eq!(bench.words(), "page.paint: 2 of 5");
+        bench.call("stop");
+        assert_eq!(bench.device.2.borrow().as_slice(), [JOB.to_owned()]);
+    }
 
-        phase an_action_reads_where_a_job_stands_and_stops_it;
-        {
-            let bench = Bench::new(true);
-            bench.call("paint");
-            bench.call("looked");
-            assert_eq!(bench.words(), "page.paint: 2 of 5");
-            bench.call("stop");
-            assert_eq!(bench.device.2.borrow().as_slice(), [JOB.to_owned()]);
-        }
+    #[test]
+    fn a_window_follows_a_job_without_asking_on_a_clock() {
+        let bench = Bench::new(true);
+        bench.call("paint");
+        let mut window = bench
+            .rt
+            .open_view(
+                &me(),
+                &bench.app.view("bar"),
+                vec![Value::resource(&bench.page)],
+            )
+            .unwrap();
+        let shown = |window: &tilolang_runtime::ViewInstance| -> Vec<String> {
+            of_kind(window.tree(), "ui.Text")
+                .into_iter()
+                .filter_map(|node| match &node.props["value"] {
+                    Value::Text(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            shown(&window),
+            ["not started"],
+            "nothing is read before the host follows it"
+        );
+        assert_eq!(
+            bench.rt.take_wanted_jobs(),
+            [JOB.to_owned()],
+            "the window's read asks the host to follow the job"
+        );
 
-        phase a_window_follows_a_job_without_asking_on_a_clock;
-        {
-            let bench = Bench::new(true);
-            bench.call("paint");
-            let mut window = bench
-                .rt
-                .open_view(
-                    &me(),
-                    &bench.app.view("bar"),
-                    vec![Value::resource(&bench.page)],
-                )
-                .unwrap();
-            let shown = |window: &tilolang_runtime::ViewInstance| -> Vec<String> {
-                of_kind(window.tree(), "ui.Text")
-                    .into_iter()
-                    .filter_map(|node| match &node.props["value"] {
-                        Value::Text(text) => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect()
-            };
-            assert_eq!(
-                shown(&window),
-                ["not started"],
-                "nothing is read before the host follows it"
-            );
-            assert_eq!(
-                bench.rt.take_wanted_jobs(),
-                [JOB.to_owned()],
-                "the window's read asks the host to follow the job"
-            );
+        bench.rt.set_job(
+            JOB,
+            &record("running", &serde_json::json!({"done": 4, "total": 5})),
+        );
+        assert!(
+            window.woken(),
+            "the job's move wakes the window that shows it"
+        );
+        window.poll_patches().unwrap();
+        assert_eq!(shown(&window), ["4 of 5"]);
+        assert!(
+            bench.rt.take_wanted_jobs().is_empty(),
+            "a job the host follows is asked for once"
+        );
+    }
 
-            bench.rt.set_job(
-                JOB,
-                &record("running", &serde_json::json!({"done": 4, "total": 5})),
-            );
-            assert!(
-                window.woken(),
-                "the job's move wakes the window that shows it"
-            );
-            window.poll_patches().unwrap();
-            assert_eq!(shown(&window), ["4 of 5"]);
-            assert!(
-                bench.rt.take_wanted_jobs().is_empty(),
-                "a job the host follows is asked for once"
-            );
-        }
+    #[test]
+    fn a_picture_answers_the_file_the_device_kept() {
+        let bench = Bench::new(true);
+        bench.call("drawn");
+        assert_eq!(
+            bench.device.0.borrow().as_slice(),
+            [(
+                "so.tilo.engined".to_owned(),
+                "page.render".to_owned(),
+                "third".to_owned()
+            )],
+            "the op, its input and the app asking reach the device"
+        );
+        assert_eq!(bench.words(), "tilo-blob://drawn");
+    }
 
-        phase a_picture_answers_the_file_the_device_kept;
-        {
-            let bench = Bench::new(true);
-            bench.call("drawn");
-            assert_eq!(
-                bench.device.0.borrow().as_slice(),
-                [(
-                    "so.tilo.engined".to_owned(),
-                    "page.render".to_owned(),
-                    "third".to_owned()
-                )],
-                "the op, its input and the app asking reach the device"
-            );
-            assert_eq!(bench.words(), "tilo-blob://drawn");
-        }
+    #[test]
+    fn a_picture_the_device_refuses_reads_as_its_words() {
+        let bench = Bench::new(true);
+        bench.call("drawn_unknown");
+        assert_eq!(
+            bench.words(),
+            "`page.unknown` is not this app's: so.tilo.engined asks its own ops"
+        );
+    }
 
-        phase a_picture_the_device_refuses_reads_as_its_words;
-        {
-            let bench = Bench::new(true);
-            bench.call("drawn_unknown");
-            assert_eq!(
-                bench.words(),
-                "`page.unknown` is not this app's: so.tilo.engined asks its own ops"
-            );
-        }
+    #[test]
+    fn a_refusal_reads_as_the_device_s_words() {
+        let bench = Bench::new(true);
+        bench.call("refused");
+        assert_eq!(
+            bench.words(),
+            "`page.unknown` is not this app's: so.tilo.engined asks its own ops"
+        );
+    }
 
-        phase a_refusal_reads_as_the_device_s_words;
-        {
-            let bench = Bench::new(true);
-            bench.call("refused");
-            assert_eq!(
-                bench.words(),
-                "`page.unknown` is not this app's: so.tilo.engined asks its own ops"
-            );
-        }
-
-        phase a_device_that_answers_no_engine_work_refuses;
-        {
-            let bench = Bench::new(false);
-            bench.call("decode");
-            assert!(
-                bench.words().contains("answers no engine work"),
-                "the action reads the refusal, not a success: {}",
-                bench.words()
-            );
-        }
+    #[test]
+    fn a_device_that_answers_no_engine_work_refuses() {
+        let bench = Bench::new(false);
+        bench.call("decode");
+        assert!(
+            bench.words().contains("answers no engine work"),
+            "the action reads the refusal, not a success: {}",
+            bench.words()
+        );
     }
 }

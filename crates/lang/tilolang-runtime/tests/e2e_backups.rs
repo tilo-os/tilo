@@ -425,352 +425,348 @@ mod cases {
             .collect()
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_backups_1;
+    #[test]
+    fn a_folder_is_chosen_backed_up_and_its_snapshots_listed() {
+        let s = Backups::new();
+        s.set_up();
+        assert_eq!(s.text(&s.root, "source"), "/home/you/Documents");
+        assert_eq!(s.text(&s.root, "destination"), "/home/you/backup-drive");
 
-        phase a_folder_is_chosen_backed_up_and_its_snapshots_listed;
-        {
-            let s = Backups::new();
-            s.set_up();
-            assert_eq!(s.text(&s.root, "source"), "/home/you/Documents");
-            assert_eq!(s.text(&s.root, "destination"), "/home/you/backup-drive");
+        // A backup starts on the device and says how far it is.
+        s.done("back_up_now", vec![Value::resource(&s.root)]);
+        assert_eq!(s.text(&s.root, "working"), "backup");
+        let ask = s.engine.last_input();
+        assert_eq!(ask["source"], "/home/you/Documents");
+        assert_eq!(ask["destination"], "/home/you/backup-drive");
+        assert_eq!(ask["policy_hourly"], 24, "the default policy is sent");
 
-            // A backup starts on the device and says how far it is.
-            s.done("back_up_now", vec![Value::resource(&s.root)]);
-            assert_eq!(s.text(&s.root, "working"), "backup");
-            let ask = s.engine.last_input();
-            assert_eq!(ask["source"], "/home/you/Documents");
-            assert_eq!(ask["destination"], "/home/you/backup-drive");
-            assert_eq!(ask["policy_hourly"], 24, "the default policy is sent");
+        // It finishes with the repository as it now stands.
+        s.engine.done_with(&catalog_json());
+        s.ended();
+        assert_eq!(s.text(&s.root, "job"), "", "no job runs any more");
+        let snapshots = s.records(&s.root, "snapshots");
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(s.number(&s.root, "used_bytes"), 312_000_000_000);
+        assert_eq!(s.text(&s.root, "source_name"), "Documents");
+        assert_eq!(
+            s.number(&s.root, "subject"),
+            1_795_080_000,
+            "the newest snapshot is the one the window shows"
+        );
+        assert_eq!(s.records(&snapshots[0], "files").len(), 2);
+        assert_eq!(s.number(&snapshots[0], "size_bytes"), 9_700_000_000);
+        assert_eq!(s.text(&s.root, "notice"), "The folder is backed up.");
 
-            // It finishes with the repository as it now stands.
-            s.engine.done_with(&catalog_json());
-            s.ended();
-            assert_eq!(s.text(&s.root, "job"), "", "no job runs any more");
-            let snapshots = s.records(&s.root, "snapshots");
-            assert_eq!(snapshots.len(), 2);
-            assert_eq!(s.number(&s.root, "used_bytes"), 312_000_000_000);
-            assert_eq!(s.text(&s.root, "source_name"), "Documents");
-            assert_eq!(
-                s.number(&s.root, "subject"),
-                1_795_080_000,
-                "the newest snapshot is the one the window shows"
-            );
-            assert_eq!(s.records(&snapshots[0], "files").len(), 2);
-            assert_eq!(s.number(&snapshots[0], "size_bytes"), 9_700_000_000);
-            assert_eq!(s.text(&s.root, "notice"), "The folder is backed up.");
+        // The window lists the snapshots and answers for the folder it protects.
+        let window = s.window();
+        let rows = titles(window.tree());
+        assert!(
+            rows.iter().any(|row| row.contains("Before the upgrade")),
+            "a named snapshot keeps its name: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("plan.md")),
+            "the shown snapshot's files are in the window: {rows:?}"
+        );
+        assert!(
+            labels(window.tree())
+                .iter()
+                .any(|label| label == "Back up now"),
+            "the window offers a backup"
+        );
+    }
 
-            // The window lists the snapshots and answers for the folder it protects.
-            let window = s.window();
-            let rows = titles(window.tree());
-            assert!(
-                rows.iter().any(|row| row.contains("Before the upgrade")),
-                "a named snapshot keeps its name: {rows:?}"
-            );
-            assert!(
-                rows.iter().any(|row| row.contains("plan.md")),
-                "the shown snapshot's files are in the window: {rows:?}"
-            );
-            assert!(
-                labels(window.tree())
-                    .iter()
-                    .any(|label| label == "Back up now"),
-                "the window offers a backup"
-            );
-        }
+    #[test]
+    fn a_snapshot_is_verified_and_restored_into_a_chosen_folder() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("back_up_now", vec![Value::resource(&s.root)]);
+        s.engine.done_with(&catalog_json());
+        s.ended();
+        let snapshots = s.records(&s.root, "snapshots");
 
-        phase a_snapshot_is_verified_and_restored_into_a_chosen_folder;
-        {
-            let s = Backups::new();
-            s.set_up();
-            s.done("back_up_now", vec![Value::resource(&s.root)]);
-            s.engine.done_with(&catalog_json());
-            s.ended();
-            let snapshots = s.records(&s.root, "snapshots");
+        // A verification reads the snapshot and reports what it checked.
+        let snapshot = &snapshots[1];
+        s.done(
+            "verify",
+            vec![Value::resource(&s.root), Value::resource(snapshot)],
+        );
+        assert_eq!(s.text(&s.root, "working"), "verify");
+        let ask = s.engine.last_input();
+        assert_eq!(ask["snapshot"], "1795076400");
+        assert_eq!(ask["destination"], "/home/you/backup-drive");
+        s.engine
+            .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
+        s.ended();
+        assert!(s.text(&s.root, "result").contains("1840 files"));
+        assert_eq!(s.text(&s.root, "notice"), "The snapshot checks out.");
 
-            // A verification reads the snapshot and reports what it checked.
-            let snapshot = &snapshots[1];
+        // A restore asks for a folder first, then writes the snapshot there.
+        s.done(
+            "ask_restore",
+            vec![Value::resource(&s.root), Value::resource(snapshot)],
+        );
+        assert_eq!(s.text(&s.root, "picking"), "restore");
+        s.done(
+            "go",
+            vec![Value::resource(&s.root), Value::text("/home/you/restored")],
+        );
+        s.done("pick", vec![Value::resource(&s.root)]);
+        assert_eq!(s.text(&s.root, "restore_into"), "/home/you/restored");
+        assert_eq!(s.text(&s.root, "picking"), "");
+
+        s.done(
+            "restore_now",
+            vec![Value::resource(&s.root), Value::resource(snapshot)],
+        );
+        assert_eq!(s.text(&s.root, "working"), "restore");
+        let ask = s.engine.last_input();
+        assert_eq!(ask["target"], "/home/you/restored");
+        assert_eq!(ask["snapshot"], "1795076400");
+        assert_eq!(ask["overwrite"], false);
+        s.engine
+            .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
+        s.ended();
+        assert_eq!(s.text(&s.root, "notice"), "The snapshot is back.");
+    }
+
+    #[test]
+    fn a_run_is_followed_while_it_runs_and_can_be_stopped() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("back_up_now", vec![Value::resource(&s.root)]);
+        s.moved();
+        assert_eq!(
+            s.text(&s.root, "progress"),
+            "1430 of 9218 files, 42.0 GB",
+            "the work's line reaches the window"
+        );
+        s.done("stop_work", vec![Value::resource(&s.root)]);
+        assert_eq!(s.engine.cancelled.borrow().len(), 1);
+        assert_eq!(s.text(&s.root, "job"), "");
+        assert!(s.text(&s.root, "notice").contains("stopped"));
+    }
+
+    #[test]
+    fn a_failed_run_says_why_and_leaves_no_job() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("back_up_now", vec![Value::resource(&s.root)]);
+        s.engine.failed_with();
+        s.ended();
+        assert_eq!(s.text(&s.root, "failure"), "the drive went away");
+        assert_eq!(s.text(&s.root, "working"), "");
+        assert_eq!(s.text(&s.root, "job"), "");
+    }
+
+    #[test]
+    fn the_retention_policy_counts_stay_inside_their_bounds() {
+        let s = Backups::new();
+        s.set_up();
+        // The policy is kept whole in the root, with the counts a person expects.
+        let policy = s.held(&s.root, "policy");
+        assert_eq!(s.number(&policy, "hourly"), 24);
+        assert_eq!(s.number(&policy, "daily"), 7);
+        assert_eq!(s.number(&policy, "weekly"), 4);
+        assert_eq!(s.number(&policy, "monthly"), 12);
+
+        s.done(
+            "keep_more",
+            vec![Value::resource(&s.root), Value::text("hourly")],
+        );
+        assert_eq!(s.number(&policy, "hourly"), 25);
+        for _ in 0..2 {
             s.done(
-                "verify",
-                vec![Value::resource(&s.root), Value::resource(snapshot)],
-            );
-            assert_eq!(s.text(&s.root, "working"), "verify");
-            let ask = s.engine.last_input();
-            assert_eq!(ask["snapshot"], "1795076400");
-            assert_eq!(ask["destination"], "/home/you/backup-drive");
-            s.engine
-                .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
-            s.ended();
-            assert!(s.text(&s.root, "result").contains("1840 files"));
-            assert_eq!(s.text(&s.root, "notice"), "The snapshot checks out.");
-
-            // A restore asks for a folder first, then writes the snapshot there.
-            s.done(
-                "ask_restore",
-                vec![Value::resource(&s.root), Value::resource(snapshot)],
-            );
-            assert_eq!(s.text(&s.root, "picking"), "restore");
-            s.done(
-                "go",
-                vec![Value::resource(&s.root), Value::text("/home/you/restored")],
-            );
-            s.done("pick", vec![Value::resource(&s.root)]);
-            assert_eq!(s.text(&s.root, "restore_into"), "/home/you/restored");
-            assert_eq!(s.text(&s.root, "picking"), "");
-
-            s.done(
-                "restore_now",
-                vec![Value::resource(&s.root), Value::resource(snapshot)],
-            );
-            assert_eq!(s.text(&s.root, "working"), "restore");
-            let ask = s.engine.last_input();
-            assert_eq!(ask["target"], "/home/you/restored");
-            assert_eq!(ask["snapshot"], "1795076400");
-            assert_eq!(ask["overwrite"], false);
-            s.engine
-                .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
-            s.ended();
-            assert_eq!(s.text(&s.root, "notice"), "The snapshot is back.");
-        }
-
-        phase a_run_is_followed_while_it_runs_and_can_be_stopped;
-        {
-            let s = Backups::new();
-            s.set_up();
-            s.done("back_up_now", vec![Value::resource(&s.root)]);
-            s.moved();
-            assert_eq!(
-                s.text(&s.root, "progress"),
-                "1430 of 9218 files, 42.0 GB",
-                "the work's line reaches the window"
-            );
-            s.done("stop_work", vec![Value::resource(&s.root)]);
-            assert_eq!(s.engine.cancelled.borrow().len(), 1);
-            assert_eq!(s.text(&s.root, "job"), "");
-            assert!(s.text(&s.root, "notice").contains("stopped"));
-        }
-
-        phase a_failed_run_says_why_and_leaves_no_job;
-        {
-            let s = Backups::new();
-            s.set_up();
-            s.done("back_up_now", vec![Value::resource(&s.root)]);
-            s.engine.failed_with();
-            s.ended();
-            assert_eq!(s.text(&s.root, "failure"), "the drive went away");
-            assert_eq!(s.text(&s.root, "working"), "");
-            assert_eq!(s.text(&s.root, "job"), "");
-        }
-
-        phase the_retention_policy_counts_stay_inside_their_bounds;
-        {
-            let s = Backups::new();
-            s.set_up();
-            // The policy is kept whole in the root, with the counts a person expects.
-            let policy = s.held(&s.root, "policy");
-            assert_eq!(s.number(&policy, "hourly"), 24);
-            assert_eq!(s.number(&policy, "daily"), 7);
-            assert_eq!(s.number(&policy, "weekly"), 4);
-            assert_eq!(s.number(&policy, "monthly"), 12);
-
-            s.done(
-                "keep_more",
+                "keep_fewer",
                 vec![Value::resource(&s.root), Value::text("hourly")],
             );
-            assert_eq!(s.number(&policy, "hourly"), 25);
-            for _ in 0..2 {
-                s.done(
-                    "keep_fewer",
-                    vec![Value::resource(&s.root), Value::text("hourly")],
-                );
-            }
-            assert_eq!(s.number(&policy, "hourly"), 23);
+        }
+        assert_eq!(s.number(&policy, "hourly"), 23);
 
-            // None of the four counts goes below zero, however often one is lowered.
-            for _ in 0..30 {
-                s.done(
-                    "keep_fewer",
-                    vec![Value::resource(&s.root), Value::text("weekly")],
-                );
-            }
-            assert_eq!(s.number(&policy, "weekly"), 0);
-
+        // None of the four counts goes below zero, however often one is lowered.
+        for _ in 0..30 {
             s.done(
-                "show_place",
-                vec![Value::resource(&s.root), Value::text("retention")],
+                "keep_fewer",
+                vec![Value::resource(&s.root), Value::text("weekly")],
             );
-            let window = s.window();
-            let headers: Vec<String> = of_kind(window.tree(), "ui.ObjectHeader")
+        }
+        assert_eq!(s.number(&policy, "weekly"), 0);
+
+        s.done(
+            "show_place",
+            vec![Value::resource(&s.root), Value::text("retention")],
+        );
+        let window = s.window();
+        let headers: Vec<String> = of_kind(window.tree(), "ui.ObjectHeader")
+            .iter()
+            .map(|header| prop(header, "title"))
+            .collect();
+        assert!(
+            headers.iter().any(|title| title == "Retention"),
+            "the retention page is the one shown: {headers:?}"
+        );
+        let facts: Vec<String> = of_kind(window.tree(), "ui.Fact")
+            .iter()
+            .map(|fact| prop(fact, "text"))
+            .collect();
+        assert!(
+            facts.iter().any(|fact| fact.contains("kept at most")),
+            "the retention page says how many are kept: {facts:?}"
+        );
+    }
+
+    #[test]
+    fn a_destination_inside_the_folder_it_copies_is_refused() {
+        let s = Backups::new();
+        s.done("choose_source", vec![Value::resource(&s.root)]);
+        s.done(
+            "go",
+            vec![Value::resource(&s.root), Value::text("/home/you")],
+        );
+        s.done("pick", vec![Value::resource(&s.root)]);
+        // The folder being protected is the home folder; its own child cannot hold the snapshots.
+        s.done("choose_destination", vec![Value::resource(&s.root)]);
+        s.done(
+            "go",
+            vec![Value::resource(&s.root), Value::text("/home/you/Documents")],
+        );
+        s.done("pick", vec![Value::resource(&s.root)]);
+        assert_eq!(
+            s.text(&s.root, "destination"),
+            "",
+            "the destination did not change"
+        );
+        assert!(
+            s.text(&s.root, "trouble").contains("outside"),
+            "{}",
+            s.text(&s.root, "trouble")
+        );
+    }
+
+    #[test]
+    fn the_window_offers_the_places_the_setup_and_the_picker() {
+        let s = Backups::new();
+        // A first run shows the setup, not an empty timeline.
+        let window = s.window();
+        assert!(
+            labels(window.tree())
                 .iter()
-                .map(|header| prop(header, "title"))
-                .collect();
-            assert!(
-                headers.iter().any(|title| title == "Retention"),
-                "the retention page is the one shown: {headers:?}"
-            );
-            let facts: Vec<String> = of_kind(window.tree(), "ui.Fact")
-                .iter()
-                .map(|fact| prop(fact, "text"))
-                .collect();
-            assert!(
-                facts.iter().any(|fact| fact.contains("kept at most")),
-                "the retention page says how many are kept: {facts:?}"
-            );
-        }
+                .any(|label| label.contains("Choose the folder to protect")),
+            "the setup offers the chooser: {:?}",
+            labels(window.tree())
+        );
 
-        phase a_destination_inside_the_folder_it_copies_is_refused;
-        {
-            let s = Backups::new();
-            s.done("choose_source", vec![Value::resource(&s.root)]);
-            s.done(
-                "go",
-                vec![Value::resource(&s.root), Value::text("/home/you")],
-            );
-            s.done("pick", vec![Value::resource(&s.root)]);
-            // The folder being protected is the home folder; its own child cannot hold the snapshots.
-            s.done("choose_destination", vec![Value::resource(&s.root)]);
-            s.done(
-                "go",
-                vec![Value::resource(&s.root), Value::text("/home/you/Documents")],
-            );
-            s.done("pick", vec![Value::resource(&s.root)]);
-            assert_eq!(
-                s.text(&s.root, "destination"),
-                "",
-                "the destination did not change"
-            );
-            assert!(
-                s.text(&s.root, "trouble").contains("outside"),
-                "{}",
-                s.text(&s.root, "trouble")
-            );
-        }
+        s.set_up();
+        let window = s.window();
+        let places: Vec<String> = of_kind(window.tree(), "ui.NavItem")
+            .iter()
+            .map(|item| prop(item, "label"))
+            .collect();
+        assert!(
+            places.iter().any(|place| place == "This device"),
+            "the sidebar names this device: {places:?}"
+        );
 
-        phase the_window_offers_the_places_the_setup_and_the_picker;
-        {
-            let s = Backups::new();
-            // A first run shows the setup, not an empty timeline.
-            let window = s.window();
-            assert!(
-                labels(window.tree())
-                    .iter()
-                    .any(|label| label.contains("Choose the folder to protect")),
-                "the setup offers the chooser: {:?}",
-                labels(window.tree())
-            );
+        // The picker walks the device's folders.
+        s.done("choose_source", vec![Value::resource(&s.root)]);
+        let window = s.window();
+        let rows = titles(window.tree());
+        assert!(
+            rows.iter().any(|row| row == "Projects"),
+            "the picker lists the folders: {rows:?}"
+        );
+    }
 
-            s.set_up();
-            let window = s.window();
-            let places: Vec<String> = of_kind(window.tree(), "ui.NavItem")
-                .iter()
-                .map(|item| prop(item, "label"))
-                .collect();
-            assert!(
-                places.iter().any(|place| place == "This device"),
-                "the sidebar names this device: {places:?}"
-            );
+    /// The snapshot's file index folds a folder's contents away and opens them again, through
+    /// the published action the window's fold control runs.
+    #[test]
+    fn a_snapshots_folders_fold_their_contents_away() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("refresh", vec![Value::resource(&s.root)]);
+        let snapshots = s.records(&s.root, "snapshots");
+        let snapshot = snapshots
+            .first()
+            .expect("the fixture holds a snapshot")
+            .clone();
+        let rows = || titles(s.window().tree());
+        assert!(
+            rows().iter().any(|row| row == "plan.md"),
+            "the file is in the index: {:?}",
+            rows()
+        );
 
-            // The picker walks the device's folders.
-            s.done("choose_source", vec![Value::resource(&s.root)]);
-            let window = s.window();
-            let rows = titles(window.tree());
-            assert!(
-                rows.iter().any(|row| row == "Projects"),
-                "the picker lists the folders: {rows:?}"
-            );
-        }
+        s.done(
+            "fold_folder",
+            vec![
+                Value::resource(&s.root),
+                Value::resource(&snapshot),
+                Value::text("Documents"),
+                Value::Bool(true),
+            ],
+        );
+        let folded = rows();
+        assert!(
+            folded.iter().any(|row| row == "Documents"),
+            "the folder stays: {folded:?}"
+        );
+        assert!(
+            !folded.iter().any(|row| row == "plan.md"),
+            "the folder's contents are folded away: {folded:?}"
+        );
 
-        phase a_snapshots_folders_fold_their_contents_away;
-        // The snapshot's file index folds a folder's contents away and opens them again, through
-        // the published action the window's fold control runs.
-        {
-            let s = Backups::new();
-            s.set_up();
-            s.done("refresh", vec![Value::resource(&s.root)]);
-            let snapshots = s.records(&s.root, "snapshots");
-            let snapshot = snapshots
-                .first()
-                .expect("the fixture holds a snapshot")
-                .clone();
-            let rows = || titles(s.window().tree());
-            assert!(
-                rows().iter().any(|row| row == "plan.md"),
-                "the file is in the index: {:?}",
-                rows()
-            );
+        s.done(
+            "fold_folder",
+            vec![
+                Value::resource(&s.root),
+                Value::resource(&snapshot),
+                Value::text("Documents"),
+                Value::Bool(false),
+            ],
+        );
+        assert!(
+            rows().iter().any(|row| row == "plan.md"),
+            "opening the folder shows its contents again: {:?}",
+            rows()
+        );
+    }
 
-            s.done(
-                "fold_folder",
-                vec![
-                    Value::resource(&s.root),
-                    Value::resource(&snapshot),
-                    Value::text("Documents"),
-                    Value::Bool(true),
-                ],
-            );
-            let folded = rows();
-            assert!(
-                folded.iter().any(|row| row == "Documents"),
-                "the folder stays: {folded:?}"
-            );
-            assert!(
-                !folded.iter().any(|row| row == "plan.md"),
-                "the folder's contents are folded away: {folded:?}"
-            );
+    /// The timeline says when the next backup is due, read from the schedule the device
+    /// reports: nothing runs it but the person when it has none, and one cadence after the
+    /// newest whole snapshot when it has one.
+    #[test]
+    fn the_next_run_follows_the_schedule() {
+        let s = Backups::new();
+        s.set_up();
+        s.done("refresh", vec![Value::resource(&s.root)]);
+        assert_eq!(s.number(&s.root, "next_run"), 0, "nothing schedules a run");
+        let window = s.window();
+        let tile = of_kind(window.tree(), "ui.StatTile")
+            .into_iter()
+            .find(|tile| prop(tile, "label") == "Next run")
+            .expect("the timeline says when the next run is");
+        assert_eq!(prop(tile, "value"), "By hand");
 
-            s.done(
-                "fold_folder",
-                vec![
-                    Value::resource(&s.root),
-                    Value::resource(&snapshot),
-                    Value::text("Documents"),
-                    Value::Bool(false),
-                ],
-            );
-            assert!(
-                rows().iter().any(|row| row == "plan.md"),
-                "opening the folder shows its contents again: {:?}",
-                rows()
-            );
-        }
-
-        phase the_next_run_follows_the_schedule;
-        // The timeline says when the next backup is due, read from the schedule the device
-        // reports: nothing runs it but the person when it has none, and one cadence after the
-        // newest whole snapshot when it has one.
-        {
-            let s = Backups::new();
-            s.set_up();
-            s.done("refresh", vec![Value::resource(&s.root)]);
-            assert_eq!(s.number(&s.root, "next_run"), 0, "nothing schedules a run");
-            let window = s.window();
-            let tile = of_kind(window.tree(), "ui.StatTile")
-                .into_iter()
-                .find(|tile| prop(tile, "label") == "Next run")
-                .expect("the timeline says when the next run is");
-            assert_eq!(prop(tile, "value"), "By hand");
-
-            // The same repository, with the source's schedule saying it runs every day.
-            let mut daily: serde_json::Value =
-                serde_json::from_str(&catalog_json()).expect("the catalog is JSON");
-            daily["sources"][0]["schedule"] = serde_json::json!("daily");
-            s.done(
-                "keep_catalog",
-                vec![Value::resource(&s.root), Value::text(daily.to_string())],
-            );
-            assert_eq!(
-                s.number(&s.root, "next_run"),
-                1_795_080_000 + 86_400,
-                "one day after the newest whole snapshot"
-            );
-            let window = s.window();
-            let tile = of_kind(window.tree(), "ui.StatTile")
-                .into_iter()
-                .find(|tile| prop(tile, "label") == "Next run")
-                .expect("the timeline says when the next run is");
-            let value = prop(tile, "value");
-            assert!(value.contains(':'), "the next run reads as a time: {value}");
-            assert_ne!(value, "By hand");
-        }
+        // The same repository, with the source's schedule saying it runs every day.
+        let mut daily: serde_json::Value =
+            serde_json::from_str(&catalog_json()).expect("the catalog is JSON");
+        daily["sources"][0]["schedule"] = serde_json::json!("daily");
+        s.done(
+            "keep_catalog",
+            vec![Value::resource(&s.root), Value::text(daily.to_string())],
+        );
+        assert_eq!(
+            s.number(&s.root, "next_run"),
+            1_795_080_000 + 86_400,
+            "one day after the newest whole snapshot"
+        );
+        let window = s.window();
+        let tile = of_kind(window.tree(), "ui.StatTile")
+            .into_iter()
+            .find(|tile| prop(tile, "label") == "Next run")
+            .expect("the timeline says when the next run is");
+        let value = prop(tile, "value");
+        assert!(value.contains(':'), "the next run reads as a time: {value}");
+        assert_ne!(value, "By hand");
     }
 }

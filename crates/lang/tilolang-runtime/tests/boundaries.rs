@@ -696,6 +696,314 @@ view deck(d: Deck) {
         }
     }
 
+    /// Whatever the collection holds when it is handed over (nothing, one item, hundreds): the
+    /// one insert is one row.
+    #[test]
+    fn a_collection_handed_to_a_view_follows_one_insert_with_one_row() {
+        for n in [0, 1, 300] {
+            let rows = Rows::new(n);
+            let mut view = rows.view("handed");
+            let opened = view.stats();
+            assert_eq!(
+                opened.boundaries,
+                n + 2,
+                "{n} items: the view, the one it hands to, a row per item"
+            );
+            let built = rows.rt.items_built();
+            rows.call(
+                "add",
+                vec![Value::resource(&rows.bag), Value::text("one more")],
+            );
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().renders - opened.renders,
+                1,
+                "{n} items: only the new item's row ran: neither view holding the collection did"
+            );
+            assert!(
+                rows.rt.items_built() - built <= 2,
+                "{n} items: the collection was not read whole: {} items built",
+                rows.rt.items_built() - built
+            );
+            assert!(
+                matches!(patches.as_slice(), [Patch::Insert { index, .. }] if *index == n),
+                "{n} items: {patches:?}"
+            );
+            assert_eq!(
+                texts(view.tree()).last().map(String::as_str),
+                Some("one more"),
+                "{n} items"
+            );
+        }
+    }
+
+    /// A handle names its frame by a serial, and serials wrap at 2048 (`handles.rs`). A view
+    /// open through more invocations than there are serials keeps following its items: every
+    /// change is its row's run and no other's, on whichever serial the action's frame and the
+    /// row's fall. The one read between the halves moves which of the two a serial falls to.
+    #[test]
+    fn a_view_follows_its_items_through_more_invocations_than_frame_serials() {
+        const HALF: usize = 1_050;
+        let rows = Rows::new(2);
+        let mut view = rows.view("eager");
+        let mut renders = view.stats().renders;
+        for round in 0..2 * HALF {
+            if round == HALF {
+                let InvokeOutcome::Done(Value::Int(open)) =
+                    rows.call("open_count", vec![Value::resource(&rows.bag)])
+                else {
+                    panic!("a count");
+                };
+                assert_eq!(open, 2);
+            }
+            let at = round % 2;
+            let title = format!("round {round}");
+            rows.retitle(at, &title);
+            let patches = view.poll_patches().unwrap();
+            assert_eq!(
+                view.stats().renders - renders,
+                1,
+                "round {round}: only the retitled item's row ran"
+            );
+            renders = view.stats().renders;
+            assert!(
+                matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
+                "round {round}: {patches:?}"
+            );
+            assert_eq!(texts(view.tree())[at], title, "round {round}");
+        }
+        assert_eq!(view.stats().boundaries, 3, "the view and its two rows");
+    }
+
+    /// A condition written once as a function of the package is answered where a lambda asks
+    /// it as the store answers the condition written out: counting the open items through the
+    /// function reads none of them one by one, whatever the collection holds.
+    #[test]
+    fn a_count_through_a_function_is_answered_by_the_store() {
+        for n in [3, 300] {
+            let rows = Rows::new(n);
+            rows.call("check", vec![Value::resource(&rows.items[0])]);
+            let built = rows.rt.items_built();
+            let InvokeOutcome::Done(Value::Int(open)) =
+                rows.call("open_count_through_a_fn", vec![Value::resource(&rows.bag)])
+            else {
+                panic!("a count");
+            };
+            assert_eq!(
+                open,
+                i64::try_from(n - 1).unwrap(),
+                "{n} items, one checked"
+            );
+            let read = rows.rt.items_built() - built;
+            assert!(
+                read <= 2,
+                "{n} items: counting through `to_do` read {read} items one by one"
+            );
+        }
+    }
+
+    /// The tags in use across a bag's items read once each, in the order of the alphabet: a
+    /// view showing them runs again when an item's tags make them other tags, and for no other
+    /// change of an item.
+    #[test]
+    fn the_tags_in_use_follow_the_items_tags() {
+        let rows = Rows::new(5);
+        let tag = |at: usize, name: &str| {
+            rows.call(
+                "tag",
+                vec![Value::resource(&rows.items[at]), Value::text(name)],
+            );
+        };
+        tag(3, "errand");
+        tag(1, "Bug");
+        tag(2, "errand");
+        let mut view = rows.view("tags");
+        assert_eq!(texts(view.tree()), ["Bug", "errand"]);
+
+        let before = view.stats().renders;
+        rows.call(
+            "retitle",
+            vec![Value::resource(&rows.items[1]), Value::text("renamed")],
+        );
+        tag(4, "errand");
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders,
+            before,
+            "a title, and a tag already in use, leave the tags as they were"
+        );
+
+        tag(0, "admin");
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["admin", "Bug", "errand"]);
+
+        rows.call(
+            "untag",
+            vec![Value::resource(&rows.items[1]), Value::text("Bug")],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            texts(view.tree()),
+            ["admin", "errand"],
+            "the last item tagged Bug let it go"
+        );
+    }
+
+    /// Rows on the machine code the device's daemon compiled answer exactly as interpreted
+    /// ones do: a view opened before and after carries the same rows and renders the same tree.
+    #[test]
+    fn a_views_rows_follow_their_collection_once_the_module_runs_compiled() {
+        let rows = Rows::compiled(30);
+        let engine = rows.rt.engine();
+        assert_eq!(
+            engine.tier(&rows.module),
+            Some(EngineKind::Cranelift),
+            "{:?}",
+            engine.compile_failure(&rows.module)
+        );
+        let mut view = rows.view("handed");
+        let opened = view.stats();
+        assert_eq!(
+            opened.boundaries, 32,
+            "the view, the one it hands to, a row per item"
+        );
+
+        let built = rows.rt.items_built();
+        rows.call(
+            "add",
+            vec![Value::resource(&rows.bag), Value::text("one more")],
+        );
+        let patches = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders - opened.renders,
+            1,
+            "only the new item's row ran: neither view holding the collection did"
+        );
+        assert!(
+            rows.rt.items_built() - built <= 2,
+            "the collection was not read whole: {} items built",
+            rows.rt.items_built() - built
+        );
+        assert!(
+            matches!(patches.as_slice(), [Patch::Insert { index: 30, .. }]),
+            "{patches:?}"
+        );
+        assert_eq!(
+            texts(view.tree()).last().map(String::as_str),
+            Some("one more")
+        );
+
+        // A view opened on compiled code: no row before it is shown, then the one shown.
+        let mut lazy = rows.view("lazy");
+        let list = list_key(&lazy);
+        assert_eq!(lazy.list_len(&list), Some(31));
+        let unshown = lazy.stats();
+        assert_eq!(unshown.renders, 1, "no row ran before it was shown");
+        assert_eq!(unshown.boundaries, 1, "{unshown:?}");
+        assert_eq!(titles(lazy.row(&list, 0).unwrap().unwrap()), ["item 0"]);
+        assert_eq!(lazy.stats().renders, 2);
+        rows.retitle(0, "null");
+        let patches = lazy.poll_patches().unwrap();
+        assert_eq!(patches.len(), 1, "{patches:?}");
+        assert_eq!(lazy.stats().renders, 3);
+        assert_eq!(titles(lazy.row(&list, 0).unwrap().unwrap()), ["null"]);
+    }
+
+    #[test]
+    fn a_lists_rows_render_when_shown_and_stop_when_hidden() {
+        let rows = Rows::new(300);
+        let mut view = rows.view("lazy");
+        let list = list_key(&view);
+        assert_eq!(view.list_len(&list), Some(300));
+        let opened = view.stats();
+        assert_eq!(opened.renders, 1, "no row ran before it was shown");
+        // Nor was one built: the list costs the rows on screen, not its length.
+        assert_eq!(opened.boundaries, 1, "{opened:?}");
+        assert_eq!(view.tree().count(), 1, "{:?}", view.tree());
+        let final_row = view.row_key(&list, 299).unwrap();
+        assert!(
+            final_row.ends_with(&format!("/{}", rows.items[299].id_string())),
+            "{final_row}"
+        );
+        assert_eq!(view.row_key(&list, 300), None);
+
+        // The host shows what fits.
+        for i in 0..20 {
+            let row = view.row(&list, i).unwrap().unwrap();
+            assert_eq!(titles(row), [format!("item {i}")]);
+        }
+        assert_eq!(view.stats().renders, 21);
+
+        // A shown row follows its item.
+        rows.retitle(3, "three");
+        let patches = view.poll_patches().unwrap();
+        assert_eq!(patches.len(), 1, "{patches:?}");
+        assert_eq!(view.stats().renders, 22);
+        // An unshown one does not run.
+        rows.retitle(250, "two fifty");
+        assert!(view.poll_patches().unwrap().is_empty());
+        assert_eq!(view.stats().renders, 22);
+        assert_eq!(
+            titles(view.row(&list, 250).unwrap().unwrap()),
+            ["two fifty"]
+        );
+
+        // Scrolled away, a row is forgotten: it no longer runs, and renders again when shown.
+        let hidden = view.hide_rows(&list, 10..20);
+        assert!(hidden.iter().all(|p| matches!(p, Patch::Remove { .. })));
+        let before = view.stats().renders;
+        rows.retitle(3, "drei");
+        assert!(view.poll_patches().unwrap().is_empty());
+        assert_eq!(view.stats().renders, before);
+        assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
+    }
+
+    /// However long the list (no row, one, more than a few): none is built before the host
+    /// shows it, there is no row past its end, and each row shown runs once.
+    #[test]
+    fn a_list_of_any_length_builds_no_row_before_it_is_shown() {
+        for n in [0, 1, 25] {
+            let rows = Rows::new(n);
+            let mut view = rows.view("lazy");
+            let list = list_key(&view);
+            assert_eq!(view.list_len(&list), Some(n), "{n} items");
+            let opened = view.stats();
+            assert_eq!(
+                opened.renders, 1,
+                "{n} items: no row ran before it was shown"
+            );
+            assert_eq!(opened.boundaries, 1, "{n} items: {opened:?}");
+            assert_eq!(view.tree().count(), 1, "{n} items: {:?}", view.tree());
+            if let Some(end) = n.checked_sub(1) {
+                let final_row = view.row_key(&list, end).unwrap();
+                assert!(
+                    final_row.ends_with(&format!("/{}", rows.items[end].id_string())),
+                    "{n} items: {final_row}"
+                );
+            }
+            assert_eq!(view.row_key(&list, n), None, "{n} items");
+            assert!(
+                view.row(&list, n).unwrap().is_none(),
+                "{n} items: a row past the end was built"
+            );
+            assert_eq!(
+                view.stats().renders,
+                1,
+                "{n} items: asking past the end ran a row"
+            );
+
+            for i in 0..n {
+                let row = view.row(&list, i).unwrap().unwrap();
+                assert_eq!(titles(row), [format!("item {i}")], "{n} items");
+            }
+            assert_eq!(
+                view.stats().renders,
+                u64::try_from(n + 1).unwrap(),
+                "{n} items: each row shown ran once"
+            );
+        }
+    }
+
     tilo_test_env::scenario! {
         fn lazy_rows_are_built_when_shown_and_keep_their_places;
 
@@ -1087,6 +1395,209 @@ view deck(d: Deck) {
             .collect()
     }
 
+    #[test]
+    fn a_view_depends_on_what_it_read_of_a_collection_not_on_all_of_it() {
+        let rows = Rows::new(300);
+        let mut oldest = rows.view("oldest");
+        let mut newest = rows.view("newest");
+        let mut count = rows.view("count");
+        assert_eq!(texts(oldest.tree()), ["item 0"]);
+        assert_eq!(texts(newest.tree()), ["item 299"]);
+        assert_eq!(texts(count.tree()), ["300"]);
+        let mut views = [&mut oldest, &mut newest, &mut count];
+        let remove = |i: usize| {
+            move |rows: &Rows| {
+                rows.call(
+                    "remove",
+                    vec![Value::resource(&rows.bag), Value::resource(&rows.items[i])],
+                );
+            }
+        };
+
+        // An append changes the last item and the length, not the first.
+        let add = |rows: &Rows| {
+            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        };
+        assert_eq!(runs_for(&rows, &mut views, add), [0, 1, 1]);
+        // A move in the middle changes none of them.
+        let shuffle = |rows: &Rows| {
+            rows.call(
+                "move_before",
+                vec![
+                    Value::resource(&rows.bag),
+                    Value::resource(&rows.items[250]),
+                    Value::resource(&rows.items[100]),
+                ],
+            );
+        };
+        assert_eq!(runs_for(&rows, &mut views, shuffle), [0, 0, 0]);
+        // Removing the first item changes the first and the length, not the last.
+        assert_eq!(runs_for(&rows, &mut views, remove(0)), [1, 0, 1]);
+        // Removing one in the middle changes the length alone.
+        assert_eq!(runs_for(&rows, &mut views, remove(150)), [0, 0, 1]);
+
+        assert_eq!(texts(oldest.tree()), ["item 1"]);
+        assert_eq!(texts(newest.tree()), ["new"]);
+        assert_eq!(texts(count.tree()), ["299"]);
+    }
+
+    /// The ends of a collection that holds nothing, or one item: an item that joins an empty
+    /// one is its first and its last, and the last to leave leaves it with neither; beside one
+    /// that stays, the first is as it was.
+    #[test]
+    fn a_view_of_a_collection_of_none_or_one_follows_its_ends() {
+        for (n, runs, alone) in [(0, [1, 1, 1], "empty"), (1, [0, 1, 1], "item 0")] {
+            let rows = Rows::new(n);
+            let mut oldest = rows.view("oldest");
+            let mut newest = rows.view("newest");
+            let mut count = rows.view("count");
+            assert_eq!(texts(oldest.tree()), [alone], "{n} items");
+            assert_eq!(texts(newest.tree()), [alone], "{n} items");
+            assert_eq!(texts(count.tree()), [n.to_string()], "{n} items");
+
+            let added = std::cell::RefCell::new(None);
+            let add = |rows: &Rows| {
+                let out = rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+                *added.borrow_mut() = Some(returned_ref(out));
+            };
+            let mut views = [&mut oldest, &mut newest, &mut count];
+            assert_eq!(
+                runs_for(&rows, &mut views, add),
+                runs,
+                "{n} items: one joined"
+            );
+            let first = if n == 0 { "new" } else { alone };
+            assert_eq!(texts(oldest.tree()), [first], "{n} items: one joined");
+            assert_eq!(texts(newest.tree()), ["new"], "{n} items: one joined");
+            assert_eq!(
+                texts(count.tree()),
+                [(n + 1).to_string()],
+                "{n} items: one joined"
+            );
+
+            let added = added.into_inner().unwrap();
+            let leave = |rows: &Rows| {
+                rows.call(
+                    "remove",
+                    vec![Value::resource(&rows.bag), Value::resource(&added)],
+                );
+            };
+            let mut views = [&mut oldest, &mut newest, &mut count];
+            assert_eq!(
+                runs_for(&rows, &mut views, leave),
+                runs,
+                "{n} items: it left"
+            );
+            assert_eq!(texts(oldest.tree()), [alone], "{n} items: it left");
+            assert_eq!(texts(newest.tree()), [alone], "{n} items: it left");
+            assert_eq!(texts(count.tree()), [n.to_string()], "{n} items: it left");
+        }
+    }
+
+    #[test]
+    fn a_lists_view_depends_on_the_rows_it_shows_not_on_the_rest() {
+        let rows = Rows::new(300);
+        let mut view = rows.view("lazy");
+        let list = list_key(&view);
+        for i in 0..20 {
+            view.row(&list, i).unwrap();
+        }
+        let opened = view.stats().renders;
+        // A move far below the shown rows re-runs nothing that is shown.
+        rows.call(
+            "move_before",
+            vec![
+                Value::resource(&rows.bag),
+                Value::resource(&rows.items[290]),
+                Value::resource(&rows.items[280]),
+            ],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders - opened,
+            0,
+            "the rows followed; nothing ran"
+        );
+        assert_eq!(titles(view.row(&list, 280).unwrap().unwrap()), ["item 290"]);
+    }
+
+    #[test]
+    fn a_lists_rows_follow_inserts_and_removes_without_running_the_view() {
+        let rows = Rows::new(300);
+        let mut view = rows.view("lazy");
+        let list = list_key(&view);
+        for i in 0..20 {
+            view.row(&list, i).unwrap();
+        }
+        let opened = view.stats().renders;
+
+        // An item moved to the top: one patch, and the shown rows below it move down.
+        rows.call(
+            "move_before",
+            vec![
+                Value::resource(&rows.bag),
+                Value::resource(&rows.items[200]),
+                Value::resource(&rows.items[0]),
+            ],
+        );
+        let moved = view.poll_patches().unwrap();
+        assert!(
+            matches!(moved.as_slice(), [Patch::Move { to: 0, .. }]),
+            "{moved:?}"
+        );
+        assert_eq!(view.stats().renders, opened, "nothing ran");
+        assert_eq!(titles(view.row(&list, 0).unwrap().unwrap()), ["item 200"]);
+        let shown = view.stats().renders;
+        assert_eq!(shown, opened + 1, "the moved row ran when it was shown");
+
+        // An appended item: one patch, a row not shown yet.
+        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        let added = view.poll_patches().unwrap();
+        assert!(
+            matches!(added.as_slice(), [Patch::Insert { index: 300, .. }]),
+            "{added:?}"
+        );
+        assert_eq!(view.list_len(&list), Some(301));
+        assert_eq!(view.stats().renders, shown);
+
+        // A shown row that moved down still follows its item, at its new place.
+        rows.retitle(5, "five");
+        let retitled = view.poll_patches().unwrap();
+        assert_eq!(retitled.len(), 1, "{retitled:?}");
+        assert_eq!(view.stats().renders, shown + 1);
+        let row = &lists(view.tree())[0].children[6];
+        assert_eq!(titles(row), ["five"]);
+
+        // A removed item takes its row with it; the rows below keep following.
+        rows.call(
+            "remove",
+            vec![Value::resource(&rows.bag), Value::resource(&rows.items[2])],
+        );
+        let removed = view.poll_patches().unwrap();
+        assert!(
+            matches!(removed.as_slice(), [Patch::Remove { .. }]),
+            "{removed:?}"
+        );
+        rows.retitle(5, "fünf");
+        view.poll_patches().unwrap();
+        let row = &lists(view.tree())[0].children[5];
+        assert_eq!(titles(row), ["fünf"]);
+
+        // Hidden after it moved, a row is forgotten where it is now.
+        let hidden = view.hide_rows(&list, 0..3);
+        assert!(hidden.iter().all(|p| matches!(p, Patch::Remove { .. })));
+        let titles_now: Vec<String> = (0..10)
+            .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+            .collect();
+        assert_eq!(
+            titles_now,
+            [
+                "item 200", "item 0", "item 1", "item 3", "item 4", "fünf", "item 6", "item 7",
+                "item 8", "item 9"
+            ]
+        );
+    }
+
     /// Every row key of `list`, as the host reads them.
     fn row_keys(view: &ViewInstance, list: &str) -> Vec<String> {
         (0..view.list_len(list).unwrap())
@@ -1142,6 +1653,71 @@ view deck(d: Deck) {
         for key in &built {
             assert!(rest.any(|k| &k == key), "{key} out of order in {built:?}");
         }
+    }
+
+    /// A count and a list of the items a lambda over their fields holds of are answered by the
+    /// store: opening builds no reference per item, and a change to an item's field moves it
+    /// in or out.
+    #[test]
+    fn a_filter_over_item_fields_is_answered_by_the_store() {
+        let rows = Rows::new(300);
+        for i in [1, 3] {
+            rows.call("check", vec![Value::resource(&rows.items[i])]);
+        }
+        rows.retitle(0, "skip");
+        let built = rows.rt.items_built();
+        let mut view = rows.view("open_card");
+        assert_eq!(texts(view.tree()), ["297 open"]);
+        assert_eq!(
+            rows.rt.items_built() - built,
+            0,
+            "the count and the list's length build no reference"
+        );
+        let list = list_key(&view);
+        let preview = |view: &mut ViewInstance| -> Vec<String> {
+            (0..3)
+                .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+                .collect()
+        };
+        assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
+
+        // Checked: out of the count, and its row where it was until the view is left.
+        rows.call("check", vec![Value::resource(&rows.items[2])]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["296 open"]);
+        assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
+
+        // A view opened anew lists only the open items.
+        let mut view = rows.view("open_card");
+        assert_eq!(texts(view.tree()), ["296 open"]);
+        assert_eq!(preview(&mut view), ["skip", "item 4", "item 5"]);
+
+        // Unchecked: back in, where it was.
+        rows.call("uncheck", vec![Value::resource(&rows.items[1])]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["297 open"]);
+        assert_eq!(preview(&mut view), ["skip", "item 1", "item 4"]);
+
+        // Retitled out of what the count holds of, and a new open item.
+        rows.retitle(4, "skip");
+        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["297 open"]);
+
+        // An action runs the same lambdas as loops, and finds the same.
+        let InvokeOutcome::Done(Value::Int(open)) =
+            rows.call("open_count", vec![Value::resource(&rows.bag)])
+        else {
+            panic!("a count");
+        };
+        assert_eq!(open, 299);
+        let InvokeOutcome::Done(Value::List(open)) =
+            rows.call("open_titles", vec![Value::resource(&rows.bag)])
+        else {
+            panic!("a list");
+        };
+        assert_eq!(open.len(), 299);
+        assert_eq!(open[..2], [Value::text("skip"), Value::text("item 1")]);
     }
 
     // ----- a view call whose branch leaves the tree ------------------------------------------
@@ -1210,585 +1786,5 @@ view board(b: Board) {
     /// The whole view, as its text, in order: every line the board draws.
     fn lines(view: &ViewInstance) -> Vec<String> {
         texts(view.tree())
-    }
-
-    tilo_test_env::scenario! {
-        fn boundaries_1;
-
-        phase a_collection_handed_to_a_view_follows_one_insert_with_one_row;
-        // Whatever the collection holds when it is handed over (nothing, one item, hundreds): the
-        // one insert is one row.
-        {
-            for n in [0, 1, 300] {
-                let rows = Rows::new(n);
-                let mut view = rows.view("handed");
-                let opened = view.stats();
-                assert_eq!(
-                    opened.boundaries,
-                    n + 2,
-                    "{n} items: the view, the one it hands to, a row per item"
-                );
-                let built = rows.rt.items_built();
-                rows.call(
-                    "add",
-                    vec![Value::resource(&rows.bag), Value::text("one more")],
-                );
-                let patches = view.poll_patches().unwrap();
-                assert_eq!(
-                    view.stats().renders - opened.renders,
-                    1,
-                    "{n} items: only the new item's row ran: neither view holding the collection did"
-                );
-                assert!(
-                    rows.rt.items_built() - built <= 2,
-                    "{n} items: the collection was not read whole: {} items built",
-                    rows.rt.items_built() - built
-                );
-                assert!(
-                    matches!(patches.as_slice(), [Patch::Insert { index, .. }] if *index == n),
-                    "{n} items: {patches:?}"
-                );
-                assert_eq!(
-                    texts(view.tree()).last().map(String::as_str),
-                    Some("one more"),
-                    "{n} items"
-                );
-            }
-        }
-
-        phase a_view_follows_its_items_through_more_invocations_than_frame_serials;
-        // A handle names its frame by a serial, and serials wrap at 2048 (`handles.rs`). A view
-        // open through more invocations than there are serials keeps following its items: every
-        // change is its row's run and no other's, on whichever serial the action's frame and the
-        // row's fall. The one read between the halves moves which of the two a serial falls to.
-        {
-            const HALF: usize = 1_050;
-            let rows = Rows::new(2);
-            let mut view = rows.view("eager");
-            let mut renders = view.stats().renders;
-            for round in 0..2 * HALF {
-                if round == HALF {
-                    let InvokeOutcome::Done(Value::Int(open)) =
-                        rows.call("open_count", vec![Value::resource(&rows.bag)])
-                    else {
-                        panic!("a count");
-                    };
-                    assert_eq!(open, 2);
-                }
-                let at = round % 2;
-                let title = format!("round {round}");
-                rows.retitle(at, &title);
-                let patches = view.poll_patches().unwrap();
-                assert_eq!(
-                    view.stats().renders - renders,
-                    1,
-                    "round {round}: only the retitled item's row ran"
-                );
-                renders = view.stats().renders;
-                assert!(
-                    matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
-                    "round {round}: {patches:?}"
-                );
-                assert_eq!(texts(view.tree())[at], title, "round {round}");
-            }
-            assert_eq!(view.stats().boundaries, 3, "the view and its two rows");
-        }
-
-        phase a_count_through_a_function_is_answered_by_the_store;
-        // A condition written once as a function of the package is answered where a lambda asks
-        // it as the store answers the condition written out: counting the open items through the
-        // function reads none of them one by one, whatever the collection holds.
-        {
-            for n in [3, 300] {
-                let rows = Rows::new(n);
-                rows.call("check", vec![Value::resource(&rows.items[0])]);
-                let built = rows.rt.items_built();
-                let InvokeOutcome::Done(Value::Int(open)) =
-                    rows.call("open_count_through_a_fn", vec![Value::resource(&rows.bag)])
-                else {
-                    panic!("a count");
-                };
-                assert_eq!(
-                    open,
-                    i64::try_from(n - 1).unwrap(),
-                    "{n} items, one checked"
-                );
-                let read = rows.rt.items_built() - built;
-                assert!(
-                    read <= 2,
-                    "{n} items: counting through `to_do` read {read} items one by one"
-                );
-            }
-        }
-
-        phase the_tags_in_use_follow_the_items_tags;
-        // The tags in use across a bag's items read once each, in the order of the alphabet: a
-        // view showing them runs again when an item's tags make them other tags, and for no other
-        // change of an item.
-        {
-            let rows = Rows::new(5);
-            let tag = |at: usize, name: &str| {
-                rows.call(
-                    "tag",
-                    vec![Value::resource(&rows.items[at]), Value::text(name)],
-                );
-            };
-            tag(3, "errand");
-            tag(1, "Bug");
-            tag(2, "errand");
-            let mut view = rows.view("tags");
-            assert_eq!(texts(view.tree()), ["Bug", "errand"]);
-
-            let before = view.stats().renders;
-            rows.call(
-                "retitle",
-                vec![Value::resource(&rows.items[1]), Value::text("renamed")],
-            );
-            tag(4, "errand");
-            view.poll_patches().unwrap();
-            assert_eq!(
-                view.stats().renders,
-                before,
-                "a title, and a tag already in use, leave the tags as they were"
-            );
-
-            tag(0, "admin");
-            view.poll_patches().unwrap();
-            assert_eq!(texts(view.tree()), ["admin", "Bug", "errand"]);
-
-            rows.call(
-                "untag",
-                vec![Value::resource(&rows.items[1]), Value::text("Bug")],
-            );
-            view.poll_patches().unwrap();
-            assert_eq!(
-                texts(view.tree()),
-                ["admin", "errand"],
-                "the last item tagged Bug let it go"
-            );
-        }
-
-        phase a_views_rows_follow_their_collection_once_the_module_runs_compiled;
-        // Rows on the machine code the device's daemon compiled answer exactly as interpreted
-        // ones do: a view opened before and after carries the same rows and renders the same tree.
-        {
-            let rows = Rows::compiled(30);
-            let engine = rows.rt.engine();
-            assert_eq!(
-                engine.tier(&rows.module),
-                Some(EngineKind::Cranelift),
-                "{:?}",
-                engine.compile_failure(&rows.module)
-            );
-            let mut view = rows.view("handed");
-            let opened = view.stats();
-            assert_eq!(
-                opened.boundaries, 32,
-                "the view, the one it hands to, a row per item"
-            );
-
-            let built = rows.rt.items_built();
-            rows.call(
-                "add",
-                vec![Value::resource(&rows.bag), Value::text("one more")],
-            );
-            let patches = view.poll_patches().unwrap();
-            assert_eq!(
-                view.stats().renders - opened.renders,
-                1,
-                "only the new item's row ran: neither view holding the collection did"
-            );
-            assert!(
-                rows.rt.items_built() - built <= 2,
-                "the collection was not read whole: {} items built",
-                rows.rt.items_built() - built
-            );
-            assert!(
-                matches!(patches.as_slice(), [Patch::Insert { index: 30, .. }]),
-                "{patches:?}"
-            );
-            assert_eq!(
-                texts(view.tree()).last().map(String::as_str),
-                Some("one more")
-            );
-
-            // A view opened on compiled code: no row before it is shown, then the one shown.
-            let mut lazy = rows.view("lazy");
-            let list = list_key(&lazy);
-            assert_eq!(lazy.list_len(&list), Some(31));
-            let unshown = lazy.stats();
-            assert_eq!(unshown.renders, 1, "no row ran before it was shown");
-            assert_eq!(unshown.boundaries, 1, "{unshown:?}");
-            assert_eq!(titles(lazy.row(&list, 0).unwrap().unwrap()), ["item 0"]);
-            assert_eq!(lazy.stats().renders, 2);
-            rows.retitle(0, "null");
-            let patches = lazy.poll_patches().unwrap();
-            assert_eq!(patches.len(), 1, "{patches:?}");
-            assert_eq!(lazy.stats().renders, 3);
-            assert_eq!(titles(lazy.row(&list, 0).unwrap().unwrap()), ["null"]);
-        }
-
-        phase a_lists_rows_render_when_shown_and_stop_when_hidden;
-        {
-            let rows = Rows::new(300);
-            let mut view = rows.view("lazy");
-            let list = list_key(&view);
-            assert_eq!(view.list_len(&list), Some(300));
-            let opened = view.stats();
-            assert_eq!(opened.renders, 1, "no row ran before it was shown");
-            // Nor was one built: the list costs the rows on screen, not its length.
-            assert_eq!(opened.boundaries, 1, "{opened:?}");
-            assert_eq!(view.tree().count(), 1, "{:?}", view.tree());
-            let final_row = view.row_key(&list, 299).unwrap();
-            assert!(
-                final_row.ends_with(&format!("/{}", rows.items[299].id_string())),
-                "{final_row}"
-            );
-            assert_eq!(view.row_key(&list, 300), None);
-
-            // The host shows what fits.
-            for i in 0..20 {
-                let row = view.row(&list, i).unwrap().unwrap();
-                assert_eq!(titles(row), [format!("item {i}")]);
-            }
-            assert_eq!(view.stats().renders, 21);
-
-            // A shown row follows its item.
-            rows.retitle(3, "three");
-            let patches = view.poll_patches().unwrap();
-            assert_eq!(patches.len(), 1, "{patches:?}");
-            assert_eq!(view.stats().renders, 22);
-            // An unshown one does not run.
-            rows.retitle(250, "two fifty");
-            assert!(view.poll_patches().unwrap().is_empty());
-            assert_eq!(view.stats().renders, 22);
-            assert_eq!(
-                titles(view.row(&list, 250).unwrap().unwrap()),
-                ["two fifty"]
-            );
-
-            // Scrolled away, a row is forgotten: it no longer runs, and renders again when shown.
-            let hidden = view.hide_rows(&list, 10..20);
-            assert!(hidden.iter().all(|p| matches!(p, Patch::Remove { .. })));
-            let before = view.stats().renders;
-            rows.retitle(3, "drei");
-            assert!(view.poll_patches().unwrap().is_empty());
-            assert_eq!(view.stats().renders, before);
-            assert_eq!(titles(view.row(&list, 3).unwrap().unwrap()), ["drei"]);
-        }
-
-        phase a_list_of_any_length_builds_no_row_before_it_is_shown;
-        // However long the list (no row, one, more than a few): none is built before the host
-        // shows it, there is no row past its end, and each row shown runs once.
-        {
-            for n in [0, 1, 25] {
-                let rows = Rows::new(n);
-                let mut view = rows.view("lazy");
-                let list = list_key(&view);
-                assert_eq!(view.list_len(&list), Some(n), "{n} items");
-                let opened = view.stats();
-                assert_eq!(
-                    opened.renders, 1,
-                    "{n} items: no row ran before it was shown"
-                );
-                assert_eq!(opened.boundaries, 1, "{n} items: {opened:?}");
-                assert_eq!(view.tree().count(), 1, "{n} items: {:?}", view.tree());
-                if let Some(end) = n.checked_sub(1) {
-                    let final_row = view.row_key(&list, end).unwrap();
-                    assert!(
-                        final_row.ends_with(&format!("/{}", rows.items[end].id_string())),
-                        "{n} items: {final_row}"
-                    );
-                }
-                assert_eq!(view.row_key(&list, n), None, "{n} items");
-                assert!(
-                    view.row(&list, n).unwrap().is_none(),
-                    "{n} items: a row past the end was built"
-                );
-                assert_eq!(
-                    view.stats().renders,
-                    1,
-                    "{n} items: asking past the end ran a row"
-                );
-
-                for i in 0..n {
-                    let row = view.row(&list, i).unwrap().unwrap();
-                    assert_eq!(titles(row), [format!("item {i}")], "{n} items");
-                }
-                assert_eq!(
-                    view.stats().renders,
-                    u64::try_from(n + 1).unwrap(),
-                    "{n} items: each row shown ran once"
-                );
-            }
-        }
-
-        phase a_view_depends_on_what_it_read_of_a_collection_not_on_all_of_it;
-        {
-            let rows = Rows::new(300);
-            let mut oldest = rows.view("oldest");
-            let mut newest = rows.view("newest");
-            let mut count = rows.view("count");
-            assert_eq!(texts(oldest.tree()), ["item 0"]);
-            assert_eq!(texts(newest.tree()), ["item 299"]);
-            assert_eq!(texts(count.tree()), ["300"]);
-            let mut views = [&mut oldest, &mut newest, &mut count];
-            let remove = |i: usize| {
-                move |rows: &Rows| {
-                    rows.call(
-                        "remove",
-                        vec![Value::resource(&rows.bag), Value::resource(&rows.items[i])],
-                    );
-                }
-            };
-
-            // An append changes the last item and the length, not the first.
-            let add = |rows: &Rows| {
-                rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-            };
-            assert_eq!(runs_for(&rows, &mut views, add), [0, 1, 1]);
-            // A move in the middle changes none of them.
-            let shuffle = |rows: &Rows| {
-                rows.call(
-                    "move_before",
-                    vec![
-                        Value::resource(&rows.bag),
-                        Value::resource(&rows.items[250]),
-                        Value::resource(&rows.items[100]),
-                    ],
-                );
-            };
-            assert_eq!(runs_for(&rows, &mut views, shuffle), [0, 0, 0]);
-            // Removing the first item changes the first and the length, not the last.
-            assert_eq!(runs_for(&rows, &mut views, remove(0)), [1, 0, 1]);
-            // Removing one in the middle changes the length alone.
-            assert_eq!(runs_for(&rows, &mut views, remove(150)), [0, 0, 1]);
-
-            assert_eq!(texts(oldest.tree()), ["item 1"]);
-            assert_eq!(texts(newest.tree()), ["new"]);
-            assert_eq!(texts(count.tree()), ["299"]);
-        }
-
-        phase a_view_of_a_collection_of_none_or_one_follows_its_ends;
-        // The ends of a collection that holds nothing, or one item: an item that joins an empty
-        // one is its first and its last, and the last to leave leaves it with neither; beside one
-        // that stays, the first is as it was.
-        {
-            for (n, runs, alone) in [(0, [1, 1, 1], "empty"), (1, [0, 1, 1], "item 0")] {
-                let rows = Rows::new(n);
-                let mut oldest = rows.view("oldest");
-                let mut newest = rows.view("newest");
-                let mut count = rows.view("count");
-                assert_eq!(texts(oldest.tree()), [alone], "{n} items");
-                assert_eq!(texts(newest.tree()), [alone], "{n} items");
-                assert_eq!(texts(count.tree()), [n.to_string()], "{n} items");
-
-                let added = std::cell::RefCell::new(None);
-                let add = |rows: &Rows| {
-                    let out = rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-                    *added.borrow_mut() = Some(returned_ref(out));
-                };
-                let mut views = [&mut oldest, &mut newest, &mut count];
-                assert_eq!(
-                    runs_for(&rows, &mut views, add),
-                    runs,
-                    "{n} items: one joined"
-                );
-                let first = if n == 0 { "new" } else { alone };
-                assert_eq!(texts(oldest.tree()), [first], "{n} items: one joined");
-                assert_eq!(texts(newest.tree()), ["new"], "{n} items: one joined");
-                assert_eq!(
-                    texts(count.tree()),
-                    [(n + 1).to_string()],
-                    "{n} items: one joined"
-                );
-
-                let added = added.into_inner().unwrap();
-                let leave = |rows: &Rows| {
-                    rows.call(
-                        "remove",
-                        vec![Value::resource(&rows.bag), Value::resource(&added)],
-                    );
-                };
-                let mut views = [&mut oldest, &mut newest, &mut count];
-                assert_eq!(
-                    runs_for(&rows, &mut views, leave),
-                    runs,
-                    "{n} items: it left"
-                );
-                assert_eq!(texts(oldest.tree()), [alone], "{n} items: it left");
-                assert_eq!(texts(newest.tree()), [alone], "{n} items: it left");
-                assert_eq!(texts(count.tree()), [n.to_string()], "{n} items: it left");
-            }
-        }
-
-        phase a_lists_view_depends_on_the_rows_it_shows_not_on_the_rest;
-        {
-            let rows = Rows::new(300);
-            let mut view = rows.view("lazy");
-            let list = list_key(&view);
-            for i in 0..20 {
-                view.row(&list, i).unwrap();
-            }
-            let opened = view.stats().renders;
-            // A move far below the shown rows re-runs nothing that is shown.
-            rows.call(
-                "move_before",
-                vec![
-                    Value::resource(&rows.bag),
-                    Value::resource(&rows.items[290]),
-                    Value::resource(&rows.items[280]),
-                ],
-            );
-            view.poll_patches().unwrap();
-            assert_eq!(
-                view.stats().renders - opened,
-                0,
-                "the rows followed; nothing ran"
-            );
-            assert_eq!(titles(view.row(&list, 280).unwrap().unwrap()), ["item 290"]);
-        }
-
-        phase a_lists_rows_follow_inserts_and_removes_without_running_the_view;
-        {
-            let rows = Rows::new(300);
-            let mut view = rows.view("lazy");
-            let list = list_key(&view);
-            for i in 0..20 {
-                view.row(&list, i).unwrap();
-            }
-            let opened = view.stats().renders;
-
-            // An item moved to the top: one patch, and the shown rows below it move down.
-            rows.call(
-                "move_before",
-                vec![
-                    Value::resource(&rows.bag),
-                    Value::resource(&rows.items[200]),
-                    Value::resource(&rows.items[0]),
-                ],
-            );
-            let moved = view.poll_patches().unwrap();
-            assert!(
-                matches!(moved.as_slice(), [Patch::Move { to: 0, .. }]),
-                "{moved:?}"
-            );
-            assert_eq!(view.stats().renders, opened, "nothing ran");
-            assert_eq!(titles(view.row(&list, 0).unwrap().unwrap()), ["item 200"]);
-            let shown = view.stats().renders;
-            assert_eq!(shown, opened + 1, "the moved row ran when it was shown");
-
-            // An appended item: one patch, a row not shown yet.
-            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-            let added = view.poll_patches().unwrap();
-            assert!(
-                matches!(added.as_slice(), [Patch::Insert { index: 300, .. }]),
-                "{added:?}"
-            );
-            assert_eq!(view.list_len(&list), Some(301));
-            assert_eq!(view.stats().renders, shown);
-
-            // A shown row that moved down still follows its item, at its new place.
-            rows.retitle(5, "five");
-            let retitled = view.poll_patches().unwrap();
-            assert_eq!(retitled.len(), 1, "{retitled:?}");
-            assert_eq!(view.stats().renders, shown + 1);
-            let row = &lists(view.tree())[0].children[6];
-            assert_eq!(titles(row), ["five"]);
-
-            // A removed item takes its row with it; the rows below keep following.
-            rows.call(
-                "remove",
-                vec![Value::resource(&rows.bag), Value::resource(&rows.items[2])],
-            );
-            let removed = view.poll_patches().unwrap();
-            assert!(
-                matches!(removed.as_slice(), [Patch::Remove { .. }]),
-                "{removed:?}"
-            );
-            rows.retitle(5, "fünf");
-            view.poll_patches().unwrap();
-            let row = &lists(view.tree())[0].children[5];
-            assert_eq!(titles(row), ["fünf"]);
-
-            // Hidden after it moved, a row is forgotten where it is now.
-            let hidden = view.hide_rows(&list, 0..3);
-            assert!(hidden.iter().all(|p| matches!(p, Patch::Remove { .. })));
-            let titles_now: Vec<String> = (0..10)
-                .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
-                .collect();
-            assert_eq!(
-                titles_now,
-                [
-                    "item 200", "item 0", "item 1", "item 3", "item 4", "fünf", "item 6", "item 7",
-                    "item 8", "item 9"
-                ]
-            );
-        }
-
-        phase a_filter_over_item_fields_is_answered_by_the_store;
-        // A count and a list of the items a lambda over their fields holds of are answered by the
-        // store: opening builds no reference per item, and a change to an item's field moves it
-        // in or out.
-        {
-            let rows = Rows::new(300);
-            for i in [1, 3] {
-                rows.call("check", vec![Value::resource(&rows.items[i])]);
-            }
-            rows.retitle(0, "skip");
-            let built = rows.rt.items_built();
-            let mut view = rows.view("open_card");
-            assert_eq!(texts(view.tree()), ["297 open"]);
-            assert_eq!(
-                rows.rt.items_built() - built,
-                0,
-                "the count and the list's length build no reference"
-            );
-            let list = list_key(&view);
-            let preview = |view: &mut ViewInstance| -> Vec<String> {
-                (0..3)
-                    .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
-                    .collect()
-            };
-            assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
-
-            // Checked: out of the count, and its row where it was until the view is left.
-            rows.call("check", vec![Value::resource(&rows.items[2])]);
-            view.poll_patches().unwrap();
-            assert_eq!(texts(view.tree()), ["296 open"]);
-            assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
-
-            // A view opened anew lists only the open items.
-            let mut view = rows.view("open_card");
-            assert_eq!(texts(view.tree()), ["296 open"]);
-            assert_eq!(preview(&mut view), ["skip", "item 4", "item 5"]);
-
-            // Unchecked: back in, where it was.
-            rows.call("uncheck", vec![Value::resource(&rows.items[1])]);
-            view.poll_patches().unwrap();
-            assert_eq!(texts(view.tree()), ["297 open"]);
-            assert_eq!(preview(&mut view), ["skip", "item 1", "item 4"]);
-
-            // Retitled out of what the count holds of, and a new open item.
-            rows.retitle(4, "skip");
-            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
-            view.poll_patches().unwrap();
-            assert_eq!(texts(view.tree()), ["297 open"]);
-
-            // An action runs the same lambdas as loops, and finds the same.
-            let InvokeOutcome::Done(Value::Int(open)) =
-                rows.call("open_count", vec![Value::resource(&rows.bag)])
-            else {
-                panic!("a count");
-            };
-            assert_eq!(open, 299);
-            let InvokeOutcome::Done(Value::List(open)) =
-                rows.call("open_titles", vec![Value::resource(&rows.bag)])
-            else {
-                panic!("a list");
-            };
-            assert_eq!(open.len(), 299);
-            assert_eq!(open[..2], [Value::text("skip"), Value::text("item 1")]);
-        }
     }
 }

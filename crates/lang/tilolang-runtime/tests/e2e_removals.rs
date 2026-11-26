@@ -79,65 +79,61 @@ mod cases {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_removals_1;
-
-        phase items_a_filter_remove_where_or_sort_picked_out_are_removed_in_one_change;
-        {
-            for (action, answer) in [
-                ("clear_filtered", Value::Unit),
-                ("clear_where", Value::Int(2)),
-                ("clear_sorted", Value::Unit),
-            ] {
-                let s = Sweep::new();
-                s.fill("items", &["milk", "eggs", "bread", "tea"], &["eggs", "tea"]);
-                let before = s.changes();
-                assert_eq!(
-                    s.call(action, vec![Value::resource(&s.board)]),
-                    answer,
-                    "{action}"
-                );
-                assert_eq!(s.titles("items"), ["milk", "bread"], "{action}");
-                assert_eq!(s.changes(), before + 1, "{action} is one change");
-            }
+    #[test]
+    fn items_a_filter_remove_where_or_sort_picked_out_are_removed_in_one_change() {
+        for (action, answer) in [
+            ("clear_filtered", Value::Unit),
+            ("clear_where", Value::Int(2)),
+            ("clear_sorted", Value::Unit),
+        ] {
             let s = Sweep::new();
-            s.fill("items", &["milk", "eggs", "tea"], &["eggs", "tea"]);
-            s.call("clear_first", vec![Value::resource(&s.board)]);
-            assert_eq!(s.titles("items"), ["milk", "tea"]);
+            s.fill("items", &["milk", "eggs", "bread", "tea"], &["eggs", "tea"]);
+            let before = s.changes();
+            assert_eq!(
+                s.call(action, vec![Value::resource(&s.board)]),
+                answer,
+                "{action}"
+            );
+            assert_eq!(s.titles("items"), ["milk", "bread"], "{action}");
+            assert_eq!(s.changes(), before + 1, "{action} is one change");
         }
+        let s = Sweep::new();
+        s.fill("items", &["milk", "eggs", "tea"], &["eggs", "tea"]);
+        s.call("clear_first", vec![Value::resource(&s.board)]);
+        assert_eq!(s.titles("items"), ["milk", "tea"]);
+    }
 
-        phase items_filtered_from_one_of_two_collections_of_a_type_leave_that_one;
-        {
-            let s = Sweep::new();
-            s.fill("items", &["milk", "eggs"], &["eggs"]);
-            s.fill("kept", &["old", "older", "keep"], &["old", "older"]);
-            s.call("clear_kept", vec![Value::resource(&s.board)]);
-            assert_eq!(s.titles("kept"), ["keep"]);
-            assert_eq!(s.titles("items"), ["milk", "eggs"]);
-            s.call("clear_filtered", vec![Value::resource(&s.board)]);
-            assert_eq!(s.titles("items"), ["milk"]);
-            assert_eq!(s.titles("kept"), ["keep"]);
-        }
+    #[test]
+    fn items_filtered_from_one_of_two_collections_of_a_type_leave_that_one() {
+        let s = Sweep::new();
+        s.fill("items", &["milk", "eggs"], &["eggs"]);
+        s.fill("kept", &["old", "older", "keep"], &["old", "older"]);
+        s.call("clear_kept", vec![Value::resource(&s.board)]);
+        assert_eq!(s.titles("kept"), ["keep"]);
+        assert_eq!(s.titles("items"), ["milk", "eggs"]);
+        s.call("clear_filtered", vec![Value::resource(&s.board)]);
+        assert_eq!(s.titles("items"), ["milk"]);
+        assert_eq!(s.titles("kept"), ["keep"]);
+    }
 
-        phase an_items_filtered_spares_leave_its_spares_and_its_parts_stay;
-        {
-            let s = Sweep::new();
-            let bike = made(&s.call("add", vec![Value::resource(&s.board), Value::text("bike")]));
-            for (action, name, worn) in [
-                ("fit", "chain", true),
-                ("fit", "bell", false),
-                ("stock", "tube", true),
-                ("stock", "pad", false),
-                ("stock", "cable", true),
-            ] {
-                s.call(
-                    action,
-                    vec![Value::resource(&bike), Value::text(name), Value::Bool(worn)],
-                );
-            }
-            s.call("clear_worn_spares", vec![Value::resource(&bike)]);
-            assert_eq!(s.names(&bike, "spares", "name"), ["pad"]);
-            assert_eq!(s.names(&bike, "parts", "name"), ["chain", "bell"]);
+    #[test]
+    fn an_items_filtered_spares_leave_its_spares_and_its_parts_stay() {
+        let s = Sweep::new();
+        let bike = made(&s.call("add", vec![Value::resource(&s.board), Value::text("bike")]));
+        for (action, name, worn) in [
+            ("fit", "chain", true),
+            ("fit", "bell", false),
+            ("stock", "tube", true),
+            ("stock", "pad", false),
+            ("stock", "cable", true),
+        ] {
+            s.call(
+                action,
+                vec![Value::resource(&bike), Value::text(name), Value::Bool(worn)],
+            );
         }
+        s.call("clear_worn_spares", vec![Value::resource(&bike)]);
+        assert_eq!(s.names(&bike, "spares", "name"), ["pad"]);
+        assert_eq!(s.names(&bike, "parts", "name"), ["chain", "bell"]);
     }
 }

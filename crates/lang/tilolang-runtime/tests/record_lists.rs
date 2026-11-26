@@ -144,60 +144,56 @@ action take_in(b: Board, names: List<Text>) -> Int {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn record_lists_1;
+    #[test]
+    fn a_record_holding_a_list_of_records_is_stored_and_read_back() {
+        let t = Trips::new();
+        t.call("plan", vec![Value::resource(&t.board), Value::text("here")]);
+        let trips = t.trips();
+        assert_eq!(trips.len(), 1);
+        assert_eq!(t.names(), ["here"]);
+        assert_eq!(
+            t.steps(&trips[0]),
+            ["Go straight", "Arrive"],
+            "the steps the trip was written with come back as the records they are"
+        );
+    }
 
-        phase a_record_holding_a_list_of_records_is_stored_and_read_back;
-        {
-            let t = Trips::new();
-            t.call("plan", vec![Value::resource(&t.board), Value::text("here")]);
-            let trips = t.trips();
-            assert_eq!(trips.len(), 1);
-            assert_eq!(t.names(), ["here"]);
-            assert_eq!(
-                t.steps(&trips[0]),
-                ["Go straight", "Arrive"],
-                "the steps the trip was written with come back as the records they are"
-            );
-        }
+    #[test]
+    fn json_text_reads_a_record_holding_a_list_of_records() {
+        let t = Trips::new();
+        let text = r#"{"from_name":"there","steps":[{"instruction":"Turn left"},{"instruction":"Arrive"}]}"#;
+        let out = t.call("land", vec![Value::resource(&t.board), Value::text(text)]);
+        assert_eq!(out, InvokeOutcome::Done(Value::text("")), "{out:?}");
+        let trips = t.trips();
+        assert_eq!(trips.len(), 1);
+        assert_eq!(t.names(), ["there"]);
+        assert_eq!(t.steps(&trips[0]), ["Turn left", "Arrive"]);
+    }
 
-        phase json_text_reads_a_record_holding_a_list_of_records;
-        {
-            let t = Trips::new();
-            let text = r#"{"from_name":"there","steps":[{"instruction":"Turn left"},{"instruction":"Arrive"}]}"#;
-            let out = t.call("land", vec![Value::resource(&t.board), Value::text(text)]);
-            assert_eq!(out, InvokeOutcome::Done(Value::text("")), "{out:?}");
-            let trips = t.trips();
-            assert_eq!(trips.len(), 1);
-            assert_eq!(t.names(), ["there"]);
-            assert_eq!(t.steps(&trips[0]), ["Turn left", "Arrive"]);
-        }
-
-        phase a_find_leaves_a_record_the_same_action_just_inserted_alone;
-        {
-            let t = Trips::new();
-            let out = t.call(
-                "take_in",
-                vec![
-                    Value::resource(&t.board),
-                    Value::List(vec![Value::text("one"), Value::text("two")]),
-                ],
-            );
-            assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "{out:?}");
-            assert_eq!(
-                t.names(),
-                ["one", "two"],
-                "the second name is a trip of its own, not the first one written over"
-            );
-            let out = t.call(
-                "take_in",
-                vec![
-                    Value::resource(&t.board),
-                    Value::List(vec![Value::text("one")]),
-                ],
-            );
-            assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "nothing new");
-            assert_eq!(t.names(), ["one again", "two"], "the known trip is changed");
-        }
+    #[test]
+    fn a_find_leaves_a_record_the_same_action_just_inserted_alone() {
+        let t = Trips::new();
+        let out = t.call(
+            "take_in",
+            vec![
+                Value::resource(&t.board),
+                Value::List(vec![Value::text("one"), Value::text("two")]),
+            ],
+        );
+        assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "{out:?}");
+        assert_eq!(
+            t.names(),
+            ["one", "two"],
+            "the second name is a trip of its own, not the first one written over"
+        );
+        let out = t.call(
+            "take_in",
+            vec![
+                Value::resource(&t.board),
+                Value::List(vec![Value::text("one")]),
+            ],
+        );
+        assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "nothing new");
+        assert_eq!(t.names(), ["one again", "two"], "the known trip is changed");
     }
 }

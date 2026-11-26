@@ -172,6 +172,8 @@ impl AppBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ActionVerdicts { .. }
+            | CollabEvent::RetiredNearbyTransferCommandResult { .. }
+            | CollabEvent::RetiredNearbyTransferChanged
             | CollabEvent::DocumentContent { .. }
             | CollabEvent::DocumentContentState { .. }
             | CollabEvent::RemoteAction { .. }

@@ -357,401 +357,393 @@ mod cases {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_typst_editor_1;
-
-        phase a_document_typesets_into_its_pages_a_pdf_and_its_outline;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            assert_eq!(desk.text(&d, "name"), "Untitled.typ");
-            assert!(
-                desk.flag(&d, "typesets"),
-                "the answer says it typesets, and the trouble is {:?}",
-                desk.text(&d, "trouble")
-            );
-            assert_eq!(desk.number(&d, "took_ms"), 12);
-            assert_eq!(desk.text(&d, "trouble"), "");
-            assert_eq!(
-                desk.engine.ops().first().map(String::as_str),
-                Some("compile"),
-                "a new document is typeset"
-            );
-            assert!(
-                desk.engine.ops().contains(&"outline".to_owned()),
-                "its headings are read"
-            );
-            let pages = desk.records(&d, "pages");
-            assert_eq!(pages.len(), 2, "both pages are laid out");
-            assert_eq!(desk.text(&pages[0], "look"), "look-a");
-            assert_eq!(desk.text(&d, "pdf"), "tilo-blob://pdf-1");
-            let headings = desk.records(&d, "headings");
-            assert_eq!(headings.len(), 2, "both headings are read");
-            assert_eq!(desk.text(&headings[0], "title"), "Hello");
-            assert_eq!(desk.number(&headings[1], "level"), 2);
-        }
-
-        phase a_typeset_that_fails_keeps_the_page_and_says_why;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            desk.engine.answer.borrow_mut().ok = false;
-            desk.engine.answer.borrow_mut().pages = Vec::new();
-            desk.engine.answer.borrow_mut().pdf = None;
-            desk.engine.answer.borrow_mut().problems = vec![(
-                "error".to_owned(),
-                "unknown variable: missing".to_owned(),
-                3,
-                7,
-            )];
-            desk.text(&d, "typeset"); // read once, so the helper is used on a field that exists
-            desk.call("typeset", vec![Value::resource(&d)]);
-            assert!(!desk.flag(&d, "typesets"));
-            assert!(desk.flag(&d, "stale"), "the last good page is kept, marked");
-            assert_eq!(
-                desk.text(&d, "trouble"),
-                "unknown variable: missing",
-                "the blocking problem is what a person reads"
-            );
-            assert_eq!(desk.records(&d, "pages").len(), 2, "the pages stay");
-            assert_eq!(desk.text(&d, "pdf"), "", "a stale PDF is not exported");
-            let problems = desk.records(&d, "problems");
-            assert_eq!(problems.len(), 1);
-            assert_eq!(desk.number(&problems[0], "line"), 3);
-        }
-
-        phase a_page_is_drawn_at_the_width_asked_for_and_kept;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            let page = desk.page(&d, 0);
-            desk.call(
-                "draw_page",
-                vec![Value::resource(&d), Value::resource(&page), Value::Int(900)],
-            );
-            assert_eq!(desk.text(&page, "picture"), "tilo-blob://page-1-900");
-            assert_eq!(desk.number(&page, "picture_width"), 900);
-            assert_eq!(
-                desk.text(&page, "thumb"),
-                "tilo-blob://page-1-132",
-                "the thumbnail is drawn too"
-            );
-            let asked = desk.engine.inputs_of("picture").len();
-            desk.call(
-                "draw_page",
-                vec![Value::resource(&d), Value::resource(&page), Value::Int(900)],
-            );
-            assert_eq!(
-                desk.engine.inputs_of("picture").len(),
-                asked,
-                "a page drawn at a width is not drawn again"
-            );
-        }
-
-        phase an_unchanged_page_keeps_its_picture_and_a_changed_one_is_drawn_again;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            let first = desk.page(&d, 0);
-            let second = desk.page(&d, 1);
-            desk.call(
-                "draw_page",
-                vec![
-                    Value::resource(&d),
-                    Value::resource(&first),
-                    Value::Int(900),
-                ],
-            );
-            desk.call(
-                "draw_page",
-                vec![
-                    Value::resource(&d),
-                    Value::resource(&second),
-                    Value::Int(900),
-                ],
-            );
-            // A new typeset leaves the first page as it was and changes the second.
-            desk.engine.answer.borrow_mut().pages = vec![
-                ("look-a".to_owned(), 595.0, 842.0),
-                ("look-c".to_owned(), 595.0, 900.0),
-            ];
-            desk.call("typeset", vec![Value::resource(&d)]);
-            let kept = desk.page(&d, 0);
-            let changed = desk.page(&d, 1);
-            assert_eq!(
-                desk.text(&kept, "picture"),
-                "tilo-blob://page-1-900",
-                "a page that draws the same keeps its picture"
-            );
-            assert_eq!(
-                desk.text(&changed, "picture"),
-                "",
-                "a page that draws something else is drawn again"
-            );
-            assert!((desk.float(&changed, "height") - 900.0).abs() < f64::EPSILON);
-        }
-
-        phase the_window_draws_the_next_page_at_its_own_width;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            desk.call("draw_next", vec![Value::resource(&d)]);
-            let first = desk.page(&d, 0);
-            assert_eq!(
-                desk.number(&first, "picture_width"),
-                900,
-                "a document with no zoom draws at the width a page reads at"
-            );
-            let second = desk.page(&d, 1);
-            assert_eq!(desk.text(&second, "picture"), "", "one page a second");
-            desk.call("draw_next", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&second, "picture"), "tilo-blob://page-2-900");
-        }
-
-        phase zoom_in_out_and_fit_change_the_width_the_pages_are_drawn_at;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            desk.call("zoom_in", vec![Value::resource(&d)]);
-            assert_eq!(desk.number(&d, "shown_width"), 1020);
-            desk.call("zoom_out", vec![Value::resource(&d)]);
-            assert_eq!(desk.number(&d, "shown_width"), 900);
-            desk.call("fit_width", vec![Value::resource(&d), Value::Int(1200)]);
-            assert_eq!(desk.number(&d, "shown_width"), 1200);
-            desk.call("draw_next", vec![Value::resource(&d)]);
-            let first = desk.page(&d, 0);
-            assert_eq!(desk.text(&first, "picture"), "tilo-blob://page-1-1200");
-            for _ in 0..8 {
-                desk.call("zoom_out", vec![Value::resource(&d)]);
-            }
-            assert_eq!(
-                desk.number(&d, "shown_width"),
-                240,
-                "the zoom stops at a page's smallest readable width"
-            );
-        }
-
-        phase a_problem_goes_to_its_line_and_the_window_comes_back_to_the_page;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            desk.engine.answer.borrow_mut().ok = false;
-            desk.engine.answer.borrow_mut().problems =
-                vec![("warning".to_owned(), "unused variable".to_owned(), 7, 3)];
-            desk.call("typeset", vec![Value::resource(&d)]);
-            let problem = desk
-                .records(&d, "problems")
-                .into_iter()
-                .next()
-                .expect("a problem");
-            desk.call("problems", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&d, "showing"), "problems");
-            desk.call(
-                "go_to_problem",
-                vec![Value::resource(&d), Value::resource(&problem)],
-            );
-            assert_eq!(
-                desk.text(&d, "showing"),
-                "split",
-                "the editor shows the place"
-            );
-            assert!(
-                desk.text(&d, "reveal").starts_with("7:3:"),
-                "the editor is asked for the problem's line and column: {}",
-                desk.text(&d, "reveal")
-            );
-            assert_eq!(desk.number(&d, "reveals"), 1);
-        }
-
-        phase a_heading_goes_to_its_line_every_time_it_is_asked;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            let heading = desk
-                .records(&d, "headings")
-                .into_iter()
-                .next()
-                .expect("a heading");
-            desk.call(
-                "go_to_heading",
-                vec![Value::resource(&d), Value::resource(&heading)],
-            );
-            let first = desk.text(&d, "reveal");
-            desk.call(
-                "go_to_heading",
-                vec![Value::resource(&d), Value::resource(&heading)],
-            );
-            assert_ne!(
-                desk.text(&d, "reveal"),
-                first,
-                "the same heading asked for again shows again"
-            );
-            assert!(desk.text(&d, "reveal").starts_with("1:1:"));
-        }
+    #[test]
+    fn a_document_typesets_into_its_pages_a_pdf_and_its_outline() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        assert_eq!(desk.text(&d, "name"), "Untitled.typ");
+        assert!(
+            desk.flag(&d, "typesets"),
+            "the answer says it typesets, and the trouble is {:?}",
+            desk.text(&d, "trouble")
+        );
+        assert_eq!(desk.number(&d, "took_ms"), 12);
+        assert_eq!(desk.text(&d, "trouble"), "");
+        assert_eq!(
+            desk.engine.ops().first().map(String::as_str),
+            Some("compile"),
+            "a new document is typeset"
+        );
+        assert!(
+            desk.engine.ops().contains(&"outline".to_owned()),
+            "its headings are read"
+        );
+        let pages = desk.records(&d, "pages");
+        assert_eq!(pages.len(), 2, "both pages are laid out");
+        assert_eq!(desk.text(&pages[0], "look"), "look-a");
+        assert_eq!(desk.text(&d, "pdf"), "tilo-blob://pdf-1");
+        let headings = desk.records(&d, "headings");
+        assert_eq!(headings.len(), 2, "both headings are read");
+        assert_eq!(desk.text(&headings[0], "title"), "Hello");
+        assert_eq!(desk.number(&headings[1], "level"), 2);
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_typst_editor_2;
+    #[test]
+    fn a_typeset_that_fails_keeps_the_page_and_says_why() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        desk.engine.answer.borrow_mut().ok = false;
+        desk.engine.answer.borrow_mut().pages = Vec::new();
+        desk.engine.answer.borrow_mut().pdf = None;
+        desk.engine.answer.borrow_mut().problems = vec![(
+            "error".to_owned(),
+            "unknown variable: missing".to_owned(),
+            3,
+            7,
+        )];
+        desk.text(&d, "typeset"); // read once, so the helper is used on a field that exists
+        desk.call("typeset", vec![Value::resource(&d)]);
+        assert!(!desk.flag(&d, "typesets"));
+        assert!(desk.flag(&d, "stale"), "the last good page is kept, marked");
+        assert_eq!(
+            desk.text(&d, "trouble"),
+            "unknown variable: missing",
+            "the blocking problem is what a person reads"
+        );
+        assert_eq!(desk.records(&d, "pages").len(), 2, "the pages stay");
+        assert_eq!(desk.text(&d, "pdf"), "", "a stale PDF is not exported");
+        let problems = desk.records(&d, "problems");
+        assert_eq!(problems.len(), 1);
+        assert_eq!(desk.number(&problems[0], "line"), 3);
+    }
 
-        phase the_views_switch_between_the_source_the_page_the_problems_and_the_outline;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            assert_eq!(
-                desk.text(&d, "showing"),
-                "split",
-                "a document opens beside its page"
-            );
-            desk.call("editor_view", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&d, "showing"), "editor");
-            desk.call("preview_view", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&d, "showing"), "preview");
-            desk.call("outline", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&d, "showing"), "outline");
-            desk.call("outline", vec![Value::resource(&d)]);
-            assert_eq!(
-                desk.text(&d, "showing"),
-                "split",
-                "the same button puts it away"
-            );
-            desk.call("problems", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&d, "showing"), "problems");
-            desk.call("side_by_side", vec![Value::resource(&d)]);
-            assert_eq!(desk.text(&d, "showing"), "split");
-        }
+    #[test]
+    fn a_page_is_drawn_at_the_width_asked_for_and_kept() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        let page = desk.page(&d, 0);
+        desk.call(
+            "draw_page",
+            vec![Value::resource(&d), Value::resource(&page), Value::Int(900)],
+        );
+        assert_eq!(desk.text(&page, "picture"), "tilo-blob://page-1-900");
+        assert_eq!(desk.number(&page, "picture_width"), 900);
+        assert_eq!(
+            desk.text(&page, "thumb"),
+            "tilo-blob://page-1-132",
+            "the thumbnail is drawn too"
+        );
+        let asked = desk.engine.inputs_of("picture").len();
+        desk.call(
+            "draw_page",
+            vec![Value::resource(&d), Value::resource(&page), Value::Int(900)],
+        );
+        assert_eq!(
+            desk.engine.inputs_of("picture").len(),
+            asked,
+            "a page drawn at a width is not drawn again"
+        );
+    }
 
-        phase a_typ_file_opens_as_the_document_it_is;
-        {
-            let desk = Desk::new();
-            let file = desk.typ_file("report.typ", "= Report\n\nBody.\n");
-            let d = returned_ref(desk.call("open_typ", vec![Value::resource(&desk.lib), file]));
-            assert_eq!(desk.text(&d, "name"), "report.typ");
-            assert_eq!(desk.text(&d, "source"), "= Report\n\nBody.\n");
-            assert_eq!(
-                desk.text(&d, "written"),
-                "= Report\n\nBody.\n",
-                "a document opened from a file is as written"
-            );
-            let documents = desk.records(&desk.lib, "documents");
-            assert_eq!(documents.len(), 1, "it is the library's one document");
-        }
+    #[test]
+    fn an_unchanged_page_keeps_its_picture_and_a_changed_one_is_drawn_again() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        let first = desk.page(&d, 0);
+        let second = desk.page(&d, 1);
+        desk.call(
+            "draw_page",
+            vec![
+                Value::resource(&d),
+                Value::resource(&first),
+                Value::Int(900),
+            ],
+        );
+        desk.call(
+            "draw_page",
+            vec![
+                Value::resource(&d),
+                Value::resource(&second),
+                Value::Int(900),
+            ],
+        );
+        // A new typeset leaves the first page as it was and changes the second.
+        desk.engine.answer.borrow_mut().pages = vec![
+            ("look-a".to_owned(), 595.0, 842.0),
+            ("look-c".to_owned(), 595.0, 900.0),
+        ];
+        desk.call("typeset", vec![Value::resource(&d)]);
+        let kept = desk.page(&d, 0);
+        let changed = desk.page(&d, 1);
+        assert_eq!(
+            desk.text(&kept, "picture"),
+            "tilo-blob://page-1-900",
+            "a page that draws the same keeps its picture"
+        );
+        assert_eq!(
+            desk.text(&changed, "picture"),
+            "",
+            "a page that draws something else is drawn again"
+        );
+        assert!((desk.float(&changed, "height") - 900.0).abs() < f64::EPSILON);
+    }
 
-        phase a_document_is_saved_as_the_text_it_holds_and_exported_as_its_pdf;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            let saved = match desk.call("save_file", vec![Value::resource(&d)]) {
-                InvokeOutcome::Done(Value::File(file)) => file,
-                other => panic!("a save answers a file: {other:?}"),
-            };
-            assert_eq!(saved.name, "Untitled.typ");
-            assert_eq!(
-                String::from_utf8_lossy(
-                    &desk
-                        .device
-                        .0
-                        .borrow()
-                        .get(&saved.hash)
-                        .cloned()
-                        .unwrap_or_default()
-                ),
-                desk.text(&d, "source"),
-                "the file holds the document's source"
-            );
-            let pdf = match desk.call("export_pdf", vec![Value::resource(&d)]) {
-                InvokeOutcome::Done(Value::File(file)) => file,
-                other => panic!("an export answers a file: {other:?}"),
-            };
-            assert_eq!(pdf.name, "Untitled.pdf");
-            assert_eq!(pdf.url(), "tilo-blob://pdf-1", "the typeset's PDF");
-        }
+    #[test]
+    fn the_window_draws_the_next_page_at_its_own_width() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        desk.call("draw_next", vec![Value::resource(&d)]);
+        let first = desk.page(&d, 0);
+        assert_eq!(
+            desk.number(&first, "picture_width"),
+            900,
+            "a document with no zoom draws at the width a page reads at"
+        );
+        let second = desk.page(&d, 1);
+        assert_eq!(desk.text(&second, "picture"), "", "one page a second");
+        desk.call("draw_next", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&second, "picture"), "tilo-blob://page-2-900");
+    }
 
-        phase a_page_s_words_are_read_whole_and_within_a_selection;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            let cells = match desk.call("page_words", vec![Value::resource(&d), Value::Int(0)]) {
-                InvokeOutcome::Done(Value::List(cells)) => cells,
-                other => panic!("a page's words answer a list: {other:?}"),
-            };
-            assert_eq!(cells.len(), 3, "three placed glyphs");
-            assert_eq!(
-                desk.words(&d, "page_text", vec![Value::Int(0)]),
-                "Hi lower",
-                "the whole page's words, a space between its lines"
-            );
-            assert_eq!(
-                desk.words(
-                    &d,
-                    "selection_text",
-                    vec![
-                        Value::Int(0),
-                        Value::List(vec![Value::Float(0.0), Value::Float(0.0)]),
-                        Value::List(vec![Value::Float(1.0), Value::Float(0.03)]),
-                    ],
-                ),
-                "Hi",
-                "only the words inside the box"
-            );
+    #[test]
+    fn zoom_in_out_and_fit_change_the_width_the_pages_are_drawn_at() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        desk.call("zoom_in", vec![Value::resource(&d)]);
+        assert_eq!(desk.number(&d, "shown_width"), 1020);
+        desk.call("zoom_out", vec![Value::resource(&d)]);
+        assert_eq!(desk.number(&d, "shown_width"), 900);
+        desk.call("fit_width", vec![Value::resource(&d), Value::Int(1200)]);
+        assert_eq!(desk.number(&d, "shown_width"), 1200);
+        desk.call("draw_next", vec![Value::resource(&d)]);
+        let first = desk.page(&d, 0);
+        assert_eq!(desk.text(&first, "picture"), "tilo-blob://page-1-1200");
+        for _ in 0..8 {
+            desk.call("zoom_out", vec![Value::resource(&d)]);
         }
+        assert_eq!(
+            desk.number(&d, "shown_width"),
+            240,
+            "the zoom stops at a page's smallest readable width"
+        );
+    }
 
-        phase a_copy_asks_the_person_the_runtime_has;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            // A copy is an outside effect: a runtime with no one to ask refuses it, and a person's
-            // press in a window takes the copy.
-            let id = desk.app.action("copy_page");
-            let out = desk
-                .rt
-                .invoke_action(
-                    &me(),
-                    (id.as_str(), vec![Value::resource(&d), Value::Int(0)]),
-                )
-                .unwrap();
-            assert!(
-                matches!(out, InvokeOutcome::Denied),
-                "a copy with nobody to ask is refused: {out:?}"
-            );
-        }
+    #[test]
+    fn a_problem_goes_to_its_line_and_the_window_comes_back_to_the_page() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        desk.engine.answer.borrow_mut().ok = false;
+        desk.engine.answer.borrow_mut().problems =
+            vec![("warning".to_owned(), "unused variable".to_owned(), 7, 3)];
+        desk.call("typeset", vec![Value::resource(&d)]);
+        let problem = desk
+            .records(&d, "problems")
+            .into_iter()
+            .next()
+            .expect("a problem");
+        desk.call("problems", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&d, "showing"), "problems");
+        desk.call(
+            "go_to_problem",
+            vec![Value::resource(&d), Value::resource(&problem)],
+        );
+        assert_eq!(
+            desk.text(&d, "showing"),
+            "split",
+            "the editor shows the place"
+        );
+        assert!(
+            desk.text(&d, "reveal").starts_with("7:3:"),
+            "the editor is asked for the problem's line and column: {}",
+            desk.text(&d, "reveal")
+        );
+        assert_eq!(desk.number(&d, "reveals"), 1);
+    }
 
-        phase a_document_leaves_the_workspace;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            assert_eq!(desk.records(&desk.lib, "documents").len(), 1);
-            desk.call(
-                "close_document",
-                vec![Value::resource(&desk.lib), Value::resource(&d)],
-            );
-            assert!(
-                desk.records(&desk.lib, "documents").is_empty(),
-                "a closed document leaves the library"
-            );
-        }
+    #[test]
+    fn a_heading_goes_to_its_line_every_time_it_is_asked() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        let heading = desk
+            .records(&d, "headings")
+            .into_iter()
+            .next()
+            .expect("a heading");
+        desk.call(
+            "go_to_heading",
+            vec![Value::resource(&d), Value::resource(&heading)],
+        );
+        let first = desk.text(&d, "reveal");
+        desk.call(
+            "go_to_heading",
+            vec![Value::resource(&d), Value::resource(&heading)],
+        );
+        assert_ne!(
+            desk.text(&d, "reveal"),
+            first,
+            "the same heading asked for again shows again"
+        );
+        assert!(desk.text(&d, "reveal").starts_with("1:1:"));
+    }
 
-        phase the_window_shows_the_source_the_page_and_what_a_person_can_do;
-        {
-            let desk = Desk::new();
-            let d = desk.new_document();
-            desk.call("draw_next", vec![Value::resource(&d)]);
-            desk.call("draw_next", vec![Value::resource(&d)]);
-            let window = desk.window(&d);
-            let tree = window.tree();
-            let sources = of_kind(tree, "ui.CodeEditor");
-            assert_eq!(sources.len(), 1, "the source is edited in a code editor");
-            let pictures = of_kind(tree, "ui.Image");
-            assert!(
-                pictures.len() >= 3,
-                "each page and each thumbnail is a picture: {}",
-                pictures.len()
-            );
-            let overlays = of_kind(tree, "ui.Drawing");
-            assert!(
-                overlays.len() >= 2,
-                "each page carries the selection overlay over it: {}",
-                overlays.len()
-            );
-        }
+    #[test]
+    fn the_views_switch_between_the_source_the_page_the_problems_and_the_outline() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        assert_eq!(
+            desk.text(&d, "showing"),
+            "split",
+            "a document opens beside its page"
+        );
+        desk.call("editor_view", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&d, "showing"), "editor");
+        desk.call("preview_view", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&d, "showing"), "preview");
+        desk.call("outline", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&d, "showing"), "outline");
+        desk.call("outline", vec![Value::resource(&d)]);
+        assert_eq!(
+            desk.text(&d, "showing"),
+            "split",
+            "the same button puts it away"
+        );
+        desk.call("problems", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&d, "showing"), "problems");
+        desk.call("side_by_side", vec![Value::resource(&d)]);
+        assert_eq!(desk.text(&d, "showing"), "split");
+    }
+
+    #[test]
+    fn a_typ_file_opens_as_the_document_it_is() {
+        let desk = Desk::new();
+        let file = desk.typ_file("report.typ", "= Report\n\nBody.\n");
+        let d = returned_ref(desk.call("open_typ", vec![Value::resource(&desk.lib), file]));
+        assert_eq!(desk.text(&d, "name"), "report.typ");
+        assert_eq!(desk.text(&d, "source"), "= Report\n\nBody.\n");
+        assert_eq!(
+            desk.text(&d, "written"),
+            "= Report\n\nBody.\n",
+            "a document opened from a file is as written"
+        );
+        let documents = desk.records(&desk.lib, "documents");
+        assert_eq!(documents.len(), 1, "it is the library's one document");
+    }
+
+    #[test]
+    fn a_document_is_saved_as_the_text_it_holds_and_exported_as_its_pdf() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        let saved = match desk.call("save_file", vec![Value::resource(&d)]) {
+            InvokeOutcome::Done(Value::File(file)) => file,
+            other => panic!("a save answers a file: {other:?}"),
+        };
+        assert_eq!(saved.name, "Untitled.typ");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &desk
+                    .device
+                    .0
+                    .borrow()
+                    .get(&saved.hash)
+                    .cloned()
+                    .unwrap_or_default()
+            ),
+            desk.text(&d, "source"),
+            "the file holds the document's source"
+        );
+        let pdf = match desk.call("export_pdf", vec![Value::resource(&d)]) {
+            InvokeOutcome::Done(Value::File(file)) => file,
+            other => panic!("an export answers a file: {other:?}"),
+        };
+        assert_eq!(pdf.name, "Untitled.pdf");
+        assert_eq!(pdf.url(), "tilo-blob://pdf-1", "the typeset's PDF");
+    }
+
+    #[test]
+    fn a_page_s_words_are_read_whole_and_within_a_selection() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        let cells = match desk.call("page_words", vec![Value::resource(&d), Value::Int(0)]) {
+            InvokeOutcome::Done(Value::List(cells)) => cells,
+            other => panic!("a page's words answer a list: {other:?}"),
+        };
+        assert_eq!(cells.len(), 3, "three placed glyphs");
+        assert_eq!(
+            desk.words(&d, "page_text", vec![Value::Int(0)]),
+            "Hi lower",
+            "the whole page's words, a space between its lines"
+        );
+        assert_eq!(
+            desk.words(
+                &d,
+                "selection_text",
+                vec![
+                    Value::Int(0),
+                    Value::List(vec![Value::Float(0.0), Value::Float(0.0)]),
+                    Value::List(vec![Value::Float(1.0), Value::Float(0.03)]),
+                ],
+            ),
+            "Hi",
+            "only the words inside the box"
+        );
+    }
+
+    #[test]
+    fn a_copy_asks_the_person_the_runtime_has() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        // A copy is an outside effect: a runtime with no one to ask refuses it, and a person's
+        // press in a window takes the copy.
+        let id = desk.app.action("copy_page");
+        let out = desk
+            .rt
+            .invoke_action(
+                &me(),
+                (id.as_str(), vec![Value::resource(&d), Value::Int(0)]),
+            )
+            .unwrap();
+        assert!(
+            matches!(out, InvokeOutcome::Denied),
+            "a copy with nobody to ask is refused: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_document_leaves_the_workspace() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        assert_eq!(desk.records(&desk.lib, "documents").len(), 1);
+        desk.call(
+            "close_document",
+            vec![Value::resource(&desk.lib), Value::resource(&d)],
+        );
+        assert!(
+            desk.records(&desk.lib, "documents").is_empty(),
+            "a closed document leaves the library"
+        );
+    }
+
+    #[test]
+    fn the_window_shows_the_source_the_page_and_what_a_person_can_do() {
+        let desk = Desk::new();
+        let d = desk.new_document();
+        desk.call("draw_next", vec![Value::resource(&d)]);
+        desk.call("draw_next", vec![Value::resource(&d)]);
+        let window = desk.window(&d);
+        let tree = window.tree();
+        let sources = of_kind(tree, "ui.CodeEditor");
+        assert_eq!(sources.len(), 1, "the source is edited in a code editor");
+        let pictures = of_kind(tree, "ui.Image");
+        assert!(
+            pictures.len() >= 3,
+            "each page and each thumbnail is a picture: {}",
+            pictures.len()
+        );
+        let overlays = of_kind(tree, "ui.Drawing");
+        assert!(
+            overlays.len() >= 2,
+            "each page carries the selection overlay over it: {}",
+            overlays.len()
+        );
     }
 }

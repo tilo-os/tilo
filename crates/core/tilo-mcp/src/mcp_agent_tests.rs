@@ -740,7 +740,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
         _caller: &Caller,
         needle: &str,
     ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
-        let words = page::needle_words(needle);
+        let words = needle_words(needle);
         if words.is_empty() {
             return Pending::ready(Ok(Vec::new()));
         }
@@ -772,7 +772,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
         };
         for row in rows.iter().filter(|row| !owned(row)) {
             // Every word, as the one search reads a query: not the rows matching the most of it.
-            let score = page::word_score(row, &words);
+            let score = word_score(row, &words);
             if score < words.len() {
                 continue;
             }
@@ -1417,3 +1417,49 @@ fn a_status_naming_no_invocation_lists_the_sessions_invocations() {
 
 #[path = "mcp_agent_link_tests.rs"]
 mod link;
+
+/// The words of a search, as the desktop's one search reads a query.
+fn needle_words(needle: &str) -> Vec<String> {
+    needle
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// How many of `words` begin a word of the row's names, or are one of those
+/// words in another inflection.
+fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
+    let mut names = vec![
+        row.resource.label.as_str(),
+        row.resource.kind.as_str(),
+        row.app_id.as_str(),
+    ];
+    if let Some(action) = &row.action {
+        names.extend([action.address.action.as_str(), action.action_label.as_str()]);
+        names.extend(action.description.as_deref());
+        for param in &action.params {
+            names.extend([param.name.as_ref(), param.description.as_ref()]);
+        }
+    }
+    let names = names
+        .iter()
+        .flat_map(|name| name.split(|c: char| !c.is_alphanumeric()))
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    let stems = names
+        .iter()
+        .map(|name| tilo_actions::remote::stem_word(name))
+        .collect::<Vec<_>>();
+    words
+        .iter()
+        .filter(|word| {
+            let stemmed = tilo_actions::remote::stem_word(word);
+            // A word begins a name's word, or is that word in another
+            // inflection: "drawing" and "draw" are the same word to a
+            // caller describing what it wants to do.
+            names.iter().any(|name| name.starts_with(word.as_str())) || stems.contains(&stemmed)
+        })
+        .count()
+}

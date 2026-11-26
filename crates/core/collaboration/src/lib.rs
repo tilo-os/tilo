@@ -470,6 +470,11 @@ pub enum CollabRequest {
         request_id: u64,
         command: runtime_collab::native_media::Request,
     },
+    /// Kept in its place so a request an earlier build wrote still reads as
+    /// itself; nothing answers it.
+    RetiredNearbyTransferCommand {
+        request_id: u64,
+    },
     OpenWorkspaceControl {
         session_id: u64,
         target_device: [u8; 32],

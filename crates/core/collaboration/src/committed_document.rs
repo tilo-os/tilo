@@ -1135,8 +1135,7 @@ mod tests {
             &ByteBudget::new(),
             async |request| {
                 assert!(matches!(request, Request::Cancel { capture: 1, .. }));
-                // Slow, but well within what the broker is given.
-                tokio::time::sleep(READ_ANSWER_DEADLINE.mul_f64(0.45)).await;
+                tokio::time::sleep(Duration::from_millis(900)).await;
                 Ok(Reply::Cancelled)
             },
         )
@@ -1436,16 +1435,9 @@ fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
 }
-/// How long the broker has to answer a committed read's `Open`, `Leave` and
-/// acknowledgement before the reader treats the read as starved and renews.
-/// One deadline for all three: a shorter acknowledgement fails a complete,
-/// verified capture whenever the broker answers slowly.
-#[cfg(not(test))]
-const READ_ANSWER_DEADLINE: Duration = Duration::from_secs(2);
-/// Tests starve the broker on purpose and wait this out, so it is short; a
-/// fake broker answers in milliseconds.
-#[cfg(test)]
-const READ_ANSWER_DEADLINE: Duration = Duration::from_millis(400);
+/// How long an assembled capture waits for the broker to accept its
+/// acknowledgement; equal to the polling Open deadline.
+const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Who waits for a capture, and so whether a clock may end it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1632,7 +1624,7 @@ async fn capture_using(
     // for it as for every other answer.
     let acknowledgement = wait
         .within(
-            READ_ANSWER_DEADLINE,
+            ACKNOWLEDGEMENT_DEADLINE,
             "committed read acknowledgement timed out",
             send(Request::Cancel {
                 capture: id,
@@ -1745,7 +1737,7 @@ impl NativeReadJoin {
     ) -> Result<runtime_collab::RecordHandle, CaptureFailure> {
         let key = spec.channel_id();
         let expected_instance = reads.private_window(&key);
-        tokio::time::timeout(READ_ANSWER_DEADLINE, async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             let channel = self.client.record(&key, &self.resource_type);
             // The record stays open for the route; ending the read on it is what the host
             // decides again, and what starts the next read with nothing of the last.
@@ -2059,7 +2051,7 @@ pub(super) async fn install(
                     },
                     |known_revision| Request::OpenChanges { known_revision },
                 );
-                tokio::time::timeout(READ_ANSWER_DEADLINE, channel.committed_document(&request))
+                tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
                     .await
             };
             queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));

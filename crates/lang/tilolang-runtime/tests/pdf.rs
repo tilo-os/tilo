@@ -179,33 +179,29 @@ action refused(s: Shelf, f: File) {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn pdf_1;
+    #[test]
+    fn a_page_the_device_draws_is_read_as_the_file_it_is() {
+        let bench = Bench::new();
+        let said = bench.call("draw");
+        assert!(
+            said.starts_with("page.png tilo-blob://"),
+            "a picture answers the file the device kept: {said}"
+        );
+    }
 
-        phase a_page_the_device_draws_is_read_as_the_file_it_is;
-        {
-            let bench = Bench::new();
-            let said = bench.call("draw");
-            assert!(
-                said.starts_with("page.png tilo-blob://"),
-                "a picture answers the file the device kept: {said}"
-            );
-        }
+    #[test]
+    fn a_copy_the_device_writes_is_read_as_the_file_it_is() {
+        let bench = Bench::new();
+        let said = bench.call("keep");
+        assert_eq!(
+            said, "annotated.pdf application/pdf",
+            "a save answers the file it wrote"
+        );
+    }
 
-        phase a_copy_the_device_writes_is_read_as_the_file_it_is;
-        {
-            let bench = Bench::new();
-            let said = bench.call("keep");
-            assert_eq!(
-                said, "annotated.pdf application/pdf",
-                "a save answers the file it wrote"
-            );
-        }
-
-        phase a_refusal_reads_as_the_device_s_words;
-        {
-            let bench = Bench::new();
-            assert_eq!(bench.call("refused"), "the document has no page 9");
-        }
+    #[test]
+    fn a_refusal_reads_as_the_device_s_words() {
+        let bench = Bench::new();
+        assert_eq!(bench.call("refused"), "the document has no page 9");
     }
 }

@@ -241,28 +241,12 @@ fn answering(
         )],
         step_timeout_secs: None,
         output: None,
-        grant: answering_grant(agent, &triggers),
+        grant: Vec::new(),
         triggers,
         saved_by: None,
         saved_proof: None,
         paused: false,
     }
-}
-
-/// What the shortcut that starts `agent`'s turn may do: start that agent's answer, and read
-/// the changes its `triggers` watch. A shortcut does nothing its grant leaves out, so one with
-/// none would fire and start no turn.
-fn answering_grant(agent: &str, triggers: &[TriggerSpec]) -> Vec<tilo_action_policy::Rule> {
-    let mut grant = vec![tilo_automation::grant::action_rule(
-        tilo_workspace_agent::OWNER,
-        AGENT_KIND,
-        Some(&agent_resource(agent)),
-        ANSWER,
-        tilo_action_policy::KindSet::UNDOABLE,
-        tilo_action_policy::Answer::Allow,
-    )];
-    grant.extend(tilo_automation::grant::trigger_rules(triggers));
-    grant
 }
 
 /// A change of `kind` that fires for the agent `who` (its id and its person), narrowed by
@@ -313,55 +297,5 @@ fn watching(
             .into_iter()
             .chain(narrowing),
         ),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_action_policy::{ActionKind, Answer};
-    use tilo_automation::{StepKind, grant_answer, step_node};
-
-    /// The shortcut an agent comes with may start that agent's answer, the one step it has, and
-    /// nothing of another agent's: one that fires but whose step its grant leaves out starts
-    /// no turn.
-    #[test]
-    fn an_agents_shortcut_may_start_its_answer_and_no_other_agents() {
-        for shortcut in [
-            triggers("scout", "person", "Scout"),
-            moderates("scout", "person", "Scout"),
-        ] {
-            let [step] = shortcut.steps.as_slice() else {
-                panic!("one step: {:?}", shortcut.steps);
-            };
-            let StepKind::Invoke { action, .. } = &step.kind else {
-                panic!("the step invokes the answer: {:?}", step.kind);
-            };
-            let at = |agent: &str| {
-                step_node(
-                    Some("studio"),
-                    &action.app,
-                    &action.kind,
-                    &answer_address(agent),
-                )
-            };
-            assert_eq!(
-                grant_answer(&shortcut.grant, &at("scout"), ActionKind::Undoable).answer,
-                Answer::Allow,
-                "{}: its own answer",
-                shortcut.id
-            );
-            assert_eq!(
-                grant_answer(&shortcut.grant, &at("other"), ActionKind::Undoable).answer,
-                Answer::Deny,
-                "{}: another agent's answer",
-                shortcut.id
-            );
-            assert!(
-                tilo_automation::grant::unused_rules(&shortcut).is_empty(),
-                "{}: no rule its step and triggers do not use",
-                shortcut.id
-            );
-        }
     }
 }

@@ -823,7 +823,9 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::NativeMediaCommandResult { .. }
+            CollabEvent::RetiredNearbyTransferCommandResult { .. }
+                | CollabEvent::RetiredNearbyTransferChanged
+                | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::ResourceCommandResult { .. }
                 | CollabEvent::RecordsMoved { .. }
@@ -911,6 +913,8 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ActionVerdicts { .. }
+            | CollabEvent::RetiredNearbyTransferCommandResult { .. }
+            | CollabEvent::RetiredNearbyTransferChanged
             // A window that holds the workspace's documents applies each as it arrives from
             // the broker; only a window that reads the store, as a tilolang app's window does,
             // re-reads the records named.

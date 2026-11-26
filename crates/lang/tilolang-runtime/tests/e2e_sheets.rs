@@ -183,261 +183,257 @@ view member_row(p: Member) {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn e2e_sheets_1;
+    #[test]
+    fn formulas_are_computed_across_the_cells_they_name() {
+        let sheets = Sheets::new();
+        sheets.write(&[("A1", "2"), ("A2", "3"), ("A3", "=SUM(A1:A2)")]);
+        assert_eq!(sheets.read("A1:A3"), ["2", "3", "5"]);
+        assert_eq!(sheets.cell("A3"), "=SUM(A1:A2)", "the formula is kept");
+    }
 
-        phase formulas_are_computed_across_the_cells_they_name;
-        {
-            let sheets = Sheets::new();
-            sheets.write(&[("A1", "2"), ("A2", "3"), ("A3", "=SUM(A1:A2)")]);
-            assert_eq!(sheets.read("A1:A3"), ["2", "3", "5"]);
-            assert_eq!(sheets.cell("A3"), "=SUM(A1:A2)", "the formula is kept");
+    #[test]
+    fn filling_down_copies_the_first_row_under_it() {
+        let sheets = Sheets::new();
+        sheets.write(&[("A1", "10"), ("B1", "20")]);
+        sheets.one(
+            "fill_down",
+            vec![
+                Value::resource(&sheets.book),
+                Value::resource(&sheets.sheet()),
+                Value::text("A1:B2"),
+            ],
+        );
+        assert_eq!(sheets.cell("A2"), "10");
+        assert_eq!(sheets.cell("B2"), "20");
+    }
+
+    #[test]
+    fn filling_right_copies_the_first_column_beside_it() {
+        let sheets = Sheets::new();
+        sheets.write(&[("A1", "1"), ("A2", "2")]);
+        sheets.one(
+            "fill_right",
+            vec![
+                Value::resource(&sheets.book),
+                Value::resource(&sheets.sheet()),
+                Value::text("A1:C2"),
+            ],
+        );
+        assert_eq!(sheets.cell("B1"), "1");
+        assert_eq!(sheets.cell("C1"), "1");
+        assert_eq!(sheets.cell("B2"), "2");
+    }
+
+    #[test]
+    fn a_chart_is_added_edited_and_deleted() {
+        let sheets = Sheets::new();
+        sheets.write(&[("A1", "1"), ("A2", "4")]);
+        let chart = returned_ref(sheets.call(
+            "add_chart",
+            vec![
+                Value::resource(&sheets.sheet()),
+                Value::text("A1:A2"),
+                sheets.kind("ChartKind.column"),
+                Value::text("Sales"),
+            ],
+        ));
+        assert_eq!(sheets.count(&sheets.sheet(), "charts"), 1);
+
+        let kind = sheets.kind("ChartKind.line");
+        sheets.one(
+            "edit_chart",
+            vec![
+                Value::resource(&chart),
+                Value::text("Revenue"),
+                Value::Opt(Some(Box::new(kind))),
+                Value::text("A1:A2"),
+            ],
+        );
+        match sheets.rt.read(&chart, "title").unwrap() {
+            Value::Text(title) => assert_eq!(title, "Revenue"),
+            other => panic!("the chart's title reads {other:?}"),
         }
 
-        phase filling_down_copies_the_first_row_under_it;
-        {
-            let sheets = Sheets::new();
-            sheets.write(&[("A1", "10"), ("B1", "20")]);
-            sheets.one(
-                "fill_down",
-                vec![
-                    Value::resource(&sheets.book),
-                    Value::resource(&sheets.sheet()),
-                    Value::text("A1:B2"),
-                ],
-            );
-            assert_eq!(sheets.cell("A2"), "10");
-            assert_eq!(sheets.cell("B2"), "20");
+        sheets.one(
+            "delete_chart",
+            vec![Value::resource(&sheets.sheet()), Value::resource(&chart)],
+        );
+        assert_eq!(sheets.count(&sheets.sheet(), "charts"), 0);
+    }
+
+    #[test]
+    fn a_comment_is_answered_and_its_reply_is_taken_away() {
+        let sheets = Sheets::new();
+        let comment = returned_ref(sheets.call(
+            "comment",
+            vec![
+                Value::resource(&sheets.book),
+                Value::text("Sheet1"),
+                Value::text("A1"),
+                Sheets::words("Is this the total?"),
+            ],
+        ));
+        let reply = returned_ref(sheets.call(
+            "reply",
+            vec![
+                Value::resource(&comment),
+                Sheets::words("Yes, for the quarter."),
+            ],
+        ));
+        assert_eq!(sheets.count(&comment, "replies"), 1);
+
+        sheets.one(
+            "delete_reply",
+            vec![Value::resource(&comment), Value::resource(&reply)],
+        );
+        assert_eq!(sheets.count(&comment, "replies"), 0);
+
+        sheets.one(
+            "resolve",
+            vec![Value::resource(&comment), Value::Bool(true)],
+        );
+        match sheets.rt.read(&comment, "resolved").unwrap() {
+            Value::Bool(resolved) => assert!(resolved),
+            other => panic!("a comment's state reads {other:?}"),
         }
+    }
 
-        phase filling_right_copies_the_first_column_beside_it;
-        {
-            let sheets = Sheets::new();
-            sheets.write(&[("A1", "1"), ("A2", "2")]);
-            sheets.one(
-                "fill_right",
-                vec![
-                    Value::resource(&sheets.book),
-                    Value::resource(&sheets.sheet()),
-                    Value::text("A1:C2"),
-                ],
-            );
-            assert_eq!(sheets.cell("B1"), "1");
-            assert_eq!(sheets.cell("C1"), "1");
-            assert_eq!(sheets.cell("B2"), "2");
-        }
+    #[test]
+    fn a_cell_shows_a_number_as_yes_or_no_when_it_is_formatted_so() {
+        let sheets = Sheets::new();
+        sheets.write(&[("A1", "1"), ("A2", "0")]);
+        assert_eq!(sheets.read("A1:A2"), ["1", "0"], "as the numbers they are");
+        sheets.one(
+            "format_cells",
+            vec![
+                Value::resource(&sheets.book),
+                Value::resource(&sheets.sheet()),
+                Value::text("A1:A2"),
+                Value::text("boolean"),
+            ],
+        );
+        assert_eq!(
+            sheets.read("A1:A2"),
+            ["TRUE", "FALSE"],
+            "the format is the cell's, and the value behind it does not change"
+        );
+        assert_eq!(sheets.read_with("A1:A2", true), ["1", "0"]);
+    }
 
-        phase a_chart_is_added_edited_and_deleted;
-        {
-            let sheets = Sheets::new();
-            sheets.write(&[("A1", "1"), ("A2", "4")]);
-            let chart = returned_ref(sheets.call(
-                "add_chart",
-                vec![
-                    Value::resource(&sheets.sheet()),
-                    Value::text("A1:A2"),
-                    sheets.kind("ChartKind.column"),
-                    Value::text("Sales"),
-                ],
-            ));
-            assert_eq!(sheets.count(&sheets.sheet(), "charts"), 1);
-
-            let kind = sheets.kind("ChartKind.line");
-            sheets.one(
-                "edit_chart",
-                vec![
-                    Value::resource(&chart),
-                    Value::text("Revenue"),
-                    Value::Opt(Some(Box::new(kind))),
-                    Value::text("A1:A2"),
-                ],
-            );
-            match sheets.rt.read(&chart, "title").unwrap() {
-                Value::Text(title) => assert_eq!(title, "Revenue"),
-                other => panic!("the chart's title reads {other:?}"),
-            }
-
-            sheets.one(
-                "delete_chart",
-                vec![Value::resource(&sheets.sheet()), Value::resource(&chart)],
-            );
-            assert_eq!(sheets.count(&sheets.sheet(), "charts"), 0);
-        }
-
-        phase a_comment_is_answered_and_its_reply_is_taken_away;
-        {
-            let sheets = Sheets::new();
-            let comment = returned_ref(sheets.call(
-                "comment",
-                vec![
-                    Value::resource(&sheets.book),
-                    Value::text("Sheet1"),
-                    Value::text("A1"),
-                    Sheets::words("Is this the total?"),
-                ],
-            ));
-            let reply = returned_ref(sheets.call(
-                "reply",
-                vec![
-                    Value::resource(&comment),
-                    Sheets::words("Yes, for the quarter."),
-                ],
-            ));
-            assert_eq!(sheets.count(&comment, "replies"), 1);
-
-            sheets.one(
-                "delete_reply",
-                vec![Value::resource(&comment), Value::resource(&reply)],
-            );
-            assert_eq!(sheets.count(&comment, "replies"), 0);
-
-            sheets.one(
-                "resolve",
-                vec![Value::resource(&comment), Value::Bool(true)],
-            );
-            match sheets.rt.read(&comment, "resolved").unwrap() {
-                Value::Bool(resolved) => assert!(resolved),
-                other => panic!("a comment's state reads {other:?}"),
-            }
-        }
-
-        phase a_cell_shows_a_number_as_yes_or_no_when_it_is_formatted_so;
-        {
-            let sheets = Sheets::new();
-            sheets.write(&[("A1", "1"), ("A2", "0")]);
-            assert_eq!(sheets.read("A1:A2"), ["1", "0"], "as the numbers they are");
-            sheets.one(
-                "format_cells",
-                vec![
-                    Value::resource(&sheets.book),
-                    Value::resource(&sheets.sheet()),
-                    Value::text("A1:A2"),
-                    Value::text("boolean"),
-                ],
-            );
-            assert_eq!(
-                sheets.read("A1:A2"),
-                ["TRUE", "FALSE"],
-                "the format is the cell's, and the value behind it does not change"
-            );
-            assert_eq!(sheets.read_with("A1:A2", true), ["1", "0"]);
-        }
-
-        phase the_window_opens_a_reference_entry_from_anywhere;
-        {
-            let sheets = Sheets::new();
-            let mut window = sheets
-                .rt
-                .open_view(
-                    &me(),
-                    &sheets.app.view("workbook"),
-                    vec![Value::resource(&sheets.book)],
-                )
-                .unwrap();
-            let bar_of = |window: &tilolang_runtime::ViewInstance| {
-                let tree = window.tree().clone();
-                let shell = of_kind(&tree, "ui.NavShell")
-                    .into_iter()
-                    .next()
-                    .expect("the workbook's window shell");
-                shell
-                    .clone()
-                    .children
-                    .iter()
-                    .find(|child| {
-                        child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
-                    })
-                    .unwrap_or_else(|| panic!("the window's bar:\n{}", dump(&tree)))
-                    .clone()
-            };
-            let bar = bar_of(&window);
-            assert!(
-                of_kind(&bar, "ui.TextInput")
-                    .iter()
-                    .all(|field| !field.props.contains_key("autofocus")),
-                "the bar opens with the name box standing as it is:\n{}",
-                dump(&bar)
-            );
-
-            // The Format menu's Go to a cell, as the window's Ctrl+G presses it.
-            let go = of_kind(&bar, "ui.MenuItem")
-                .into_iter()
-                .find(|item| item.props.get("label") == Some(&Value::text("Go to a cell…")))
-                .unwrap_or_else(|| panic!("the window offers Go to a cell:\n{}", dump(&bar)))
-                .key
-                .clone();
-            window.fire(&go, "choose").unwrap();
-            window.poll_patches().unwrap();
-            let entry = of_kind(&bar_of(&window), "ui.TextInput")
-                .into_iter()
-                .find(|field| field.props.get("autofocus") == Some(&Value::Bool(true)))
-                .unwrap_or_else(|| panic!("the entry takes the keyboard:\n{}", dump(&bar)))
-                .key
-                .clone();
-            window
-                .fire_with(&entry, "submit", Some(&Value::text("c7")))
-                .unwrap();
-            window.poll_patches().unwrap();
-            assert!(
-                of_kind(&bar_of(&window), "ui.TextInput")
-                    .iter()
-                    .all(|field| !field.props.contains_key("autofocus")),
-                "the entry closes once the reference is given:\n{}",
-                dump(&bar_of(&window))
-            );
-            let grid = of_kind(window.tree(), "ui.Sheet")
-                .into_iter()
-                .next()
-                .expect("the grid");
-            let chosen = match grid.props.get("selection") {
-                Some(Value::Text(at)) => at.clone(),
-                Some(Value::Opt(Some(held))) => match &**held {
-                    Value::Text(at) => at.clone(),
-                    other => panic!("the grid's selection reads {other:?}"),
-                },
-                other => panic!("the grid's selection reads {other:?}"),
-            };
-            assert_eq!(
-                chosen, "C7",
-                "the grid stands on the reference the person typed"
-            );
-        }
-
-        phase the_window_shows_the_grid_the_bar_and_the_tabs;
-        {
-            let sheets = Sheets::new();
-            let window = sheets
-                .rt
-                .open_view(
-                    &me(),
-                    &sheets.app.view("workbook"),
-                    vec![Value::resource(&sheets.book)],
-                )
-                .unwrap();
-            let tree = window.tree();
-            let shown = crate::common::dump(tree);
-            for expected in ["Sheet1", "Add sheet"] {
-                assert!(shown.contains(expected), "no {expected} in\n{shown}");
-            }
-            // The workbook's bar is the page's header: it stands in the window's bar.
-            let shell = of_kind(tree, "ui.NavShell")
+    #[test]
+    fn the_window_opens_a_reference_entry_from_anywhere() {
+        let sheets = Sheets::new();
+        let mut window = sheets
+            .rt
+            .open_view(
+                &me(),
+                &sheets.app.view("workbook"),
+                vec![Value::resource(&sheets.book)],
+            )
+            .unwrap();
+        let bar_of = |window: &tilolang_runtime::ViewInstance| {
+            let tree = window.tree().clone();
+            let shell = of_kind(&tree, "ui.NavShell")
                 .into_iter()
                 .next()
                 .expect("the workbook's window shell");
-            let bar = shell
+            shell
+                .clone()
                 .children
                 .iter()
                 .find(|child| {
                     child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
                 })
-                .unwrap_or_else(|| panic!("the window's bar holds the workbook's bar:\n{shown}"));
-            let bar_shown = crate::common::dump(bar);
-            for expected in ["AutoSum", "Value or formula"] {
-                assert!(
-                    bar_shown.contains(expected),
-                    "no {expected} in the workbook's bar:\n{bar_shown}"
-                );
-            }
+                .unwrap_or_else(|| panic!("the window's bar:\n{}", dump(&tree)))
+                .clone()
+        };
+        let bar = bar_of(&window);
+        assert!(
+            of_kind(&bar, "ui.TextInput")
+                .iter()
+                .all(|field| !field.props.contains_key("autofocus")),
+            "the bar opens with the name box standing as it is:\n{}",
+            dump(&bar)
+        );
+
+        // The Format menu's Go to a cell, as the window's Ctrl+G presses it.
+        let go = of_kind(&bar, "ui.MenuItem")
+            .into_iter()
+            .find(|item| item.props.get("label") == Some(&Value::text("Go to a cell…")))
+            .unwrap_or_else(|| panic!("the window offers Go to a cell:\n{}", dump(&bar)))
+            .key
+            .clone();
+        window.fire(&go, "choose").unwrap();
+        window.poll_patches().unwrap();
+        let entry = of_kind(&bar_of(&window), "ui.TextInput")
+            .into_iter()
+            .find(|field| field.props.get("autofocus") == Some(&Value::Bool(true)))
+            .unwrap_or_else(|| panic!("the entry takes the keyboard:\n{}", dump(&bar)))
+            .key
+            .clone();
+        window
+            .fire_with(&entry, "submit", Some(&Value::text("c7")))
+            .unwrap();
+        window.poll_patches().unwrap();
+        assert!(
+            of_kind(&bar_of(&window), "ui.TextInput")
+                .iter()
+                .all(|field| !field.props.contains_key("autofocus")),
+            "the entry closes once the reference is given:\n{}",
+            dump(&bar_of(&window))
+        );
+        let grid = of_kind(window.tree(), "ui.Sheet")
+            .into_iter()
+            .next()
+            .expect("the grid");
+        let chosen = match grid.props.get("selection") {
+            Some(Value::Text(at)) => at.clone(),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Text(at) => at.clone(),
+                other => panic!("the grid's selection reads {other:?}"),
+            },
+            other => panic!("the grid's selection reads {other:?}"),
+        };
+        assert_eq!(
+            chosen, "C7",
+            "the grid stands on the reference the person typed"
+        );
+    }
+
+    #[test]
+    fn the_window_shows_the_grid_the_bar_and_the_tabs() {
+        let sheets = Sheets::new();
+        let window = sheets
+            .rt
+            .open_view(
+                &me(),
+                &sheets.app.view("workbook"),
+                vec![Value::resource(&sheets.book)],
+            )
+            .unwrap();
+        let tree = window.tree();
+        let shown = crate::common::dump(tree);
+        for expected in ["Sheet1", "Add sheet"] {
+            assert!(shown.contains(expected), "no {expected} in\n{shown}");
+        }
+        // The workbook's bar is the page's header: it stands in the window's bar.
+        let shell = of_kind(tree, "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the workbook's window shell");
+        let bar = shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "part" && child.props.get("name") == Some(&Value::text("actions"))
+            })
+            .unwrap_or_else(|| panic!("the window's bar holds the workbook's bar:\n{shown}"));
+        let bar_shown = crate::common::dump(bar);
+        for expected in ["AutoSum", "Value or formula"] {
+            assert!(
+                bar_shown.contains(expected),
+                "no {expected} in the workbook's bar:\n{bar_shown}"
+            );
         }
     }
 }

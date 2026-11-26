@@ -161,6 +161,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::OfferContent { .. }
             | CollabRequest::WantContent { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
+            | CollabRequest::RetiredNearbyTransferCommand { .. }
             | CollabRequest::NativeMediaCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActionSurface { .. }

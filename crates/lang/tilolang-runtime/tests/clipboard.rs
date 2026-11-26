@@ -164,64 +164,60 @@ action paste_picture(b: Board) uses clipboard {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn clipboard_1;
+    #[test]
+    fn an_action_copies_text_onto_the_person_s_selection() {
+        let board = Bench::new();
+        board.set_text("Lisbon in May");
+        board.call("copy", vec![Value::resource(&board.board)]);
+        assert_eq!(
+            board.clipboard.0.borrow().clone(),
+            Some(("text/plain".to_owned(), b"Lisbon in May".to_vec())),
+            "the action's text is the person's copy"
+        );
+    }
 
-        phase an_action_copies_text_onto_the_person_s_selection;
-        {
-            let board = Bench::new();
-            board.set_text("Lisbon in May");
-            board.call("copy", vec![Value::resource(&board.board)]);
-            assert_eq!(
-                board.clipboard.0.borrow().clone(),
-                Some(("text/plain".to_owned(), b"Lisbon in May".to_vec())),
-                "the action's text is the person's copy"
-            );
-        }
+    #[test]
+    fn a_paste_answers_what_the_person_copied_elsewhere() {
+        let board = Bench::new();
+        board.set_text("old");
+        *board.clipboard.0.borrow_mut() = Some(("text/plain".to_owned(), b"Porto".to_vec()));
+        board.call("paste", vec![Value::resource(&board.board)]);
+        assert_eq!(board.text(), "Porto");
+    }
 
-        phase a_paste_answers_what_the_person_copied_elsewhere;
-        {
-            let board = Bench::new();
-            board.set_text("old");
-            *board.clipboard.0.borrow_mut() = Some(("text/plain".to_owned(), b"Porto".to_vec()));
-            board.call("paste", vec![Value::resource(&board.board)]);
-            assert_eq!(board.text(), "Porto");
-        }
+    #[test]
+    fn an_image_is_copied_as_its_bytes_and_pastes_back_as_a_file_the_device_kept() {
+        let board = Bench::new();
+        let png = [0x89, b'P', b'N', b'G', 0, 1, 2, 3];
+        let hash = board.device.keeps(&png);
+        let file = Value::file(FileValue::new("fox.png", "image/png", 8, hash));
+        board.call("copy_picture", vec![Value::resource(&board.board), file]);
+        assert_eq!(
+            board.clipboard.0.borrow().clone(),
+            Some(("image/png".to_owned(), png.to_vec())),
+            "an image is offered as the bytes the file holds, under its media type"
+        );
 
-        phase an_image_is_copied_as_its_bytes_and_pastes_back_as_a_file_the_device_kept;
-        {
-            let board = Bench::new();
-            let png = [0x89, b'P', b'N', b'G', 0, 1, 2, 3];
-            let hash = board.device.keeps(&png);
-            let file = Value::file(FileValue::new("fox.png", "image/png", 8, hash));
-            board.call("copy_picture", vec![Value::resource(&board.board), file]);
-            assert_eq!(
-                board.clipboard.0.borrow().clone(),
-                Some(("image/png".to_owned(), png.to_vec())),
-                "an image is offered as the bytes the file holds, under its media type"
-            );
+        // What another app copied as an image pastes as a file this device keeps.
+        *board.clipboard.0.borrow_mut() = Some(("image/jpeg".to_owned(), b"\xff\xd8jpeg".to_vec()));
+        board.call("paste_picture", vec![Value::resource(&board.board)]);
+        assert_eq!(board.text(), "pasted.jpg");
+    }
 
-            // What another app copied as an image pastes as a file this device keeps.
-            *board.clipboard.0.borrow_mut() = Some(("image/jpeg".to_owned(), b"\xff\xd8jpeg".to_vec()));
-            board.call("paste_picture", vec![Value::resource(&board.board)]);
-            assert_eq!(board.text(), "pasted.jpg");
-        }
-
-        phase copying_a_file_that_is_no_image_fails_rather_than_copying_nothing;
-        {
-            let board = Bench::new();
-            let hash = board.device.keeps(b"# Notes");
-            let file = Value::file(FileValue::new("Notes.md", "text/markdown", 7, hash));
-            let id = board.app.action("copy_picture");
-            let failed = board.rt.invoke_action(
-                &me(),
-                (id.as_str(), vec![Value::resource(&board.board), file]),
-            );
-            assert!(
-                failed.is_err(),
-                "a copy of no image says why: `Notes.md` is text/markdown"
-            );
-            assert_eq!(board.clipboard.0.borrow().clone(), None, "nothing copied");
-        }
+    #[test]
+    fn copying_a_file_that_is_no_image_fails_rather_than_copying_nothing() {
+        let board = Bench::new();
+        let hash = board.device.keeps(b"# Notes");
+        let file = Value::file(FileValue::new("Notes.md", "text/markdown", 7, hash));
+        let id = board.app.action("copy_picture");
+        let failed = board.rt.invoke_action(
+            &me(),
+            (id.as_str(), vec![Value::resource(&board.board), file]),
+        );
+        assert!(
+            failed.is_err(),
+            "a copy of no image says why: `Notes.md` is text/markdown"
+        );
+        assert_eq!(board.clipboard.0.borrow().clone(), None, "nothing copied");
     }
 }

@@ -665,18 +665,8 @@ fn a_launch_of_an_uninstalled_app_is_refused_and_mcp_still_answers() -> Result<(
         "the refusal must say how to install the app: {refused}"
     );
     ping(profile.path())?;
-    let listed = ask(
-        profile.path(),
-        &json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}),
-    )?;
-    ensure!(
-        listed
-            .get("result")
-            .and_then(|result| result.get("resources"))
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty),
-        "nothing runs, so resources/list lists no app: {listed}"
-    );
+    let running = apps_once(profile.path())?;
+    ensure!(running.is_empty(), "nothing runs, so no app is listed: {running:?}");
     Ok(())
 }
 
@@ -927,30 +917,33 @@ fn start_app(profile: &Path, app: &str) -> Result<()> {
     Ok(())
 }
 
-/// The app instances the daemon's MCP `resources/list` reports, once: each as its `app_id` and
-/// the `uri` of its own connection.
+/// The app instances the daemon's action registry lists, once: each as its `app_id` and the
+/// provider of its own connection.
 fn apps_once(profile: &Path) -> Result<Vec<Value>> {
-    let reply = ask(
-        profile,
-        &json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}),
-    )?;
-    let resources = reply
-        .get("result")
-        .and_then(|result| result.get("resources"))
-        .and_then(Value::as_array)
-        .with_context(|| format!("the reply reports no apps: {reply}"))?;
-    // Each is named `<app id> (<instance>)`.
-    Ok(resources
-        .iter()
-        .map(|resource| {
-            let name = resource["name"].as_str().unwrap_or_default();
-            let app_id = name.split_once(" (").map_or(name, |(app, _)| app);
-            json!({"app_id": app_id, "peer_id": resource["uri"]})
-        })
+    use tilo_actions::remote::{ActionProvider as _, Caller, CatalogueQuery, LineClient};
+    let line = LineClient::connect(&native_socket(profile)?)?;
+    let page = line
+        .query(
+            &Caller::local_person(""),
+            CatalogueQuery {
+                max_results: 0,
+                ..CatalogueQuery::default()
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .context("the daemon answers what its registry lists")?
+        .map_err(|error| anyhow::anyhow!("the registry's listing was refused: {error:?}"))?;
+    Ok(page
+        .providers
+        .into_iter()
+        .filter(|provider| provider.browsable && provider.provider.parse::<u64>().is_ok())
+        .map(|provider| json!({"app_id": provider.app_id, "peer_id": provider.provider}))
         .collect())
 }
 
-/// The app instances `resources/list` reports, once `count` of them run.
+/// The app instances the registry lists, once `count` of them run.
 fn listed_apps(profile: &Path, count: usize) -> Result<Vec<Value>> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
