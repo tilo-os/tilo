@@ -557,11 +557,6 @@ fn create_own_params() -> Vec<ActionParam> {
             ParamType::Object,
             "What you label it with, for your programs to find it by: names (a-z, 0-9, `_`, `-`, `.`) to values, at most 16, which only you read. Given for one of yours, in place of its labels.",
         ),
-        ActionParam::optional(
-            "expires_in_seconds",
-            ParamType::Integer,
-            "How long the invitation your devices redeem to hold the workspace stays redeemable: 600 seconds when omitted.",
-        ),
     ]
 }
 
@@ -762,8 +757,7 @@ impl Workspaces {
             ServiceOperation::CreateOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.create_own_invoke((caller, device), &args, request_id, now)
-                    .await
+                self.create_own_invoke((caller, device), &args, now).await
             }
             ServiceOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -782,7 +776,7 @@ impl Workspaces {
             ServiceOperation::BranchOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                Box::pin(self.branch_own_invoke(device, &args, request_id, now)).await
+                Box::pin(self.branch_own_invoke(device, &args, now)).await
             }
             ServiceOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -1228,7 +1222,6 @@ impl Workspaces {
         &self,
         (caller, device): (&Caller, &DeviceCert),
         args: &Args,
-        request_id: [u8; 32],
         now: u64,
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
@@ -1239,13 +1232,8 @@ impl Workspaces {
         if let Some(labels) = &labels {
             check_labels(labels).map_err(ActionCallError::invalid_request)?;
         }
-        let seconds = args
-            .integer("expires_in_seconds")?
-            .unwrap_or(OWN_INVITATION_SECONDS);
         let Some(own) = self.own() else {
-            return self
-                .enter_host_persons(device, name, moving, request_id, expiry(now, seconds))
-                .await;
+            return self.enter_host_persons(device, name, moving).await;
         };
         // A grant for one workspace enters that one, already made: it makes no other, and labels
         // none, labels being its person's for their programs.
@@ -1270,15 +1258,7 @@ impl Workspaces {
                 .summary(&existing)
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?;
-            return self
-                .invite_own_person(
-                    summary,
-                    device,
-                    Role::Editor,
-                    request_id,
-                    expiry(now, seconds),
-                )
-                .await;
+            return self.own_person_enters(summary, device).await;
         }
         // What could be made twice at once waits for the first: a workspace
         // the ask names (a retried create answers the one the first made),
@@ -1296,26 +1276,16 @@ impl Workspaces {
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if let Some(joined) = moving.filter(|_| name.is_none())
-            && let Some(role) = self.role_of(joined, person, now).await
+            && self.role_of(joined, person, now).await.is_some()
         {
-            // Another's, which the person was invited into or was handed:
-            // another device of theirs (their key) enters it as them, at the
-            // role they hold. No invitation gives the owner's place: theirs
-            // is the Editor's invitation a workspace of their own invites
-            // them with, which admits their device and gives them no role.
+            // Another's, which the person was invited into or was handed: another device of
+            // theirs (their key) enters it as them, at the place the member list gives them.
             drop(making);
             let summary = self
                 .summary(joined)
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?;
-            let role = if role == Role::Owner {
-                Role::Editor
-            } else {
-                role
-            };
-            return self
-                .invite_own_person(summary, device, role, request_id, expiry(now, seconds))
-                .await;
+            return self.own_person_enters(summary, device).await;
         } else if name.is_none() && moving.is_some() {
             // A workspace that is not theirs: another's, or one this host has
             // never made. The host makes a person's own workspace under an id
@@ -1346,14 +1316,7 @@ impl Workspaces {
             self.label(&summary.workspace, &labels).await?;
         }
         drop(making);
-        self.invite_own_person(
-            summary,
-            device,
-            Role::Editor,
-            request_id,
-            expiry(now, seconds),
-        )
-        .await
+        self.own_person_enters(summary, device).await
     }
 
     /// The wait that makes a workspace two asks at once would make one by the name the ask gives,
@@ -1469,11 +1432,12 @@ impl Workspaces {
         None
     }
 
-    /// Invite the host's own person (`device` is theirs) into the workspace
+    /// Have the host's own person (`device` is theirs) enter the workspace
     /// `workspace` hosted here, as a host that keeps no workspaces of anyone
     /// else's answers `workspace.create-own`: every workspace it hosts is
     /// theirs, so another device of theirs, or a key of theirs whose scope
-    /// reaches it, enters it as them. It makes none: that is `workspace.create`.
+    /// reaches it, enters it as them, by a row of its own
+    /// ([`Self::own_person_enters`]). It makes none: that is `workspace.create`.
     /// An ask that names no workspace, as a page their computer signed in asks
     /// for "my workspace", is answered with the person's own workspace.
     async fn enter_host_persons(
@@ -1481,8 +1445,6 @@ impl Workspaces {
         device: &DeviceCert,
         name: Option<&str>,
         workspace: Option<&str>,
-        request_id: [u8; 32],
-        expires_at_ns: u64,
     ) -> Result<Value, ActionCallError> {
         let their_own = tilo_server_protocol::servers::person_workspace_id(&device.user_public_key);
         let workspace = match (name, workspace) {
@@ -1498,8 +1460,7 @@ impl Workspaces {
             .summary(workspace)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        self.invite_own_person(summary, device, Role::Editor, request_id, expires_at_ns)
-            .await
+        self.own_person_enters(summary, device).await
     }
 
     /// Whether `device`'s grant, which reaches one workspace already made, is asked for more
@@ -1537,37 +1498,16 @@ impl Workspaces {
             .and_then(|member| member.role)
     }
 
-    /// Answer `summary` with an invitation for `device`'s person as `role`, until
-    /// `expires_at_ns`, for `device` to redeem: the workspace's host invites them.
-    async fn invite_own_person(
+    /// Answer `summary`, a workspace `device`'s person is in, for `device` to enter: it comes in
+    /// through the workspace's entry by a row it signs itself as one of its person's devices
+    /// ([`Self::member_device`]), at the place the member list gives its person. No host invites
+    /// a person into what is theirs.
+    async fn own_person_enters(
         &self,
         summary: WorkspaceSummary,
         device: &DeviceCert,
-        role: Role,
-        request_id: [u8; 32],
-        expires_at_ns: u64,
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
-        let terms = IssueInvitationRequest {
-            request_id,
-            role,
-            recipient_user_public_key: Some(person),
-            invitee_name: None,
-            expires_at_ns,
-            inviter_name: None,
-        };
-        let address = self.invitation_addr_for(device).await;
-        let issued = self
-            .issue_from(
-                &summary.workspace,
-                &self.inner.host.cert,
-                terms,
-                false,
-                None,
-                address,
-            )
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let mut workspace = listing(&summary);
         if let Some(own) = self.own()
             && own.is_of(&person, &summary.workspace)
@@ -1578,7 +1518,7 @@ impl Workspaces {
         }
         answer(&CreatedWorkspace {
             workspace,
-            invitation: Some(ActionInvitation::of(&issued)),
+            invitation: None,
         })
     }
 

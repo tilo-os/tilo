@@ -323,9 +323,18 @@ impl Device {
     /// # Errors
     /// The session is closed, the host did not answer, or the workspace did not let it in.
     pub async fn let_in(&self, workspace: &str) -> Result<Admission, CertifyError> {
+        self.let_in_as(workspace, "").await
+    }
+
+    /// [`Self::let_in`], shown to the workspace's people as `name` where its person has none
+    /// there yet.
+    ///
+    /// # Errors
+    /// As [`Self::let_in`].
+    pub async fn let_in_as(&self, workspace: &str, name: &str) -> Result<Admission, CertifyError> {
         let entering = tilo_server_protocol::entering::Entering {
             workspace: workspace.to_owned(),
-            name: String::new(),
+            name: name.to_owned(),
             request_id: rand::random(),
             through: tilo_server_protocol::entering::Through::Entry,
             admission: Vec::new(),
@@ -445,8 +454,8 @@ impl Device {
     }
 
     /// Have this device in `workspace` (its UUID) on its host, the one way every program enters
-    /// one: a workspace of its person's own, or one they were invited into, which the host invites
-    /// this device into and it redeems; or one the host admits it to already. `shown_as` is the
+    /// one: a workspace of its person's own, or one they were invited into, which this device
+    /// enters by a row it signs itself; or one the host admits it to already. `shown_as` is the
     /// name its members see. Its id on the session.
     ///
     /// # Errors
@@ -467,8 +476,8 @@ impl Device {
             .own_workspace(named, tilo_actions::InvocationId::new())
             .await
         {
-            Ok((listing, invitation)) if listing.workspace == workspace => {
-                self.redeem(&invitation, shown_as).await?;
+            Ok(listing) if listing.workspace == workspace => {
+                self.let_in_as(workspace, shown_as).await?;
                 None
             }
             Ok(_) => Some(DeviceRefusal::malformed(
@@ -508,42 +517,38 @@ impl Device {
             .map_err(|refusal| *refusal)
     }
 
-    /// The person's own workspace on the host, and the invitation into it: its `name` makes
-    /// another, or the `workspace` it must be. Asked under `invocation`: the same one answers the
-    /// workspace an earlier ask made, so asking again after no answer makes no second workspace.
+    /// The person's own workspace on the host: its `name` makes another, or the `workspace` it
+    /// must be. Asked under `invocation`: the same one answers the workspace an earlier ask made,
+    /// so asking again after no answer makes no second workspace. A device of theirs enters it by
+    /// a row it signs itself ([`Self::let_in`]): no host invites a person into what is theirs.
     ///
     /// # Errors
-    /// The host did not answer, refused, or answered no invitation.
+    /// The host did not answer or refused.
     pub async fn own_workspace(
         &self,
         arguments: Map<String, Value>,
         invocation: tilo_actions::InvocationId,
-    ) -> Result<(WorkspaceListing, Vec<u8>), DeviceRefusal> {
+    ) -> Result<WorkspaceListing, DeviceRefusal> {
         let output = self
             .server_action_as(CREATE_OWN_WORKSPACE, arguments, invocation)
             .await?;
-        let malformed = |why: String| {
+        let made: CreatedWorkspace = serde_json::from_value(output).map_err(|error| {
             DeviceRefusal::malformed(format!(
-                "The host made no workspace of the person's own: {why}"
+                "The host made no workspace of the person's own: it answered something else: \
+                 {error}"
             ))
-        };
-        let made: CreatedWorkspace = serde_json::from_value(output)
-            .map_err(|error| malformed(format!("it answered something else: {error}")))?;
-        let invitation = made
-            .invitation
-            .ok_or_else(|| malformed("it issued no invitation".to_owned()))?;
-        let invitation =
-            hex::decode(invitation.invitation).map_err(|error| malformed(error.to_string()))?;
-        Ok((made.workspace, invitation))
+        })?;
+        Ok(made.workspace)
     }
 
     /// Have this device in the person's own workspace on the host: the host makes it the first
     /// time, under an id it chooses, and answers the same one to every later ask (another for each
-    /// `name` they give). This very device redeems the invitation into it, so the key this session
-    /// holds is the one that opens it next. One the person did not name is named in `language`, the
-    /// one they read. A workspace `entered` says this device is in already is not redeemed again.
-    /// `shown_as` is the name its members see. `invocation` is the caller's own id for this make,
-    /// kept across its asks (a page's dialog, asked again), or a fresh one.
+    /// `name` they give). This very device enters it by a row it signs itself as one of its
+    /// person's devices, so the key this session holds is the one that opens it next. One the
+    /// person did not name is named in `language`, the one they read. A workspace `entered` says
+    /// this device is in already is not entered again. `shown_as` is the name its members see.
+    /// `invocation` is the caller's own id for
+    /// this make, kept across its asks (a page's dialog, asked again), or a fresh one.
     ///
     /// # Errors
     /// The host did not answer or refused (typed, as it said), or the workspace did not admit this
@@ -562,11 +567,11 @@ impl Device {
         }
         // The host names a workspace the person did not, so it is told the language they read.
         arguments.insert("language".to_owned(), Value::String(language.to_owned()));
-        let (listing, invitation) = self
+        let listing = self
             .own_workspace(arguments, invocation.unwrap_or_default())
             .await?;
         if !entered(&listing.workspace) {
-            self.redeem(&invitation, shown_as)
+            self.let_in_as(&listing.workspace, shown_as)
                 .await
                 .map_err(DeviceRefusal::from)?;
         }

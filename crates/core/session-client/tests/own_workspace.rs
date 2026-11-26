@@ -197,6 +197,18 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         Some(own.workspace.clone())
     );
     assert_eq!(device.join(&own.workspace).await.unwrap(), own.workspace_id);
+    // The tab came in by a row it signed itself as one of Bob's devices, with no invitation: its
+    // membership is the owner's, never the Editor's an invitation would have given it.
+    let members = workspaces.summary(&own.workspace).await.unwrap().members;
+    let bobs = members
+        .iter()
+        .find(|member| member.root() == Some(bob_person) && !member.removed)
+        .expect("Bob is in his own workspace");
+    assert_eq!(
+        bobs.role,
+        Some(tilo_peer_state::join::Role::Owner),
+        "{members:?}"
+    );
 
     // The site holds no copy of the person's own workspace, so it writes nothing into it: what
     // is his is his own device's to write.
@@ -314,11 +326,11 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         .await
         .unwrap();
     let second = device.own_workspace(asked_twice, once).await.unwrap();
-    assert_eq!(first.0.workspace, second.0.workspace);
-    assert_eq!(first.0.name, "Twice");
+    assert_eq!(first.workspace, second.workspace);
+    assert_eq!(first.name, "Twice");
     // His computer takes it in, and the second ask made no second workspace: one entry in the
     // list has that name.
-    take_in(bob_workspaces, workspaces, &first.0.workspace).await;
+    take_in(bob_workspaces, workspaces, &first.workspace).await;
     let twice = listed_names(bob_workspaces)
         .await
         .iter()

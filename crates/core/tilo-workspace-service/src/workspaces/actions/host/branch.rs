@@ -5,11 +5,10 @@
 use serde_json::Value;
 use tilo_actions::remote::ActionCallError;
 use tilo_actions::{ActionParam, ParamType};
-use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::{AdminRefusal, WorkspaceLabels, check_labels};
 use tilo_user_identity::DeviceCert;
 
-use super::{Args, OWN_INVITATION_SECONDS, expiry};
+use super::Args;
 use crate::workspaces::Workspaces;
 
 /// What branching a workspace takes.
@@ -45,13 +44,12 @@ pub(super) fn params() -> Vec<ActionParam> {
 
 impl Workspaces {
     /// Branch the workspace `args` names, one of `device`'s person's own,
-    /// already permitted to, and invite the person into the branch: the one made
+    /// already permitted to, for the person to enter by a row of their own: the one made
     /// under the identity `branch` names when it is theirs already (a retry).
     pub(super) async fn branch_own_invoke(
         &self,
         device: &DeviceCert,
         args: &Args,
-        request_id: [u8; 32],
         now: u64,
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
@@ -68,9 +66,6 @@ impl Workspaces {
         if let Some(labels) = &labels {
             check_labels(labels).map_err(ActionCallError::invalid_request)?;
         }
-        let seconds = args
-            .integer("expires_in_seconds")?
-            .unwrap_or(OWN_INVITATION_SECONDS);
         let own = self
             .own()
             .ok_or_else(|| ActionCallError::refused(AdminRefusal::NotYourOwn.to_reason()))?;
@@ -112,14 +107,7 @@ impl Workspaces {
             self.label(&summary.workspace, &labels).await?;
         }
         drop(making);
-        self.invite_own_person(
-            summary,
-            device,
-            Role::Editor,
-            request_id,
-            expiry(now, seconds),
-        )
-        .await
+        self.own_person_enters(summary, device).await
     }
 
     #[cfg(feature = "agents")]

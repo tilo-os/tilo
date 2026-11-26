@@ -10,7 +10,7 @@ use tilo_action_services::server_account::{self, Reason, ServerAccount};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
-use tilo_peer_state::join::{Role, decode_and_verify_invitation};
+use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_protocol::workspaces::{
     AdminRefusal, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
@@ -53,14 +53,21 @@ async fn offered(
         .collect()
 }
 
-/// `device` redeems `created`'s invitation, as a page joining does.
+/// `device`, one of the person's own, enters `created` by a row it signs itself, as a page
+/// entering its person's workspace does: the host answers no invitation for it.
 async fn join(
     workspaces: &Workspaces,
     created: &CreatedWorkspace,
-    device: (&SigningKey, &DeviceCert),
+    (key, device): (&SigningKey, &DeviceCert),
 ) {
-    let issued = created.invitation.as_ref().unwrap().decode().unwrap();
-    join_with(workspaces, issued.signed_invitation, device).await;
+    assert!(
+        created.invitation.is_none(),
+        "a person's own workspace is answered with no invitation"
+    );
+    workspaces
+        .enter(&created.workspace.workspace, (device, key))
+        .await
+        .expect("the person's device enters what is theirs by its own row");
 }
 
 /// `device` redeems `invitation`, the signed bytes of one.
@@ -151,28 +158,8 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         workspaces.own_workspace_of(&guest.user_public_key),
         Some(created.workspace.workspace.clone())
     );
-    // The invitation is the person's alone, an Editor's.
-    let issued = created.invitation.as_ref().unwrap().decode().unwrap();
-    let invitation = decode_and_verify_invitation(
-        &issued.signed_invitation,
-        Some(guest.user_public_key),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    assert_eq!(invitation.grant().role, Role::Editor);
-    assert!(
-        decode_and_verify_invitation(
-            &issued.signed_invitation,
-            Some([9; 32]),
-            &RevocationList::new(),
-            tilo_clock::unix_now_ns()
-        )
-        .is_err()
-    );
-
-    // It is theirs: its governance names them its owner, and their device
-    // comes in as the owner's.
+    // It is theirs: its governance names them its owner, and their device comes in by a row of
+    // its own as the owner's, never as the Editor an invitation would make it.
     join(workspaces, &created, (&guest_key, &guest)).await;
     assert_eq!(
         access(
@@ -184,12 +171,11 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         Some((Role::Owner, true))
     );
 
-    // Asking again without a name answers the same workspace, with a new
-    // invitation.
+    // Asking again without a name answers the same workspace, again with no invitation.
     let again = create_own(&host, &guest, json!({})).await.unwrap();
     assert_eq!(again.workspace.workspace, created.workspace.workspace);
     assert_eq!(again.workspace.name, "Ada's workspace");
-    assert_ne!(again.invitation, created.invitation);
+    assert_eq!(again.invitation, None);
     // Entering it by its id answers the same one.
     let entered = create_own(
         &host,
@@ -683,18 +669,7 @@ async fn a_persons_own_key_founds_their_own_workspace_at_a_server() {
         panic!("the key's person's own workspace is made: {receipt:?}");
     };
     let created: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
-    // The invitation is the person's, which the grant redeems as any new
-    // device of theirs does.
-    let issued = created.invitation.as_ref().unwrap().decode().unwrap();
-    assert!(
-        decode_and_verify_invitation(
-            &issued.signed_invitation,
-            Some(root.verifying_key().to_bytes()),
-            &RevocationList::new(),
-            tilo_clock::unix_now_ns()
-        )
-        .is_ok()
-    );
+    // The grant enters it by a row of its own, as any new device of the person's does.
     join(workspaces, &created, (&grant_key, &all)).await;
     assert_eq!(
         access(
