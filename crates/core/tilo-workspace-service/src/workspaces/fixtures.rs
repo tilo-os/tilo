@@ -1518,16 +1518,30 @@ pub fn on_issue_change() -> tilo_automation::Shortcut {
     .unwrap()
 }
 
-/// Whoever's turns an agent takes here: the agent `scout`, as a device that holds its key.
-pub struct ActsAsScout;
+/// Whoever's turns an agent engine takes here: the agents a test's device holds keys for, or
+/// every agent's, or none.
+pub enum ActsAs {
+    /// Every agent of every workspace the device runs.
+    EveryAgent,
+    /// No agent's: this device takes no turn.
+    NoAgent,
+    /// Only the agents named.
+    Only(&'static [&'static str]),
+}
 
-impl crate::work::AgentEngine for ActsAsScout {
+impl crate::work::AgentEngine for ActsAs {
     fn acts_as<'a>(
         &'a self,
         _workspace: &'a str,
         agent: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        Box::pin(async move { agent == "scout" })
+        Box::pin(async move {
+            match self {
+                Self::EveryAgent => true,
+                Self::NoAgent => false,
+                Self::Only(agents) => agents.contains(&agent),
+            }
+        })
     }
 }
 

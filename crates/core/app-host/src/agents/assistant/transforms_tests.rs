@@ -26,23 +26,9 @@ use crate::collab_app_broker::AppBrokerState;
 use crate::services::ProcessServices;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_person_services::model_answers::scripted::{Linking, Reply, ScriptedProvider};
-use tilo_workspace_service::work::AgentEngine;
+use tilo_workspace_service::workspaces::fixtures::ActsAs;
 use tilo_workspace_service::workspaces::fixtures::hosted;
 use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
-
-/// An agent engine that acts as every agent: what makes this device one that answers its
-/// workspaces' agents, and so runs their transforms.
-struct Keys;
-
-impl AgentEngine for Keys {
-    fn acts_as<'a>(
-        &'a self,
-        _: &'a str,
-        _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        Box::pin(std::future::ready(true))
-    }
-}
 
 /// Two agents on one device each run four transforms at once; the fifth one agent asks is
 /// refused as busy, while the other's four go on.
@@ -106,7 +92,7 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     let (server, workspace) = runtime.block_on(async {
         let server = test_host(dir.path(), &key, &owner).await;
         let workspace = hosted(server.workspaces()).await;
-        server.workspaces().run_agents(Arc::new(Keys));
+        server.workspaces().run_agents(Arc::new(ActsAs::EveryAgent));
         tilo_person_services::PersonServices::of(server.workspaces())
             .call_private_model_addresses(true);
         tilo_person_services::PersonServices::of(server.workspaces())

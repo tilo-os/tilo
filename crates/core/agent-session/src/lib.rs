@@ -20,17 +20,9 @@
 
 #![deny(rust_2018_idioms)]
 
-pub mod facts;
 pub mod model;
 pub mod record_actions;
-pub mod render;
-pub mod search;
 pub mod shell;
 pub mod transform;
 
 pub use record_actions::{RESOURCE_PROVIDER, resource_provider};
-
-// Unit tests admit peer bytes through the Automerge isolate, whose workers
-// are this test binary started again.
-#[cfg(test)]
-tilo_automerge_isolate::test_worker!();

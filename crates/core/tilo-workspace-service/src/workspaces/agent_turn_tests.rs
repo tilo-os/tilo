@@ -15,22 +15,10 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use super::super::Workspaces;
 use super::super::fixtures::{TestHost, device_cert};
 use super::super::fixtures::{member_service, persons_root, shared_with};
-use crate::work::{Actor, AgentEngine, Ineligible, NotTaken, Turn, takes_turn};
+use crate::work::{Actor, Ineligible, NotTaken, Turn, takes_turn};
+use crate::workspaces::fixtures::ActsAs;
 
 const CHAT: &str = "so.tilo.chat";
-
-/// An agent engine that holds an approved key of every agent, or of none.
-struct Keys(bool);
-
-impl AgentEngine for Keys {
-    fn acts_as<'a>(
-        &'a self,
-        _: &'a str,
-        _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        Box::pin(std::future::ready(self.0))
-    }
-}
 
 /// The agent's turn on what somebody wrote in Chat's `part`, and the lease it is claimed under.
 fn turn_in(part: &str) -> (Turn, String) {
@@ -58,8 +46,8 @@ async fn two_devices(
     let (desktop, laptop, created, invitation) = shared_with(states.0, "Asked", seed, laptop).await;
     let laptop = member_service(states.1, laptop).await;
     laptop.workspaces().join_member(&invitation).await.unwrap();
-    desktop.workspaces().run_agents(Arc::new(Keys(false)));
-    laptop.workspaces().run_agents(Arc::new(Keys(false)));
+    desktop.workspaces().run_agents(Arc::new(ActsAs::NoAgent));
+    laptop.workspaces().run_agents(Arc::new(ActsAs::NoAgent));
     (desktop, laptop, created.workspace)
 }
 
@@ -89,8 +77,10 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let laptop = device_cert(&persons_root(), "laptop", DeviceCapabilities::member());
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), laptop, 41).await;
-    desktop.workspaces().run_agents(Arc::new(Keys(true)));
-    laptop.workspaces().run_agents(Arc::new(Keys(true)));
+    desktop
+        .workspaces()
+        .run_agents(Arc::new(ActsAs::EveryAgent));
+    laptop.workspaces().run_agents(Arc::new(ActsAs::EveryAgent));
     let desktop_cert = desktop.workspaces().device_cert().clone();
     let (turn, lease) = turn_in("messages-1");
 
@@ -159,13 +149,13 @@ async fn only_a_device_that_acts_as_the_agent_claims_what_it_may_open() {
             .err(),
         Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
     );
-    laptop.workspaces().run_agents(Arc::new(Keys(true)));
+    laptop.workspaces().run_agents(Arc::new(ActsAs::EveryAgent));
     takes_turn(laptop.workspaces(), &workspace, &turn)
         .await
         .expect("a device that holds the agent's approved key runs it");
 
     // Without the agent's key again, the device claims nothing while the grant reaches it.
-    laptop.workspaces().run_agents(Arc::new(Keys(false)));
+    laptop.workspaces().run_agents(Arc::new(ActsAs::NoAgent));
     let (unopened, lease) = turn_in("messages-3");
     desktop
         .workspaces()
@@ -205,7 +195,9 @@ async fn only_a_device_that_acts_as_the_agent_claims_what_it_may_open() {
             .claims
             .is_empty()
     );
-    desktop.workspaces().run_agents(Arc::new(Keys(true)));
+    desktop
+        .workspaces()
+        .run_agents(Arc::new(ActsAs::EveryAgent));
     takes_turn(desktop.workspaces(), &workspace, &unopened)
         .await
         .expect("a device that acts as the agent and opens Chat claims the turn");

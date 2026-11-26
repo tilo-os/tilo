@@ -3472,7 +3472,7 @@ doc = false
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-agent-provider-config" = { path = "../../crates/integrations/provider-config", default-features = false, features = ["model"] }
-"tilo-agent-session" = { path = "../../crates/core/agent-session", default-features = false, features = ["test-support"] }
+"tilo-agent-session" = { path = "../../crates/core/agent-session", default-features = false, features = [] }
 "tilo-agent-turn" = { path = "../../crates/integrations/agent-turn", default-features = false, features = [] }
 "tilo-api" = { path = "../../crates/core/tilo-api", default-features = false, features = ["test-support"] }
 "tilo-app" = { path = "../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }

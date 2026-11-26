@@ -30,7 +30,6 @@ core = [
     "tilo-action-policy -> tilo-app-fleet",
     "tilo-agent-session -> tilo-agent-provider-config",
     "tilo-agent-session -> tilo-app",
-    "tilo-agent-session -> tilo-desktop-model",
     "tilo-app-host -> app-cli",
     "tilo-app-host -> tilo-accounts",
     "tilo-app-host -> tilo-agent-provider-config",

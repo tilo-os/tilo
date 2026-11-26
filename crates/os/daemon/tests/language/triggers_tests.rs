@@ -16,7 +16,7 @@ use tilo_automation::dispatch::DocumentEvent;
 use tilo_workspace_service::agent_shortcuts;
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::{
-    ActsAsScout, declare_app, on_issue_change, save_signed,
+    ActsAs, declare_app, on_issue_change, save_signed,
 };
 
 use super::{Device, Write, mount, write};
@@ -351,7 +351,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     let device = Device::start("Chat", Some(CHAT)).await;
     let (key, cert) = (&device.key, &device.cert);
     let workspaces = device.workspaces();
-    workspaces.run_agents(Arc::new(ActsAsScout));
+    workspaces.run_agents(Arc::new(ActsAs::Only(&["scout"])));
     let workspace = device.workspace.clone();
     save_signed(
         workspaces,
@@ -717,7 +717,7 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    workspaces.run_agents(Arc::new(ActsAsScout));
+    workspaces.run_agents(Arc::new(ActsAs::Only(&["scout"])));
     // Mail is a package the daemon does not run itself: a test that writes its records compiles
     // its sources and declares the surface they make.
     let mail_package = tilolang_workspace::records::Packages::compile(&[
@@ -956,7 +956,7 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    workspaces.run_agents(Arc::new(ActsAsScout));
+    workspaces.run_agents(Arc::new(ActsAs::Only(&["scout"])));
     // Mail is a package the daemon does not run itself: a test that writes its records compiles
     // its sources and declares the surface they make.
     let mail_package = tilolang_workspace::records::Packages::compile(&[
@@ -1149,7 +1149,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     let device = Device::start("Moderation", Some(CHAT)).await;
     let (key, cert) = (&device.key, &device.cert);
     let workspaces = device.workspaces();
-    workspaces.run_agents(Arc::new(ActsAsScout));
+    workspaces.run_agents(Arc::new(ActsAs::Only(&["scout"])));
     let workspace = device.workspace.clone();
     // The Moderator's one shortcut: the chat watch, not the agent's own triggers.
     save_signed(
@@ -1432,7 +1432,7 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     // The language the daemon links, mounted as its program mounts it: Chat's types and verbs
     // are what the store judges the conversation's writes by.
     mount(workspaces);
-    workspaces.run_agents(Arc::new(ActsAsScout));
+    workspaces.run_agents(Arc::new(ActsAs::Only(&["scout"])));
     let workspace = workspaces.create("Chat").await.unwrap().workspace;
     let route = super::record_route(&workspace, CHAT);
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
