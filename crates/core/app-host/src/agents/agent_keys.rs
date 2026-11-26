@@ -371,6 +371,37 @@ impl AgentKeys for DeviceMadeKeys {
     }
 }
 
+/// Why no agent's key is certified in a process whose daemon installed no answer.
+const NO_GRANTS: &str = "this computer's daemon keeps no identity to certify an agent's key with";
+
+/// What this process's daemon installed last ([`install_grants`]), as each call finds it: the
+/// daemon installs it anew for each part of the person's it starts, over that part's workspaces,
+/// and the keys made for the process outlive the part they were first made in.
+struct Installed;
+
+impl AgentGrants for Installed {
+    fn certify(
+        &self,
+        person: [u8; 32],
+        grant: [u8; 32],
+        workspace: WorkspaceId,
+        agent: &str,
+        name: &str,
+    ) -> Result<Option<DeviceCert>, String> {
+        grants()
+            .ok_or(NO_GRANTS)?
+            .certify(person, grant, workspace, agent, name)
+    }
+
+    fn revocation(
+        &self,
+        person: &[u8; 32],
+        key: &[u8; 32],
+    ) -> Result<Option<RevocationEntry>, String> {
+        grants().ok_or(NO_GRANTS)?.revocation(person, key)
+    }
+}
+
 /// The keys this device's agents sign with, made as this device's own and certified through what
 /// its daemon installed: one for the process, so a key made once is held while it runs.
 ///
@@ -381,12 +412,10 @@ pub fn this_device() -> Result<Arc<dyn AgentKeys>, String> {
     if let Some(keys) = KEYS.get() {
         return Ok(Arc::clone(keys));
     }
-    let grants = grants().ok_or_else(|| {
-        "this computer's daemon keeps no identity to certify an agent's key with".to_owned()
-    })?;
-    Ok(Arc::clone(
-        KEYS.get_or_init(|| Arc::new(DeviceMadeKeys::of(grants))),
-    ))
+    grants().ok_or_else(|| NO_GRANTS.to_owned())?;
+    Ok(Arc::clone(KEYS.get_or_init(|| {
+        Arc::new(DeviceMadeKeys::of(Arc::new(Installed)))
+    })))
 }
 
 /// One agent's key in one workspace, as this device made it: what signs every call the agent
