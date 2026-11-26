@@ -697,7 +697,7 @@ impl Workspaces {
         let entering = &entry.entering;
         let admission = tilo_peer_state::own_admission::sign_entry(
             &entering.workspace,
-            &governance,
+            (&governance, &[]),
             (invitation, entering.request_id),
             Some(entering.name.as_str()),
             (cert, signer),
@@ -1015,7 +1015,7 @@ mod tests {
         );
         let admission = tilo_peer_state::own_admission::sign_entry(
             &workspace,
-            &governance,
+            (&governance, &[]),
             (None, request_id),
             Some("Ada"),
             (&tab, &tab_key),

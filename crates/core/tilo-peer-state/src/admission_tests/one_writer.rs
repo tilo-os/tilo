@@ -1,31 +1,10 @@
 //! One key signing its own admission in two places at once, both on the governance they were
-//! sent and the same record of what the key signed before: a daemon letting one agent key in for
-//! two connections that open together, or a server and a session of one device. However the two
-//! signings meet, the key never writes two changes under one number.
+//! sent: a daemon letting one agent key in for two connections that open together, or a server
+//! and a session of one device. Each takes the key's turn, reads what the key signed before from
+//! the device's store, signs on top of it and keeps what it signed. However the two signings
+//! meet, the key never writes two changes under one number.
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
-
-/// A key that, the first time it signs, waits until the other signer has started signing too:
-/// both read what the key signed before while neither has kept anything yet.
-struct MeetsTheOther {
-    key: SigningKey,
-    met: Arc<Barrier>,
-    waited: AtomicBool,
-}
-
-impl collab_types::signer::DeviceSigner for MeetsTheOther {
-    fn device_public_key(&self) -> [u8; 32] {
-        self.key.verifying_key().to_bytes()
-    }
-
-    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-        if !self.waited.swap(true, Ordering::SeqCst) {
-            self.met.wait();
-        }
-        collab_types::signer::DeviceSigner::sign(&self.key, message)
-    }
-}
+use std::sync::Barrier;
 
 /// An invitation the owner (`authority`) issued for `guest`'s person, its own nonce `n`, as
 /// redeemed by `guest`'s device.
@@ -56,30 +35,38 @@ fn one_key_signing_in_two_places_at_once_never_takes_one_number_twice() {
     let (key, guest) = crate::fixture::device(171, 173);
     let workspace = peer.workspace_id().to_owned();
     let governance = vec![postcard::to_stdvec(&peer.workspace_message()).unwrap()];
-    let met = Arc::new(Barrier::new(2));
+    // What the device's store keeps of what the key signed there.
+    let store = parking_lot::Mutex::new(Vec::<Vec<u8>>::new());
+    let met = Barrier::new(2);
 
     // Each place redeems an invitation of its own for the key, as a host invites a key again for
-    // every connection that asks to bring it in.
+    // every connection that asks to bring it in, and both start at once.
     let signed: Vec<Vec<Vec<u8>>> = std::thread::scope(|scope| {
         [181, 182]
             .map(|n| {
                 let redemption = invited(&peer, &authority_key, &guest, n, now);
-                let signer = MeetsTheOther {
-                    key: key.clone(),
-                    met: Arc::clone(&met),
-                    waited: AtomicBool::new(false),
-                };
-                let (workspace, governance) = (&workspace, &governance);
+                let (workspace, governance, store, met, key) =
+                    (&workspace, &governance, &store, &met, &key);
+                let device = guest.device_public_key;
                 scope.spawn(move || {
-                    crate::own_admission::own_admission(
+                    met.wait();
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .unwrap();
+                    let _turn =
+                        runtime.block_on(crate::own_admission::signing_turn(workspace, device));
+                    let earlier = store.lock().clone();
+                    let changes = crate::own_admission::own_admission_turn(
                         workspace,
-                        governance,
+                        (governance, &earlier),
                         &redemption,
                         None,
-                        &signer,
+                        key,
                         now,
                     )
-                    .unwrap()
+                    .unwrap();
+                    store.lock().extend(changes.iter().cloned());
+                    changes
                 })
             })
             .map(|signing| signing.join().unwrap())
@@ -108,5 +95,14 @@ fn one_key_signing_in_two_places_at_once_never_takes_one_number_twice() {
 
     // And the key goes on signing there: its next admission builds on both.
     let again = invited(&peer, &authority_key, &guest, 183, now);
-    crate::own_admission::own_admission(&workspace, &governance, &again, None, &key, now).unwrap();
+    let earlier = store.lock().clone();
+    crate::own_admission::own_admission_turn(
+        &workspace,
+        (&governance, &earlier),
+        &again,
+        None,
+        &key,
+        now,
+    )
+    .unwrap();
 }

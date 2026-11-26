@@ -19,6 +19,8 @@
 //! a page's too, which signs outside the turn; [`own_admission`] and
 //! [`further_device_row`] are the same step for a key that signs at once. A caller
 //! that must resend exactly what it sent keeps what it was answered.
+//! [`sign_entry`] and [`sign_further_device_row`] also take what the device signed into the
+//! workspace before, as its store keeps it, and build on it ([`written`]).
 
 use crate::StatePeer;
 use crate::join::VerifiedRedemption;
@@ -27,119 +29,57 @@ use collab_types::signer::DeviceSigner;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
-/// The admissions each device signed in this program, by workspace, the history of it they were
-/// signed on ([`StatePeer::workspace_roots`]) and device, as the changes it answered: what the
-/// device's next admission into that history builds on.
-///
-/// A device can be signed in twice at once: a server its person adds is handed their workspace
-/// and signs its row there, while its own session redeems an invitation into the same workspace;
-/// a daemon lets one agent key into a workspace for each of several connections that open at
-/// once. Each signs on the governance it was sent, and where neither holds the other's change
-/// both are the key's first change: two changes under one number of one writer, which every copy
-/// that meets both refuses. Reading what a key signed and keeping what it signs next are
-/// therefore one step: a signing that finds another one kept something for the same key since
-/// it read signs again, on top of it ([`Signed::kept`]).
-static SIGNED: std::sync::LazyLock<parking_lot::Mutex<SignedAdmissions>> =
-    std::sync::LazyLock::new(Default::default);
+/// One key's turn to sign itself into one workspace: while a caller has it, no other signing by
+/// that key there starts. A daemon brings one agent key into a workspace for each of its
+/// connections that opens, and a server is handed a workspace while its session signs into it:
+/// each reads what the key signed there before from its store, signs on top of it and keeps what
+/// it signed, and two that overlapped would both read nothing and both sign the key's first
+/// change. The turn is let go when what it gives is dropped.
+pub async fn signing_turn(workspace: &str, device: [u8; 32]) -> tokio::sync::OwnedMutexGuard<()> {
+    type Turns =
+        std::collections::HashMap<(String, [u8; 32]), std::sync::Weak<tokio::sync::Mutex<()>>>;
+    static TURNS: std::sync::LazyLock<parking_lot::Mutex<Turns>> =
+        std::sync::LazyLock::new(Default::default);
+    let turn = {
+        let mut turns = TURNS.lock();
+        turns.retain(|_, turn| turn.strong_count() > 0);
+        let key = (workspace.to_owned(), device);
+        if let Some(turn) = turns.get(&key).and_then(std::sync::Weak::upgrade) {
+            turn
+        } else {
+            let turn = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            turns.insert(key, std::sync::Arc::downgrade(&turn));
+            turn
+        }
+    };
+    turn.lock_owned().await
+}
 
-type SignedBy = (String, Vec<automerge::ChangeHash>, [u8; 32]);
-type SignedAdmissions = std::collections::HashMap<SignedBy, Vec<Vec<u8>>>;
-
-/// Why a device signs nothing on governance that lacks an admission it signed already, and its
-/// copy cannot take that admission in.
+/// Why a device signs nothing on governance its own earlier admissions do not take on.
 const SIGNED_ELSEWHERE: &str = "this device signed itself into the workspace already, on \
      governance the copy it signs on now does not build on: it signs once that copy holds it";
 
-/// Who signed in `peer`, `own`'s copy of `workspace`: the key [`SIGNED`] keeps it under.
-fn signed_by(peer: &StatePeer, workspace: &str, own: &DeviceCert) -> SignedBy {
-    (
-        workspace.to_owned(),
-        peer.workspace_roots(),
-        own.device_public_key,
-    )
-}
-
-/// Take into `peer`, `own`'s copy of `workspace`, every admission `own` signed in its history
-/// before and the copy lacks, so a change it signs now comes after them. A copy that holds the
-/// device's own row already holds what it signed: those are let go. What it read is answered:
-/// what the signing built on, and what is kept of it.
-///
-/// # Errors
-/// The copy does not take those admissions in ([`SIGNED_ELSEWHERE`]).
-fn after_own(
-    peer: &mut StatePeer,
-    signer: &SignedBy,
-    own: &DeviceCert,
-    now: SystemTime,
-) -> Result<BuiltOn, String> {
-    let earlier = SIGNED.lock().get(signer).cloned().unwrap_or_default();
-    if earlier.is_empty() {
-        return Ok(BuiltOn::default());
-    }
-    if peer.governance().lists_device(own) {
-        return Ok(BuiltOn {
-            read: earlier,
-            kept: Vec::new(),
-        });
-    }
-    let hashes = earlier
-        .iter()
-        .map(|bytes| automerge::Change::try_from(bytes.as_slice()).map(|change| change.hash()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    if !hashes.iter().all(|hash| peer.workspace_holds_change(hash)) {
-        peer.admit_own(own, earlier.clone(), now)
-            .map_err(|error| format!("{SIGNED_ELSEWHERE}: {error}"))?;
-        if !hashes.iter().all(|hash| peer.workspace_holds_change(hash)) {
-            return Err(SIGNED_ELSEWHERE.into());
-        }
-    }
-    Ok(BuiltOn {
-        read: earlier.clone(),
-        kept: earlier,
-    })
-}
-
-/// What a signing read of the key's earlier admissions ([`SIGNED`]), and what of them is kept
-/// beside what it signs.
-#[derive(Default)]
-struct BuiltOn {
-    read: Vec<Vec<u8>>,
-    kept: Vec<Vec<u8>>,
-}
-
-/// Forget what `own` signed into `workspace` on `governance`: the workspace refused it, so no
-/// copy holds it, and the device's next admission there signs its first change again instead of
-/// building on a refusal every copy would refuse after it. A device that enters with an
-/// invitation and is refused (a pre-admission token it got wrong, say) tries again with the
-/// same invitation under a new request; the row of the refused request cannot come first.
-///
-/// # Errors
-/// The governance does not read.
-pub fn forget_signed(
-    workspace: &str,
-    governance: &[Vec<u8>],
-    own: &DeviceCert,
-    now: SystemTime,
-) -> Result<(), String> {
-    let peer = StatePeer::unanchored(workspace, own, governance, now)?;
-    SIGNED.lock().remove(&signed_by(&peer, workspace, own));
-    Ok(())
-}
-
 /// Write `write` on `own`'s copy of the workspace as `governance` makes it,
 /// signed by `key`, and answer the workspace changes it made: none when the
-/// workspace holds what it would write already. What the device signed into the
-/// workspace before and `governance` lacks comes first, and is answered with it:
-/// a device never signs two changes under one number.
+/// workspace holds what it would write already.
+///
+/// `earlier` is what the device signed into the workspace before, as its store keeps it
+/// ([`StatePeer::own_admissions`]). A device can be signed in twice: a server its person adds is
+/// handed their workspace and signs its row on the copy it was handed, while its own session
+/// redeems an invitation on what the person's device answered it, or signed in once before it
+/// restarted. Each signs on the governance it was sent, and where that lacks the other's change
+/// both are the key's first change: two changes under one number of one writer, which every
+/// copy that meets both refuses. What `governance` lacks of `earlier` is taken in first and
+/// answered with what is written: a copy that lists the device by it signs nothing new, and the
+/// copy it is answered to takes the device's row in.
 fn written(
     workspace: &str,
-    governance: &[Vec<u8>],
+    (governance, earlier): (&[Vec<u8>], &[Vec<u8>]),
     own: &DeviceCert,
     key: &dyn DeviceSigner,
     write: impl FnOnce(&mut StatePeer, &dyn DeviceSigner) -> Result<bool, String>,
     now: SystemTime,
-) -> Result<Signed, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     if key.device_public_key() != own.device_public_key {
         return Err("a device signs only its own admission".into());
     }
@@ -147,86 +87,41 @@ fn written(
     let heads = peer
         .workspace_heads()
         .ok_or("the workspace's governance is missing")?;
-    let signer = signed_by(&peer, workspace, own);
-    let built_on = after_own(&mut peer, &signer, own, now)?;
-    // Where the device's earlier admission lists it already, nothing new is written, and that
-    // admission is what is answered: the copy it is answered to takes the device's own row in.
+    if !earlier.is_empty() && !peer.governance().lists_device(own) {
+        let hashes = earlier
+            .iter()
+            .map(|bytes| automerge::Change::try_from(bytes.as_slice()).map(|change| change.hash()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        // Read as one with the governance, as a copy that met both reads them: what the earlier
+        // admissions build on comes with them, and may be any member's.
+        let mut with_earlier = governance.to_vec();
+        with_earlier.push(
+            postcard::to_stdvec(&crate::NeighbourMsg::SyncResp {
+                workspace: workspace.to_owned(),
+                changes: earlier.to_vec(),
+            })
+            .map_err(|error| error.to_string())?,
+        );
+        peer = StatePeer::unanchored(workspace, own, &with_earlier, now)
+            .map_err(|error| format!("{SIGNED_ELSEWHERE}: {error}"))?;
+        if !hashes.iter().all(|hash| peer.workspace_holds_change(hash)) {
+            return Err(SIGNED_ELSEWHERE.into());
+        }
+    }
     write(&mut peer, key)?;
-    Ok(Signed {
-        changes: peer.workspace_changes_since(&heads),
-        signer,
-        built_on,
-    })
-}
-
-/// The changes a turn of [`written`] answered, whose they are, and what it read of the key's
-/// earlier admissions. A turn whose signer signs outside it runs until every signature is given
-/// ([`signed_turn`]): only the run it ends with is kept ([`Self::kept`]).
-struct Signed {
-    changes: Vec<Vec<u8>>,
-    signer: SignedBy,
-    built_on: BuiltOn,
-}
-
-impl Signed {
-    /// The changes, kept for the key's next admission to build on ([`after_own`]): `None` where
-    /// another signing kept something for the same key since this one read, so these changes
-    /// may take a number that one took, and are signed again on top of it.
-    fn kept(self) -> Option<Vec<Vec<u8>>> {
-        let mut kept = SIGNED.lock();
-        let read = kept.get(&self.signer).map_or(&[][..], Vec::as_slice);
-        if read != self.built_on.read.as_slice() {
-            return None;
-        }
-        let mut now_kept = self.built_on.kept;
-        for change in &self.changes {
-            if !now_kept.contains(change) {
-                now_kept.push(change.clone());
-            }
-        }
-        if now_kept.is_empty() {
-            kept.remove(&self.signer);
-        } else {
-            kept.insert(self.signer, now_kept);
-        }
-        drop(kept);
-        Some(self.changes)
-    }
-}
-
-/// Run `turn`, a key that signs at once signing in it, until what it signed is kept
-/// ([`Signed::kept`]).
-fn kept_now(mut turn: impl FnMut() -> Result<Signed, String>) -> Result<Vec<Vec<u8>>, String> {
-    loop {
-        if let Some(changes) = turn()?.kept() {
-            return Ok(changes);
-        }
-    }
-}
-
-/// Run `turn` under `signer`, which may sign outside it ([`signed_turn`]), until what it signed
-/// is kept ([`Signed::kept`]).
-async fn kept_signed(
-    signer: &dyn DeviceSigner,
-    mut turn: impl FnMut(&dyn DeviceSigner) -> Result<Signed, String>,
-) -> Result<Vec<Vec<u8>>, String> {
-    loop {
-        let answered = signed_turn(signer, |signatures| turn(signatures)).await?;
-        if let Some(changes) = answered.kept() {
-            return Ok(changes);
-        }
-    }
+    Ok(peer.workspace_changes_since(&heads))
 }
 
 /// One run of [`own_admission`] under `key`, as [`signed_turn`] makes it.
-fn own_admission_turn(
+pub(crate) fn own_admission_turn(
     workspace: &str,
-    governance: &[Vec<u8>],
+    signed_on: (&[Vec<u8>], &[Vec<u8>]),
     redemption: &VerifiedRedemption,
     name: Option<&str>,
     key: &dyn DeviceSigner,
     now: SystemTime,
-) -> Result<Signed, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     let own = redemption.certificate();
     // A key's grant is listed by the name it joined as, the name its person
     // approved it under.
@@ -239,7 +134,7 @@ fn own_admission_turn(
         .filter(|_| crate::join_log::names_its_person(own));
     written(
         workspace,
-        governance,
+        signed_on,
         own,
         key,
         |peer, key| {
@@ -273,7 +168,7 @@ pub fn own_admission(
     key: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    kept_now(|| own_admission_turn(workspace, governance, redemption, name, key, now))
+    own_admission_turn(workspace, (governance, &[]), redemption, name, key, now)
 }
 
 /// [`own_admission`] signed by `signer`, which may sign outside the turn.
@@ -288,8 +183,15 @@ pub async fn sign_own_admission(
     signer: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    kept_signed(signer, |signatures| {
-        own_admission_turn(workspace, governance, redemption, name, signatures, now)
+    signed_turn(signer, |signatures| {
+        own_admission_turn(
+            workspace,
+            (governance, &[]),
+            redemption,
+            name,
+            signatures,
+            now,
+        )
     })
     .await
 }
@@ -297,14 +199,14 @@ pub async fn sign_own_admission(
 /// One run of [`further_device_row`] under `key`, as [`signed_turn`] makes it.
 fn further_device_row_turn(
     workspace: &str,
-    governance: &[Vec<u8>],
+    signed_on: (&[Vec<u8>], &[Vec<u8>]),
     own: &DeviceCert,
     key: &dyn DeviceSigner,
     now: SystemTime,
-) -> Result<Signed, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     written(
         workspace,
-        governance,
+        signed_on,
         own,
         key,
         |peer, key| {
@@ -333,22 +235,22 @@ pub fn further_device_row(
     key: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    kept_now(|| further_device_row_turn(workspace, governance, own, key, now))
+    further_device_row_turn(workspace, (governance, &[]), own, key, now)
 }
 
 /// One run of [`entry_admission`] under `key`, as [`signed_turn`] makes it.
 fn entry_admission_turn(
     workspace: &str,
-    governance: &[Vec<u8>],
+    signed_on: (&[Vec<u8>], &[Vec<u8>]),
     own: &DeviceCert,
     request_id: [u8; 32],
     name: Option<&str>,
     key: &dyn DeviceSigner,
     now: SystemTime,
-) -> Result<Signed, String> {
+) -> Result<Vec<Vec<u8>>, String> {
     written(
         workspace,
-        governance,
+        signed_on,
         own,
         key,
         |peer, key| {
@@ -393,7 +295,15 @@ pub fn entry_admission(
     key: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    kept_now(|| entry_admission_turn(workspace, governance, own, request_id, name, key, now))
+    entry_admission_turn(
+        workspace,
+        (governance, &[]),
+        own,
+        request_id,
+        name,
+        key,
+        now,
+    )
 }
 
 /// [`entry_admission`] signed by `signer`, which may sign outside the turn.
@@ -409,9 +319,15 @@ pub async fn sign_entry_admission(
     signer: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    kept_signed(signer, |signatures| {
+    signed_turn(signer, |signatures| {
         entry_admission_turn(
-            workspace, governance, own, request_id, name, signatures, now,
+            workspace,
+            (governance, &[]),
+            own,
+            request_id,
+            name,
+            signatures,
+            now,
         )
     })
     .await
@@ -439,13 +355,13 @@ fn person_is_member(
 /// As [`further_device_row`], or `signer` does not sign.
 pub async fn sign_further_device_row(
     workspace: &str,
-    governance: &[Vec<u8>],
+    (governance, earlier): (&[Vec<u8>], &[Vec<u8>]),
     own: &DeviceCert,
     signer: &dyn DeviceSigner,
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
-    kept_signed(signer, |signatures| {
-        further_device_row_turn(workspace, governance, own, signatures, now)
+    signed_turn(signer, |signatures| {
+        further_device_row_turn(workspace, (governance, earlier), own, signatures, now)
     })
     .await
 }
@@ -461,12 +377,13 @@ pub async fn sign_further_device_row(
 /// or `signer` does not sign.
 pub async fn sign_entry(
     workspace: &str,
-    governance: &[Vec<u8>],
+    (governance, earlier): (&[Vec<u8>], &[Vec<u8>]),
     (invitation, request_id): (Option<&[u8]>, [u8; 32]),
     name: Option<&str>,
     (own, signer): (&DeviceCert, &dyn DeviceSigner),
     now: SystemTime,
 ) -> Result<Vec<Vec<u8>>, String> {
+    let signed_on = (governance, earlier);
     match invitation {
         Some(invitation) => {
             let redemption = crate::join::verify_connection_redemption(
@@ -476,16 +393,22 @@ pub async fn sign_entry(
                 &tilo_user_identity::RevocationList::new(),
                 crate::state::now_ns(now),
             )?;
-            sign_own_admission(workspace, governance, &redemption, name, signer, now).await
+            signed_turn(signer, |signatures| {
+                own_admission_turn(workspace, signed_on, &redemption, name, signatures, now)
+            })
+            .await
         }
         // A device of a person the workspace has in it brings itself in as
         // theirs; a stranger comes in under the workspace's entry, naming the
         // entry the governance it was sent holds.
         None if person_is_member(workspace, governance, own, now) => {
-            sign_further_device_row(workspace, governance, own, signer, now).await
+            sign_further_device_row(workspace, signed_on, own, signer, now).await
         }
         None => {
-            sign_entry_admission(workspace, governance, own, request_id, name, signer, now).await
+            signed_turn(signer, |signatures| {
+                entry_admission_turn(workspace, signed_on, own, request_id, name, signatures, now)
+            })
+            .await
         }
     }
 }

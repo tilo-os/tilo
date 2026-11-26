@@ -1487,4 +1487,23 @@ impl tilo_session_client::MemberLinks for MemberLinks {
     fn up(&self, workspace: WorkspaceId) -> Option<tokio::sync::watch::Receiver<bool>> {
         self.0.workspaces().member_up(workspace).ok()
     }
+
+    fn own_admissions(&self, workspace: WorkspaceId, device: &[u8; 32]) -> Vec<Vec<u8>> {
+        self.0.workspaces().own_admissions(workspace, device)
+    }
+
+    fn keep_own_admission(
+        &self,
+        workspace: WorkspaceId,
+        device: &[u8; 32],
+        changes: &[Vec<u8>],
+    ) -> Result<(), String> {
+        self.0
+            .workspaces()
+            .keep_own_admission(workspace, device, changes)
+    }
+
+    fn forget_own_admission(&self, workspace: WorkspaceId, device: &[u8; 32]) {
+        self.0.workspaces().forget_own_admission(workspace, device);
+    }
 }

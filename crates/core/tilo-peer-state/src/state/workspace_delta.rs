@@ -27,21 +27,51 @@ impl StatePeer {
             .collect()
     }
 
-    /// The changes the committed workspace document starts from, those that build on none:
-    /// which history of the workspace it is, the same in every copy of that history.
-    pub(crate) fn workspace_roots(&self) -> Vec<automerge::ChangeHash> {
+    /// The generation of the workspace's history this copy holds: zero for one never founded
+    /// again.
+    #[must_use]
+    pub fn workspace_generation(&self) -> u64 {
+        self.core
+            .workspace_doc
+            .as_deref()
+            .map_or(0, crate::workspace::base::generation)
+    }
+
+    /// The changes `device` signed into this copy of the workspace as its own admission, in
+    /// every generation of its history, with what they build on, encoded in causal order: what
+    /// a later admission of the device builds on, so it never signs a second change under a
+    /// number it signed one under ([`crate::own_admission`]). Empty where it signed none here.
+    #[must_use]
+    pub fn own_admissions(&self, device: &[u8; 32]) -> Vec<Vec<u8>> {
         let Some(workspace) = self.core.workspace_doc.as_deref() else {
             return Vec::new();
         };
-        let mut roots: Vec<_> = workspace
-            .clone()
-            .get_changes(&[])
-            .into_iter()
-            .filter(|change| change.deps().is_empty())
-            .map(|change| change.hash())
+        let generation = crate::workspace::base::generation(workspace);
+        let actors: Vec<_> = (0..=generation)
+            .map(|generation| crate::workspace_device_actor_at(device, generation))
             .collect();
-        roots.sort_unstable();
-        roots
+        let mut document = workspace.clone();
+        let changes = document.get_changes(&[]);
+        let mut wanted: std::collections::HashSet<automerge::ChangeHash> = changes
+            .iter()
+            .filter(|change| actors.contains(change.actor_id()))
+            .map(automerge::Change::hash)
+            .collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        // Causal order puts every change after what it builds on: walking it backwards takes
+        // in each change's dependencies before they are passed.
+        for change in changes.iter().rev() {
+            if wanted.contains(&change.hash()) {
+                wanted.extend(change.deps().iter().copied());
+            }
+        }
+        changes
+            .iter()
+            .filter(|change| wanted.contains(&change.hash()))
+            .map(|change| change.raw_bytes().to_vec())
+            .collect()
     }
 
     /// Whether the workspace document holds the change `hash`.

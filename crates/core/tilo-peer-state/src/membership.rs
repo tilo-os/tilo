@@ -54,7 +54,7 @@ where
     // workspace lists already writes nothing.
     let admission = crate::own_admission::sign_further_device_row(
         &workspace_id.to_string(),
-        &governance,
+        (&governance, &[]),
         device,
         signer,
         tilo_clock::wall(),

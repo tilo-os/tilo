@@ -285,7 +285,7 @@ async fn a_server_retired_while_away_retires_itself_once_back() {
         _following: mut following,
     } = person_with_a_server().await;
     following.remove(0).abort();
-    let kept = server.stop_keeping().await;
+    let kept = (*server).stop_keeping().await;
     // What the person's device does when the server does not answer in time.
     let id = servers::device_id(&nas.device_pubkey());
     servers::apply(
@@ -419,11 +419,11 @@ async fn lists(hosted: &Hosted, workspace: WorkspaceId, device: &TestDevice, wha
     .await;
 }
 
-/// A server a person adds signs itself into their workspace twice at once: its session signs
-/// its row on the governance the person's device answered it, and the hand-over has it sign its
-/// row on the copy it was handed, which lacks the first. The person then hands it the workspace
-/// again. The server signs one change under each number all the same, every copy agrees on
-/// them, and a write on either device reaches the other after.
+/// A server a person adds signs itself into their workspace twice: its session signs its row
+/// on the governance the person's device answered it, and the hand-over, after the server
+/// restarted, has it sign its row on the copy it was handed, which lacks the first. The person
+/// then hands it the workspace again. The server signs one change under each number all the
+/// same, every copy agrees on them, and a write on either device reaches the other after.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_signed_in_twice_and_handed_its_workspace_twice_keeps_one_change_per_number() {
     use tilo_peer_state::join_log::GovernanceMessages as _;
@@ -439,8 +439,9 @@ async fn a_server_signed_in_twice_and_handed_its_workspace_twice_keeps_one_chang
     let workspace = WorkspaceId::parse(&admin).unwrap();
     servers::found(desktop.host.workspaces()).await.unwrap();
 
-    // The server's session signs its row on what the laptop answered it, before the laptop
-    // hands it the workspace: the copy the hand-over brings does not hold that row.
+    // The server's session signs its row on what the laptop answered it, and keeps it in the
+    // server's store as it sends it, before the laptop hands it the workspace: the copy the
+    // hand-over brings does not hold that row.
     let answered = desktop
         .host
         .workspaces()
@@ -451,16 +452,24 @@ async fn a_server_signed_in_twice_and_handed_its_workspace_twice_keeps_one_chang
         .unwrap();
     let session = tilo_peer_state::own_admission::sign_further_device_row(
         &admin,
-        &answered,
+        (&answered, &[]),
         &nas.cert,
         &nas.sk,
         tilo_clock::wall(),
     )
     .await
     .unwrap();
+    server
+        .host
+        .workspaces()
+        .keep_own_admission(workspace, &nas.device_pubkey(), &session)
+        .unwrap();
     let first = automerge::Change::try_from(session[0].as_slice()).unwrap();
     let writer = first.actor_id().clone();
 
+    // The server restarts before the hand-over reaches it.
+    let kept = (*server).stop_keeping().await;
+    let server = Box::new(serve_in(&alice, &nas, WorkSetting::own_person(), kept).await);
     join_person_workspace(&desktop, &nas, &server).await;
     lists(
         &server,
@@ -523,4 +532,74 @@ async fn a_server_signed_in_twice_and_handed_its_workspace_twice_keeps_one_chang
         signed_by(&server, workspace, &writer),
         signed_by(&desktop, workspace, &writer)
     );
+}
+
+/// The other way round: the hand-over has the server sign its row on the copy it was handed,
+/// the server restarts, and its session then signs itself in on what the person's device had
+/// answered it before the hand-over, which lacks that row. What the session signs builds on the
+/// row the server's store keeps: no second change under its number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_restarted_after_the_hand_over_signs_its_session_in_after_its_row() {
+    use tilo_peer_state::join_log::GovernanceMessages as _;
+
+    let alice = TestUser::fresh("Alice");
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let server = Box::new(serve_on(&alice, &nas, WorkSetting::own_person()).await);
+    let desktop = Box::new(serve_on(&alice, &laptop, WorkSetting::own_person()).await);
+    let admin = person_workspace_id(&alice.user_pk);
+    let workspace = WorkspaceId::parse(&admin).unwrap();
+    servers::found(desktop.host.workspaces()).await.unwrap();
+    let answered = desktop
+        .host
+        .workspaces()
+        .copy_now(workspace)
+        .unwrap()
+        .peer
+        .governance_messages()
+        .unwrap();
+
+    join_person_workspace(&desktop, &nas, &server).await;
+    lists(
+        &server,
+        workspace,
+        &nas,
+        "the server's copy to hold its own row",
+    )
+    .await;
+    let kept = (*server).stop_keeping().await;
+    let server = Box::new(serve_in(&alice, &nas, WorkSetting::own_person(), kept).await);
+    let own = server
+        .host
+        .workspaces()
+        .own_admissions(workspace, &nas.device_pubkey());
+    assert!(
+        !own.is_empty(),
+        "the server's store keeps the row it signed"
+    );
+    let writer = automerge::Change::try_from(own.last().unwrap().as_slice())
+        .unwrap()
+        .actor_id()
+        .clone();
+    let numbered = signed_by(&server, workspace, &writer);
+
+    let session = tilo_peer_state::own_admission::sign_further_device_row(
+        &admin,
+        (&answered, &own),
+        &nas.cert,
+        &nas.sk,
+        tilo_clock::wall(),
+    )
+    .await
+    .unwrap();
+    for bytes in &session {
+        let change = automerge::Change::try_from(bytes.as_slice()).unwrap();
+        if change.actor_id() == &writer {
+            assert_eq!(
+                numbered.get(&change.seq()),
+                Some(&change.hash()),
+                "the session signed another change under a number the server's row took"
+            );
+        }
+    }
 }

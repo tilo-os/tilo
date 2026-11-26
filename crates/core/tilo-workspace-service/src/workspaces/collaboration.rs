@@ -498,13 +498,18 @@ impl Workspaces {
                 tilo_peer_state::REMOVED_DEVICE_REFUSED,
             ));
         }
+        // What the device signed into the workspace before this copy had it (its session's
+        // redemption, sent to the host that handed the copy over) comes first.
+        let _turn =
+            tilo_peer_state::own_admission::signing_turn(workspace, device.device_public_key).await;
+        let own = self.own_admissions(hosted.workspace_id(), &device.device_public_key);
         let governance = hosted
             .peer()
             .governance_messages()
             .map_err(CollaborationError::new)?;
         let row = tilo_peer_state::own_admission::sign_further_device_row(
             workspace,
-            &governance,
+            (&governance, &own),
             device,
             signer,
             system_time(now),

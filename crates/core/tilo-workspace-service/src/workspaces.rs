@@ -112,6 +112,7 @@ pub(crate) mod memberships;
 /// The operator's kill switch, held while a host offers one.
 pub mod mode;
 mod own;
+mod own_admissions;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;

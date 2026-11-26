@@ -306,6 +306,34 @@ pub trait MemberLinks: collab_types::signer::MaybeSendSync {
         let _ = workspace;
         None
     }
+
+    /// What `device` signed into `workspace` as its own admission, as the device's store keeps
+    /// it ([`tilo_peer_state::own_admission::sign_entry`]): what its next admission there builds
+    /// on.
+    fn own_admissions(&self, workspace: WorkspaceId, device: &[u8; 32]) -> Vec<Vec<u8>> {
+        let _ = (workspace, device);
+        Vec::new()
+    }
+
+    /// Keep `changes`, what `device` signed into `workspace` as its own admission and is about
+    /// to send its host, in the device's store, before they leave it.
+    ///
+    /// # Errors
+    /// The store does not keep them.
+    fn keep_own_admission(
+        &self,
+        workspace: WorkspaceId,
+        device: &[u8; 32],
+        changes: &[Vec<u8>],
+    ) -> Result<(), String> {
+        let _ = (workspace, device, changes);
+        Ok(())
+    }
+
+    /// Forget what `device` signed into `workspace`: the workspace refused it.
+    fn forget_own_admission(&self, workspace: WorkspaceId, device: &[u8; 32]) {
+        let _ = (workspace, device);
+    }
 }
 
 /// [`start_session`] for a session of a device that lends it what its own session runs
@@ -1005,7 +1033,7 @@ impl Task {
             return;
         };
         let answer = ask_entry(
-            self.actions.as_ref(),
+            (self.actions.as_ref(), self.own_store()),
             Arc::clone(&self.signer),
             self.config.cert.clone(),
             self.config.server_cert.device_public_key,
@@ -1037,8 +1065,9 @@ impl Task {
         let cert = self.config.cert.clone();
         let host = self.config.server_cert.device_public_key;
         let actions = self.actions.clone();
+        let store = self.own_store();
         n0_future::task::spawn(async move {
-            let answer = ask_entry(actions.as_ref(), signer, cert, host, &entering)
+            let answer = ask_entry((actions.as_ref(), store), signer, cert, host, &entering)
                 .await
                 .map_err(|failure| LinkError::Unavailable(failure.message));
             let _ = done.send(answer);
@@ -1084,6 +1113,12 @@ impl Task {
                 Err(error)
             }
         }
+    }
+
+    /// The device service's store, for a session lent it: where what the device signed into a
+    /// workspace is kept ([`MemberLinks::own_admissions`]).
+    fn own_store(&self) -> Option<Arc<dyn MemberLinks>> {
+        self.lent.as_ref().map(|lent| Arc::clone(&lent.links))
     }
 
     /// `workspace_id`'s member copy's link, as the device service keeps it.
@@ -1286,7 +1321,7 @@ impl Task {
             admission: Vec::new(),
         };
         let answered = ask_entry(
-            self.actions.as_ref(),
+            (self.actions.as_ref(), self.own_store()),
             Arc::clone(&self.signer),
             self.config.cert.clone(),
             self.config.server_cert.device_public_key,
@@ -4744,7 +4779,10 @@ async fn ask_fetch_grant(
 /// its own key ([`tilo_peer_state::own_admission::sign_entry`]) and asks again with it: no host
 /// signs anyone in. The host's last answer.
 async fn ask_entry(
-    actions: Option<&tilo_server_client::link::Link>,
+    (actions, store): (
+        Option<&tilo_server_client::link::Link>,
+        Option<Arc<dyn MemberLinks>>,
+    ),
     signer: Arc<dyn tilo_server_client::DeviceSigner>,
     cert: DeviceCert,
     host: [u8; 32],
@@ -4764,34 +4802,49 @@ async fn ask_entry(
         Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
         Through::Entry => None,
     };
+    // What the device signed into the workspace before, as its store keeps it, comes first: it
+    // never signs a second change under a number it gave one already, after a restart either.
+    let workspace_id = WorkspaceId::parse(&entering.workspace);
+    let stored = store.as_ref().zip(workspace_id);
+    let turn =
+        tilo_peer_state::own_admission::signing_turn(&entering.workspace, cert.device_public_key)
+            .await;
+    let own = stored
+        .map(|(store, workspace)| store.own_admissions(workspace, &cert.device_public_key))
+        .unwrap_or_default();
     // A row the workspace refuses leaves nothing of it there, so the device's next try signs
     // its first change again: one signed for a refused request cannot come first, since every
     // copy holding it would refuse the retry's redemption of the same invitation.
     let forget_refused = || {
-        tilo_peer_state::own_admission::forget_signed(
-            &entering.workspace,
-            &governance,
-            &cert,
-            tilo_clock::wall(),
-        )
-        .ok();
+        if let Some((store, workspace)) = stored {
+            store.forget_own_admission(workspace, &cert.device_public_key);
+        }
     };
     let admission = tilo_peer_state::own_admission::sign_entry(
         &entering.workspace,
-        &governance,
+        (&governance, &own),
         (invitation, entering.request_id),
         Some(entering.name.as_str()),
         (&cert, signer.as_ref()),
         tilo_clock::wall(),
     )
     .await
-    .map_err(|reason| {
-        forget_refused();
-        EntryFailure {
-            code: "refused",
-            message: format!("this device could not sign its own admission: {reason}"),
-        }
+    .map_err(|reason| EntryFailure {
+        code: "refused",
+        message: format!("this device could not sign its own admission: {reason}"),
     })?;
+    // Kept before it leaves: a hand-over of the workspace that reaches this device before the
+    // host's answer signs on top of it.
+    if let Some((store, workspace)) = stored {
+        store
+            .keep_own_admission(workspace, &cert.device_public_key, &admission)
+            .map_err(|reason| EntryFailure {
+                code: "unavailable",
+                message: format!("this device could not keep its own admission: {reason}"),
+            })?;
+    }
+    // Let go before the host is asked: the next signing needs only what is kept.
+    drop(turn);
     let with_admission = tilo_server_protocol::entering::Entering {
         through,
         admission,
