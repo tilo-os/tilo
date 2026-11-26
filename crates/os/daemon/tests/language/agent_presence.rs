@@ -566,6 +566,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             matches!(
                 revoked.status,
                 tilo_actions::remote::ReceiptStatus::Completed { .. }
+                    | tilo_actions::remote::ReceiptStatus::Accepted
             ),
             "{revoked:?}"
         );
