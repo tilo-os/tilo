@@ -862,8 +862,14 @@ impl StatePeer {
         candidate: &mut automerge::AutoCommit,
     ) -> Result<(), AdmissionError> {
         if let Some(device) = self.own_device {
-            let actor = self.workspace_actor_for(&device);
-            workspace::base::carried(before, candidate, &actor)
+            // The change is written on the base this copy adopts, as that base's generation
+            // numbers it: the history the base replaced gave this device other numbers, and the
+            // base names what it holds of those.
+            let held_as =
+                self.workspace_actor_in(&device, crate::workspace::base::generation(before));
+            let actor =
+                self.workspace_actor_in(&device, crate::workspace::base::generation(candidate));
+            workspace::base::carried(before, candidate, (&held_as, &actor))
                 .map_err(crate::AdmissionError::malformed)?;
         }
         Ok(())

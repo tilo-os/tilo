@@ -1907,10 +1907,14 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Ticks true when `workspace`'s member copy is linked to the device
-    /// serving it, and false when that link ends.
-    #[cfg(test)]
-    fn member_up(
+    /// `workspace`'s member copy coming up: the signal is `true` while its link to the device
+    /// serving it is up, and false when that link ends. What a session lent the device's member
+    /// copies waits on instead of dialling a link of its own.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here as a member copy.
+    pub fn member_up(
         &self,
         workspace: WorkspaceId,
     ) -> Result<tokio::sync::watch::Receiver<bool>, String> {

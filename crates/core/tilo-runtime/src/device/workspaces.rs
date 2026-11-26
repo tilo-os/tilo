@@ -1465,4 +1465,8 @@ impl tilo_session_client::MemberLinks for MemberLinks {
         let copies = self.0.workspaces().clone();
         tokio::spawn(async move { Box::pin(copies.hold_as_members([(workspace, host)])).await });
     }
+
+    fn up(&self, workspace: WorkspaceId) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.0.workspaces().member_up(workspace).ok()
+    }
 }

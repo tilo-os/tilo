@@ -13,6 +13,8 @@
 // enrollment answer, which the fixtures and internals behind `test-support`
 // carry: the one target depends on it.
 
+#[path = "base_generations.rs"]
+mod base_generations;
 #[path = "common/mod.rs"]
 mod common;
 

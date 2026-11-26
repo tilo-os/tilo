@@ -106,8 +106,8 @@ pub use state::{
     Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
     WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision, decide_with_surfaces,
     default_surfaces, entry_digest, holder_role, keeping_devices_of, peer_handle, seed_workspace,
-    seed_workspace_at, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
-    workspace_seed,
+    seed_workspace_at, trigger_mark, unranked, workspace_device_actor_at, workspace_grants_of,
+    workspace_host_actor, workspace_host_actor_at, workspace_seed,
 };
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};

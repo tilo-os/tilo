@@ -8,7 +8,7 @@ use super::written_under::Under;
 use super::{
     ActionKind, AutoCommit, DeviceCert, DeviceRow, MemberAccess, MembershipError, Role, Route,
     SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
-    held_units, now_ns, resource_type, workspace, workspace_host_actor,
+    held_units, now_ns, resource_type, workspace,
 };
 use collab_types::signer::DeviceSigner;
 
@@ -995,13 +995,27 @@ impl StatePeer {
         self.workspace_actor_for(&key.device_public_key())
     }
 
-    /// [`Self::workspace_actor_of`] by the signing device's public key.
+    /// [`Self::workspace_actor_of`] by the signing device's public key: the device's actor of
+    /// the workspace's generation, so no generation gives out numbers another one gave.
     #[must_use]
     pub fn workspace_actor_for(&self, device: &[u8; 32]) -> automerge::ActorId {
+        let generation = self
+            .core
+            .workspace_doc
+            .as_deref()
+            .map_or(0, crate::workspace::base::generation);
+        self.workspace_actor_in(device, generation)
+    }
+
+    /// The actor this copy makes the workspace changes a device signs under, in the workspace's
+    /// `generation`: [`workspace_host_actor_at`] for a workspace host's copy,
+    /// [`workspace_device_actor_at`] for a member copy's.
+    #[must_use]
+    pub fn workspace_actor_in(&self, device: &[u8; 32], generation: u64) -> automerge::ActorId {
         if self.workspace_host {
-            workspace_host_actor(device)
+            crate::workspace_host_actor_at(device, generation)
         } else {
-            automerge::ActorId::from(device.to_vec())
+            crate::workspace_device_actor_at(device, generation)
         }
     }
 

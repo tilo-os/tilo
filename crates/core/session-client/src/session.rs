@@ -298,6 +298,14 @@ pub trait MemberLinks: collab_types::signer::MaybeSendSync {
     /// at: what a host answered as it let this device in. The session's join waits for that
     /// copy's link, so the service takes it in now rather than once the join returned.
     fn take_in(&self, workspace: WorkspaceId, host: tilo_peer_state::join::TransportHint);
+
+    /// `workspace`'s member copy coming up, for a session that waits on the device service
+    /// rather than dialling a link of its own: the signal is `true` while the copy's link is up.
+    /// `None` where the device service keeps no copy of the workspace.
+    fn up(&self, workspace: WorkspaceId) -> Option<tokio::sync::watch::Receiver<bool>> {
+        let _ = workspace;
+        None
+    }
 }
 
 /// [`start_session`] for a session of a device that lends it what its own session runs
@@ -361,13 +369,7 @@ fn session_task(
     });
     let engine = session_engine(&config, &signer, &owner);
     engine.keys().set(Some(workspace_keys.clone()));
-    let held = Held::default();
-    {
-        let mut waiting = held.lock();
-        for (route, mutation) in key_state.held() {
-            waiting.entry(route).or_default().push(mutation);
-        }
-    }
+    let held = held_from_store(&key_state);
     #[cfg(feature = "toolkit")]
     crate::surfaces::decide_with_kept_surfaces();
     let task = Task {
@@ -408,6 +410,8 @@ fn session_task(
         behind: BTreeMap::new(),
         links: BTreeMap::new(),
         dialing: BTreeSet::new(),
+        waiting: BTreeSet::new(),
+        woke: Arc::default(),
         sent: BTreeMap::new(),
         actions: None,
         latched: Latched::default(),
@@ -435,6 +439,18 @@ fn session_task(
         reports,
     );
     (task, link, receiver)
+}
+
+/// The writes a session keeps for their record's keys, as the store held them for this device:
+/// the same ones the session drafts and admits, waiting for the keys that let them go.
+fn held_from_store(key_state: &crate::membership_check::StoredKeys) -> Held {
+    let held = Held::default();
+    let mut waiting = held.lock();
+    for (route, mutation) in key_state.held() {
+        waiting.entry(route).or_default().push(mutation);
+    }
+    drop(waiting);
+    held
 }
 
 /// The engine a session writes its workspaces through: this device's identity, kept beside
@@ -619,6 +635,12 @@ struct Task {
     links: BTreeMap<WorkspaceId, WorkspaceLink>,
     /// The workspaces whose link is being dialled now.
     dialing: BTreeSet<WorkspaceId>,
+    /// The workspaces this lent session waits on the device service for: its member copy is not
+    /// linked yet, and the session dials nothing until the service's own link is up.
+    waiting: BTreeSet<WorkspaceId>,
+    /// A workspace's member copy came up: the session dials the links it waits on now, rather
+    /// than asking again and again before the copy is there.
+    woke: Arc<tokio::sync::Notify>,
     /// The ownership entries sent on the current link of each workspace, each with its frame,
     /// until its answer retires it: a new link sends everything again.
     sent: BTreeMap<(WorkspaceId, [u8; 32]), Vec<u8>>,
@@ -808,7 +830,19 @@ impl Task {
                     attempt = 0;
                     self.admission_since = Some(tilo_clock::unix_now_ms());
                     self.connected();
-                    let exit = self.serve(&mut commands).await;
+                    let woke = Arc::clone(&self.woke);
+                    let served = tokio::select! {
+                        exit = self.serve(&mut commands) => Some(exit),
+                        () = woke.notified() => None,
+                    };
+                    let Some(exit) = served else {
+                        // A member copy the session waits on came up: its link is dialled now,
+                        // beside the workspaces already linked, rather than by dialling them all
+                        // again.
+                        tracing::info!("a workspace's member copy is linked; the session dials it");
+                        self.requests_lost();
+                        continue;
+                    };
                     self.requests_lost();
                     match exit {
                         Exit::Closed => return self.closed().await,
@@ -1016,8 +1050,22 @@ impl Task {
         if self.links.contains_key(&workspace_id) || !self.dialing.insert(workspace_id) {
             return Ok(());
         }
+        // A lent session dials no link of its own: it reads the member copy the device service
+        // keeps, so it has nothing to dial until that copy is there. Waiting for the copy rather
+        // than failing the dial keeps a session that is up for its other workspaces: failing it
+        // here took the session's every link down and dialled them all again, twice a second,
+        // however long the device service took to make the copy.
+        if self.lent.is_some() && self.lent_link(workspace_id).is_none() {
+            self.dialing.remove(&workspace_id);
+            self.wait_for_member_link(workspace_id);
+            self.reports.change(|status| {
+                status.workspaces.entry(workspace_id).or_insert(false);
+            });
+            return Ok(());
+        }
         let dialed = self.open_link(workspace_id).await;
         self.dialing.remove(&workspace_id);
+        self.waiting.remove(&workspace_id);
         match dialed {
             Ok(()) => {
                 self.link_up(workspace_id);
@@ -1036,6 +1084,37 @@ impl Task {
                 Err(error)
             }
         }
+    }
+
+    /// `workspace_id`'s member copy's link, as the device service keeps it.
+    fn lent_link(&self, workspace_id: WorkspaceId) -> Option<DirectSync> {
+        self.lent.as_ref()?.links.link(workspace_id)
+    }
+
+    /// Wait for the device service to link `workspace_id`'s member copy, once: the session dials
+    /// the link when it comes up. A workspace the service holds no copy of is waited on by
+    /// nothing, and stays this session's to read when it is placed.
+    fn wait_for_member_link(&mut self, workspace_id: WorkspaceId) {
+        if self.waiting.contains(&workspace_id) {
+            return;
+        }
+        let Some(mut up) = self
+            .lent
+            .as_ref()
+            .and_then(|lent| lent.links.up(workspace_id))
+        else {
+            return;
+        };
+        self.waiting.insert(workspace_id);
+        let woke = Arc::clone(&self.woke);
+        n0_future::task::spawn(async move {
+            while up.changed().await.is_ok() {
+                if *up.borrow() {
+                    woke.notify_one();
+                    return;
+                }
+            }
+        });
     }
 
     /// Open `workspace_id`'s link, ready to run: the device's replica of it, the link the host
@@ -1581,6 +1660,11 @@ impl Task {
     async fn retry_links(&mut self) -> Option<Exit> {
         for workspace_id in self.workspaces.clone() {
             if self.links.contains_key(&workspace_id) || self.dialing.contains(&workspace_id) {
+                continue;
+            }
+            // The device service's copy is not linked yet, and the session is told when it is:
+            // asking again before then reaches nothing.
+            if self.waiting.contains(&workspace_id) {
                 continue;
             }
             if let Err(error) = self.dial_link(workspace_id).await {

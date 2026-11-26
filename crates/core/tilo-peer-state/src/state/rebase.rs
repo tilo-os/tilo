@@ -33,7 +33,14 @@ impl StatePeer {
         if doc.get_heads().is_empty() || workspace::compaction::nothing_past_base(&mut doc) {
             return Ok(false);
         }
-        let actor = self.workspace_actor_for(&device.device_public_key);
+        // The base starts the workspace's history again as its next generation, so it is signed
+        // under this device's actor of that generation: the history it replaces keeps what it
+        // gave this device's numbers, and no copy that still holds it can take the base's
+        // writer's changes for the ones of the same numbers it holds.
+        let actor = self.workspace_actor_in(
+            &device.device_public_key,
+            crate::workspace::base::generation(&held).saturating_add(1),
+        );
         let at_ns = u64::try_from(
             now.duration_since(web_time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -72,8 +79,11 @@ impl StatePeer {
             return Ok(false);
         }
         let mut doc = is.clone();
-        let actor = self.workspace_actor_for(device);
-        if !workspace::base::carried(was, &mut doc, &actor).map_err(err)? {
+        // The change is written on the base this copy adopted, as that generation numbers it;
+        // the base names what it holds of the numbers the replaced history gave this device.
+        let held_as = self.workspace_actor_in(device, workspace::base::generation(was));
+        let actor = self.workspace_actor_in(device, workspace::base::generation(&doc));
+        if !workspace::base::carried(was, &mut doc, (&held_as, &actor)).map_err(err)? {
             return Ok(false);
         }
         self.core.workspace_doc = Some(doc.into());

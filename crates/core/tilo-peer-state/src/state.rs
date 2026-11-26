@@ -405,6 +405,46 @@ pub fn workspace_host_actor(device: &[u8; 32]) -> automerge::ActorId {
     automerge::ActorId::from(blake3::derive_key("tilo workspace host actor v1", device).to_vec())
 }
 
+/// The actor a host's own changes to a workspace are made under in the workspace's
+/// `generation`, for the host signing with `device`: the device's actor of that generation.
+///
+/// A base starts a workspace's history again from one change, and every copy of the history it
+/// replaced keeps that history's changes of the same writer. Signed under one actor, the
+/// changes the base's history gives out reuse the numbers the replaced history gave them, and a
+/// copy that meets both refuses one of them for good
+/// ([`crate::workspace::candidate`]). Each generation is therefore its own namespace: a writer's
+/// changes of one generation are no other generation's, whatever a copy still holds of the
+/// others. Generation zero keeps the actor it always had, so a stored history's changes stay as
+/// they were signed; a device's actor of one generation stays the same across restarts, since it
+/// is derived from the device and the generation alone.
+#[must_use]
+pub fn workspace_host_actor_at(device: &[u8; 32], generation: u64) -> automerge::ActorId {
+    if generation == 0 {
+        return workspace_host_actor(device);
+    }
+    let mut named = Vec::with_capacity(device.len().saturating_add(8));
+    named.extend_from_slice(device);
+    named.extend_from_slice(&generation.to_le_bytes());
+    automerge::ActorId::from(blake3::derive_key("tilo workspace host actor v1", &named).to_vec())
+}
+
+/// The actor a device's own changes to a workspace are made under in the workspace's
+/// `generation`, on a copy that is not its host copy: the device key itself at generation zero,
+/// which is what every stored history numbers such a copy's changes under, and a namespace of its
+/// own for each generation after it, as a host's changes have ([`workspace_host_actor_at`]). The
+/// host's copy of a device's changes and the device's own copy are two documents writing under
+/// one key, so the two actors stay distinct.
+#[must_use]
+pub fn workspace_device_actor_at(device: &[u8; 32], generation: u64) -> automerge::ActorId {
+    if generation == 0 {
+        return automerge::ActorId::from(device.to_vec());
+    }
+    let mut named = Vec::with_capacity(device.len().saturating_add(8));
+    named.extend_from_slice(device);
+    named.extend_from_slice(&generation.to_le_bytes());
+    automerge::ActorId::from(blake3::derive_key("tilo workspace device actor v1", &named).to_vec())
+}
+
 fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
     static DEFAULTS: std::sync::OnceLock<std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)>> =
         std::sync::OnceLock::new();

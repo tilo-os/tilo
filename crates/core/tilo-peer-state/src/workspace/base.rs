@@ -193,14 +193,16 @@ pub fn root(doc: &mut AutoCommit) -> Option<ChangeHash> {
         .map(|change| change.hash())
 }
 
-/// Carry onto `adopted`, a newer base, the changes `actor` made in `before`
-/// that the base does not hold, as `actor`'s own change: what `actor` wrote
+/// Carry onto `adopted`, a newer base, the changes `held_as` made in `before`
+/// that the base does not hold, as `actor`'s own change: what a device wrote
 /// against the history the base replaced is written again on the base, not
-/// dropped with that history. The base names what it holds ([`COVERS_KEY`]);
-/// the difference `actor`'s other changes made is taken from `before`
-/// itself, between its state without them and with them, so whatever the
-/// base's maker wrote meanwhile stays as the base holds it. Returns whether
-/// anything was carried.
+/// dropped with that history. `held_as` is the actor the device's changes have in the history
+/// the base replaced—each generation of a history numbers a writer's changes under an actor of
+/// its own—and `actor` is the actor of the base's generation, which the change written here
+/// takes. The base names what it holds ([`COVERS_KEY`]); the difference `held_as`'s other changes
+/// made is taken from `before` itself, between its state without them and with them, so whatever
+/// the base's maker wrote meanwhile stays as the base holds it. Returns whether anything was
+/// carried.
 ///
 /// # Errors
 /// `before` could not be read at the heads it is compared at, or `adopted`
@@ -208,25 +210,25 @@ pub fn root(doc: &mut AutoCommit) -> Option<ChangeHash> {
 pub fn carried(
     before: &AutoCommit,
     adopted: &mut AutoCommit,
-    actor: &ActorId,
+    (held_as, actor): (&ActorId, &ActorId),
 ) -> Result<bool, automerge::AutomergeError> {
-    let Some(covered) = covered_seq(adopted, actor) else {
+    let Some(covered) = covered_seq(adopted, held_as) else {
         // A base that names nothing it holds was made before bases said:
-        // there is no telling which of `actor`'s changes it holds.
+        // there is no telling which of its changes it holds.
         return Ok(false);
     };
     let mut before = before.clone();
     let changes = before.get_changes(&[]);
     let uncovered: std::collections::HashSet<ChangeHash> = changes
         .iter()
-        .filter(|change| change.actor_id() == actor && change.seq() > covered)
+        .filter(|change| change.actor_id() == held_as && change.seq() > covered)
         .map(automerge::Change::hash)
         .collect();
     if uncovered.is_empty() {
         return Ok(false);
     }
-    // Another's change built on one of `actor`'s uncovered changes is not
-    // `actor`'s to write again: the state compared against leaves it out too.
+    // Another's change built on one of `held_as`'s uncovered changes is not
+    // their author's to write again: the state compared against leaves it out too.
     let mut excluded = uncovered.clone();
     loop {
         let grown = changes.iter().filter(|change| {
@@ -398,26 +400,14 @@ fn founder(doc: &AutoCommit) -> Option<String> {
 /// dropped once `before` has a base, since applied beside it, an older
 /// history would merge back what the base left behind.
 ///
-/// A host writes each base's history afresh under its own actor, so the
-/// history a base replaced numbers its changes as the new one does. A change
-/// of the replaced history waiting for what it builds on holds its actor's
-/// sequence number, and the change of the current history at that number
-/// would be refused as a duplicate, with everything after it. A change still
-/// waiting for its parent may as well be of the current history, and must
-/// then wait and apply, so a change is dropped only where it is shown to
-/// belong to another history:
+/// Each generation of a workspace's history numbers its writers under actors of its own
+/// ([`crate::workspace_host_actor_at`]), so a change of the history a base replaced carries
+/// different actors than the current history's and is never taken for one of the same number. A
+/// waiting change is dropped only where it is shown to belong to another history:
 ///
 /// - it starts another history, or builds on a change that does;
-/// - or a change built on the base the receiver holds (applied, or taken
-///   with this batch on what is applied) holds its actor's sequence number:
-///   one history numbers each actor's changes once, so the other change is
-///   of another history;
-/// - or it waits for a change the base replaced ([`REPLACED_KEY`]): that
-///   change never comes, as the base holds what it held. A reader catching
-///   up from what a holder retained takes such changes after the base, and
-///   a change of the base's history at the same number may itself come
-///   ahead of what it builds on, before anything built on the base claims
-///   the number: the two would be refused as a duplicate, with the batch.
+/// - or it waits for a change the base replaced ([`REPLACED_KEY`]): that change never comes, as
+///   the base holds what it held.
 ///
 /// This applies to the batch and to the changes already waiting in
 /// `before`, and to what builds on such a change.
@@ -514,7 +504,6 @@ fn sorted(
         .map(|doc| doc.queued_changes().collect())
         .unwrap_or_default();
     let mut other = Other::default();
-    renumbered(decoded, &mut sort, &queued, before, &mut other);
     waiting_on_replaced(decoded, &mut sort, &queued, before, replaced, &mut other);
     built_on_other(decoded, &mut sort, &queued, &mut other);
     let kept = changes
@@ -592,47 +581,6 @@ fn build_on_base(
 struct Other {
     hashes: std::collections::HashSet<ChangeHash>,
     replaced: Vec<ChangeHash>,
-}
-
-/// Marks as of another history each waiting change, in the batch or in
-/// `queued`, whose actor's sequence number the base's history holds.
-fn renumbered(
-    decoded: &[Option<automerge::Change>],
-    sort: &mut [Sort],
-    queued: &[&automerge::Change],
-    before: Option<&automerge::Automerge>,
-    other: &mut Other,
-) {
-    let claimed: std::collections::HashMap<(&automerge::ActorId, u64), ChangeHash> = decoded
-        .iter()
-        .zip(sort.iter())
-        .filter(|&(_, sort)| *sort == Sort::Built)
-        .filter_map(|(change, _)| change.as_ref())
-        .map(|change| ((change.actor_id(), change.seq()), change.hash()))
-        .collect();
-    let held_elsewhere = |change: &automerge::Change| {
-        claimed
-            .get(&(change.actor_id(), change.seq()))
-            .is_some_and(|hash| *hash != change.hash())
-    };
-    for (change, sort) in decoded.iter().zip(sort.iter_mut()) {
-        let Some(change) = change else { continue };
-        let numbered = before.is_some_and(|doc| {
-            doc.applied_seq(change.actor_id()) >= change.seq() && !applied(before, &change.hash())
-        });
-        if *sort == Sort::Waiting && (held_elsewhere(change) || numbered) {
-            *sort = Sort::Other;
-        }
-        if *sort == Sort::Other {
-            other.hashes.insert(change.hash());
-        }
-    }
-    for change in queued {
-        if held_elsewhere(change) {
-            other.hashes.insert(change.hash());
-            other.replaced.push(change.hash());
-        }
-    }
 }
 
 /// Marks as of another history each waiting change, in the batch or in
@@ -1068,7 +1016,7 @@ mod tests {
             base.commit();
 
             let mut adopted = base.clone();
-            assert!(carried(&held, &mut adopted, &holder).unwrap());
+            assert!(carried(&held, &mut adopted, (&holder, &holder)).unwrap());
             let leases = adopted.get(ROOT, "leases").unwrap().unwrap().1;
             assert!(adopted.get(&leases, "update").unwrap().is_none());
             assert_eq!(
@@ -1094,7 +1042,7 @@ mod tests {
             doc.commit();
             let mut base = rebase(&doc, ActorId::random()).unwrap();
             let mut adopted = base.clone();
-            assert!(!carried(&doc, &mut adopted, &holder).unwrap());
+            assert!(!carried(&doc, &mut adopted, (&holder, &holder)).unwrap());
             assert_eq!(adopted.get_heads(), base.get_heads());
         }
     }

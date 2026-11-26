@@ -254,25 +254,14 @@ pub fn candidate_on(
     changes: &[Vec<u8>],
 ) -> Result<AutoCommit, AdmissionFailure> {
     // Each entry is one complete change chunk; their concatenation is ordinary
-    // storage, admitted like any other untrusted document mutation.
+    // storage, admitted like any other untrusted document mutation. A change under a number its
+    // writer gave another is a writer that signed twice under one number, which no copy can
+    // decide: every generation of a workspace's history gives each writer its own actor, so the
+    // batch is refused as it came rather than half taken in.
     let storage = changes.concat();
     candidate.reset_diff_cursor();
-    match apply_storage(&mut candidate, &storage) {
-        Ok(()) => Ok(candidate),
-        // A change under a number its writer gave another change the document holds is a second
-        // branch of that writer, which Automerge refuses with the whole batch. Refusing the
-        // batch refuses it again with every batch after, which carries it until the document
-        // holds it: no change from that sender would land again. That change, and what builds
-        // on it, is left out, and the rest is taken in; a refused apply leaves `candidate` as it
-        // was.
-        Err(refused) => match without_second_branches(&candidate, changes) {
-            Some(kept) if kept.len() < changes.len() => {
-                apply_storage(&mut candidate, &kept.concat())?;
-                Ok(candidate)
-            }
-            _ => Err(refused),
-        },
-    }
+    apply_storage(&mut candidate, &storage)?;
+    Ok(candidate)
 }
 
 /// Apply `storage` to `candidate`, keeping changes whose dependencies are not there yet.
@@ -295,42 +284,6 @@ fn apply_storage(candidate: &mut AutoCommit, storage: &[u8]) -> Result<(), Admis
     })
 }
 
-/// `changes` without each that takes a number its writer gave another change `candidate` holds
-/// or the batch carries before it, and without what builds on one left out. `None` when a
-/// change does not read: the batch is decided as it came.
-fn without_second_branches(candidate: &AutoCommit, changes: &[Vec<u8>]) -> Option<Vec<Vec<u8>>> {
-    use std::collections::{HashMap, HashSet};
-    let incoming = changes
-        .iter()
-        .map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
-        .collect::<Option<Vec<_>>>()?;
-    let mut numbered: HashMap<(automerge::ActorId, u64), automerge::ChangeHash> = candidate
-        .clone()
-        .get_changes(&[])
-        .into_iter()
-        .map(|change| ((change.actor_id().clone(), change.seq()), change.hash()))
-        .collect();
-    let mut left_out = HashSet::new();
-    let mut kept = Vec::with_capacity(changes.len());
-    for (bytes, change) in changes.iter().zip(incoming) {
-        let number = (change.actor_id().clone(), change.seq());
-        let second = numbered
-            .get(&number)
-            .is_some_and(|other| *other != change.hash());
-        if second || change.deps().iter().any(|dep| left_out.contains(dep)) {
-            tracing::warn!(
-                writer = %change.actor_id(),
-                seq = change.seq(),
-                "a workspace change under a number its writer gave another is left out"
-            );
-            left_out.insert(change.hash());
-            continue;
-        }
-        numbered.insert(number, change.hash());
-        kept.push(bytes.clone());
-    }
-    Some(kept)
-}
 pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uuid) -> bool {
     let declared = match candidate.get(ROOT, "workspace").ok().flatten() {
         Some((Value::Scalar(s), _)) => match s.as_ref() {
