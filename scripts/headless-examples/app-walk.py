@@ -3325,6 +3325,11 @@ class Walk:
                 # goes with the walk, and the machine's own files are put back.
                 self.mail.stop()
                 self.mail = None
+            if any(step.get("failed") for step in self.steps):
+                try:
+                    self.diagnose()
+                except OSError as error:
+                    print(f"  diagnose: {error}", file=sys.stderr)
             if not self.shared:
                 if self.devices is not None:
                     self.devices.stop()
@@ -3385,6 +3390,48 @@ class Walk:
             pass
         self.set_dark(False)
         until_value("every window to close", lambda: not self.session.windows(), 20)
+
+    def diagnose(self) -> None:
+        """What the walk's session was given, where a check reads it: an app the session never
+        offered is a question of what it saw of the device's apps, and the session's own log and
+        the stores it reads answer it. Only a failed walk keeps it."""
+        kept = self.out / "diagnose"
+        kept.mkdir(parents=True, exist_ok=True)
+        for name, source in (
+            ("session.log", self.state / "logs" / "session.log"),
+            ("session-out.log", self.out / "logs" / f"session-{self.variant}.log"),
+        ):
+            try:
+                (kept / name).write_bytes(source.read_bytes())
+            except OSError:
+                pass
+        # The session runs the copy of the tools its state holds (`nested-session.sh` stages
+        # them), and falls back to the build's own.
+        install = next(
+            (tool for tool in (self.state / "bin" / "tilo-install",
+                               BUILD / "bin" / "tilo-install") if tool.is_file()),
+            None,
+        )
+        if install is None:
+            return
+        base = {key: value for key, value in os.environ.items()
+                if key not in ("TILO_APPS_SYSTEM_DIR", "TILO_APPS_DATA_DIR")}
+        # The two stores a session reads: the person's, where a walk's packages go, and the
+        # image's, where the build's own apps live; and both, as a session sees them.
+        for name, stores in (
+            ("apps", {"TILO_APPS_DATA_DIR": str(self.state / "apps")}),
+            ("system", {"TILO_APPS_DATA_DIR": str(self.state / "system")}),
+            ("both", {"TILO_APPS_DATA_DIR": str(self.state / "apps"),
+                      "TILO_APPS_SYSTEM_DIR": str(self.state / "system")}),
+        ):
+            try:
+                listed = subprocess.run(
+                    [str(install), "list"], capture_output=True, text=True, timeout=120,
+                    env={**base, **stores})
+            except (OSError, subprocess.SubprocessError) as error:
+                (kept / f"install-{name}.txt").write_text(f"{error}\n")
+                continue
+            (kept / f"install-{name}.txt").write_text(listed.stdout + listed.stderr)
 
     def tapps(self) -> list[Path]:
         """The tilolang app's signed package, built against this state's runtime."""
