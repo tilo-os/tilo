@@ -248,7 +248,6 @@ pub use runtime_collab::NearbyTransferPhase;
 pub use runtime_collab::{file_clipboard, recall};
 
 pub use collab_types::MemberId;
-use collab_types::presence::PresenceKey;
 pub use collab_types::presence::{Member, Person, PersonId, PresencePayload};
 
 use std::sync::mpsc;
@@ -445,14 +444,6 @@ pub enum CollabRequest {
     /// [`CollabEvent::DocumentContent`].
     WantContent {
         hash: String,
-    },
-    /// The app's word of its person under `key` — pointer moved, caret changed, selection
-    /// shifted, arrived at or left a keyed object — said as the frame the workspace's live
-    /// session carries. Every other app and device of the workspace hears it as
-    /// `CollabEvent::RemotePresenceUpdate`.
-    Say {
-        key: PresenceKey,
-        payload: collab_types::presence::Payload,
     },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new

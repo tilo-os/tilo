@@ -4,8 +4,9 @@
 //! The device has one word in each workspace, and its daemon says it ([`tilo_live::speaker`]):
 //! what the person's shell tells it of them over the shell link, with the runs the device
 //! executes there ([`ShellSpeaking::say`]); what the device's apps say of the person in their
-//! records, as the broker's fan-out carries it ([`Speaking::hear_apps`]); and the call the device
-//! is in. Everyone else's words in their apps are handed to the device's apps the same way.
+//! records, over the connection each app's launcher handed it ([`Speaking::say_app`]); and the
+//! call the device is in. Everyone else's words in their apps are handed to the device's apps
+//! the same way, as the workspace's live session hears them ([`Speaking::watch_app`]).
 //!
 //! A call is joined and left by the typed actions [`JOIN`] and [`LEAVE`] of this device's live
 //! sessions ([`PROVIDER`], [`tilo_live::link::SESSIONS`]): an app calls them through the device's
@@ -15,10 +16,11 @@
 //! leave it.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
-use collab_types::presence::{CallPresence, Payload, PresenceKey, ShellPresence};
-use runtime_collab::event::CollabEvent;
+use collab_types::MemberId;
+use collab_types::presence::{CallPresence, Payload, Presence, PresenceKey, ShellPresence};
 use runtime_collab::wire::shell::{ShellInCall, ShellWord, SpokenFor};
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
@@ -28,7 +30,7 @@ use tilo_actions::{
     ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, OperationKind,
     ResultSpec,
 };
-use tilo_app_host::collab_broker::{FanoutState, WorkspaceSubscription};
+use tilo_app_host::collab_broker::{AppPresence, CrdtRoute};
 use tilo_app_host::shell::ShellSpeaking;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence::Own;
@@ -119,77 +121,177 @@ type AppWord = (String, PresenceKey, Payload);
 /// What the person's shell says in one workspace, and the runs the device executes there.
 type ShellSaid = (Option<Own>, Vec<(String, String, ShellPresence)>);
 
+/// What one app's connection hears: every word another member says in its workspace, as the
+/// workspace's live session hears it. `id` is the connection, so a word is never handed back to
+/// the app that said it.
+pub(crate) struct AppWatch {
+    id: u64,
+    sink: Arc<dyn Fn(MemberId, Presence) + Send + Sync>,
+}
+
+/// The apps' connections watching one workspace, and how the next is numbered.
+type Watchers = Arc<Mutex<BTreeMap<String, Vec<AppWatch>>>>;
+
+/// An app's registration as a watcher, which hears the workspace's words until it is dropped:
+/// what an app's connection holds for as long as it lives.
+pub(crate) struct Watch {
+    id: u64,
+    workspace: String,
+    watchers: Watchers,
+}
+
+impl Watch {
+    /// The connection this watch is for.
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if let Ok(mut watchers) = self.watchers.lock() {
+            if let Some(watching) = watchers.get_mut(&self.workspace) {
+                watching.retain(|watch| watch.id != self.id);
+            }
+            if watchers.get(&self.workspace).is_some_and(Vec::is_empty) {
+                watchers.remove(&self.workspace);
+            }
+        }
+    }
+}
+
 /// What the device's apps and the person's shell say in each workspace, kept for a live session
 /// that opens after they said it, and each workspace's speaker while its live session is open.
 pub(crate) struct Speaking {
-    fanout: Arc<FanoutState>,
     apps: Arc<Mutex<BTreeMap<String, Vec<AppWord>>>>,
     shell: Mutex<BTreeMap<String, ShellSaid>>,
     speakers: Arc<Mutex<BTreeMap<String, Weak<Speaker>>>>,
-    /// Held so the device's apps' words keep reaching the speakers.
-    subscription: OnceLock<Arc<WorkspaceSubscription>>,
+    /// The apps' connections hearing each workspace's words.
+    watchers: Watchers,
+    next_watch: AtomicU64,
 }
 
 impl Speaking {
-    pub(crate) fn new(fanout: Arc<FanoutState>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            fanout,
             apps: Arc::default(),
             shell: Mutex::default(),
             speakers: Arc::default(),
-            subscription: OnceLock::new(),
+            watchers: Arc::default(),
+            next_watch: AtomicU64::new(1),
         }
     }
 
-    /// Take what the device's apps say of its person, as the broker's fan-out carries it, into
-    /// the word of the workspace each says it in.
-    pub(crate) fn hear_apps(&self, live: &Arc<Live>) {
-        let person = hex::encode(live.person());
-        let (apps, speakers) = (Arc::clone(&self.apps), Arc::clone(&self.speakers));
-        let subscription = self.fanout.subscribe_workspaces(
-            Vec::new(),
-            Box::new(move |event, route| {
-                // A word an app here said names the app; what is handed to the apps of someone
-                // else's names only the workspace.
-                let CollabEvent::RemotePresenceUpdate {
-                    member,
-                    key,
-                    payload,
-                } = event
-                else {
-                    return;
-                };
-                if route.app_id.is_empty() || member.person_id() != Some(person.as_str()) {
-                    return;
-                }
-                let word = payload.to_live();
-                let workspace = route.cluster_id.clone();
-                {
-                    let mut apps = apps.lock_recover();
-                    let words = apps.entry(workspace.clone()).or_default();
-                    words.retain(|(app, held, _)| *app != route.app_id || held != key);
-                    if let Some(word) = word.clone().filter(|word| *word != Payload::Left) {
-                        words.push((route.app_id.clone(), key.clone(), word));
-                    }
-                    drop(apps);
-                }
-                let speaker = speakers
-                    .lock_recover()
-                    .get(&workspace)
-                    .and_then(Weak::upgrade);
-                if let Some(speaker) = speaker {
-                    speaker.set_app_word(&route.app_id, key.clone(), word);
-                }
-            }),
+    /// Watch `workspace`: `sink` hears every word another member says there until the watch is
+    /// dropped. `id` names the connection, so a word it says itself is not handed back.
+    pub(crate) fn watch_app(
+        &self,
+        workspace: &str,
+        sink: impl Fn(MemberId, Presence) + Send + Sync + 'static,
+    ) -> Watch {
+        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers
+                .entry(workspace.to_owned())
+                .or_default()
+                .push(AppWatch {
+                    id,
+                    sink: Arc::new(sink),
+                });
+        }
+        Watch {
+            id,
+            workspace: workspace.to_owned(),
+            watchers: Arc::clone(&self.watchers),
+        }
+    }
+
+    /// What the app `app` says of its person in `workspace` under `key`: kept for a live session
+    /// that opens later, said by the workspace's speaker for the device, and handed to the other
+    /// apps of the workspace here but the connection `except`.
+    pub(crate) fn say_app(
+        &self,
+        app: &str,
+        workspace: &str,
+        member: &MemberId,
+        key: PresenceKey,
+        payload: Payload,
+        except: Option<u64>,
+    ) {
+        {
+            let mut all = self.apps.lock_recover();
+            let apps = all.entry(workspace.to_owned()).or_default();
+            apps.retain(|(held_app, held, _)| held_app != app || *held != key);
+            if payload != Payload::Left {
+                apps.push((app.to_owned(), key.clone(), payload.clone()));
+            }
+            drop(all);
+        }
+        let speaker = self
+            .speakers
+            .lock_recover()
+            .get(workspace)
+            .and_then(Weak::upgrade);
+        if let Some(speaker) = speaker {
+            speaker.set_app_word(app, key.clone(), Some(payload.clone()));
+        }
+        self.tell(
+            workspace,
+            member,
+            &Presence::app(app.to_owned(), workspace.to_owned(), key, payload),
+            except,
         );
-        let _ = self.subscription.set(subscription);
     }
 
-    /// The device's apps' words are followed in `held`, the workspaces the device holds.
-    pub(crate) fn follow_workspaces(&self, held: &[WorkspaceId]) {
-        if let Some(subscription) = self.subscription.get() {
-            subscription.set_workspaces(held.iter().map(ToString::to_string).collect());
+    /// The app `app`'s connection in `workspace` ended, and it leaves every `key` it said there:
+    /// nobody is shown at a caret whose window closed.
+    pub(crate) fn left_app(
+        &self,
+        app: &str,
+        workspace: &str,
+        member: &MemberId,
+        keys: &[PresenceKey],
+    ) {
+        let speaker = self
+            .speakers
+            .lock_recover()
+            .get(workspace)
+            .and_then(Weak::upgrade);
+        for key in keys {
+            {
+                let mut all = self.apps.lock_recover();
+                let apps = all.entry(workspace.to_owned()).or_default();
+                apps.retain(|(held_app, held, _)| held_app != app || held != key);
+                drop(all);
+            }
+            if let Some(speaker) = &speaker {
+                speaker.set_app_word(app, key.clone(), Some(Payload::Left));
+            }
+            self.tell(
+                workspace,
+                member,
+                &Presence::app(
+                    app.to_owned(),
+                    workspace.to_owned(),
+                    key.clone(),
+                    Payload::Left,
+                ),
+                None,
+            );
         }
+    }
+
+    /// `frame`, what `member` said on another device, is handed to the apps of its workspace.
+    fn tell(&self, workspace: &str, member: &MemberId, frame: &Presence, except: Option<u64>) {
+        tell_watched(&self.watchers, workspace, member, frame, except);
+    }
+
+    /// `frame`, what `member` said on another device, reaches the apps watching `workspace`, as
+    /// the workspace's live session hearing it does: what a test says for a device it does not
+    /// run.
+    #[cfg(test)]
+    pub(crate) fn hear_from_other_device(&self, member: &MemberId, frame: &Presence) {
+        tell_watched(&self.watchers, &frame.cluster, member, frame, None);
     }
 
     /// `workspace`'s live session opened, and `speaker` says the device's word in it: everything
@@ -206,8 +308,10 @@ impl Speaking {
         for (app, key, word) in apps.unwrap_or_default() {
             speaker.set_app_word(&app, key, Some(word));
         }
-        let fanout = Arc::clone(&self.fanout);
-        speaker.on_heard(Arc::new(move |member, frame| fanout.heard(member, frame)));
+        let watchers = Arc::clone(&self.watchers);
+        speaker.on_heard(Arc::new(move |member, frame| {
+            tell_watched(&watchers, &frame.cluster, member, frame, None);
+        }));
         self.speakers
             .lock_recover()
             .insert(workspace, Arc::downgrade(speaker));
@@ -246,6 +350,49 @@ impl Speaking {
             }
         }
         said.into_keys().collect()
+    }
+}
+
+impl AppPresence for Live {
+    /// The broker's own account of an action as it runs, said by the device for the member it
+    /// acts as, in the app and workspace it acts in: the same word an app's views say.
+    fn said(
+        &self,
+        member: &MemberId,
+        key: PresenceKey,
+        payload: collab_types::presence::PresencePayload,
+        origin: &CrdtRoute,
+    ) {
+        if let Some(live) = payload.to_live() {
+            self.speaking
+                .say_app(&origin.app_id, &origin.cluster_id, member, key, live, None);
+        }
+    }
+}
+
+/// Hand `frame`, what `member` said in `workspace`, to the apps watching it there but the
+/// connection `except`.
+fn tell_watched(
+    watchers: &Watchers,
+    workspace: &str,
+    member: &MemberId,
+    frame: &Presence,
+    except: Option<u64>,
+) {
+    let sinks: Vec<Arc<dyn Fn(MemberId, Presence) + Send + Sync>> = {
+        let Ok(watchers) = watchers.lock() else {
+            return;
+        };
+        watchers
+            .get(workspace)
+            .into_iter()
+            .flatten()
+            .filter(|watch| Some(watch.id) != except)
+            .map(|watch| Arc::clone(&watch.sink))
+            .collect()
+    };
+    for sink in sinks {
+        sink(member.clone(), frame.clone());
     }
 }
 

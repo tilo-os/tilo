@@ -38,7 +38,10 @@ impl App {
     fn finish_undelivered_events(&mut self) -> (bool, bool) {
         self.collaboration.manager.finish_event_batch();
         self.drain_local_input_capture();
-        (false, false)
+        // A window with no workspace of its own may still hold the connection its launcher
+        // handed it, and hear the other members' words there.
+        let heard = self.drain_line_presence();
+        (heard, false)
     }
 
     /// Prepare and mount an application on its already admitted collaboration manager.
@@ -282,11 +285,73 @@ impl App {
         if let Some(sink) = self.presence.broadcast_sink.as_ref() {
             sink(&key, &payload);
         }
-        // What no app says (the shell's availability) never leaves.
-        if let Some(payload) = payload.to_live() {
-            self.collaboration
-                .manager
-                .send(CollabRequest::Say { key, payload });
+        self.publish_presence(key, payload);
+    }
+
+    /// Say one word of this window's person on the connection its launcher handed it: the
+    /// device's live presence says it in the window's workspace, for this app and this member,
+    /// so the person's other devices hear it exactly as the shell's own words go. What no app
+    /// says (the shell's availability) never leaves, and a host window handed no connection says
+    /// nothing this way.
+    fn publish_presence(
+        &self,
+        key: tilo_ui_base::presence::PresenceKey,
+        payload: tilo_ui_base::collaboration::PresencePayload,
+    ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(handed) = tilo_actions::remote::handed::connection() else {
+                return;
+            };
+            let Some(payload) = payload.to_live() else {
+                return;
+            };
+            let said = collab_types::presence::Said { key, payload };
+            match serde_json::to_value(&said) {
+                Ok(said) => {
+                    if let Err(error) = handed.line.say_presence(&said) {
+                        tracing::debug!(%error, "the person's presence was not said");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "a presence word does not write"),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (key, payload);
+        }
+    }
+
+    /// Take what the device's live session heard in this window's workspace since the last
+    /// frame: the other members' words, as the connection its launcher handed it carried them.
+    /// Whether any was shown.
+    fn drain_line_presence(&mut self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(handed) = tilo_actions::remote::handed::connection() else {
+                return false;
+            };
+            let mut shown = false;
+            for heard in handed.line.presence_heard() {
+                let heard = match serde_json::from_str::<collab_types::presence::Heard>(&heard) {
+                    Ok(heard) => heard,
+                    Err(error) => {
+                        tracing::warn!(%error, "a presence word does not read");
+                        continue;
+                    }
+                };
+                if let Ok(Some(payload)) =
+                    collab_types::presence::PresencePayload::from_live(heard.payload)
+                {
+                    self.apply_remote_presence(heard.member, heard.key, payload);
+                    shown = true;
+                }
+            }
+            shown
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
         }
     }
 
@@ -712,10 +777,7 @@ impl App {
             // Announcements made while connecting were refused; repeat the
             // current one on the acknowledged route.
             if let Some(scope) = self.presence.broadcast_scope.clone() {
-                self.collaboration.manager.send(CollabRequest::Say {
-                    key: scope,
-                    payload: collab_types::presence::Payload::Arrived,
-                });
+                self.publish_presence(scope, tilo_ui_base::collaboration::PresencePayload::Arrived);
             }
             self.publish_continuation_metadata();
             self.publish_search_index();
@@ -733,8 +795,8 @@ impl App {
     /// Files' 2s poll used to recommit an unchanged listing because `any`
     /// meant "a packet arrived".
     fn drain_collab_presence_events(&mut self) -> (bool, bool) {
+        let mut any = self.drain_line_presence();
         let events = self.collaboration.manager.poll();
-        let mut any = false;
         let mut action_surface_may_have_changed = false;
         for event in events {
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);

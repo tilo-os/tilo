@@ -26,6 +26,8 @@ mod accounts;
 mod agent_tools;
 #[cfg(test)]
 mod app_listing_tests;
+/// An app's place in its workspace's live presence, on the connection its launcher handed it.
+mod app_presence;
 /// The project checks this device approved: its work, kept as its jobs. A check's commands are
 /// ush's own, which runs only on Linux.
 #[cfg(target_os = "linux")]

@@ -2604,6 +2604,20 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<native_media::Snapshot, ActionCallError>,
     },
+    /// What an app says of its person in its workspace, on the line its launcher handed it: one
+    /// word under the key it is said under, as `collab_types::presence::Said` JSON. The device
+    /// says it for the connection's app, workspace and member in the workspace's live session,
+    /// where the shell's own words go, so every other device of the workspace hears it.
+    PresenceSaid { correlation: u64, said: String },
+    /// Answer to [`Self::PresenceSaid`], same correlation: whether the device's live presence
+    /// said the word, and why it refused it when it did not.
+    PresenceSaidResult {
+        correlation: u64,
+        result: Result<(), ActionCallError>,
+    },
+    /// What another member said in the app's workspace, as the workspace's live session heard
+    /// it from another device: one `collab_types::presence::Heard` as JSON, pushed, never asked.
+    PresenceHeard { heard: String },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2711,6 +2725,7 @@ impl RemoteActionMessage {
                 | Self::AudioOutputRequest { .. }
                 | Self::StoreRequest { .. }
                 | Self::CallMediaRequest { .. }
+                | Self::PresenceSaid { .. }
         )
     }
 }
@@ -2925,6 +2940,13 @@ fn no_call_media_lane() -> ActionCallError {
     }
 }
 
+/// A presence lane is its own host's, never a provider's: one asked here says it carries none.
+fn no_presence_lane() -> ActionCallError {
+    ActionCallError::Unavailable {
+        reason: "this connection carries no presence lane".into(),
+    }
+}
+
 /// A sound output lane is its own host's, never a provider's: one asked here says it carries none.
 fn no_audio_output_lane() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -3054,6 +3076,14 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 result: Err(no_call_media_lane()),
             })
         }
+        // A presence lane is its own host's, never a provider's: one asked here says it carries
+        // none.
+        RemoteActionMessage::PresenceSaid { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::PresenceSaidResult {
+                correlation,
+                result: Err(no_presence_lane()),
+            })
+        }
         // An answer is never a request: `refuse` classified every message before this match and
         // answered `None` for an answer, so none reaches here.
         _ => return None,
@@ -3165,6 +3195,12 @@ pub fn refuse(
         }
         RemoteActionMessage::StoreRequest { correlation, .. } => {
             RemoteActionMessage::StoreResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::PresenceSaid { correlation, .. } => {
+            RemoteActionMessage::PresenceSaidResult {
                 correlation: *correlation,
                 result: Err(error),
             }

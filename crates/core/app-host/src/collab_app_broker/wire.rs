@@ -25,7 +25,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::*;
 
-mod presence;
 mod record;
 
 /// What a subscription receives from the broker's fanout. A host worker's
@@ -65,10 +64,9 @@ impl<T> Feed<T> {
     }
 }
 
-/// What a connection holds on one record its calls named, and its presence there.
+/// What a connection holds on one record its calls named.
 pub(super) struct ChannelSession {
     channel: Rc<JoinedChannel>,
-    said: presence::Said,
     /// The app's settings, opened on its first call.
     settings: RefCell<Option<Rc<super::session::AppSettings>>>,
     /// The app's live activity, opened on its first call; it ends when the
@@ -82,7 +80,6 @@ impl ChannelSession {
     pub(super) fn new(channel: Rc<JoinedChannel>) -> Self {
         Self {
             channel,
-            said: presence::Said::default(),
             settings: RefCell::default(),
             live_activity: RefCell::default(),
             record_runs: RefCell::default(),
@@ -1443,7 +1440,6 @@ impl WireConnection {
     /// first call is decided before it is answered.
     fn unopened(&self, request: &Operation) -> Option<(Record, Opened)> {
         let (Operation::Publish { record, .. }
-        | Operation::Say { record, .. }
         | Operation::Subscribe { record, .. }
         | Operation::Read { record, .. }
         | Operation::Command { record, .. }
@@ -1739,9 +1735,10 @@ impl WireConnection {
     )]
     fn dispatch(self: &Rc<Self>, id: u64, request: Operation) -> Result<Reply, String> {
         match request {
-            Operation::Say { record, frame } => {
-                self.channel(&record)?.say(frame)?;
-                Ok(Reply::Done)
+            // An app's word of its person is said on the connection its launcher handed it,
+            // never here: a call of an earlier build says so.
+            Operation::RetiredSay { .. } => {
+                Err("an app's presence is said on the connection its launcher hands it".into())
             }
             Operation::Publish {
                 publication: Publication::Effect { .. },

@@ -1,11 +1,12 @@
-//! Where the people of a document are, and who of them is writing a message: the presence frames
-//! that arrive on an instance's own connection, and presence as the instance says it of its person
-//! there.
+//! Where the people of a document are, and who of them is writing a message: the presence words
+//! that arrive on the connection the launcher handed this process, and presence as the instance
+//! says it of its person there.
 //!
 //! Who the workspace's members are, and what they are called, is its `workspace/members`
 //! resource: the instance's host reads it through the store and names the window's views with
-//! it. This relays every member's presence frame on the document's route to the other
-//! connections on it. The instance's views read what this device heard as lenses
+//! it. The device's live presence says every word this process says in its workspace, and hands
+//! back what the workspace's live session hears from the other devices. The instance's views
+//! read what this device heard as lenses
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
 //! instance says of its own person is where they are (the resource the detail view shows) and
@@ -14,14 +15,13 @@
 
 use std::collections::HashMap;
 
-use collab_types::presence::Payload;
-use collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use collab_types::presence::{Heard, Payload, PresencePayload, Said};
 use tilo_render_protocol::patch::ToUi;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::{presence::DraftSaid, presence::PresenceCtx, presence::PresenceKey};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
-use ui_core::component_lifecycle::Heard;
+use ui_core::component_lifecycle::Heard as Shown;
 
 /// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {
@@ -35,7 +35,7 @@ pub struct Presence {
     /// What the window shows of the people here as a window with a connection of its own does,
     /// waiting to be sent to it: each step of an action taken on a resource of the app, which
     /// outlines the control the action stands for.
-    for_window: Vec<Heard>,
+    for_window: Vec<Shown>,
 }
 
 impl Presence {
@@ -56,26 +56,25 @@ impl Presence {
         }
     }
 
-    /// Take `event` when it is a presence frame the broker relayed. Whether it was one.
-    pub fn take(&mut self, event: &CollabEvent) -> bool {
-        match event {
-            CollabEvent::RemotePresenceUpdate {
-                member,
-                key,
-                payload,
-            } => {
-                if let PresencePayload::Interaction(interaction) = payload
-                    && matches!(key, PresenceKey::Resource { app, .. } if *app == self.app)
-                {
-                    self.for_window
-                        .push(Heard::Interaction((**interaction).clone()));
-                }
-                self.heard
-                    .apply_remote_presence(member.clone(), key.clone(), payload.clone());
-                true
+    /// Take `heard`, the words the device's live session heard in this app's workspace since the
+    /// last look. Whether any was a word these views are shown.
+    pub fn heard(&mut self, heard: impl IntoIterator<Item = Heard>) -> bool {
+        let mut took = false;
+        for word in heard {
+            let Ok(Some(payload)) = PresencePayload::from_live(word.payload) else {
+                continue;
+            };
+            if let PresencePayload::Interaction(interaction) = &payload
+                && matches!(&word.key, PresenceKey::Resource { app, .. } if *app == self.app)
+            {
+                self.for_window
+                    .push(Shown::Interaction((**interaction).clone()));
             }
-            _ => false,
+            self.heard
+                .apply_remote_presence(word.member, word.key, payload);
+            took = true;
         }
+        took
     }
 
     /// How long until someone heard composing without a word since drops out: the host wakes
@@ -104,10 +103,10 @@ impl Presence {
         // member is named here, from the same read of the workspace's members' resource that
         // names the app's own views.
         if let Some(names) = instance.take_member_names() {
-            self.for_window.push(Heard::Names(names));
+            self.for_window.push(Shown::Names(names));
         }
         for heard in &mut self.for_window {
-            if let Heard::Interaction(interaction) = heard {
+            if let Shown::Interaction(interaction) = heard {
                 instance.heard(interaction);
             }
         }
@@ -131,7 +130,7 @@ impl Presence {
     /// Say where `instance`'s person is, when that changed since it was last said, and whether
     /// they write a message there, through `send`: again while they type, and a draft emptied at
     /// once, under the key it was under, so nobody reads them typing after they stopped.
-    pub fn say(&mut self, instance: &Instance, send: impl FnMut(CollabRequest)) {
+    pub fn say(&mut self, instance: &Instance, send: impl FnMut(Said)) {
         let at = instance.detail_target().map(|target| self.key(target));
         let draft = instance
             .composing_in()
@@ -145,11 +144,11 @@ impl Presence {
         at: Option<PresenceKey>,
         draft: Option<(PresenceKey, u64)>,
         now: ui_core::time::Instant,
-        mut send: impl FnMut(CollabRequest),
+        mut send: impl FnMut(Said),
     ) {
         if at != self.said_at {
             if let Some(key) = &at {
-                send(CollabRequest::Say {
+                send(Said {
                     key: key.clone(),
                     payload: Payload::Selection { start: 0, end: 0 },
                 });
@@ -159,7 +158,7 @@ impl Presence {
         if let Some((key, payload)) = self.said_composing.look(draft, now)
             && let Some(payload) = payload.to_live()
         {
-            send(CollabRequest::Say { key, payload });
+            send(Said { key, payload });
         }
     }
 
@@ -209,12 +208,12 @@ mod tests {
         PresenceKey::resource(APP, "channel-1", "TextChannel")
     }
 
-    fn heard(presence: &mut Presence, user: &str, payload: PresencePayload) {
-        presence.take(&CollabEvent::RemotePresenceUpdate {
+    fn heard(presence: &mut Presence, user: &str, payload: &PresencePayload) {
+        presence.heard([Heard {
             member: MemberId::person(user),
             key: channel(),
-            payload,
-        });
+            payload: payload.to_live().expect("a word the live session carries"),
+        }]);
     }
 
     /// An agent's step of `action` on `resource`, of kind `kind`, of the app `app`.
@@ -248,7 +247,7 @@ mod tests {
     }
 
     /// What `presence` sends its window, as the window reads it.
-    fn sent(presence: &mut Presence) -> Vec<Heard> {
+    fn sent(presence: &mut Presence) -> Vec<Shown> {
         presence
             .take_for_window()
             .iter()
@@ -266,14 +265,14 @@ mod tests {
         let mut presence = Presence::new(APP, "bo");
         for (app, resource) in [(APP, "channel-1"), ("so.tilo.tasks", "task-1")] {
             let (key, payload) = step(app, resource, "TextChannel");
-            assert!(presence.take(&CollabEvent::RemotePresenceUpdate {
+            assert!(presence.heard([Heard {
                 member: MemberId::agent("scout", "ada"),
                 key,
-                payload,
-            }));
+                payload: payload.to_live().expect("a word the live session carries"),
+            }]));
         }
         let heard = sent(&mut presence);
-        let [Heard::Interaction(interaction)] = heard.as_slice() else {
+        let [Shown::Interaction(interaction)] = heard.as_slice() else {
             panic!("the step on this app's resource alone: {heard:?}");
         };
         assert_eq!(interaction.resource.id, "channel-1");
@@ -284,8 +283,8 @@ mod tests {
     fn someone_at_a_resource_by_their_caret_is_there_as_by_their_selection() {
         let mut presence = Presence::new(APP, "bo");
         // Another device hands a selection of nothing over as a caret.
-        heard(&mut presence, "ada", PresencePayload::Caret { pos: 0 });
-        heard(&mut presence, "bo", PresencePayload::Caret { pos: 0 });
+        heard(&mut presence, "ada", &PresencePayload::Caret { pos: 0 });
+        heard(&mut presence, "bo", &PresencePayload::Caret { pos: 0 });
         assert_eq!(
             presence.peers(),
             HashMap::from([("channel-1".to_owned(), MemberId::person("ada"))])
@@ -294,7 +293,7 @@ mod tests {
         heard(
             &mut selected,
             "ada",
-            PresencePayload::Selection { start: 0, end: 0 },
+            &PresencePayload::Selection { start: 0, end: 0 },
         );
         assert_eq!(selected.peers(), presence.peers());
     }
@@ -312,12 +311,14 @@ mod tests {
                 .checked_add(std::time::Duration::from_millis(at))
                 .expect("a clock 30 s on");
             let draft = (at < typed || !sent).then(|| (channel(), at.min(typed)));
-            ada.say_at(Some(channel()), draft, now, |request| {
-                if let CollabRequest::Say { key, payload } = request
-                    && let Ok(Some(payload)) = PresencePayload::from_live(payload)
-                {
-                    bo.heard
-                        .apply_remote_presence_at(MemberId::person("ada"), key, payload, now);
+            ada.say_at(Some(channel()), draft, now, |said| {
+                if let Ok(Some(payload)) = PresencePayload::from_live(said.payload) {
+                    bo.heard.apply_remote_presence_at(
+                        MemberId::person("ada"),
+                        said.key,
+                        payload,
+                        now,
+                    );
                 }
             });
             bo.heard.prune_composing(now);

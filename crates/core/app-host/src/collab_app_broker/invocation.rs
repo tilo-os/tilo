@@ -659,7 +659,8 @@ impl AppBrokerState {
         let key = PresenceKey::resource(&route.app_id, &shown.key.0, &shown.key.1);
         let payload = PresencePayload::Interaction(Box::new(interaction));
         if let Some(fanout) = self.fanout.upgrade() {
-            // No connection is peer 0: the view the action runs in sees it too.
+            // No connection is peer 0: the view the action runs in sees it too, and the
+            // device's live presence says it where the shell's own words go.
             fanout.said(&member, key, payload, 0, route);
         }
     }

@@ -17,7 +17,6 @@ use super::*;
 use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use collab_types::presence::PresenceKey;
 use runtime_collab::SurfaceDelta;
 
 /// The concrete broker transport's bridge state behind a test manager.
@@ -225,8 +224,6 @@ pub struct Captures {
     pub record_reads: Vec<String>,
     /// The action each record write named, in the order they came.
     pub record_commits: Vec<Option<collab_types::WorkspaceCommit>>,
-    /// Each frame the app said of its person, in order.
-    pub said: Vec<collab_types::presence::Presence>,
     pub action_publications: Vec<(String, Vec<(String, String)>)>,
     /// The connection's surface as its deltas built it, and each delta.
     pub surface_table: runtime_collab::SurfaceTable,
@@ -843,10 +840,9 @@ impl FakeHost {
             } => self.on(record, move |host, channel| {
                 host.publish(channel, publication)
             }),
-            Operation::Say { record, frame } => self.on(record, move |host, _| {
-                host.captures().said.push(frame);
-                answered(Ok(Reply::Done))
-            }),
+            Operation::RetiredSay { .. } => {
+                answered(Err("presence is said on the launcher's line".into()))
+            }
             Operation::Command {
                 record,
                 service,
@@ -2011,51 +2007,6 @@ tilo_test_env::scenario! {
         transport.drain(&mut events);
         assert!(transport.spill.is_empty());
         assert!(shovel.try_recv().is_ok());
-    }
-
-    phase the_last_caret_of_a_burst_waits_for_room_and_is_the_one_said;
-    // A caret that moves while typing fills the queue waits for room rather than
-    // being dropped, and only the newest word under its key is said: the last
-    // caret of a burst is the one everyone sees.
-    {
-        let (mut transport, mut shovel) = parking_transport(1);
-        let caret = |pos: u64| {
-            TransportCommand::Primary(CollabRequest::Say {
-                key: PresenceKey::Tab {
-                    id: "note".to_owned(),
-                },
-                payload: collab_types::presence::Payload::Caret { pos },
-            })
-        };
-        assert_eq!(
-            transport.submit(TransportCommand::Primary(
-                CollabRequest::document_incremental(b"typed".to_vec())
-            )),
-            Ok(())
-        );
-        for pos in 1..=50 {
-            assert_eq!(
-                transport.submit(caret(pos)),
-                Ok(()),
-                "a caret is never shed"
-            );
-        }
-        assert_eq!(transport.spill.len(), 1, "one caret waits, the newest");
-        let mut said = Vec::new();
-        while let Ok(queued) = shovel.try_recv() {
-            said.push(queued.command);
-            let mut events = Vec::new();
-            transport.drain(&mut events);
-        }
-        let Some(SdkCommand::Primary(CollabRequest::Say {
-            payload: collab_types::presence::Payload::Caret { pos },
-            ..
-        })) = said.last()
-        else {
-            panic!("the caret is said once there is room: {}", said.len());
-        };
-        assert_eq!(*pos, 50, "the caret said is where the burst ended");
-        assert!(transport.spill.is_empty());
     }
 }
 
@@ -3492,10 +3443,7 @@ tilo_test_env::scenario! {
         );
         // The frame loop keeps calling these while connecting. With no
         // acknowledged route nothing is queued behind the connection.
-        assert!(!mgr.send(CollabRequest::Say {
-            key: PresenceKey::surface_pointer("silent-broker-test"),
-            payload: collab_types::presence::Payload::Arrived,
-        }));
+        assert!(!mgr.send(CollabRequest::document_snapshot(b"while connecting".to_vec())));
         assert!(mgr.poll().is_empty());
         assert_eq!(mgr.take_state_change(), None, "still connecting");
 
@@ -3592,69 +3540,6 @@ fn poll_until(
 
 tilo_test_env::scenario! {
     fn bridge_backpressure_sheds_presence_and_defers_results;
-
-    phase saturated_outbound_bridge_sheds_only_presence_then_fails_closed;
-    {
-        let (tx, mut rx) = tokio_mpsc::channel(1);
-        let state = BridgeState::new();
-        let document =
-            || SdkCommand::Primary(CollabRequest::document_incremental(b"durable".to_vec()));
-        let presence = || {
-            SdkCommand::Primary(CollabRequest::Say {
-                key: PresenceKey::Tab {
-                    id: "saturated".to_owned(),
-                },
-                payload: collab_types::presence::Payload::Pointer { x: 1.0, y: 2.0 },
-            })
-        };
-
-        assert!(enqueue_sdk_command(&tx, document(), &state));
-        for _ in 0..10_000 {
-            assert!(
-                !enqueue_sdk_command(&tx, presence(), &state),
-                "a full bounded queue may shed only this transient update"
-            );
-        }
-        assert!(state.is_healthy());
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(QueuedSdkCommand {
-                command: SdkCommand::Primary(CollabRequest::Document {
-                    mutation: DocumentMutation::Incremental(data),
-                    ..
-                }),
-                ..
-            })
-                if data == b"durable"
-        ));
-
-        assert!(enqueue_sdk_command(&tx, document(), &state));
-        assert_eq!(
-            try_enqueue_sdk_command(&tx, document(), &state),
-            Err(TransportError::Busy),
-            "a full queue defers a document change so its sender retries it"
-        );
-        assert!(
-            state.is_healthy(),
-            "deferring a document change never disconnects"
-        );
-        assert!(
-            !enqueue_sdk_command(
-                &tx,
-                SdkCommand::Primary(CollabRequest::ClearContinuation),
-                &state
-            ),
-            "a durable control overflow is refused as busy, to be parked by the transport"
-        );
-        assert!(
-            state.is_healthy(),
-            "overload must never disable collaboration"
-        );
-        assert!(
-            rx.try_recv().is_ok() && rx.try_recv().is_err(),
-            "the bounded queue retains only its admitted durable command"
-        );
-    }
 
     phase inbound_events_wake_the_owner_once_per_queued_burst;
     {
@@ -4037,7 +3922,7 @@ fn background_manager(fd: RawFd, route: RouteSpec) -> CollaborationManager {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    fn sdk_transport_forwards_documents_and_presence;
+    fn sdk_transport_forwards_documents;
 
     phase hello_joins_channel_and_reads_its_record;
     {
@@ -4131,91 +4016,6 @@ tilo_test_env::scenario! {
             8,
             "the barrier resolved before the documents ahead of it reached the broker"
         );
-    }
-}
-
-tilo_test_env::scenario! {
-    fn presence_round_trips_every_keyed_variant;
-
-    phase a_word_leaves_as_its_frame_and_others_words_return_as_they_went;
-    {
-        use collab_types::presence::{Payload, Presence};
-        let key = PresenceKey::Tab {
-            id: "note-1".to_owned(),
-        };
-        let member = collab_types::MemberId::person("peer-bob");
-        let words = [
-            Payload::Pointer { x: 6.0, y: 9.0 },
-            Payload::Caret { pos: 7 },
-            Payload::Selection { start: 1, end: 3 },
-            Payload::Typing { start: 2, end: 5 },
-            Payload::Arrived,
-            Payload::Left,
-        ];
-        let frame = |payload| Presence::app("app", Uuid::nil().to_string(), key.clone(), payload);
-        let mut presence_backlog: Vec<SeedPresence> = words
-            .iter()
-            .map(|payload| SeedPresence {
-                member: member.clone(),
-                frame: frame(payload.clone()),
-            })
-            .collect();
-        // An interaction that does not decode names nothing: it is refused rather than shown.
-        presence_backlog.push(SeedPresence {
-            member: member.clone(),
-            frame: frame(Payload::InteractionJson("{".to_owned())),
-        });
-        let broker = FakeBroker {
-            presence_backlog,
-            ..FakeBroker::default()
-        };
-        let (fd, captures, _th) = stand_up_fake_broker(broker);
-        let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        tilo_test_env::wait_until("the record must be opened", || {
-            !captures.lock().unwrap().joined.is_empty()
-        });
-
-        for payload in &words {
-            mgr.send(CollabRequest::Say {
-                key: key.clone(),
-                payload: payload.clone(),
-            });
-        }
-        tilo_test_env::wait_until("every word reaches the host as its frame", || {
-            captures.lock().unwrap().said.len() == words.len()
-        });
-        let said = captures.lock().unwrap().said.clone();
-        assert_eq!(
-            said.iter().map(|frame| frame.payload.clone()).collect::<Vec<_>>(),
-            words.to_vec(),
-            "each word leaves once, in order, under the key its app chose"
-        );
-        assert!(said.iter().all(|frame| frame.key == key && frame.app == "alice"));
-
-        let events = poll_until(&mut mgr, |events| {
-            events
-                .iter()
-                .filter(|e| matches!(e, CollabEvent::RemotePresenceUpdate { .. }))
-                .count()
-                >= words.len()
-        });
-        let updates: Vec<_> = events
-            .into_iter()
-            .filter_map(|e| match e {
-                CollabEvent::RemotePresenceUpdate { member, key, payload } => {
-                    Some((member, key, payload))
-                }
-                _ => None,
-            })
-            .collect();
-        let expected: Vec<_> = words
-            .into_iter()
-            .map(|payload| {
-                let payload = PresencePayload::from_live(payload).unwrap().unwrap();
-                (member.clone(), key.clone(), payload)
-            })
-            .collect();
-        assert_eq!(updates, expected, "every word arrives as it went, by whom said it");
     }
 }
 

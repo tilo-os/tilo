@@ -452,15 +452,7 @@ impl BrokerTransport {
                     ));
                 }
             }
-            command => {
-                // Presence says where someone is now: what waits under the
-                // same key is older, and the newer goes to the back.
-                if let Some(slot) = command.presence_slot() {
-                    self.spill
-                        .retain(|parked| parked.presence_slot().as_ref() != Some(&slot));
-                }
-                self.spill.push_back(command);
-            }
+            command => self.spill.push_back(command),
         }
         // Arm before the retry so a release racing it is never missed.
         self.state.command_bytes.arm_budget_wake();
@@ -996,27 +988,6 @@ impl SdkCommand {
                 }
             }
         }
-    }
-
-    /// The route and key a presence word is said under: a newer word under
-    /// the same one replaces it.
-    fn presence_slot(&self) -> Option<(Option<RouteSpec>, collab_types::presence::PresenceKey)> {
-        match self {
-            Self::Primary(CollabRequest::Say { key, .. }) => Some((None, key.clone())),
-            Self::ToRoute(route, CollabRequest::Say { key, .. }) => {
-                Some((Some(route.clone()), key.clone()))
-            }
-            _ => None,
-        }
-    }
-
-    /// Presence is visual, short-lived state. All other frames represent a
-    /// durable state change, an ordered request, or a lifecycle result.
-    fn is_transient_presence(&self) -> bool {
-        matches!(
-            self,
-            Self::Primary(CollabRequest::Say { .. }) | Self::ToRoute(_, CollabRequest::Say { .. })
-        )
     }
 }
 
@@ -1629,9 +1600,8 @@ fn admit_sdk_command(
             }
         };
     }
-    let transient = command.is_transient_presence();
     let bytes = command_bytes(&command).unwrap_or(usize::MAX);
-    if bytes > SDK_COMMAND_QUEUE_BYTES && !transient {
+    if bytes > SDK_COMMAND_QUEUE_BYTES {
         // It can never fit, however long it waits: refuse this command to its
         // sender, and leave the bridge, which did nothing wrong, up.
         tracing::error!(
@@ -3936,7 +3906,6 @@ fn orders_after_documents(command: &SdkCommand) -> bool {
                 request,
                 CollabRequest::Document { .. }
                     | CollabRequest::ReportLocalDocumentAction { .. }
-                    | CollabRequest::Say { .. }
                     | CollabRequest::PublishSearchIndex { .. }
             )
     )
@@ -5135,19 +5104,6 @@ async fn dispatch_sdk_request(
         CollabRequest::WantContent { hash } => {
             if let Err(error) = route.channel.want_blob(&hash).await {
                 tracing::warn!(%error, %hash, "collab: asking for record content failed");
-            }
-        }
-        CollabRequest::Say { key, payload } => {
-            // Presence is a workspace signal, not the app's request: a word the host refused is
-            // logged, and the request that carried it still answers.
-            let frame = collab_types::presence::Presence::app(
-                route.spec.app_id.clone(),
-                route.spec.cluster_id.to_string(),
-                key,
-                payload,
-            );
-            if let Err(error) = route.channel.say(frame).await {
-                tracing::warn!(%error, "collab: presence refused");
             }
         }
         CollabRequest::PublishActionSurface { delta } => {

@@ -1,9 +1,5 @@
 use crate::support_collab::{TypedBroker, change_carrying, changes_of};
-use tilo_ui_base::presence::PresenceKey;
-use tilo_ui_base::{
-    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload,
-    collaboration::RouteSpec,
-};
+use tilo_ui_base::{collaboration::CollabRequest, collaboration::RouteSpec};
 use uuid::Uuid;
 
 #[test]
@@ -48,18 +44,6 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             }),
             "the sender is not echoed"
         );
-
-        peer_a.send(CollabRequest::Say {
-            key: PresenceKey::Workspace { id: "77".into() },
-            payload: PresencePayload::Arrived.to_live().unwrap(),
-        });
-        tilo_test_env::wait_until("peer A's typed presence at peer B", || {
-            peer_b.poll().iter().any(|event| matches!(
-                event,
-                CollabEvent::RemotePresenceUpdate { member, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
-                    if *member == tilo_ui_base::permissions::MemberId::person("peer-a") && id == "77"
-            ))
-        });
     }
 
     {

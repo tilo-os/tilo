@@ -79,6 +79,9 @@ struct Waiting {
     /// Answers to the app's own call commands, by correlation, until it takes them: what an app
     /// that sends its commands from its frame loop reads instead of waiting for each.
     media: VecDeque<(u64, Result<CallSnapshot, ActionCallError>)>,
+    /// What the workspace's live session heard from the other devices, the newest
+    /// [`MAX_HEARD`] of them, until the app's views take them.
+    presence: VecDeque<String>,
 }
 
 /// How many of the workspace's frames wait for an app that has not taken them: a second of a
@@ -88,6 +91,15 @@ const MAX_SAID: usize = 50;
 /// How many answers to an app's own call commands wait for it to take them. An app holds one
 /// watch and one picture collection outstanding, so older answers are a bug of its own.
 const MAX_MEDIA_ANSWERS: usize = 32;
+
+/// How many words heard from the workspace's other devices wait for the app's views to take
+/// them: presence is visual and short-lived, and a view that falls this far behind reads the
+/// current layout anyway.
+const MAX_HEARD: usize = 64;
+
+/// How long a presence word's answer is waited for: a word is sent from the app's frame loop,
+/// and a device that does not answer it must not hold the frame.
+const PRESENCE_ANSWERED_WITHIN: Duration = Duration::from_secs(5);
 
 /// What a request's answer is found by.
 #[derive(Clone, Copy)]
@@ -458,6 +470,13 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
                 None
             }
         }
+        RemoteActionMessage::PresenceHeard { heard } => {
+            if waiting.presence.len() >= MAX_HEARD {
+                waiting.presence.pop_front();
+            }
+            waiting.presence.push_back(heard.clone());
+            None
+        }
         RemoteActionMessage::CatalogueResponse { correlation, .. }
         | RemoteActionMessage::CallCarryResponse { correlation, .. }
         | RemoteActionMessage::CallReportResponse { correlation, .. }
@@ -466,6 +485,7 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
         | RemoteActionMessage::StoreResponse { correlation, .. }
+        | RemoteActionMessage::PresenceSaidResult { correlation, .. }
         | RemoteActionMessage::ChangesResponse { correlation, .. }
         | RemoteActionMessage::ChangedResponse { correlation, .. }
         | RemoteActionMessage::Update {
@@ -975,6 +995,44 @@ impl LineClient {
     #[must_use]
     pub fn call_media_answers(&self) -> Vec<(u64, Answered<CallSnapshot>)> {
         self.0.waiting.lock_recover().media.drain(..).collect()
+    }
+}
+
+/// The app's own presence in its workspace ([`crate::remote::RemoteActionMessage::PresenceSaid`]):
+/// what its views say of their person — pointers, carets, selections, who is composing, a
+/// workspace status, the steps of an action as they run — said by the device in the workspace's
+/// live session for the connection's app, workspace and member, so the person's other devices
+/// hear it exactly as the shell's own words go.
+impl LineClient {
+    /// Say one word of the app's person: `said`, a `collab_types::presence::Said` as JSON.
+    ///
+    /// # Errors
+    /// The device refused the word (and said nothing), the connection ended, or the device did
+    /// not answer in time.
+    pub fn say_presence(&self, said: &serde_json::Value) -> Answered<()> {
+        let correlation = self.correlation();
+        let answer = self.ask(
+            Key::Correlation(correlation),
+            RemoteActionMessage::PresenceSaid {
+                correlation,
+                said: said.to_string(),
+            },
+        );
+        match answer
+            .wait_timeout(PRESENCE_ANSWERED_WITHIN)
+            .ok()
+            .flatten()
+            .unwrap_or(Err(ActionCallError::Unanswered))?
+        {
+            RemoteActionMessage::PresenceSaidResult { result, .. } => result,
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// What the device's live session heard in the app's workspace since the last look, each a
+    /// `collab_types::presence::Heard` as JSON, oldest first.
+    pub fn presence_heard(&self) -> Vec<String> {
+        self.0.waiting.lock_recover().presence.drain(..).collect()
     }
 }
 

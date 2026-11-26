@@ -8,7 +8,6 @@ struct MemberJoinFixture {
     directories: Rc<LocalActionDirectoryRegistry>,
     certificate: tilo_user_identity::DeviceCert,
     route: CrdtRoute,
-    actor: String,
 }
 
 impl MemberJoinFixture {
@@ -45,7 +44,6 @@ impl MemberJoinFixture {
             directories,
             certificate: device_certificate(&root, &device),
             route,
-            actor,
         }
     }
 
@@ -75,63 +73,6 @@ impl MemberJoinFixture {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
-    // The wire connection is served on the test's LocalSet.
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let ascii = "a".repeat(128);
-            let multibyte = "\u{e9}".repeat(64);
-            let fixture = MemberJoinFixture::new(&[
-                ascii.clone(),
-                multibyte.clone(),
-                // The old display-name truncation would silently select this
-                // different, also admitted Agent rather than reject the join.
-                "a".repeat(64),
-            ]);
-            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let _subscription = fixture.fanout.subscribe_workspaces(
-                vec![fixture.route.cluster_id.clone()],
-                Box::new(move |event, _| {
-                    event_tx.send(event.clone()).unwrap();
-                }),
-            );
-            let key = PresenceKey::Resource {
-                app: "so.tilo.notes".into(),
-                id: "note:draft".into(),
-                kind: "note".into(),
-            };
-            let frame = collab_types::presence::Presence::app(
-                "",
-                fixture.route.cluster_id.clone(),
-                key.clone(),
-                collab_types::presence::Payload::Arrived,
-            );
-            for expected in [ascii, multibyte] {
-                let input = format!(" {} ", expected.to_uppercase());
-                let channel = fixture
-                    .opened(Some(&input))
-                    .await
-                    .expect("certified join preserves the complete canonical Agent ID");
-                channel.say(frame.clone()).await.unwrap();
-                // The connection before this one left what it said when it closed.
-                let event = loop {
-                    match event_rx.recv().await.unwrap() {
-                        CollabEvent::RemotePresenceUpdate {
-                            payload: PresencePayload::Left,
-                            ..
-                        } => {}
-                        event => break event,
-                    }
-                };
-                assert!(matches!(event,
-                    CollabEvent::RemotePresenceUpdate { member, key: delivered, payload: PresencePayload::Arrived }
-                        if member == collab_types::MemberId::agent(expected, fixture.actor.as_str()) && delivered == key));
-            }
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback() {
     // The broker serves joins on its LocalSet: a person's join starts its
     // app-authorship admission there (`spawn_local`).
@@ -154,26 +95,7 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 assert!(fixture.state.channels.lock().unwrap().is_empty());
             }
             // A connection naming no agent acts as the Person's certified actor.
-            let person = fixture.opened(None).await.unwrap();
-            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let _subscription = fixture.fanout.subscribe_workspaces(
-                vec![fixture.route.cluster_id.clone()],
-                Box::new(move |event, _| {
-                    event_tx.send(event.clone()).unwrap();
-                }),
-            );
-            person
-                .say(collab_types::presence::Presence::app(
-                    "",
-                    fixture.route.cluster_id.clone(),
-                    PresenceKey::pointer_default(),
-                    collab_types::presence::Payload::Arrived,
-                ))
-                .await
-                .unwrap();
-            assert!(matches!(event_rx.try_recv().unwrap(),
-                CollabEvent::RemotePresenceUpdate { member, payload: PresencePayload::Arrived, .. }
-                    if member == collab_types::MemberId::person(fixture.actor.clone())));
+            fixture.opened(None).await.unwrap();
         })
         .await;
 }

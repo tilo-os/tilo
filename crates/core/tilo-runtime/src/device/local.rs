@@ -54,6 +54,9 @@ pub(crate) struct Frames {
     /// The call lane an app's connection carries: the device's call service as that app process
     /// takes part in its workspace's calls.
     media: Option<tilo_app_host::collab_app_broker::CallMediaConnection>,
+    /// The presence lane an app's connection carries: the device's live presence as that app's
+    /// views say where their person is, and hear where everyone else is.
+    app_presence: Option<super::app_presence::Setup>,
     /// Whether a connection may be carried to another of the person's devices
     /// ([`super::carry`]): the person's own alone.
     carrying: super::carry::Carrying,
@@ -71,6 +74,7 @@ impl Frames {
             lane: None,
             audio: None,
             media: None,
+            app_presence: None,
             carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
         }
     }
@@ -141,6 +145,7 @@ impl Frames {
         let lane = daemon.app_call_setup(at);
         let audio = super::audio_output::lane_for(daemon, at).map(Arc::new);
         let media = super::call_media::connection_for(daemon, at);
+        let app_presence = super::app_presence::Setup::of(daemon, at);
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
         let mut frames = Self::new(move |named| {
@@ -158,6 +163,7 @@ impl Frames {
         frames.lane = Some(lane);
         frames.audio = audio;
         frames.media = media;
+        frames.app_presence = app_presence;
         frames
     }
 
@@ -206,6 +212,10 @@ impl Frames {
 
     /// [`Self::serve`], handing the connection on once `handover` says the part that serves it
     /// ends ([`remote::serve_lines_handing`]).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one connection's lanes and its serving are read in one place"
+    )]
     pub(crate) fn serve_handing<R: BufRead>(
         &self,
         mut stream: Stream,
@@ -267,19 +277,27 @@ impl Frames {
         };
         // An app's connection carries the call lane of the workspace's live session; any other
         // connection carries none.
-        let out = (self.lane.is_some() || self.media.is_some()).then(|| {
-            stream.try_clone().ok().map(|writer| {
-                let writer = Arc::new(std::sync::Mutex::new(writer));
-                Arc::new(move |line: String| {
-                    if let Ok(mut writer) = writer.lock() {
-                        let _ = writeln!(writer, "{line}");
-                    }
-                }) as tilo_live::app_call::Out
-            })
-        });
+        let out = (self.lane.is_some() || self.media.is_some() || self.app_presence.is_some())
+            .then(|| {
+                stream.try_clone().ok().map(|writer| {
+                    let writer = Arc::new(std::sync::Mutex::new(writer));
+                    Arc::new(move |line: String| {
+                        if let Ok(mut writer) = writer.lock() {
+                            let _ = writeln!(writer, "{line}");
+                        }
+                    }) as tilo_live::app_call::Out
+                })
+            });
         let call_media = match (&self.media, &out) {
             (Some(media), Some(Some(out))) => Some(super::call_media::CallMediaLane::new(
                 media.clone(),
+                Arc::clone(out),
+            )),
+            _ => None,
+        };
+        let presence = match (&self.app_presence, &out) {
+            (Some(setup), Some(Some(out))) => Some(super::app_presence::PresenceLane::new(
+                setup.clone(),
                 Arc::clone(out),
             )),
             _ => None,
@@ -291,11 +309,13 @@ impl Frames {
             _ => None,
         };
         let lanes =
-            (call.is_some() || self.audio.is_some() || call_media.is_some()).then(|| Lanes {
-                call,
-                audio: self.audio.as_deref(),
-                media: call_media.as_ref(),
-            });
+            (call.is_some() || self.audio.is_some() || call_media.is_some() || presence.is_some())
+                .then(|| Lanes {
+                    call,
+                    audio: self.audio.as_deref(),
+                    media: call_media.as_ref(),
+                    presence: presence.as_ref(),
+                });
         remote::serve_lines_handing(
             in_workspace,
             &self.uploads,
@@ -318,10 +338,17 @@ struct Lanes<'a> {
     call: Option<Arc<tilo_live::app_call::AppLane>>,
     audio: Option<&'a super::audio_output::AudioLane>,
     media: Option<&'a super::call_media::CallMediaLane>,
+    presence: Option<&'a super::app_presence::PresenceLane>,
 }
 
 impl remote::CallLanes for Lanes<'_> {
     fn take(&self, message: &RemoteActionMessage) -> remote::Take {
+        if let Some(presence) = self.presence {
+            match remote::CallLanes::take(presence, message) {
+                remote::Take::NotCall => {}
+                taken => return taken,
+            }
+        }
         if let Some(media) = self.media {
             match remote::CallLanes::take(media, message) {
                 remote::Take::NotCall => {}

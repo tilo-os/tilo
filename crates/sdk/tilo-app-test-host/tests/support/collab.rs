@@ -4,8 +4,9 @@
 //! speaks the collaboration wire, keeps each channel's record as the device's
 //! store does (an endpoint reads the changes past what it holds and writes its
 //! own), tells the other subscribers on the channel when the record changed,
-//! routes presence to them, and lets integration tests exercise the real UI
-//! SDK shovel without a shell process or process-global service-fd variables.
+//! and lets integration tests exercise the real UI SDK shovel without a shell
+//! process or process-global service-fd variables. Presence is said on the
+//! connection an app's launcher hands it, never on this wire.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -111,16 +112,6 @@ impl Hub {
         drop(channels);
         Ok(Store::Written)
     }
-
-    fn tell_heard(&self, channel: &str, source: u64, heard: &ContextUpdate) {
-        self.channels
-            .lock()
-            .unwrap()
-            .entry(channel.to_owned())
-            .or_default()
-            .notices
-            .retain(|sub| sub.peer == source || sub.tx.send(heard.clone()).is_ok());
-    }
 }
 
 /// A shared typed fan-out service. Each call to [`connect`](Self::connect)
@@ -139,12 +130,11 @@ impl TypedBroker {
         self.connect_peer(user_id).1
     }
 
-    fn connect_peer(&self, user_id: &str) -> (u64, RawFd) {
+    fn connect_peer(&self, _user_id: &str) -> (u64, RawFd) {
         let peer = self.hub.next_peer.fetch_add(1, Ordering::Relaxed);
         let connection = Connection {
             hub: self.hub.clone(),
             peer,
-            user_id: user_id.to_owned(),
             subscriptions: RefCell::default(),
         };
         let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -227,7 +217,6 @@ impl TypedBroker {
 struct Connection {
     hub: Arc<Hub>,
     peer: u64,
-    user_id: String,
     subscriptions: RefCell<HashMap<u64, tokio::task::AbortHandle>>,
 }
 
@@ -293,14 +282,8 @@ impl Connection {
 
     fn answer(&self, request: Operation) -> Result<Reply, String> {
         match request {
-            Operation::Say { record, frame } => {
-                let heard = ContextUpdate::Heard {
-                    member: tilo_ui_base::permissions::MemberId::person(self.user_id.clone()),
-                    frame: Box::new(frame),
-                };
-                self.hub.tell_heard(&record.key, self.peer, &heard);
-                Ok(Reply::Done)
-            }
+            // Presence is said on the connection an app's launcher hands it, never here.
+            Operation::RetiredSay { .. } => Err("presence is not said on this wire".into()),
             Operation::Command {
                 record,
                 service: Service::Resources,

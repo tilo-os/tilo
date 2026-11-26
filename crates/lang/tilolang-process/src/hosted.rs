@@ -2396,9 +2396,9 @@ impl Hosted {
             shell.turn(&self.instance);
             shell.say(|request| connection.manager().send(request));
         }
-        self.presence.say(&self.instance, |request| {
-            if !connection.manager().send(request) {
-                tracing::debug!("the connection did not take the person's presence");
+        self.presence.say(&self.instance, |said| {
+            if let Err(error) = crate::daemon_line::say_presence(&said) {
+                tracing::debug!(%error, "the person's presence was not said");
             }
         });
         // What the person changed of their own state is kept in its document, as theirs.
@@ -2441,12 +2441,13 @@ impl Hosted {
     fn take_events(&mut self, events: &mut Vec<CollabEvent>) -> bool {
         let before = events.len();
         events.retain(|event| {
-            !self.presence.take(event)
-                && !self.invocations.take(event)
+            !self.invocations.take(event)
                 && !self.shell.as_mut().is_some_and(|shell| shell.take(event))
         });
         let mut took = events.len() != before;
-        // The call service answers on the line's own lane, not this connection's events.
+        // The live presence and the call service answer on the line's own lanes, not this
+        // connection's events.
+        took |= self.presence.heard(crate::daemon_line::presence_heard());
         took |= self.calls.answers(crate::daemon_line::call_media_answers());
         self.presence.show(&mut self.instance);
         self.calls.show(&mut self.instance);

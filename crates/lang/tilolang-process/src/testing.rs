@@ -489,29 +489,6 @@ impl Bus {
             told.push(inbox);
         }
     }
-
-    /// Delivers the presence frame `key` and `payload`, which `from` said on `route` as
-    /// `person`, to the other connections joined on that route.
-    fn present(
-        &self,
-        route: &RouteSpec,
-        from: &Inbox,
-        person: &str,
-        key: &tilo_ui_base::presence::PresenceKey,
-        payload: &collaboration::PresencePayload,
-    ) {
-        for (joined, _, inbox) in self.joined.borrow().iter() {
-            if joined == route && !Rc::ptr_eq(inbox, from) {
-                inbox
-                    .borrow_mut()
-                    .push_back(CollabEvent::RemotePresenceUpdate {
-                        member: tilo_ui_base::permissions::MemberId::person(person),
-                        key: key.clone(),
-                        payload: payload.clone(),
-                    });
-            }
-        }
-    }
 }
 
 /// `mutation` sent on `route`, as the device's store delivers the record's changes to the
@@ -651,14 +628,6 @@ impl PeerTransport for Broker {
                         request_id: *request_id,
                         result,
                     });
-            }
-            CollabRequest::Say { key, payload } => {
-                if let Ok(Some(payload)) =
-                    collaboration::PresencePayload::from_live(payload.clone())
-                {
-                    self.bus
-                        .present(&self.route, &self.inbox, &self.person, key, &payload);
-                }
             }
             CollabRequest::RemoteAction {
                 message:

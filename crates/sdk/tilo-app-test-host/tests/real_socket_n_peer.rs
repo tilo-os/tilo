@@ -12,10 +12,7 @@
 //!
 
 use crate::support_collab::{TypedBroker, change_carrying, changes_of};
-use tilo_ui_base::presence::PresenceKey;
-use tilo_ui_base::{
-    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload,
-};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 #[test]
 fn n_peer_fanout_and_per_peer_attribution() {
@@ -63,65 +60,6 @@ fn n_peer_fanout_and_per_peer_attribution() {
         count_incremental(&a_evs),
         0,
         "A must not receive its own incremental: {a_evs:?}"
-    );
-
-    // --- 2. Per-peer presence attribution ---------------------------
-    // A announces on Workspace "1"; B announces on Workspace "2".
-    a.send(CollabRequest::Say {
-        key: PresenceKey::Workspace { id: "1".into() },
-        payload: PresencePayload::Pointer { x: 1.0, y: 1.0 }
-            .to_live()
-            .unwrap(),
-    });
-    b.send(CollabRequest::Say {
-        key: PresenceKey::Workspace { id: "2".into() },
-        payload: PresencePayload::Pointer { x: 2.0, y: 2.0 }
-            .to_live()
-            .unwrap(),
-    });
-    let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<tilo_ui_base::permissions::MemberId> {
-        evs.iter().find_map(|e| match e {
-            CollabEvent::RemotePresenceUpdate {
-                member,
-                key: PresenceKey::Workspace { id },
-                ..
-            } if id == ws => Some(member.clone()),
-            _ => None,
-        })
-    };
-    let (mut c_evs, mut a_evs) = (Vec::new(), Vec::new());
-    tilo_test_env::wait_until("both presences at C and B's at A", || {
-        c_evs.extend(c.poll());
-        a_evs.extend(a.poll());
-        uid_for(&c_evs, "1").is_some()
-            && uid_for(&c_evs, "2").is_some()
-            && uid_for(&a_evs, "2").is_some()
-    });
-    let uid_a = uid_for(&c_evs, "1").expect("C sees A's Workspace-1 presence");
-    let uid_b = uid_for(&c_evs, "2").expect("C sees B's Workspace-2 presence");
-    // Asserts the exact announced ids, not just `uid_a != uid_b` — that
-    // weaker check would still pass if the broker swapped them.
-    assert_eq!(
-        uid_a,
-        tilo_ui_base::permissions::MemberId::person("peer-a"),
-        "A's presence must be attributed to A"
-    );
-    assert_eq!(
-        uid_b,
-        tilo_ui_base::permissions::MemberId::person("peer-b"),
-        "B's presence must be attributed to B"
-    );
-    assert_ne!(uid_a, uid_b, "A and B must be attributed distinct user ids");
-
-    // A must NOT receive its own Workspace-1 presence, but SHOULD see
-    // B's Workspace-2 presence.
-    assert!(
-        uid_for(&a_evs, "1").is_none(),
-        "A must not receive its own presence back: {a_evs:?}"
-    );
-    assert!(
-        uid_for(&a_evs, "2").is_some(),
-        "A should receive B's presence: {a_evs:?}"
     );
 
     drop(a);

@@ -773,20 +773,6 @@ impl RecordHandle {
         self.report(Report::SearchIndex(delta_json.to_vec())).await
     }
 
-    /// Say the app's word of its person in the record's workspace (`frame`), as the
-    /// workspace's live session carries it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses it.
-    pub async fn say(&self, frame: collab_types::presence::Presence) -> Result<(), NotAvailable> {
-        self.done(Operation::Say {
-            record: self.channel.record.clone(),
-            frame,
-        })
-        .await
-    }
-
     /// Roster and permission changes, and the session's directed asks of
     /// this endpoint.
     ///

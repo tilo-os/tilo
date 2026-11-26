@@ -209,14 +209,6 @@ impl AppBrokerState {
             invocation,
         })
     }
-    /// Stable authenticated actor id for native presence and interactions.
-    /// Display handles remain presentation only.
-    pub(super) fn member_id(admitted: &AdmittedJoinIdentity) -> collab_types::MemberId {
-        admitted.agent_id.as_ref().map_or_else(
-            || collab_types::MemberId::person(admitted.actor_key.clone()),
-            |agent| collab_types::MemberId::agent(agent.clone(), admitted.actor_key.clone()),
-        )
-    }
     pub(super) fn revalidate_admission(
         &self,
         route: &CrdtRoute,

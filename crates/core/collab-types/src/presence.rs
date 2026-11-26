@@ -7,6 +7,7 @@
 
 mod bridged;
 mod call;
+mod line;
 mod payload;
 mod said;
 mod shell;
@@ -15,6 +16,7 @@ mod shown;
 pub use crate::member::{Member, Person, joined_at_from_packed};
 pub use bridged::{Bridged, MAX_ACCOUNT_CHARS, MAX_BRIDGED_NAME_CHARS};
 pub use call::CallPresence;
+pub use line::{Heard, Said};
 pub use payload::PresencePayload;
 pub use said::{DESKTOP_APP, Presence, stand_in};
 pub use tilo_action_policy::{PersonId, identity_color};

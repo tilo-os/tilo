@@ -78,10 +78,11 @@ pub enum Operation {
         record: Record,
         publication: Publication,
     },
-    /// Say the app's word of its person, as the frame the workspace's live session carries:
-    /// where they are, their caret, what they do. The host attributes it to the connection's
-    /// member and says it to the workspace's other apps and devices.
-    Say { record: Record, frame: Presence },
+    /// A retired word of the app's person: presence is said on the connection the launcher
+    /// handed the app ([`tilo_actions::remote::RemoteActionMessage::PresenceSaid`]) and reaches
+    /// its views as the workspace's live session hears it. Kept in its place so every later
+    /// call reads as the call those builds wrote; a host refuses it.
+    RetiredSay { record: Record, frame: Presence },
     /// Start receiving one of a record's topics. The call's id names the
     /// subscription in every event it delivers.
     Subscribe { record: Record, topic: Topic },
@@ -531,7 +532,7 @@ mod tests {
         {
             let call = Call {
                 id: 7,
-                request: Operation::Say {
+                request: Operation::RetiredSay {
                     record: Record::new("app/workspace", ""),
                     frame: Presence::app(
                         "app",

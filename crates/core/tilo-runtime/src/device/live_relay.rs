@@ -858,7 +858,7 @@ impl Live {
     pub(crate) fn new(
         workspaces: &Arc<ServiceWorkspaces>,
         relay: Option<Relay>,
-        fanout: Arc<tilo_app_host::collab_broker::FanoutState>,
+        fanout: &Arc<tilo_app_host::collab_broker::FanoutState>,
     ) -> Arc<Self> {
         let (changed, _) = tokio::sync::watch::channel(0);
         let shared = Arc::new(Shared {
@@ -900,11 +900,15 @@ impl Live {
             endpoint: workspaces.endpoint(),
             serves,
             calls: Mutex::default(),
-            speaking: super::live_speaking::Speaking::new(fanout),
+            speaking: super::live_speaking::Speaking::new(),
             this: this.clone(),
             settle: Arc::new(tokio::sync::Notify::new()),
         });
-        live.speaking.hear_apps(&live);
+        // The words the broker's own account of an action says reach the device's live presence
+        // where every other word goes.
+        fanout.attach_presence(
+            Arc::clone(&live) as Arc<dyn tilo_app_host::collab_broker::AppPresence>
+        );
         // An app joins and leaves a call through the device's one dispatch, as any action.
         workspaces.copies().providers().provide(
             super::live_speaking::PROVIDER,
@@ -921,7 +925,8 @@ impl Live {
         self.this.clone()
     }
 
-    /// The person this device belongs to, by their root key.
+    /// The person this device belongs to, by their root key: what a test says words for.
+    #[cfg(test)]
     pub(super) fn person(&self) -> [u8; 32] {
         self.shared.workspaces.device_cert().user_public_key
     }
@@ -981,7 +986,6 @@ impl Live {
                     return;
                 };
                 let held = live.shared.workspaces.copies().ids().await;
-                live.speaking.follow_workspaces(&held);
                 if live.serves {
                     let observing = Arc::clone(&live.shared);
                     let workspaces = held.clone();

@@ -138,3 +138,34 @@ pub fn call_media_answers() -> Vec<(u64, Result<CallSnapshot, ActionCallError>)>
         .map(LineClient::call_media_answers)
         .unwrap_or_default()
 }
+
+/// Say `said`, one word of this app's person in its workspace, on the daemon's line: the
+/// device's live presence says it in the workspace's live session for this process's app, and
+/// the workspace's other devices hear it.
+///
+/// # Errors
+/// The process has no line, the device refused the word, or it did not answer in time.
+pub fn say_presence(said: &collab_types::presence::Said) -> Result<(), String> {
+    let line = line().get().ok_or_else(|| NO_LINE.to_owned())?;
+    let said = serde_json::to_value(said).map_err(|error| error.to_string())?;
+    line.say_presence(&said).map_err(|error| error.own_words())
+}
+
+/// What the device's live session heard in this process's workspace since the last look, oldest
+/// first.
+#[must_use]
+pub fn presence_heard() -> Vec<collab_types::presence::Heard> {
+    line()
+        .get()
+        .map(LineClient::presence_heard)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|heard| match serde_json::from_str(&heard) {
+            Ok(heard) => Some(heard),
+            Err(error) => {
+                tracing::warn!(%error, "a presence word does not read");
+                None
+            }
+        })
+        .collect()
+}

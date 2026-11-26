@@ -883,7 +883,10 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::StoreRequest { .. }
         | RemoteActionMessage::StoreResponse { .. }
         | RemoteActionMessage::CallMediaRequest { .. }
-        | RemoteActionMessage::CallMediaResult { .. } => None,
+        | RemoteActionMessage::CallMediaResult { .. }
+        | RemoteActionMessage::PresenceSaid { .. }
+        | RemoteActionMessage::PresenceSaidResult { .. }
+        | RemoteActionMessage::PresenceHeard { .. } => None,
     }
 }
 

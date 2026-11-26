@@ -25,7 +25,6 @@ use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{
     collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager,
-    collaboration::PresencePayload,
 };
 use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey};
 use tilo_ui_base::{widget::DrawChild as _, widget::Widget};
@@ -363,49 +362,9 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
     }
 
     {
-        let (mut a, mut b) = two_peers();
-
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Field("text".into())],
         };
-
-        a.send(CollabRequest::Say {
-            key: key.clone(),
-            payload: PresencePayload::Caret { pos: 7 }.to_live().unwrap(),
-        });
-        let a_caret_on_b = poll_until(
-            "B must receive A's caret presence attributed to alice",
-            &mut b,
-            |ev| match ev {
-                CollabEvent::RemotePresenceUpdate {
-                    member,
-                    payload: PresencePayload::Caret { pos },
-                    ..
-                } if *member == MemberId::person("alice") => Some(*pos),
-                _ => None,
-            },
-        );
-        assert_eq!(a_caret_on_b, 7);
-
-        // B's caret moves -> A sees it, attributed to bob. Both directions
-        // travel the same real presence fan-out.
-        b.send(CollabRequest::Say {
-            key: key.clone(),
-            payload: PresencePayload::Caret { pos: 3 }.to_live().unwrap(),
-        });
-        let b_caret_on_a = poll_until(
-            "A must receive B's caret presence attributed to bob",
-            &mut a,
-            |ev| match ev {
-                CollabEvent::RemotePresenceUpdate {
-                    member,
-                    payload: PresencePayload::Caret { pos },
-                    ..
-                } if *member == MemberId::person("bob") => Some(*pos),
-                _ => None,
-            },
-        );
-        assert_eq!(b_caret_on_a, 3);
 
         // The remote caret paints into the local render: place alice's caret
         // into a presence context keyed to the same widget and prove the
@@ -426,9 +385,6 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
             non_background_pixels(&with_caret.pixels) > non_background_pixels(&baseline.pixels),
             "the peer caret must add drawn pixels to the local render"
         );
-
-        drop(a);
-        drop(b);
     }
 
     {

@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::test_support::WorkspaceTree;
-use collab_types::presence::{Payload, Presence};
 use ed25519_dalek::SigningKey;
 use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
@@ -217,122 +216,6 @@ impl Endpoint {
             other => panic!("expected the reply to {id}, got {other:?}"),
         }
     }
-
-    /// Say `payload` under `key` as the app of the endpoint's record, in its workspace.
-    async fn say(&mut self, key: &PresenceKey, payload: Payload) -> Result<Reply, String> {
-        let record = self.channel.clone();
-        let route = CrdtRoute::from_channel_key(&record.key);
-        let frame = Presence::app(route.app_id, route.cluster_id, key.clone(), payload);
-        self.call(Operation::Say { record, frame }).await
-    }
-
-    /// The next word someone else said, on the subscription `subscription`, past the context
-    /// it starts with.
-    async fn heard(&mut self, subscription: u64) -> (collab_types::MemberId, Presence) {
-        loop {
-            match self.frame().await {
-                HostFrame::Event {
-                    subscription: delivered,
-                    event: Event::Context(ContextUpdate::Heard { member, frame }),
-                } if delivered == subscription => return (member, *frame),
-                HostFrame::Event {
-                    event: Event::Context(_),
-                    ..
-                } => {}
-                other => panic!("expected a word on {subscription}, got {other:?}"),
-            }
-        }
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn presence_crosses_the_wire_attributed_and_replicated() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let workspace = Workspace::new(&[1, 2]);
-            let mut watcher = workspace.endpoint(1);
-            let mut author = workspace.endpoint(2);
-            let channel = watcher.channel.clone();
-            let subscription = watcher
-                .send(Operation::Subscribe {
-                    record: channel.clone(),
-                    topic: Topic::Context,
-                })
-                .await;
-            assert_eq!(
-                watcher.frame().await,
-                HostFrame::Reply {
-                    id: subscription,
-                    result: Ok(Reply::Subscribed),
-                }
-            );
-
-            let key = PresenceKey::surface_pointer("editor/document-7");
-            assert_eq!(
-                author
-                    .say(
-                        &key,
-                        Payload::Status {
-                            text: "  Reviewing   Q2 ".into(),
-                            automatic: false,
-                        },
-                    )
-                    .await,
-                Ok(Reply::Done)
-            );
-            let (member, presence) = watcher.heard(subscription).await;
-            assert_eq!(
-                member,
-                collab_types::MemberId::person(actor(2)),
-                "attributed"
-            );
-            assert_eq!(presence.key, key);
-            assert_eq!(
-                presence.payload,
-                Payload::Status {
-                    text: "Reviewing Q2".into(),
-                    automatic: false,
-                },
-                "the broker trims a status before it travels"
-            );
-
-            assert!(
-                author
-                    .say(
-                        &key,
-                        Payload::Availability {
-                            state: "away".into(),
-                            call: None,
-                            camera: false,
-                            screen: false,
-                        },
-                    )
-                    .await
-                    .is_err(),
-                "an app never speaks for the desktop's presence"
-            );
-
-            assert_eq!(
-                watcher.call(Operation::Unsubscribe { subscription }).await,
-                Ok(Reply::Done)
-            );
-            author.say(&key, Payload::Arrived).await.unwrap();
-            let channel = watcher.channel.clone();
-            assert_eq!(
-                watcher
-                    .call(Operation::Leave {
-                        record: channel.key
-                    })
-                    .await,
-                Ok(Reply::Done),
-                "nothing more arrives on an ended subscription before the next reply"
-            );
-            assert!(
-                watcher.say(&key, Payload::Left).await.is_err(),
-                "a record the connection left names nothing on it"
-            );
-        })
-        .await;
 }
 
 /// The device's copy of the one record the test's route opened, as its workspace service keeps
@@ -728,6 +611,7 @@ async fn a_record_opens_on_the_first_call_naming_it() {
         .run_until(async {
             let workspace = Workspace::new(&[3]);
             let mut endpoint = workspace.opening_endpoint(3, &device(4));
+            let channel = endpoint.channel.clone();
             assert_eq!(
                 endpoint
                     .call(Operation::Workspace {
@@ -738,18 +622,25 @@ async fn a_record_opens_on_the_first_call_naming_it() {
                 Ok(Reply::Workspace(runtime_collab::WorkspaceStatus::Ready))
             );
             let refused = endpoint
-                .say(&PresenceKey::surface_pointer("editor"), Payload::Arrived)
+                .call(Operation::Subscribe {
+                    record: channel.clone(),
+                    topic: Topic::Context,
+                })
                 .await;
             assert!(
                 refused.is_err(),
                 "a device the workspace never enrolled opens nothing"
             );
             let mut endpoint = workspace.opening_endpoint(3, &device(3));
+            let channel = endpoint.channel.clone();
             assert_eq!(
                 endpoint
-                    .say(&PresenceKey::surface_pointer("editor"), Payload::Arrived)
+                    .call(Operation::Subscribe {
+                        record: channel,
+                        topic: Topic::Context,
+                    })
                     .await,
-                Ok(Reply::Done)
+                Ok(Reply::Subscribed)
             );
         })
         .await;
@@ -1022,64 +913,6 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
                     .is_err(),
                 "a surface change that does not read is refused"
             );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn the_wire_client_calls_and_subscribes_against_the_host() {
-    use runtime_collab::wire::client::{Client, Delivery};
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let workspace = Workspace::new(&[11, 12]);
-            let connect = |seed: u8| {
-                let (connection, outgoing, channel) = workspace.connection(seed);
-                let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
-                let (reader, writer) = host.into_split();
-                tokio::task::spawn_local(serve(connection, outgoing, reader, writer));
-                let (reader, writer) = endpoint.into_split();
-                let (client, frames) = Client::new(reader, writer);
-                tokio::task::spawn_local(frames);
-                (client, channel)
-            };
-            let (watcher, watcher_channel) = connect(11);
-            let (author, authored) = connect(12);
-            let mut presence = watcher
-                .subscribe(watcher_channel, Topic::Context)
-                .await
-                .unwrap();
-            let key = PresenceKey::surface_pointer("editor");
-            let route = CrdtRoute::from_channel_key(&authored.key);
-            let frame = Presence::app(route.app_id, route.cluster_id, key, Payload::Arrived);
-            assert_eq!(
-                author
-                    .call(Operation::Say {
-                        record: authored,
-                        frame,
-                    })
-                    .await,
-                Ok(Reply::Done)
-            );
-            let member = loop {
-                match presence.next().await {
-                    Some(Delivery::Event(Event::Context(ContextUpdate::Heard {
-                        member, ..
-                    }))) => {
-                        break member;
-                    }
-                    Some(Delivery::Event(Event::Context(_))) => {}
-                    _ => panic!("the client routes the subscription's event"),
-                }
-            };
-            assert_eq!(member, collab_types::MemberId::person(actor(12)));
-            assert!(
-                watcher
-                    .call(Operation::Close { handle: Handle(99) })
-                    .await
-                    .is_err(),
-                "a refusal reaches the call that caused it"
-            );
-            drop(presence);
         })
         .await;
 }

@@ -187,9 +187,14 @@ pub struct Daemon {
 
 impl Daemon {
     /// The device's live session, once the daemon runs it.
+    pub(crate) fn live_session(&self) -> Option<&Arc<super::live_relay::Live>> {
+        self.live.get()
+    }
+
+    /// [`Self::live_session`], under the name those tests know it by.
     #[cfg(test)]
     pub(crate) fn live(&self) -> Option<&Arc<super::live_relay::Live>> {
-        self.live.get()
+        self.live_session()
     }
 
     /// Whether the app `app` installed here declares `capability` in its signed manifest.
@@ -2405,7 +2410,7 @@ impl Daemon {
             super::live_relay::Live::new(
                 &workspaces,
                 kept.as_ref().and_then(super::keep::Kept::live_relay),
-                Arc::clone(&fanout),
+                &fanout,
             )
         };
         stage("serving the device's endpoint");

@@ -67,6 +67,23 @@ pub struct FanoutState {
     peer_id_counter: AtomicU64,
     app_broker: Mutex<Option<Arc<AppBrokerState>>>,
     local_subs: Mutex<Vec<Arc<WorkspaceSubscription>>>,
+    /// What says a word the broker itself publishes in a workspace (an agent's step of an
+    /// action): the device's live presence, which says it as the member's, where the shell's
+    /// and the apps' own words go.
+    presence: Mutex<Option<Arc<dyn AppPresence>>>,
+}
+
+/// What a broker of this device hands its own words to: the device's live presence, so a word
+/// its screens say of an agent's action travels and is shown as every other word is.
+pub trait AppPresence: Send + Sync {
+    /// `member` said `payload` under `key` in `origin`'s app and workspace.
+    fn said(
+        &self,
+        member: &collab_types::MemberId,
+        key: collab_types::presence::PresenceKey,
+        payload: collab_types::presence::PresencePayload,
+        origin: &CrdtRoute,
+    );
 }
 
 /// A subscriber inside the shell process, addressed by workspace — how the
@@ -117,6 +134,7 @@ impl FanoutState {
             peer_id_counter: AtomicU64::new(0),
             app_broker: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
+            presence: Mutex::new(None),
         }
     }
 
@@ -243,43 +261,42 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    /// What `member` said under `key` in an app on this device, `origin` (its app, workspace and
-    /// record): every other app of the workspace here is handed it as the frame the live session
-    /// carries, and the session's own subscribers are told the app and record it came from, so
-    /// the person's word leaves for their other devices and everyone else's.
+    /// Attach what says a word this broker publishes: the device's live presence, which says it
+    /// where the shell's and the apps' own words go. Called once, when the live session starts.
+    pub fn attach_presence(&self, presence: Arc<dyn AppPresence>) {
+        if let Ok(mut held) = self.presence.lock() {
+            *held = Some(presence);
+        }
+    }
+
+    /// What `member` said under `key` in the app `origin` names, the broker's own account of an
+    /// action as it runs: the device's live presence says it for the member, in the app and
+    /// workspace of `origin`, and keeps it for a live session that opens later.
     pub fn said(
         &self,
         member: &collab_types::MemberId,
         key: collab_types::presence::PresenceKey,
         payload: collab_types::presence::PresencePayload,
-        except: u64,
+        _except: u64,
         origin: &CrdtRoute,
     ) {
         if self.stopped.load(Ordering::Acquire) || origin.cluster_id.is_empty() {
             return;
         }
-        let frame = payload.to_live().map(|live| {
-            collab_types::presence::Presence::app(
-                origin.app_id.clone(),
-                origin.cluster_id.clone(),
-                key.clone(),
-                live,
-            )
-        });
-        let scope = origin.to_cluster_scope();
         let event = CollabEvent::RemotePresenceUpdate {
             member: member.clone(),
-            key,
-            payload,
+            key: key.clone(),
+            payload: payload.clone(),
         };
+        let scope = origin.to_cluster_scope();
         for sub in self.local_subs() {
             if sub.wants(&scope) {
                 (sub.sink)(&event, origin);
             }
         }
-        let heard_by = (frame, self.app_broker());
-        if let (Some(frame), Some(app_broker)) = heard_by {
-            app_broker.heard(member, &frame, except, &scope);
+        let presence = self.presence.lock().ok().and_then(|held| held.clone());
+        if let Some(presence) = presence {
+            presence.said(member, key, payload, origin);
         }
     }
 
