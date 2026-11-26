@@ -335,6 +335,108 @@ fn every_message_a_long_conversation_lists_is_read_at_its_path() {
     });
 }
 
+/// The paths a `tilo_ls` answer lists, in order.
+fn listed_paths(reply: &Value) -> Vec<String> {
+    reply["structuredContent"]["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row["path"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// One page of a path's listing, from `cursor`, `limit` rows at a time.
+async fn list_page(
+    key: &host::Key,
+    workspace: &str,
+    path: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Value {
+    let mut arguments = json!({"workspace": workspace, "path": path, "limit": limit});
+    if let Some(cursor) = cursor {
+        arguments["cursor"] = json!(cursor);
+    }
+    key.tool_structured("tilo_ls", &arguments).await
+}
+
+/// A listing read on after the app published a change carries on after the row it stood at,
+/// not from its first page: a row inserted before that place makes it neither repeat nor skip
+/// one that was there all along, and the page says it read on.
+#[test]
+fn a_listing_read_on_after_a_change_carries_on_after_the_row_it_stood_at() {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
+        const ROWS: usize = 30;
+        const PAGE: usize = 7;
+        let workspace = host.workspace().to_owned();
+        let key = host.key("Paged conversation");
+        host::start_app(host.as_ref(), CHAT)
+            .await
+            .unwrap_or_else(|refused| panic!("Chat starts with no window: {refused:?}"));
+        let conversation = format!("{CHAT}/{}", did_channel(&key, &workspace, "paged").await);
+        for index in 0..ROWS {
+            act(
+                &key,
+                &workspace,
+                &conversation,
+                "send",
+                &json!({"body": format!("row {index} end")}),
+            )
+            .await;
+        }
+        let first = list_page(&key, &workspace, &conversation, None, PAGE).await;
+        assert_ne!(first["isError"], true, "{first}");
+        let mut listed = listed_paths(&first);
+        let mut cursor = first["structuredContent"]["next_cursor"]
+            .as_str()
+            .map(str::to_owned);
+        // The app publishes a change between two pages: one more row, wherever it lands among
+        // the rows the listing already stood past.
+        act(
+            &key,
+            &workspace,
+            &conversation,
+            "send",
+            &json!({"body": "a row posted midway"}),
+        )
+        .await;
+        let mut restarted = false;
+        while let Some(at) = cursor {
+            let reply = list_page(&key, &workspace, &conversation, Some(&at), PAGE).await;
+            assert_ne!(reply["isError"], true, "{reply}");
+            restarted |= said(&reply).0.contains("the directory changed");
+            listed.extend(listed_paths(&reply));
+            cursor = reply["structuredContent"]["next_cursor"]
+                .as_str()
+                .map(str::to_owned);
+        }
+        assert!(
+            restarted,
+            "the page after the change says it read on: {listed:?}"
+        );
+        let unique: std::collections::BTreeSet<&String> = listed.iter().collect();
+        assert_eq!(
+            unique.len(),
+            listed.len(),
+            "no row is listed twice: {listed:?}"
+        );
+        // Every row that was there throughout is read once, at its listed path.
+        for index in 0..ROWS {
+            let body = format!("row {index} end");
+            let mut found = 0;
+            for at in &unique {
+                let reply = key
+                    .tool_structured("tilo_read", &json!({"workspace": workspace, "path": at}))
+                    .await;
+                if said(&reply).0.contains(&body) {
+                    found += 1;
+                }
+            }
+            assert_eq!(found, 1, "{body:?} is listed once, not {found}");
+        }
+    });
+}
+
 /// A startup's backend makes a workspace per customer with its one key, as fast as it answers,
 /// and works in some of them at once: none is refused or paced, and the workspaces made
 /// before do not make the next slower.

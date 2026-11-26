@@ -787,6 +787,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Whether this page had to read the directory again from its first
         // page because the app published a change since the page before it.
         let mut restarted = false;
+        // The absolute index this page starts at: the cursor's offset, or the
+        // row after the one the page before ended at when a change moved the
+        // rows before it.
+        let mut page_start = offset;
         if want_resources && resolved.node.is_some() {
             let resumed = match (&cursor.resume, &resolved.node) {
                 (Some((mark, skip)), Some(node)) if offset > 0 => self
@@ -827,14 +831,39 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     (level, skip, false)
                 } else {
                     let reading = super::timing_start();
-                    let level = self
+                    let mut level = self
                         .tree
                         .level_reaching(&resolved.provider, &node.id, level, end)
                         .await?;
+                    // This page carries on after the row the one before ended at, wherever a
+                    // change since put it; only if that row is gone does the offset stand.
+                    let skipped = cursor
+                        .after
+                        .as_deref()
+                        .and_then(|after| {
+                            level
+                                .children
+                                .iter()
+                                .position(|child| child.id == after)
+                                .map(|at| at.saturating_add(1))
+                        })
+                        .unwrap_or(offset);
+                    if skipped.saturating_add(limit) > level.children.len() && level.unread() {
+                        level = self
+                            .tree
+                            .level_reaching(
+                                &resolved.provider,
+                                &node.id,
+                                level,
+                                skipped.saturating_add(limit),
+                            )
+                            .await?;
+                    }
                     super::timing_done("ls.level", reading);
-                    (level, offset, true)
+                    page_start = skipped;
+                    (level, skipped, true)
                 };
-                first = offset.saturating_sub(skipped);
+                first = page_start.saturating_sub(skipped);
                 let related: Vec<Node> = resolved
                     .children
                     .iter()
@@ -852,6 +881,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
         }
         let unread = read.as_ref().is_some_and(|(level, _)| level.unread());
+        let page_end = page_start.saturating_add(limit);
         // Each entry is a resource's line, and its row; then the resource's
         // own actions, a line each. A page is a window of them.
         let mut entries: Vec<(String, Option<Value>)> = Vec::new();
@@ -876,7 +906,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             entries.resize(first, (String::new(), None));
             for (index, child) in children.iter().enumerate() {
                 let index = first.saturating_add(index);
-                if index < offset || index >= end {
+                if index < page_start || index >= page_end {
                     // Off this page: only counted.
                     entries.push((String::new(), None));
                     continue;
@@ -949,7 +979,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             std::collections::HashSet::new();
         for child in children
             .iter()
-            .skip(offset.saturating_sub(first))
+            .skip(page_start.saturating_sub(first))
             .take(limit)
         {
             let kind = forms
@@ -978,18 +1008,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let _ = write!(text, "  ({})", resolved.app_id);
         }
         let mut rows: Vec<Value> = Vec::new();
-        for (line, row) in entries.into_iter().skip(offset).take(limit) {
+        for (line, row) in entries.into_iter().skip(page_start).take(limit) {
             text.push('\n');
             text.push_str(&line);
             rows.extend(row);
         }
         // The next page starts at the directory page its first resource
         // was read in, when one was.
-        let next = (end < total || unread).then(|| {
+        let next = (page_end < total || unread).then(|| {
             let resume = read.as_ref().and_then(|(level, first)| {
                 let node = resolved.node.as_ref()?;
                 level
-                    .row_mark(&node.id, end.checked_sub(*first)?)
+                    .row_mark(&node.id, page_end.checked_sub(*first)?)
                     .map(|(cursor, revision)| {
                         (
                             PageMark {
@@ -1007,7 +1037,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Some(level.children.get(last)?.id.clone())
             });
             LsCursor {
-                offset: end,
+                offset: page_end,
                 after: resume.as_ref().and(after),
                 resume,
             }
@@ -1035,7 +1065,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             text.push_str("\n(nothing here)");
         }
         if restarted {
-            text.push_str("\nthe directory changed; this page reads on from its first page");
+            text.push_str("\nthe directory changed; this page reads on from the last row it read");
         }
         let mut reply = Reply::ok(text);
         if structured {
