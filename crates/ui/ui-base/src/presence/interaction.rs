@@ -329,7 +329,7 @@ impl PresenceCtx {
     /// Name each step on an item by what its app publishes for that item now, through
     /// `label_of`: a rename, or a note made a moment ago, reads by its current name rather
     /// than the one the step began with.
-    pub(crate) fn relabel_items(&mut self, label_of: &dyn Fn(&str) -> Option<String>) {
+    pub fn relabel_items(&mut self, label_of: &dyn Fn(&str) -> Option<String>) {
         for entry in self.interactions.values_mut() {
             let id = tilo_actions::logical_resource_id(&entry.interaction.resource.id);
             if let Some(label) = acted_item(&entry.interaction)
@@ -342,7 +342,7 @@ impl PresenceCtx {
     }
 
     /// Whether a widget drew `invocation`'s place ([`Self::note_placed`]).
-    pub(crate) fn placed(&self, invocation: InvocationId) -> bool {
+    pub fn placed(&self, invocation: InvocationId) -> bool {
         self.interactions
             .get(&invocation)
             .is_some_and(|entry| entry.placed.get())

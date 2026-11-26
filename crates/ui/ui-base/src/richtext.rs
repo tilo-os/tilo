@@ -179,7 +179,7 @@ impl RichSpan {
 
     /// Whether the run carries no styling of its own: text in the block's style, as [`Self::new`] makes
     /// it.
-    pub(crate) fn is_unstyled(&self) -> bool {
+    pub fn is_unstyled(&self) -> bool {
         !self.bold
             && !self.italic
             && self.size.is_none()
@@ -270,7 +270,7 @@ impl InkReachCache {
 pub struct RichTextLayout {
     /// One exact source snapshot, scoped to this layout owner.
     prepared: Option<RichPreparation>,
-    pub(crate) buffer: Buffer,
+    pub buffer: Buffer,
     /// Global byte offset of every cosmic-text logical line. cosmic-text cursors are `(line,
     /// byte-within-line)`; the public toolkit API uses a single byte space over the complete
     /// paragraph/block.
@@ -495,7 +495,7 @@ impl RichTextLayout {
     }
 
     /// Revealed secret controls need geometry without an additional retained plaintext source snapshot.
-    pub(crate) fn discard_prepared_inputs(&mut self) {
+    pub fn discard_prepared_inputs(&mut self) {
         self.prepared = None;
     }
 
@@ -525,7 +525,7 @@ impl RichTextLayout {
         Self::shape_plain_browser(fs, text, style, max_width, false)
     }
 
-    pub(crate) fn shape_plain_browser(
+    pub fn shape_plain_browser(
         fs: &mut FontSystem,
         text: &str,
         style: &crate::text_render::TextStyle,
@@ -675,7 +675,7 @@ impl RichTextLayout {
         )
     }
 
-    pub(crate) fn shape_styled_browser(
+    pub fn shape_styled_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
@@ -706,7 +706,7 @@ impl RichTextLayout {
             .with_decorations(underlines, strikes)
     }
 
-    pub(crate) fn shape_styled_reusing_browser(
+    pub fn shape_styled_reusing_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
@@ -1140,7 +1140,7 @@ impl RichTextLayout {
     /// whose top stands in a band wraps to the width that band leaves and starts where its left
     /// inset puts it. The rows are laid out again at those widths, so the row tops and the ink
     /// reach cached above no longer hold.
-    pub(crate) fn set_row_bands(
+    pub fn set_row_bands(
         &mut self,
         fs: &mut FontSystem,
         bands: &crate::text_render::RowBands,
@@ -1261,7 +1261,7 @@ impl RichTextLayout {
     /// Resolve a set of carets from one traversal of the shaped visual rows. Exact affinity wins over
     /// the first byte-only fallback, as in `caret_geometry_at`. Geometry is local to this call and
     /// never survives an edit, reshape, font change or owner replacement.
-    pub(crate) fn caret_geometries(&self, positions: &[TextPosition]) -> Vec<(f32, f32, f32)> {
+    pub fn caret_geometries(&self, positions: &[TextPosition]) -> Vec<(f32, f32, f32)> {
         use std::collections::HashMap;
         let mut exact = HashMap::new();
         let mut fallback = HashMap::new();

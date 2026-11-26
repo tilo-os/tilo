@@ -182,7 +182,7 @@ impl RichTextLayout {
 
     /// Tint, in `tint`, the pictures of the inline emoji `selected` covers: a selection is painted
     /// under the text, where a picture hides it.
-    pub(crate) fn tint_selected_emoji(
+    pub fn tint_selected_emoji(
         &self,
         scene: &mut Scene,
         transform: Affine,

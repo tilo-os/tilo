@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::widget::RowShapeFace;
+
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};

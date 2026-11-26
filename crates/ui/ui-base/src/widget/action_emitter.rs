@@ -135,7 +135,7 @@ pub struct RefusedPress {
 impl RefusedPress {
     /// Follow `event` over `rect`: where a press of the left button inside it landed, which it
     /// takes.
-    pub(crate) fn pressed(
+    pub fn pressed(
         &mut self,
         event: &winit::event::WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,

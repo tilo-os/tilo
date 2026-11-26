@@ -65,13 +65,13 @@ pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
 /// the end.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LineEdit {
-    pub(crate) start: usize,
-    pub(crate) old_end: usize,
-    pub(crate) new_end: usize,
+    pub start: usize,
+    pub old_end: usize,
+    pub new_end: usize,
 }
 
 impl LineEdit {
-    pub(crate) fn between(old: &str, new: &str) -> Self {
+    pub fn between(old: &str, new: &str) -> Self {
         let (old_bytes, new_bytes) = (old.as_bytes(), new.as_bytes());
         let prefix = old_bytes
             .iter()

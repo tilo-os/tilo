@@ -46,7 +46,7 @@ impl Keep {
     /// The content shown in `clip` (logical pixels, drawn with `transform`) and moved by `delta`
     /// (logical pixels, on screen) since the frame on screen, with `overlays` (logical) painted over it
     /// without moving.
-    pub(crate) fn scrolled(
+    pub fn scrolled(
         transform: Affine,
         clip: Rect,
         delta: Vec2,
@@ -139,7 +139,7 @@ impl Keep {
 #[derive(Default)]
 pub struct Culling {
     /// The scenes a culled frame draws into.
-    pub(crate) scenes: Scenes,
+    pub scenes: Scenes,
     /// Where the last frame that copied repainted, in scene pixels.
     expected: Vec<Rect>,
     /// Whether the last frame showed a secret: what a frame leaves out still shows it.
@@ -153,13 +153,13 @@ pub struct Culling {
 /// be drawn again in full before the two are composed.
 #[derive(Default)]
 pub struct Scenes {
-    pub(crate) widgets: Scene,
-    pub(crate) layers: Scene,
+    pub widgets: Scene,
+    pub layers: Scene,
 }
 
 impl Culling {
     /// Begin culling a frame, with empty scenes to draw it into.
-    pub(crate) fn begin(&mut self) -> Frame {
+    pub fn begin(&mut self) -> Frame {
         self.scenes.widgets.reset();
         self.scenes.layers.reset();
         Frame::begin(&self.expected)
@@ -167,7 +167,7 @@ impl Culling {
 
     /// The frame just drawn repainted `damage` (scene pixels), and copied if `copied`: the next culled
     /// frame expects a copy's frame to repaint there again.
-    pub(crate) fn repainted(&mut self, damage: &[Rect], copied: bool) {
+    pub fn repainted(&mut self, damage: &[Rect], copied: bool) {
         if copied {
             self.expected.clear();
             self.expected.extend_from_slice(damage);
@@ -180,7 +180,7 @@ impl Culling {
         not(test),
         expect(clippy::needless_pass_by_ref_mut, reason = "only tests keep the count")
     )]
-    pub(crate) fn tally(&mut self, left_out: bool, redrawn: bool) {
+    pub fn tally(&mut self, left_out: bool, redrawn: bool) {
         #[cfg(test)]
         {
             self.tally.0 += usize::from(left_out);
@@ -191,7 +191,7 @@ impl Culling {
 
     /// Whether the frame showed a secret, given that its draw saw one (`drawn`) and whether it left
     /// anything out.
-    pub(crate) fn shows_secret(&mut self, drawn: bool, left_out: bool) -> bool {
+    pub fn shows_secret(&mut self, drawn: bool, left_out: bool) -> bool {
         self.secret = drawn || (left_out && self.secret);
         self.secret
     }
@@ -220,7 +220,7 @@ impl Frame {
     }
 
     /// Whether the draw left anything out.
-    pub(crate) fn skipped_any(&self) -> bool {
+    pub fn skipped_any(&self) -> bool {
         FRAME.with_borrow(|frame| {
             frame
                 .as_ref()
@@ -230,7 +230,7 @@ impl Frame {
 
     /// Whether this frame, repainting `damage` (scene pixels) from the scene over its last pixels moved
     /// by its copies, shows only what was drawn: nothing left out meets the damage.
-    pub(crate) fn holds(&self, damage: Option<&[Rect]>) -> bool {
+    pub fn holds(&self, damage: Option<&[Rect]>) -> bool {
         FRAME.with_borrow(|frame| {
             let Some(state) = frame.as_ref() else {
                 return true;

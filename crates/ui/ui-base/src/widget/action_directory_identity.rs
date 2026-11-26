@@ -26,7 +26,7 @@ impl ActionDirectoryInvocationDomain {
         Self::Versioned(*hasher.finalize().as_bytes())
     }
 
-    pub(crate) fn is_supported(self) -> bool {
+    pub fn is_supported(self) -> bool {
         !matches!(self, Self::Unsupported)
     }
 }

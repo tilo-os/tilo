@@ -592,6 +592,15 @@ pub enum TextKind {
     Code,
 }
 
+crate::choice!(TextKind, "TextKind", {
+    Prose => "prose",
+    Numeric => "numeric",
+    Secret => "secret",
+    Identifier => "identifier",
+    Url => "url",
+    Code => "code",
+});
+
 /// The features that pick a figure style: spacing and form.
 pub const FIGURE_TAGS: [OpenTypeTag; 4] = [
     OpenTypeTag::TABULAR_NUMERALS,
@@ -2540,7 +2549,7 @@ impl TextRenderer {
     }
 
     /// Greedy UAX #14 wrap of `text` at `max_width`.
-    pub(crate) fn wrap_lines(
+    pub fn wrap_lines(
         &mut self,
         text: &str,
         style: &TextStyle,
@@ -2939,14 +2948,14 @@ impl TextRenderer {
         }
     }
 
-    pub(crate) fn note_browser_rich_layout(&mut self, layout: &crate::richtext::RichTextLayout) {
+    pub fn note_browser_rich_layout(&mut self, layout: &crate::richtext::RichTextLayout) {
         self.note_browser_font_demands(&layout.buffer);
         for face in &layout.faces {
             self.note_browser_explicit_family(face);
         }
     }
 
-    pub(crate) fn browser_color_emoji_installed(&self) -> bool {
+    pub fn browser_color_emoji_installed(&self) -> bool {
         self.browser_font_assets.contains("Noto-COLRv1.ttf")
     }
 
@@ -3337,7 +3346,7 @@ impl TextRenderer {
     /// [`Self::draw_rich_in_clip_painted`] inside `clip`, but for the rows of the logical
     /// lines `leave_out` (ascending), whose pixels the frame keeps
     /// ([`crate::draw_cull`]).
-    pub(crate) fn draw_rich_in_clip_painted_leaving_out(
+    pub fn draw_rich_in_clip_painted_leaving_out(
         &mut self,
         scene: &mut Scene,
         layout: &crate::richtext::RichTextLayout,

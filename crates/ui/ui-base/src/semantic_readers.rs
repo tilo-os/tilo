@@ -141,10 +141,10 @@ pub type ReadProjection =
 /// App-owned code paired with a closed request decoder and exact result schema. This
 /// public registration cannot create a frame, response stamp, or permission.
 pub struct RegisteredSemanticReader {
-    pub(crate) operation_type: &'static str,
-    pub(crate) schema: fn() -> &'static serde_json::Value,
-    pub(crate) validate: fn(&ResourceSpec, &[u8]) -> Result<(), SemanticReadError>,
-    pub(crate) project: ReadProjection,
+    pub operation_type: &'static str,
+    pub schema: fn() -> &'static serde_json::Value,
+    pub validate: fn(&ResourceSpec, &[u8]) -> Result<(), SemanticReadError>,
+    pub project: ReadProjection,
 }
 
 impl RegisteredSemanticReader {

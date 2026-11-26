@@ -65,7 +65,7 @@ impl PainterSet {
         self.painter.as_ref()
     }
 
-    pub(crate) fn id(&self) -> u64 {
+    pub fn id(&self) -> u64 {
         self.id
     }
 }

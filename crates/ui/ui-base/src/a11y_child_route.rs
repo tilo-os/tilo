@@ -150,7 +150,7 @@ pub struct Routes(HashMap<*const (), ChildRoute>);
 impl Routes {
     /// `w`'s own route when it has no layout node (`own`), after routing every child from it, hosted
     /// ones included, before any child is visited.
-    pub(crate) fn enter(&mut self, w: &dyn Widget, own: Option<TaffyNodeId>) -> Option<ChildRoute> {
+    pub fn enter(&mut self, w: &dyn Widget, own: Option<TaffyNodeId>) -> Option<ChildRoute> {
         let route = if own.is_some() {
             None
         } else {

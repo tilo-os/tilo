@@ -330,7 +330,7 @@ pub struct Reads {
 
 impl Reads {
     /// What `self` and a later pass's `other` read together, each as first read.
-    pub(crate) fn join(mut self, other: Self) -> Self {
+    pub fn join(mut self, other: Self) -> Self {
         self.untracked = self.untracked.or(other.untracked);
         self.take(other.probes, false);
         self
@@ -356,7 +356,7 @@ impl Reads {
     }
 
     /// Whether every outside read still is where it was read.
-    pub(crate) fn stand(&self) -> Result<(), &'static str> {
+    pub fn stand(&self) -> Result<(), &'static str> {
         if let Some(what) = self.untracked {
             return Err(what);
         }

@@ -1039,6 +1039,7 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
         | Action::Increment
         | Action::Decrement
         | Action::SetValue(_) => OperationKind::Effect,
+        other => unreachable!("an action no operation kind names: {other:?}"),
     }
 }
 

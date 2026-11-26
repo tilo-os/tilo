@@ -253,7 +253,7 @@ impl ArrivalClock {
     /// Whether the answer comes from this device or from elsewhere: what a read that goes on in
     /// another view keeps of it.
     #[must_use]
-    pub(crate) fn source(&self) -> &Source {
+    pub fn source(&self) -> &Source {
         &self.from
     }
 

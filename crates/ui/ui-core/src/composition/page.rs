@@ -389,6 +389,7 @@ fn shows(semantics: Option<&AccessNode>, width: Option<f64>) -> Shows {
                 Shows::Paint
             }
         }
+        other => unreachable!("a role no page shows: {other:?}"),
     }
 }
 
@@ -1101,6 +1102,7 @@ fn autocomplete(autofill: Autofill) -> &'static str {
         Autofill::OneTimeCode => "one-time-code",
         Autofill::Name => "name",
         Autofill::Tel => "tel",
+        other => unreachable!("an autofill no page names: {other:?}"),
     }
 }
 

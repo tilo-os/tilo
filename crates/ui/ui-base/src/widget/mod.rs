@@ -1006,7 +1006,7 @@ impl<'a> Edits<'a> {
     }
 
     /// The lent document, for the hosts that pass it on to a record of their own.
-    pub(crate) fn document_mut(&mut self) -> &mut AutoCommit {
+    pub fn document_mut(&mut self) -> &mut AutoCommit {
         self.doc
     }
 }
@@ -1472,7 +1472,7 @@ pub mod layout_info;
 pub use {layout_info::Density, layout_info::Effective, layout_info::FieldLayout, layout_info::FormLayout, layout_info::HeaderRowLayout, layout_info::HeaderRows, layout_info::LabelPlacement, layout_info::LayoutInfo, layout_info::LayoutOrigin, layout_info::ListLayout, layout_info::ListPillLayout, layout_info::ManualConflict, layout_info::ManualLayout, layout_info::PageLayout, layout_info::RowLayout, layout_info::ScrollDirection, layout_info::ScrollLayout, layout_info::SectionLayout, layout_info::ShellLayout, layout_info::SidebarPosition, layout_info::TextLayout};
 pub mod manual;
 pub use {manual::ChildMeasurement, manual::Manual, manual::ManualContext, manual::ManualInvalidation, manual::ManualPolicy, manual::MeasureConstraint};
-mod router;
+pub mod router;
 pub use {router::RouteError, router::RouteHandle, router::RouteSnapshot, router::Router};
 
 /// The narrowest the window `root` lays out still works at

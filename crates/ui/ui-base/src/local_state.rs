@@ -140,7 +140,7 @@ pub struct LocalBinding<T> {
 }
 
 impl<T: Clone> LocalBinding<T> {
-    pub(crate) fn new(state: &LocalState<T>) -> (T, Self) {
+    pub fn new(state: &LocalState<T>) -> (T, Self) {
         // Read the revision first. If a worker mutates between these reads,
         // the value is already current and the next poll is merely redundant;
         // the reverse order could pair an old value with a new revision and
@@ -158,16 +158,16 @@ impl<T: Clone> LocalBinding<T> {
 
     /// Whether the state moved since this binding last observed it: what the next [`Self::poll`] would
     /// return, without taking it.
-    pub(crate) fn changed(&self) -> bool {
+    pub fn changed(&self) -> bool {
         self.state.revision() != self.observed_revision
     }
 
     /// Whether this binding follows `state`.
-    pub(crate) fn follows(&self, state: &LocalState<T>) -> bool {
+    pub fn follows(&self, state: &LocalState<T>) -> bool {
         self.state.same_state(state)
     }
 
-    pub(crate) fn poll(&mut self) -> Option<T> {
+    pub fn poll(&mut self) -> Option<T> {
         let revision = self.state.revision();
         if revision == self.observed_revision {
             return None;
@@ -186,7 +186,7 @@ impl<T: Clone> LocalBinding<T> {
 }
 
 impl<T: Clone + PartialEq> LocalBinding<T> {
-    pub(crate) fn publish(&mut self, value: &T) {
+    pub fn publish(&mut self, value: &T) {
         self.publish_by(value, PartialEq::eq);
     }
 }

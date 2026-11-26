@@ -376,7 +376,7 @@ mod component_adapter {
     use crate::application::AppComponent;
     use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
     use tilo_ui_base::widget::DrawChild;
-    use crate::{widget::AppKind, widget::Instant};
+    use crate::{time::Instant, widget::AppKind};
     use tilo_ui_base::{widget::ActionDirectoryResourcePage, widget::Affine, widget::AudiencePresentationProvider, widget::AudiencePresentationWidgetExt, widget::AutoCommit, widget::CompleteContentProvider, widget::CompleteContentWidgetExt, widget::ControlBindingMetadata, widget::FullscreenProvider, widget::FullscreenWidgetExt, widget::HashMap, widget::HashSet, widget::NodeId, widget::ObjId, widget::PresenceKey, widget::ResourceOperationStart, widget::Scene, widget::TaffyTree, widget::TaffyTreeExt, widget::TextRenderer, widget::Theme, widget::WindowEvent};
 
     pub(crate) struct BoundAppWidget {

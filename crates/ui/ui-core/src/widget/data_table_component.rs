@@ -12,15 +12,6 @@ use tilo_ui_base::text_render::TextKind;
 use tilo_ui_base::widget::Widget;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-tilo_ui_base::choice!(tilo_ui_base::text_render::TextKind, "TextKind", {
-    Prose => "prose",
-    Numeric => "numeric",
-    Secret => "secret",
-    Identifier => "identifier",
-    Url => "url",
-    Code => "code",
-});
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TableColumnWidth {
     #[default]

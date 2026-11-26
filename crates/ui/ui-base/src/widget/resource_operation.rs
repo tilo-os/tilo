@@ -100,7 +100,7 @@ pub struct OperationTarget {
 }
 #[cfg(feature = "model")]
 impl OperationTarget {
-    pub(crate) fn new(
+    pub fn new(
         route: ::collaboration::RouteSpec,
         address: tilo_actions::ActionAddress,
     ) -> Self {
@@ -195,7 +195,7 @@ impl<'a> ResourceOperation<'a> {
     }
 
     #[cfg(feature = "model")]
-    pub(crate) fn with_target(mut self, target: Option<&'a OperationTarget>) -> Self {
+    pub fn with_target(mut self, target: Option<&'a OperationTarget>) -> Self {
         self.target = target;
         self
     }

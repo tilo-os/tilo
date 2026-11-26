@@ -219,8 +219,8 @@ pub(crate) struct Moves {
     /// The old and new box of every widget that moved or resized otherwise, and the box
     /// of every widget that came or went outside a scrolled content: a frame with any
     /// repaints as it would without copies.
-    pub(crate) besides: Vec<Rect>,
-    pub(crate) carried: Vec<Rect>,
+    pub besides: Vec<Rect>,
+    pub carried: Vec<Rect>,
 }
 
 /// What moved between `before` and `after` (two walks of one tree, matched by identity)

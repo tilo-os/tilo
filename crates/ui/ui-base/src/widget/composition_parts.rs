@@ -8,13 +8,13 @@ use vello::kurbo::{Point, Rect};
 
 #[derive(Default)]
 pub struct Parts {
-    pub(super) children: Vec<Element>,
-    pub(super) nodes: Vec<NodeId>,
-    pub(super) rect: Rect,
+    pub children: Vec<Element>,
+    pub nodes: Vec<NodeId>,
+    pub rect: Rect,
 }
 
 impl Parts {
-    pub(super) fn new(children: Vec<Element>) -> Self {
+    pub fn new(children: Vec<Element>) -> Self {
         Self {
             children,
             nodes: Vec::new(),
@@ -22,7 +22,7 @@ impl Parts {
         }
     }
 
-    pub(super) fn build(
+    pub fn build(
         &mut self,
         style: Style,
         taffy: &mut TaffyTree<()>,
@@ -37,7 +37,7 @@ impl Parts {
         taffy.parent_node(style, &self.nodes)
     }
 
-    pub(super) fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+    pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         let start = self.rect.origin();
         for (child, &node) in self.children.iter_mut().zip(&self.nodes) {
@@ -45,7 +45,7 @@ impl Parts {
         }
     }
 
-    pub(super) fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

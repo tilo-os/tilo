@@ -57,7 +57,7 @@ pub enum LocalUndoStatus {
     Pending,
 }
 impl LocalUndoStatus {
-    pub(crate) fn key(&self) -> (bool, bool, bool) {
+    pub fn key(&self) -> (bool, bool, bool) {
         match self {
             Self::Ready(status) => (true, status.can_undo, status.can_redo),
             Self::Pending => (false, false, false),

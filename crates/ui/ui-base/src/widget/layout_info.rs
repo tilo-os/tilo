@@ -35,7 +35,7 @@ pub struct Effective<T> {
     pub origin: LayoutOrigin,
 }
 impl<T> Effective<T> {
-    pub(super) fn new(value: T, origin: LayoutOrigin) -> Self {
+    pub fn new(value: T, origin: LayoutOrigin) -> Self {
         Self { value, origin }
     }
 }

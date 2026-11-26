@@ -135,7 +135,7 @@ const REASONS: [&str; 14] = [
 
 impl RepaintWhy {
     /// `full`, noting it as `reason` when it holds.
-    pub(crate) fn note(&mut self, reason: &'static str, full: bool) -> bool {
+    pub fn note(&mut self, reason: &'static str, full: bool) -> bool {
         if full {
             let bit = REASONS
                 .iter()
@@ -146,7 +146,7 @@ impl RepaintWhy {
         full
     }
 
-    pub(crate) fn names(self) -> String {
+    pub fn names(self) -> String {
         let names: Vec<&str> = REASONS
             .iter()
             .enumerate()

@@ -89,7 +89,7 @@ impl SharedChildren {
     }
 
     /// What filtering these children for `token` gave last, if it was for `token`.
-    pub(crate) fn filtered(&self, token: u64) -> Option<Filtered<SharedChildren>> {
+    pub fn filtered(&self, token: u64) -> Option<Filtered<SharedChildren>> {
         self.0
             .filtered
             .borrow()
@@ -98,7 +98,7 @@ impl SharedChildren {
             .map(|(_, filtered)| filtered.clone())
     }
 
-    pub(crate) fn remember_filtered(&self, token: u64, filtered: Filtered<SharedChildren>) {
+    pub fn remember_filtered(&self, token: u64, filtered: Filtered<SharedChildren>) {
         *self.0.filtered.borrow_mut() = Some((token, filtered));
     }
 }
@@ -179,7 +179,7 @@ impl SharedResource {
     }
 
     /// What filtering this node for `token` gave last, if it was for `token`.
-    pub(crate) fn filtered(&self, token: u64) -> Option<Filtered<SharedResource>> {
+    pub fn filtered(&self, token: u64) -> Option<Filtered<SharedResource>> {
         self.0
             .filtered
             .borrow()
@@ -188,7 +188,7 @@ impl SharedResource {
             .map(|(_, filtered)| filtered.clone())
     }
 
-    pub(crate) fn remember_filtered(&self, token: u64, filtered: Filtered<SharedResource>) {
+    pub fn remember_filtered(&self, token: u64, filtered: Filtered<SharedResource>) {
         *self.0.filtered.borrow_mut() = Some((token, filtered));
     }
 }

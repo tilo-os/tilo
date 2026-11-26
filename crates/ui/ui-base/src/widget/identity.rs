@@ -549,7 +549,7 @@ decorator_trait! {
         fn arrival_shape() -> ::tilo_ui_base::widget::SkeletonShape;
         fn text_review() -> Option<(usize, String)>;
         fn nav_availability() -> ::tilo_ui_base::gesture::NavAvailability;
-        fn dev_route() -> Option<::tilo_ui_base::widget::router::RouteSnapshot>;
+        pub fn dev_route() -> Option<::tilo_ui_base::widget::router::RouteSnapshot>;
         fn appearance_intent() -> Option<::tilo_ui_base::theme::AppearanceIntent>;
         fn minimum_window_width() -> Option<f64>;
         fn preferred_window_size() -> Option<(f64, f64)>;
@@ -646,7 +646,7 @@ decorator_trait! {
         #[cfg(feature = "model")]
         fn take_app_activation(ready: bool) -> Option<::tilo_ui_base::widget::AppActivation>;
         fn take_focus_request() -> Option<String>;
-        fn restore_dev_route(route: &::tilo_ui_base::widget::router::RouteSnapshot) -> bool;
+        pub fn restore_dev_route(route: &::tilo_ui_base::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn take_structure_dirty() -> bool;
         fn dismiss_presented_modal() -> bool;

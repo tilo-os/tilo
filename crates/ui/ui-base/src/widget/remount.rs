@@ -29,7 +29,7 @@ impl<'a> Remount<'a> {
     }
 
     /// A remount of the tree `taffy`, whose widgets `node_map` maps.
-    pub(crate) fn new(
+    pub fn new(
         taffy: &'a mut TaffyTree<()>,
         theme: &'a Theme,
         node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
@@ -107,7 +107,7 @@ impl<'a> Remount<'a> {
         self.taffy.set_children(parent, children)
     }
 
-    pub(crate) fn finish(self) -> (Vec<(NodeId, NodeId)>, Vec<NodeId>) {
+    pub fn finish(self) -> (Vec<(NodeId, NodeId)>, Vec<NodeId>) {
         (self.mounted, self.unmounted)
     }
 }

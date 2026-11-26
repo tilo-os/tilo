@@ -58,7 +58,7 @@ impl Disclosing {
 
     /// A column whose followers stand `shifts` below their places ([`follower_shifts`], the
     /// last its whole growth) as `children` on their way move them, `gap(i)` above child `i`.
-    pub(crate) fn of_column<'a>(
+    pub fn of_column<'a>(
         shifts: &[f64],
         children: impl IntoIterator<Item = &'a dyn Widget>,
         gap: impl Fn(usize) -> f64,

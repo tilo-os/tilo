@@ -161,7 +161,7 @@ fn layout_width(width: f32, discretionary_hyphen_width: f32, align: TextAlign) -
 impl RichTextLayout {
     /// Lay out plain `text` in `style`, wrapped to `max_width`, paragraph by paragraph, reusing
     /// `previous`.
-    pub(crate) fn shape_paragraphs_reusing_browser(
+    pub fn shape_paragraphs_reusing_browser(
         fs: &mut FontSystem,
         text: &str,
         style: &TextStyle,
@@ -408,7 +408,7 @@ impl RichTextLayout {
 
     /// A copy that keeps every line's shape and wrap, for a caller that lays the same text out at a
     /// second width without shaping it twice.
-    pub(crate) fn duplicate(&self, fs: &mut FontSystem) -> Self {
+    pub fn duplicate(&self, fs: &mut FontSystem) -> Self {
         let mut buffer = Buffer::new_empty(self.buffer.metrics());
         let (width, height) = self.buffer.size();
         buffer.set_size(width, height);

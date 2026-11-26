@@ -1456,7 +1456,7 @@ where
 
     /// Scroll one page while keeping the focused row's screen position as the navigation
     /// anchor.
-    pub(crate) fn page_from(&mut self, index: usize, forward: bool) -> Option<(usize, bool)> {
+    pub fn page_from(&mut self, index: usize, forward: bool) -> Option<(usize, bool)> {
         if self.count == 0 || self.viewport <= 0.0 || index >= self.count {
             return None;
         }

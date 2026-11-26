@@ -83,9 +83,9 @@ pub enum PendingControlOrigin {
 #[cfg(feature = "model")]
 #[derive(Clone)]
 pub struct ComponentControl {
-    pub(crate) input: crate::widget::input_provenance::Input,
-    pub(crate) binding: crate::widget::component_walk::Binding,
-    pub(crate) address: tilo_actions::ActionAddress,
+    pub input: crate::widget::input_provenance::Input,
+    pub binding: crate::widget::component_walk::Binding,
+    pub address: tilo_actions::ActionAddress,
 }
 
 #[derive(Clone)]
@@ -130,9 +130,9 @@ pub struct ControlOutbox {
     producer: Rc<RefCell<Producer>>,
 }
 pub struct OwnedControl {
-    pub(crate) origin: PendingControlOrigin,
-    pub(crate) invocation: ControlInvocation,
-    pub(crate) domain: WeakControlDomain,
+    pub origin: PendingControlOrigin,
+    pub invocation: ControlInvocation,
+    pub domain: WeakControlDomain,
 }
 /// Exact surface incarnation/generation. Removing one lease cannot remove any
 /// overlapping surface's lease. New descendants observe ancestors immediately.
@@ -148,16 +148,16 @@ impl Drop for SuspensionLease {
     }
 }
 impl WeakControlDomain {
-    pub(crate) fn upgrade(&self) -> Option<ControlDomain> {
+    pub fn upgrade(&self) -> Option<ControlDomain> {
         self.0.upgrade().map(ControlDomain)
     }
-    pub(crate) fn live(&self) -> bool {
+    pub fn live(&self) -> bool {
         self.upgrade()
             .is_some_and(|d| !d.closed() && !d.suspended())
     }
 }
 impl ControlDomain {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let id = uuid::Uuid::new_v4();
         Self(Rc::new(RefCell::new(DomainState {
             id,
@@ -174,32 +174,32 @@ impl ControlDomain {
             coverage: ControlCoverage::default(),
         })))
     }
-    pub(crate) fn finish_initial_installation(&self) {
+    pub fn finish_initial_installation(&self) {
         self.0.borrow_mut().initial_installation = false;
         for child in self.children() {
             child.finish_initial_installation();
         }
     }
-    pub(crate) fn renewal_from(&self, previous: &Self) -> DomainAttachment {
+    pub fn renewal_from(&self, previous: &Self) -> DomainAttachment {
         assert!(previous.closed(), "renewal requires closed owner ownership");
         DomainAttachment::Renewal(ControlRenewal {
             previous: previous.0.borrow().incarnation,
             replacement: self.0.borrow().incarnation,
         })
     }
-    pub(crate) fn permits_renewal(&self, previous: &Self, attachment: DomainAttachment) -> bool {
+    pub fn permits_renewal(&self, previous: &Self, attachment: DomainAttachment) -> bool {
         matches!(attachment, DomainAttachment::Renewal(token) if previous.closed() && token.previous==previous.0.borrow().incarnation && token.replacement==self.0.borrow().incarnation)
     }
-    pub(crate) fn outer() -> Self {
+    pub fn outer() -> Self {
         let domain = Self::new();
         let id = domain.0.borrow().id;
         domain.set_owner(ControlOwner::Outer(id));
         domain
     }
-    pub(crate) fn downgrade(&self) -> WeakControlDomain {
+    pub fn downgrade(&self) -> WeakControlDomain {
         WeakControlDomain(Rc::downgrade(&self.0))
     }
-    pub(crate) fn same_owner_incarnation(&self, other: &Self) -> bool {
+    pub fn same_owner_incarnation(&self, other: &Self) -> bool {
         self.0.borrow().incarnation == other.0.borrow().incarnation
     }
     pub(crate) fn inherit_owner(&self, parent: &Self) -> Result<(), AttachError> {
@@ -220,13 +220,13 @@ impl ControlDomain {
         state.incarnation = parent.incarnation;
         Ok(())
     }
-    pub(crate) fn set_owner(&self, owner: ControlOwner) {
+    pub fn set_owner(&self, owner: ControlOwner) {
         self.0.borrow_mut().owner = Some(owner);
     }
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    pub fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
-    pub(crate) fn closed(&self) -> bool {
+    pub fn closed(&self) -> bool {
         self.0.borrow().closed
     }
     pub(crate) fn suspended(&self) -> bool {
@@ -237,7 +237,7 @@ impl ControlDomain {
                 .upgrade()
                 .is_some_and(|parent| parent.suspended())
     }
-    pub(crate) fn attach_to(&self, parent: &Self) -> Result<(), AttachError> {
+    pub fn attach_to(&self, parent: &Self) -> Result<(), AttachError> {
         if self.same(parent) {
             return Ok(());
         }
@@ -277,7 +277,7 @@ impl ControlDomain {
         }
         Ok(())
     }
-    pub(crate) fn child(&self) -> Self {
+    pub fn child(&self) -> Self {
         let child = Self::new();
         if child
             .inherit_owner(self)
@@ -341,7 +341,7 @@ impl ControlDomain {
         }
         result
     }
-    pub(crate) fn unsafe_attachment(&self) {
+    pub fn unsafe_attachment(&self) {
         self.0.borrow_mut().coverage.unsafe_late_attachments += 1;
     }
     fn children(&self) -> Vec<Self> {
@@ -352,7 +352,7 @@ impl ControlDomain {
             .filter_map(WeakControlDomain::upgrade)
             .collect()
     }
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         self.0.borrow_mut().closed = true;
         self.clear_live();
         for child in self.children() {
@@ -427,7 +427,7 @@ impl ControlDomain {
         self.detach_pending(&mut output);
         output
     }
-    pub(crate) fn suspend(&self) -> (SuspensionLease, Vec<OwnedControl>) {
+    pub fn suspend(&self) -> (SuspensionLease, Vec<OwnedControl>) {
         let pending = self.drain_live();
         let key = uuid::Uuid::new_v4();
         self.0.borrow_mut().leases.insert(key);
@@ -678,7 +678,7 @@ pub struct RegisteredControls {
     pub(crate) components: Vec<(ComponentControl, ControlInvocation)>,
 }
 impl ControlDomain {
-    pub(crate) fn drain_partitioned(&self) -> RegisteredControls {
+    pub fn drain_partitioned(&self) -> RegisteredControls {
         let mut result = RegisteredControls::default();
         for control in self.drain_live() {
             match control.origin {
@@ -696,13 +696,13 @@ impl ControlDomain {
 /// The life of what owns a control domain (a mounted component, an open record): while it is
 /// active its controls run, and dropping it closes the domain.
 pub struct ResourceOwnerLifetime {
-    pub(crate) active: std::cell::Cell<bool>,
-    pub(crate) id: uuid::Uuid,
-    pub(crate) control_domain: ControlDomain,
+    pub active: std::cell::Cell<bool>,
+    pub id: uuid::Uuid,
+    pub control_domain: ControlDomain,
 }
 
 impl ResourceOwnerLifetime {
-    pub(crate) fn new() -> Rc<Self> {
+    pub fn new() -> Rc<Self> {
         Rc::new(Self {
             active: std::cell::Cell::new(true),
             id: uuid::Uuid::new_v4(),

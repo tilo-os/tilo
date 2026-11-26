@@ -796,7 +796,7 @@ impl HistoryHost {
             let observation = crate::bound_dispatch::control_observation(
                 live,
                 doc,
-                &origin.target(),
+                &super::pending_controls::origin_target(&origin),
                 &invocation,
             )
             .map_err(|error| error.to_string());
@@ -832,7 +832,7 @@ impl HistoryHost {
                     let observation = crate::bound_dispatch::control_observation(
                         live,
                         doc,
-                        &origin.target(),
+                        &super::pending_controls::origin_target(&origin),
                         &invocation,
                     )
                     .map_err(|error| error.to_string());
@@ -844,7 +844,7 @@ impl HistoryHost {
                     let observation = crate::bound_dispatch::control_observation(
                         live,
                         doc,
-                        &origin.target(),
+                        &super::pending_controls::origin_target(&origin),
                         &invocation,
                     )
                     .map_err(|error| error.to_string());
@@ -868,7 +868,7 @@ impl HistoryHost {
             crate::bound_dispatch::control_declaration(
                 live,
                 doc,
-                &origin.target(),
+                &super::pending_controls::origin_target(&origin),
                 &invocation.address,
             )
         });

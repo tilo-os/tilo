@@ -598,7 +598,7 @@ impl AccessNode {
 
     /// Whether this node's id stays the same control across a rebuild: it has a semantic key of its
     /// own, or the key it hashed, rather than its place among its siblings.
-    pub(crate) fn is_keyed(&self) -> bool {
+    pub fn is_keyed(&self) -> bool {
         self.semantic_key.is_some() || self.key.is_some()
     }
 
@@ -1169,16 +1169,16 @@ const KEYED: &str = "~k:";
 const REPEATED: char = '#';
 
 impl SemanticId {
-    pub(crate) fn root() -> Self {
+    pub fn root() -> Self {
         SemanticId("root".into())
     }
-    pub(crate) fn widget(taffy_id: taffy::NodeId) -> Self {
+    pub fn widget(taffy_id: taffy::NodeId) -> Self {
         SemanticId(format!("w{}", u64::from(taffy_id)))
     }
-    pub(crate) fn synthetic(parent: &SemanticId, index: usize) -> Self {
+    pub fn synthetic(parent: &SemanticId, index: usize) -> Self {
         SemanticId(format!("{}~{}", parent.0, index))
     }
-    pub(crate) fn synthetic_of(
+    pub fn synthetic_of(
         parent: &SemanticId,
         index: usize,
         access: &crate::a11y::AccessNode,
@@ -1191,13 +1191,13 @@ impl SemanticId {
             |key| SemanticId::keyed(parent, key),
         )
     }
-    pub(crate) fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
+    pub fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
         SemanticId(format!("{}{KEYED}{}", parent.0, key))
     }
-    pub(crate) fn repeat(id: &SemanticId, n: usize) -> Self {
+    pub fn repeat(id: &SemanticId, n: usize) -> Self {
         SemanticId(format!("{}{REPEATED}{n}", id.0))
     }
-    pub(crate) fn control_key(&self) -> Option<&str> {
+    pub fn control_key(&self) -> Option<&str> {
         let (_, keyed) = self.0.rsplit_once(KEYED)?;
         Some(
             keyed
@@ -1206,7 +1206,7 @@ impl SemanticId {
                 .map_or(keyed, |(key, _)| key),
         )
     }
-    pub(crate) fn resource(id: &str) -> Self {
+    pub fn resource(id: &str) -> Self {
         SemanticId(format!("r:{id}"))
     }
 

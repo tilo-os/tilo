@@ -1114,7 +1114,7 @@ impl Theme {
 
     /// Replace factors already baked into an effective component snapshot. Its metadata
     /// must describe the supplied values; public builders remain cumulative.
-    pub(crate) fn with_component_scales(mut self, text_scale: f32, ui_scale: f32) -> Self {
+    pub fn with_component_scales(mut self, text_scale: f32, ui_scale: f32) -> Self {
         let text_scale = if text_scale.is_finite() {
             text_scale.clamp(0.5, 4.0)
         } else {

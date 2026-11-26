@@ -68,7 +68,7 @@ pub struct HoverIntent {
 
 impl HoverIntent {
     /// The item whose controls the pointer has opened.
-    pub(crate) fn open(&self) -> Option<usize> {
+    pub fn open(&self) -> Option<usize> {
         self.open
     }
 
@@ -81,7 +81,7 @@ impl HoverIntent {
     }
 
     /// Forget everything, e.g. when the pointer leaves the surface.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         *self = Self::default();
     }
 
@@ -89,13 +89,13 @@ impl HoverIntent {
     /// than passing through. A control's hover wash follows this, so a
     /// control the pointer only crosses never lights up. Without motion seen
     /// yet, the pointer is where it is.
-    pub(crate) fn settled(&self, now: Instant) -> bool {
+    pub fn settled(&self, now: Instant) -> bool {
         self.last
             .is_none_or(|l| l.settling || now.saturating_duration_since(l.at) >= SETTLE)
     }
 
     /// A pointer sample.
-    pub(crate) fn on_motion(&mut self, s: &Sample<'_>, now: Instant) {
+    pub fn on_motion(&mut self, s: &Sample<'_>, now: Instant) {
         let p = s.p;
         self.path.push(p, now);
         self.settle(now);
@@ -160,7 +160,7 @@ impl HoverIntent {
     /// opens its item unless the pointer is aiming at (or may be settling
     /// on) a control that would move; a lapsed aim hold hands over to the
     /// item the pointer rests on.
-    pub(crate) fn settle(&mut self, now: Instant) {
+    pub fn settle(&mut self, now: Instant) {
         if let Some(Hold::Aim(confirmed)) = self.hold
             && now.saturating_duration_since(confirmed) >= AIM_HOLD
         {
@@ -184,7 +184,7 @@ impl HoverIntent {
     /// changes with no further input, so the host can sleep until then
     /// instead of pumping frames. A pending item blocked by a control the
     /// pointer has settled on has nothing to wait for.
-    pub(crate) fn deadline(&self, now: Instant) -> Option<Instant> {
+    pub fn deadline(&self, now: Instant) -> Option<Instant> {
         let unsettled = self
             .last
             .filter(|l| l.in_control && !l.settling)

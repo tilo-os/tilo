@@ -152,7 +152,7 @@ impl<S: Shown> ShownFrames<S> {
     /// pixels of its content, as [`Self::compare`] will find it (moved by a copy, or not
     /// moved), for its content to leave out what it has nothing new to paint for
     /// ([`crate::draw_cull`]).
-    pub(crate) fn keep(&self) -> Option<crate::draw_cull::Keep> {
+    pub fn keep(&self) -> Option<crate::draw_cull::Keep> {
         let (drawing, presented) = self.frames()?;
         if drawing.clip() != presented.clip()
             || drawing.transform() != presented.transform()

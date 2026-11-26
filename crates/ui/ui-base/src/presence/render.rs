@@ -296,7 +296,7 @@ impl PresenceCtx {
     /// agent's would-click place stands at the outline's own strength and flashes brighter the
     /// moment its step was taken ([`PresenceCtx::agent_locus_tint`]), never in a second layer over
     /// the control's words.
-    pub(crate) fn draw_peer_outline_filled(
+    pub fn draw_peer_outline_filled(
         &self,
         scene: &mut Scene,
         theme: &Theme,
@@ -384,7 +384,7 @@ impl PresenceCtx {
     /// Semantic actions label the actual control beside it, not in the row
     /// above it: that row often contains a notice explaining whether the action
     /// is available. Ordinary peer selections retain their existing name chips.
-    pub(crate) fn draw_action_label_within(
+    pub fn draw_action_label_within(
         &self,
         ctx: &mut PaintCtx<'_>,
         user: &MemberId,

@@ -348,7 +348,7 @@ impl Styles for taffy::Restyle<'_> {
 pub struct TreeId(*const ());
 
 impl TreeId {
-    pub(crate) fn of(taffy: &TaffyTree<()>) -> Self {
+    pub fn of(taffy: &TaffyTree<()>) -> Self {
         Self(std::ptr::from_ref(taffy).cast::<()>())
     }
 }
@@ -1058,7 +1058,7 @@ impl CompositionFocus {
     /// Recover focus from the retained tree after a structural mutation. No
     /// pointer from the previous layout is read; owner ownership follows the
     /// same component boundaries as the next admitted topology.
-    pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
+    pub fn capture_live(root: &dyn Widget) -> Option<Self> {
         type Visit<'v> =
             dyn FnMut(&dyn Widget, &Option<crate::widget::component_walk::Binding>, bool) + 'v;
         fn walk(
@@ -1141,7 +1141,7 @@ impl CompositionFocus {
     }
     /// # Safety
     /// The caller exclusively owns the live tree described by both maps.
-    pub(crate) unsafe fn capture(
+    pub unsafe fn capture(
         node: Option<NodeId>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &BoundNodeMap,
@@ -1287,7 +1287,7 @@ impl CompositionFocus {
     /// unrelated focused siblings are ambiguous and yield no input target.
     /// # Safety
     /// The caller exclusively owns the live tree described by both maps.
-    pub(crate) unsafe fn current(
+    pub unsafe fn current(
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
@@ -1331,7 +1331,7 @@ impl CompositionFocus {
     /// The caller exclusively owns the rebuilt tree described by both maps.
     /// `allowed` restricts the unique target to the current host focus order,
     /// including an active focus trap. It does not relax identity uniqueness.
-    pub(crate) unsafe fn restore(
+    pub unsafe fn restore(
         &self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &BoundNodeMap,
@@ -1345,7 +1345,7 @@ impl CompositionFocus {
     /// Which control the saved focus names now, if exactly one does.
     /// # Safety
     /// The caller exclusively owns the rebuilt tree described by both maps.
-    pub(crate) unsafe fn resolve(
+    pub unsafe fn resolve(
         &self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &BoundNodeMap,

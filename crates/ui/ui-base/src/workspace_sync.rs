@@ -457,7 +457,7 @@ pub struct Waiting {
 }
 
 impl Waiting {
-    pub(crate) const fn keeps_action(&self) -> bool {
+    pub const fn keeps_action(&self) -> bool {
         self.keeps_action
     }
 }

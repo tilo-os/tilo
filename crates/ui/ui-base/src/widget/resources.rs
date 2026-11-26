@@ -226,12 +226,12 @@ pub struct TakenResources(std::collections::HashSet<String>);
 
 impl TakenResources {
     /// Whether this walk holds resource root `id` already.
-    pub(crate) fn holds(&self, id: &str) -> bool {
+    pub fn holds(&self, id: &str) -> bool {
         self.0.contains(id)
     }
 
     /// Hold `id`. A widget publishing it twice is its own defect, which the tree reports.
-    pub(crate) fn take(&mut self, id: &str) {
+    pub fn take(&mut self, id: &str) {
         self.0.insert(id.to_owned());
     }
 }

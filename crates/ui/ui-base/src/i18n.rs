@@ -1076,7 +1076,7 @@ impl I18nManager {
 
     /// Resolve `key` in the window's language ([`Self::speaking_locale`]: the selected locale when its
     /// catalogues are in it, the source language otherwise).
-    pub(crate) fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
+    pub fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
         if args.is_some() {
             return Self::resolve_lookup(key, args);
         }
@@ -1215,7 +1215,7 @@ impl I18nManager {
 
     /// Resolve a message without variables.
     #[must_use]
-    pub(crate) fn lookup_plain(key: &str) -> String {
+    pub fn lookup_plain(key: &str) -> String {
         Self::lookup(key, None)
     }
 
@@ -1250,7 +1250,7 @@ impl I18nManager {
     }
 
     #[must_use]
-    pub(crate) fn format(key: &str, args: &[(&str, ArgValue)]) -> String {
+    pub fn format(key: &str, args: &[(&str, ArgValue)]) -> String {
         if args.is_empty() {
             return Self::lookup(key, None);
         }

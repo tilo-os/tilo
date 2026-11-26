@@ -59,7 +59,7 @@ impl LabeledCaret {
     /// in order, a cut line ending in an ellipsis) from `x` and `top`, `line` apart in `style`: one
     /// band per line they reach, and the caret after them, its chip kept below `ceiling`, left of
     /// `right` and off every line's ink. No bands for a range the shown lines cut off.
-    pub(crate) fn after_span(
+    pub fn after_span(
         renderer: &mut TextRenderer,
         (text, lines, style): (&str, &[String], &crate::text_render::TextStyle),
         (x, top, line): (f64, f64, f64),

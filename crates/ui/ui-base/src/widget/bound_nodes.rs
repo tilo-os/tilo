@@ -53,7 +53,7 @@ pub(crate) struct NodeEntry {
 /// Admission metadata for precisely one live widget/Taffy layout.
 #[derive(Default)]
 pub struct BoundNodeMap {
-    pub(crate) nodes: HashMap<NodeId, BoundNode>,
+    pub nodes: HashMap<NodeId, BoundNode>,
     pub(crate) parents: HashMap<NodeId, NodeId>,
 }
 type PendingAdmission = (NodeId, Scope, bool);
@@ -85,26 +85,26 @@ impl BoundNodeMap {
         }
         false
     }
-    pub(crate) fn binding_for(&self, node: NodeId) -> Option<Binding> {
+    pub fn binding_for(&self, node: NodeId) -> Option<Binding> {
         self.nodes
             .get(&node)
             .filter(|node| !node.inactive)
             .and_then(|node| node.binding.clone())
     }
     /// [`Self::binding_for`] without copying the binding, for a walk that asks it of every node.
-    pub(crate) fn binding_ref(&self, node: NodeId) -> Option<&Binding> {
+    pub fn binding_ref(&self, node: NodeId) -> Option<&Binding> {
         self.nodes
             .get(&node)
             .filter(|node| !node.inactive)
             .and_then(|node| node.binding.as_ref())
     }
     /// Whether `node` was admitted inside a bound component.
-    pub(crate) fn has_owner(&self, node: NodeId) -> bool {
+    pub fn has_owner(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
             .is_some_and(|entry| scoped(&entry.binding))
     }
-    pub(crate) fn owns_document(&self, node: NodeId) -> bool {
+    pub fn owns_document(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
             .is_some_and(|entry| scoped(&entry.binding))
@@ -164,7 +164,7 @@ impl BoundNodeMap {
         unsafe { self.rebuild_roots_with_retained(roots, None, taffy, nodes) };
     }
 
-    pub(crate) unsafe fn rebuild_roots_with_retained(
+    pub unsafe fn rebuild_roots_with_retained(
         &mut self,
         roots: &[(&dyn Widget, NodeId)],
         retained: Option<&dyn Widget>,
@@ -190,7 +190,7 @@ impl BoundNodeMap {
     /// Admit the subtree at `child`, which the widget at `parent` mounted in place
     /// ([`crate::widget::Remount`]), as a rebuild would: under the binding and inactivity `parent` was
     /// admitted with, and the boundaries the subtree widgets declare.
-    pub(crate) unsafe fn admit_mounted(
+    pub unsafe fn admit_mounted(
         &mut self,
         parent: NodeId,
         child: NodeId,
@@ -227,7 +227,7 @@ impl BoundNodeMap {
     }
 
     /// Forget `removed`, nodes a widget unmounted in place ([`crate::widget::Remount`]).
-    pub(crate) fn forget(&mut self, removed: &[NodeId]) {
+    pub fn forget(&mut self, removed: &[NodeId]) {
         for node in removed {
             self.nodes.remove(node);
             self.parents.remove(node);
@@ -279,7 +279,7 @@ pub fn enter_widget(widget: &dyn Widget) -> Result<NodeEntry, WalkError> {
 }
 
 impl BoundNodeMap {
-    pub(crate) fn admitted(
+    pub fn admitted(
         &self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         node: NodeId,
@@ -331,7 +331,7 @@ pub struct NodeSweep<'m> {
 }
 
 impl<'m> NodeSweep<'m> {
-    pub(crate) fn new(
+    pub fn new(
         bindings: &'m BoundNodeMap,
         nodes: &'m HashMap<NodeId, *mut dyn Widget>,
     ) -> Self {
@@ -361,7 +361,7 @@ impl<'m> NodeSweep<'m> {
     }
 
     /// [`inspect_bound_node`] within this sweep.
-    pub(crate) unsafe fn inspect<R>(
+    pub unsafe fn inspect<R>(
         &mut self,
         node: NodeId,
         callback: impl FnOnce(&dyn Widget) -> R,

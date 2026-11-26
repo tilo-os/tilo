@@ -125,7 +125,7 @@ impl Press {
         Some(Box::new(move || press.run()))
     }
 
-    pub(crate) fn take(&self) -> Option<tilo_actions::ControlInvocation> {
+    pub fn take(&self) -> Option<tilo_actions::ControlInvocation> {
         self.action
             .as_ref()
             .and_then(|action| action.borrow_mut().take())
@@ -139,7 +139,7 @@ impl Press {
             .map(|action| action.borrow().metadata(control_id))
     }
 
-    pub(crate) fn attach(
+    pub fn attach(
         &self,
         domain: &crate::ControlDomain,
         attachment: crate::control_domain::DomainAttachment,
@@ -149,7 +149,7 @@ impl Press {
         }
     }
 
-    pub(crate) fn refresh_availability(
+    pub fn refresh_availability(
         &self,
         allowed: &HashSet<tilo_actions::ActionAddress>,
     ) -> bool {
