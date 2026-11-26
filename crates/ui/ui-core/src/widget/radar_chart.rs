@@ -17,6 +17,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
+use crate::widget::chart_labels::ShownLabel;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
@@ -244,6 +245,79 @@ impl RadarMarks {
         let area = self.frame.inside();
         (area.center(), area.width().min(area.height()) / 2.0)
     }
+
+    /// `axis`'s label as the chart shows it, outside the ring on the axis's side: whole on one
+    /// line where its room holds it; otherwise whole over two lines where it stands beside the
+    /// ring, the side having the chart's height to stack them; otherwise shortened to whole
+    /// words of itself on either side of one ellipsis, never splitting a word; and left out
+    /// where none of those fits, the readout and the accessible tree still naming the axis.
+    fn axis_label(&self, tr: &mut TextRenderer, theme: &Theme, axis: usize) -> Option<ShownLabel> {
+        let label = self.axes.get(axis)?.label.trim();
+        if label.is_empty() {
+            return None;
+        }
+        let style = theme.text(TextRole::Caption);
+        let step = crate::widget::plot::step(theme);
+        let (center, radius) = self.geometry();
+        let angle = self.angle(axis);
+        let (cos, sin) = (angle.cos(), angle.sin());
+        let at = chart_geometry::polar(center, radius + step, angle);
+        let beside = cos.abs() > 0.3;
+        let room = if beside {
+            (self.frame.margins.left - step).max(0.0)
+        } else {
+            self.frame.rect.width()
+        };
+        let measure = |tr: &mut TextRenderer, text: &str| {
+            let (w, h) = tr.measure_style(text, None, &style);
+            (f64::from(w), f64::from(h))
+        };
+        let (w, h) = measure(tr, label);
+        let lines = if w <= room {
+            vec![(label.to_owned(), w, h)]
+        } else {
+            let wrapped = if beside {
+                crate::widget::chart_labels::wrapped_labels(tr, label, &style)
+                    .into_iter()
+                    .find(|block| block.width <= room)
+            } else {
+                None
+            };
+            if let Some(block) = wrapped {
+                block.lines
+            } else {
+                let cut = crate::widget::chart_labels::shortened_labels(tr, label, &style)
+                    .into_iter()
+                    .find(|(_, w, _)| *w <= room)?;
+                vec![cut]
+            }
+        };
+        let height: f64 = lines.iter().map(|(_, _, h)| *h).sum();
+        let mut y = if sin < -0.3 {
+            at.y - height
+        } else if sin > 0.3 {
+            at.y
+        } else {
+            at.y - height / 2.0
+        };
+        let mut placed = Vec::with_capacity(lines.len());
+        for (text, w, h) in lines {
+            let x = if cos > 0.3 {
+                at.x
+            } else if cos < -0.3 {
+                at.x - w
+            } else {
+                at.x - w / 2.0
+            };
+            placed.push((text, Rect::new(x, y, x + w, y + h)));
+            y += h;
+        }
+        Some(ShownLabel {
+            lines: placed,
+            turn: 0.0,
+        })
+    }
+
     fn angle(&self, axis: usize) -> f64 {
         self.style.start_angle
             + f64::from(u32::try_from(axis).unwrap_or(u32::MAX))
@@ -443,43 +517,17 @@ impl PlotMarks for RadarMarks {
                 None,
                 &Line::new(center, outer),
             );
-            if let Some(spec) = self.axes.get(axis) {
-                // A label stands outside the ring on its axis's side, reading away from the web:
-                // one to the right starts at the axis, one to the left ends there, one above or
-                // below is centred on it. One longer than the room on its side is shortened.
+            // A label stands outside the ring on its axis's side, reading away from the web:
+            // one to the right starts at the axis, one to the left ends there, one above or
+            // below is centred on it.
+            if let Some(label) = self.axis_label(tr, theme, axis) {
                 let style = theme.text(TextRole::Caption);
-                let step = crate::widget::plot::step(theme);
-                let angle = self.angle(axis);
-                let (cos, sin) = (angle.cos(), angle.sin());
-                let at = chart_geometry::polar(center, radius + step, angle);
-                let side = cos.abs() > 0.3;
-                let room = if side {
-                    (self.frame.margins.left - step).max(0.0)
-                } else {
-                    self.frame.rect.width()
-                };
-                if let Some((shown, width, height)) =
-                    crate::widget::chart_labels::fit_label(tr, &spec.label, room, &style)
-                {
-                    let x = if cos > 0.3 {
-                        at.x
-                    } else if cos < -0.3 {
-                        at.x - width
-                    } else {
-                        at.x - width / 2.0
-                    };
-                    let y = if sin < -0.3 {
-                        at.y - height
-                    } else if sin > 0.3 {
-                        at.y
-                    } else {
-                        at.y - height / 2.0
-                    };
+                for (line, at) in &label.lines {
                     tr.draw_style(
                         scene,
-                        &shown,
+                        line,
                         theme.tokens.colors.text_dim,
-                        transform * Affine::translate((x, y)),
+                        transform * Affine::translate((at.x0, at.y0)),
                         None,
                         &style,
                     );
@@ -607,6 +655,85 @@ mod tests {
             );
             assert!(chart.toggle_series("current"));
             assert!(chart.inspect("current", "a"));
+        }
+    }
+
+    /// The gallery's longest axis names, far wider than the room beside a radar's ring.
+    fn long_axes() -> Vec<RadarAxis> {
+        vec![
+            RadarAxis::new("answer", "Time to the first useful answer", 100.0),
+            RadarAxis::new("latency", "P95 request latency at peak load", 100.0),
+            RadarAxis::new("tickets", "Support tickets closed per day", 100.0),
+            RadarAxis::new("docs", "Documentation pages updated", 100.0),
+        ]
+    }
+
+    /// An axis's name stays readable wherever the chart stands: the chart shows it whole, on
+    /// one line or over two, or as whole words of itself on either side of one ellipsis — a cut
+    /// never splits a word. Where none of those fits it is left out, and the readout and the
+    /// accessible tree still name the axis whole.
+    #[test]
+    fn axis_labels_stay_readable_at_every_width() {
+        let axes = long_axes();
+        let series = vec![RadarSeries::new(
+            "after",
+            "After the caching change",
+            Color::from_rgb8(1, 2, 3),
+            vec![68.0, 74.0, 52.0, 41.0],
+        )];
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            for width in [1000.0, 358.0] {
+                let mut chart = RadarChart::new(axes.clone(), series.clone());
+                // The height a radar takes on a page; the width is the one under test.
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 400.0);
+                chart.marks.place(&mut tr, &theme);
+                let items = chart.marks.items();
+                let mut shown = 0;
+                for axis in &axes {
+                    // However short the chart draws it, the whole name is still read by the
+                    // readout and the accessible tree.
+                    assert!(
+                        items
+                            .iter()
+                            .any(|item| item.name.contains(axis.label.as_str())),
+                        "{width}: {:?} is named nowhere",
+                        axis.label
+                    );
+                }
+                for axis in 0..axes.len() {
+                    let Some(shown_label) = chart.marks.axis_label(&mut tr, &theme, axis) else {
+                        continue;
+                    };
+                    shown += 1;
+                    let text = shown_label.text();
+                    let label = axes.get(axis).expect("the axis").label.as_str();
+                    assert!(
+                        crate::widget::chart_labels::reads_as_whole_words(label, &text),
+                        "{width}: {label:?} shows {text:?}, which is not whole words of it"
+                    );
+                }
+                // Pointing at a mark on any axis reads that axis's whole name.
+                for axis in 0..axes.len() {
+                    let label = axes.get(axis).expect("the axis").label.as_str();
+                    chart.marks.frame.inspection.hovered = Some(Hovered { series: 0, axis });
+                    let readout = chart.marks.readout(&theme).expect("the mark reads out");
+                    assert!(
+                        readout.title.contains(label),
+                        "{width}: the readout names {label:?} as {:?}",
+                        readout.title
+                    );
+                }
+                // At the phone's width the room beside the dial holds three of these names: the
+                // longest word left over has no whole-word reading and no line break that fits,
+                // so that axis is named by its readout and the accessible tree alone.
+                let least = if width <= 358.0 { 3 } else { axes.len() };
+                assert!(
+                    shown >= least,
+                    "{width}: the chart names only {shown} of its {} axes",
+                    axes.len()
+                );
+            }
         }
     }
 }

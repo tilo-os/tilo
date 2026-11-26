@@ -88,79 +88,74 @@ pub(crate) fn fit_label(
     Some((shown, f64::from(w), f64::from(h)))
 }
 
-/// The fewest letters a shortened label keeps before its ellipsis: below it the stub names
-/// nothing, and the segment is better left unnamed, since its tooltip and accessible name
-/// still read its whole path.
-pub(crate) const MIN_READABLE_LETTERS: usize = 4;
-
 const CUT: char = '\u{2026}';
 
 fn readable_letters(text: &str) -> usize {
     text.chars().filter(|c| c.is_alphanumeric()).count()
 }
 
-/// The ways `label` reads short, richest first, for a place too small to hold it whole: cut at
-/// a word boundary keeping the words at both its start and its end (`Integration…clients`),
-/// then cut from the middle of a long word. Every way keeps at least
-/// [`MIN_READABLE_LETTERS`] letters before its ellipsis — a shorter stub names nothing — and
-/// keeps the label's own end wherever it can, so two labels sharing a start still read apart.
-/// The whole label is not among them: ask for it first.
+/// A label as a chart shows it: the lines it reads as, the box each sits in, and the turn its
+/// words take about each box's centre.
+pub(crate) struct ShownLabel {
+    pub(crate) lines: Vec<(String, Rect)>,
+    pub(crate) turn: f64,
+}
+
+impl ShownLabel {
+    /// The words the label reads as on one line, for telling it from another's.
+    pub(crate) fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(|(line, _)| line.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// A label over two lines: the words each line reads as, measured, and the box they make
+/// together.
+pub(crate) struct WrappedLabel {
+    pub(crate) lines: Vec<(String, f64, f64)>,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
+/// The ways `label` reads short, richest first, for a place too small to hold it whole: each
+/// keeps whole words from the label's start and from its end around one ellipsis
+/// (`Integration…clients`, `Platform work…long`), at least one whole word on each side.
+///
+/// A reading never splits a word (`Integr…nts` names nothing), and never keeps just a head or
+/// just a tail. A chart shows the whole label first, and breaks it over two lines where it has
+/// the room ([`wrapped_labels`]); these readings are for the places that hold neither, and a
+/// label with no reading that fits is left out, since its tooltip and accessible name still
+/// carry the whole of it. The whole label is not among the readings: ask for it first.
 pub(crate) fn shortened_labels(
     tr: &mut TextRenderer,
     label: &str,
     style: &TextStyle,
 ) -> Vec<(String, f64, f64)> {
     let label = label.trim();
-    if readable_letters(label) <= MIN_READABLE_LETTERS {
+    let words: Vec<&str> = label.split_whitespace().collect();
+    // A cut of two words is the two words with the space turned into an ellipsis, no shorter
+    // than the label itself; one word has no two sides to keep.
+    if words.len() < 3 {
         return Vec::new();
     }
     let mut cuts: Vec<(usize, String)> = Vec::new();
-    let mut keep = |head: &str, tail: &str| {
-        let head = head.trim_end();
-        if readable_letters(head) < MIN_READABLE_LETTERS {
-            return;
-        }
-        let tail = tail.trim_start();
-        let mut text = head.to_owned();
-        text.push(CUT);
-        if !tail.is_empty() {
-            text.push_str(tail);
-        }
-        if text != label {
+    for head_words in 1..words.len() {
+        let head = words.get(..head_words).unwrap_or_default().join(" ");
+        // At least one word comes out: a reading with none out is the label itself with the
+        // ellipsis where a space was, no narrower than the whole.
+        for tail_words in 1..words.len().saturating_sub(head_words) {
+            let tail = words
+                .get(words.len().saturating_sub(tail_words)..)
+                .unwrap_or_default()
+                .join(" ");
+            let text = format!("{head}{CUT}{tail}");
             cuts.push((readable_letters(&text), text));
         }
-    };
-    let words: Vec<&str> = label.split_whitespace().collect();
-    if words.len() > 1 {
-        for head_words in 1..words.len() {
-            let head = words.get(..head_words).unwrap_or_default().join(" ");
-            let rest = words.len().saturating_sub(head_words);
-            for tail_words in 0..rest {
-                let tail = words
-                    .get(words.len().saturating_sub(tail_words)..)
-                    .unwrap_or_default()
-                    .join(" ");
-                keep(&head, &tail);
-            }
-        }
     }
-    // Then the middle of a word: the start and the end of the text, with what will not fit
-    // taken from between them.
-    let chars: Vec<char> = label.chars().collect();
-    let total = chars.len();
-    for kept in (MIN_READABLE_LETTERS..total).rev() {
-        let tail_chars = (kept / 3).min(kept.saturating_sub(MIN_READABLE_LETTERS));
-        let head_chars = kept.saturating_sub(tail_chars);
-        let head: String = chars.get(..head_chars).unwrap_or_default().iter().collect();
-        let tail: String = chars
-            .get(total.saturating_sub(tail_chars)..)
-            .unwrap_or_default()
-            .iter()
-            .collect();
-        keep(&head, &tail);
-    }
-    // The richest reading first: the one that keeps the most of the label. Ties keep the
-    // order they were found in, word cuts before middle ones.
+    // The richest reading first: the one that keeps the most of the label.
     cuts.sort_by_key(|(letters, _)| std::cmp::Reverse(*letters));
     let mut seen = std::collections::HashSet::new();
     cuts.retain(|(_, text)| seen.insert(text.clone()));
@@ -168,6 +163,76 @@ pub(crate) fn shortened_labels(
         .map(|(_, text)| {
             let (w, h) = tr.measure_style(&text, None, style);
             (text, f64::from(w), f64::from(h))
+        })
+        .collect()
+}
+
+/// Whether `text` reads as `label` itself, or as whole words of it from its start and its end
+/// around one ellipsis, with at least one whole word on each side: what a chart may show in a
+/// place too small for the whole name.
+#[cfg(test)]
+pub(crate) fn reads_as_whole_words(label: &str, text: &str) -> bool {
+    let label = label.trim();
+    if text == label {
+        return true;
+    }
+    let Some((head, tail)) = text.split_once(CUT) else {
+        return false;
+    };
+    if head.contains(CUT) || tail.contains(CUT) {
+        return false;
+    }
+    let words: Vec<&str> = label.split_whitespace().collect();
+    let head_words = head.split_whitespace().count();
+    let tail_words = tail.split_whitespace().count();
+    head_words >= 1
+        && tail_words >= 1
+        && head_words.saturating_add(tail_words) <= words.len()
+        && words.get(..head_words).unwrap_or_default().join(" ") == head
+        && words
+            .get(words.len().saturating_sub(tail_words)..)
+            .unwrap_or_default()
+            .join(" ")
+            == tail
+}
+
+/// `label` broken over two lines at the words' own breaks, the evenest pair first: each pair's
+/// lines, measured, and the box they make together. Empty where the label has not two words to
+/// break between.
+pub(crate) fn wrapped_labels(
+    tr: &mut TextRenderer,
+    label: &str,
+    style: &TextStyle,
+) -> Vec<WrappedLabel> {
+    let label = label.trim();
+    let words: Vec<&str> = label.split_whitespace().collect();
+    if words.len() < 2 {
+        return Vec::new();
+    }
+    let measure = |tr: &mut TextRenderer, text: &str| {
+        let (w, h) = tr.measure_style(text, None, style);
+        (f64::from(w), f64::from(h))
+    };
+    let mut breaks: Vec<(f64, usize)> = (1..words.len())
+        .map(|at| {
+            let first = words.get(..at).unwrap_or_default().join(" ");
+            let second = words.get(at..).unwrap_or_default().join(" ");
+            (measure(tr, &first).0.max(measure(tr, &second).0), at)
+        })
+        .collect();
+    breaks.sort_by(|a, b| a.0.total_cmp(&b.0));
+    breaks
+        .into_iter()
+        .map(|(width, at)| {
+            let first = words.get(..at).unwrap_or_default().join(" ");
+            let second = words.get(at..).unwrap_or_default().join(" ");
+            let (w1, h1) = measure(tr, &first);
+            let (w2, h2) = measure(tr, &second);
+            WrappedLabel {
+                lines: vec![(first, w1, h1), (second, w2, h2)],
+                width,
+                height: h1 + h2,
+            }
         })
         .collect()
 }
@@ -432,5 +497,44 @@ pub(crate) fn format_compact(value: f64) -> String {
         format!("{value:.0}")
     } else {
         format!("{value:.1}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shortened reading keeps whole words on both sides of its one ellipsis: it never splits
+    /// a word, never keeps a side without one, and never shows the label itself.
+    #[test]
+    fn a_shortened_label_keeps_whole_words() {
+        let theme = Theme::light();
+        let mut tr = TextRenderer::new();
+        let style = theme.text(TextRole::Label);
+        for label in [
+            "Integration tests for the desktop clients",
+            "Platform work that ran long",
+            "Documentation pages updated",
+            "P95 request latency at peak load",
+            "Release notes",
+            "Migration",
+        ] {
+            for (text, _, _) in shortened_labels(&mut tr, label, &style) {
+                assert!(
+                    reads_as_whole_words(label, &text),
+                    "{label:?} offers {text:?}"
+                );
+                assert_ne!(text, label, "{label:?} offers itself whole");
+            }
+        }
+        let cuts = shortened_labels(&mut tr, "Integration tests for the desktop clients", &style);
+        assert!(
+            cuts.iter()
+                .any(|(text, _, _)| text == "Integration…clients"),
+            "the words at both ends are offered: {cuts:?}"
+        );
+        // Two words cannot be cut without splitting one, and one word has no two sides.
+        assert!(shortened_labels(&mut tr, "Release notes", &style).is_empty());
+        assert!(shortened_labels(&mut tr, "Migration", &style).is_empty());
     }
 }

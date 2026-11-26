@@ -5,7 +5,7 @@
     reason = "radial hierarchy projection is bounded floating-point geometry"
 )]
 
-use std::f64::consts::{FRAC_PI_2, TAU};
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::ops::Range;
 
 use vello::Scene;
@@ -16,7 +16,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
-use crate::widget::chart_labels::format_compact;
+use crate::widget::chart_labels::{ShownLabel, format_compact};
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
@@ -481,11 +481,13 @@ impl PlotMarks for SunburstMarks {
             };
             let ink = crate::widget::chart_labels::ink_on_fill(theme, color);
             for (line, at) in &label.lines {
+                let turned = Affine::rotate_about(label.turn, at.center())
+                    * Affine::translate((at.x0, at.y0));
                 tr.draw_style(
                     scene,
                     line,
                     ink,
-                    transform * Affine::translate((at.x0, at.y0)),
+                    transform * turned,
                     None,
                     &label_style(theme),
                 );
@@ -547,21 +549,24 @@ struct Ring {
 }
 
 impl Ring {
-    /// Whether `rect` lies wholly inside the band, `air` clear of its edges: its outline is
-    /// walked, since a straight edge can bulge past a curved one between its corners.
-    fn holds(&self, rect: Rect, air: f64) -> bool {
+    /// Whether `rect`, turned `turn` about its own centre, lies wholly inside the band, `air`
+    /// clear of its edges: its outline is walked, since a straight edge can bulge past a curved
+    /// one between its corners.
+    fn holds(&self, rect: Rect, turn: f64, air: f64) -> bool {
         const STEPS: u32 = 8;
         let inner = self.inner + air;
         let outer = self.outer - air;
         if outer <= inner {
             return false;
         }
+        let turned = Affine::rotate_about(turn, rect.center());
         let corners = [
             Point::new(rect.x0, rect.y0),
             Point::new(rect.x1, rect.y0),
             Point::new(rect.x1, rect.y1),
             Point::new(rect.x0, rect.y1),
-        ];
+        ]
+        .map(|corner| turned * corner);
         (0..4).all(|side| {
             let from = corners[side];
             let to = corners[(side + 1) % 4];
@@ -588,33 +593,23 @@ fn label_style(theme: &Theme) -> crate::text_render::TextStyle {
         .with_weight(TextWeight::Semibold)
 }
 
-/// One segment's label as its band shows it: the lines it reads as, and the box each sits in.
-struct ShownLabel {
-    lines: Vec<(String, Rect)>,
+/// The turn a band's words take at `angle` round the ring: along the ring's tangent, never more
+/// than a quarter turn from upright, so a label on the lower half is not read upside down.
+fn tangent_turn(angle: f64) -> f64 {
+    let mut turn = (angle + FRAC_PI_2).rem_euclid(PI);
+    if turn > FRAC_PI_2 {
+        turn -= PI;
+    }
+    turn
 }
 
-impl ShownLabel {
-    fn one(text: String, at: Rect) -> Self {
-        Self {
-            lines: vec![(text, at)],
-        }
-    }
-
-    /// The words the label reads as on one line, for telling it from a sibling's.
-    fn text(&self) -> String {
-        self.lines
-            .iter()
-            .map(|(line, _)| line.as_str())
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-}
-
-/// `label` as the band shows it, centred in the middle of it: whole where it fits, otherwise
-/// over two lines where the band is tall enough to hold them, otherwise shortened to a reading
-/// it can still be told apart by — at a word boundary, keeping its start and its end — and
-/// left out where not even that fits, since a stub names nothing. Pointing at the segment
-/// reads its whole path in the tooltip, and the accessible tree carries it whole too.
+/// `label` as the band shows it, centred in the middle of it and reading along the ring: whole
+/// where it fits, otherwise over two lines where the band is thick enough to hold them, otherwise
+/// shortened to whole words of itself at either side of an ellipsis — a cut never splits a word —
+/// and left out where none of those fits, since a stub names nothing. A ring's room runs along
+/// the arc, so its words follow the arc: read flat, a long name cannot fit a band at all.
+/// Pointing at the segment reads its whole path in the tooltip, and the accessible tree carries
+/// it whole too.
 fn ring_label(
     tr: &mut TextRenderer,
     theme: &Theme,
@@ -633,6 +628,7 @@ fn ring_label(
         ring.center.x + radius * mid.cos(),
         ring.center.y + radius * mid.sin(),
     );
+    let turn = tangent_turn(mid);
     let at = |w: f64, h: f64| {
         Rect::new(
             anchor.x - w / 2.0,
@@ -646,10 +642,14 @@ fn ring_label(
         (f64::from(w), f64::from(h))
     };
     let (w, h) = measure(tr, label);
-    if ring.holds(at(w, h), air) {
-        return Some(ShownLabel::one(label.to_owned(), at(w, h)));
+    let whole = at(w, h);
+    if ring.holds(whole, turn, air) {
+        return Some(ShownLabel {
+            lines: vec![(label.to_owned(), whole)],
+            turn,
+        });
     }
-    if let Some(shown) = wrapped_label(tr, label, ring, anchor, &style, air) {
+    if let Some(shown) = wrapped_label(tr, label, ring, &style, air) {
         return Some(shown);
     }
     for (text, w, h) in crate::widget::chart_labels::shortened_labels(tr, label, &style) {
@@ -657,70 +657,55 @@ fn ring_label(
             continue;
         }
         let rect = at(w, h);
-        if ring.holds(rect, air) {
-            return Some(ShownLabel::one(text, rect));
+        if ring.holds(rect, turn, air) {
+            return Some(ShownLabel {
+                lines: vec![(text, rect)],
+                turn,
+            });
         }
     }
     None
 }
 
 /// `label` broken over two lines at the words' own breaks, the evenest pair the band holds
-/// inside it. `None` where even the evenest pair does not fit, or where the label has not two
-/// words to break between.
+/// inside it, the second line across the band from the first. `None` where no pair fits.
 fn wrapped_label(
     tr: &mut TextRenderer,
     label: &str,
     ring: &Ring,
-    anchor: Point,
     style: &crate::text_render::TextStyle,
     air: f64,
 ) -> Option<ShownLabel> {
-    let words: Vec<&str> = label.split_whitespace().collect();
-    if words.len() < 2 {
-        return None;
-    }
-    let measure = |tr: &mut TextRenderer, text: &str| {
-        let (w, h) = tr.measure_style(text, None, style);
-        (f64::from(w), f64::from(h))
-    };
-    let mut breaks: Vec<(f64, usize)> = (1..words.len())
-        .map(|at| {
-            let first = words.get(..at).unwrap_or_default().join(" ");
-            let second = words.get(at..).unwrap_or_default().join(" ");
-            (measure(tr, &first).0.max(measure(tr, &second).0), at)
-        })
-        .collect();
-    breaks.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (width, at) in breaks {
-        let first = words.get(..at).unwrap_or_default().join(" ");
-        let second = words.get(at..).unwrap_or_default().join(" ");
-        let (w1, h1) = measure(tr, &first);
-        let (w2, h2) = measure(tr, &second);
-        let height = h1 + h2;
-        let block = Rect::new(
-            anchor.x - width / 2.0,
-            anchor.y - height / 2.0,
-            anchor.x + width / 2.0,
-            anchor.y + height / 2.0,
-        );
-        if !ring.holds(block, air) {
-            continue;
+    let mid = ring.start.midpoint(ring.end);
+    let turn = tangent_turn(mid);
+    let (sin, cos) = mid.sin_cos();
+    let radius = ring.inner.midpoint(ring.outer);
+    for block in crate::widget::chart_labels::wrapped_labels(tr, label, style) {
+        let mut top = -block.height / 2.0;
+        let mut lines = Vec::with_capacity(block.lines.len());
+        let mut fits = true;
+        for (text, w, h) in block.lines {
+            let across = top + h / 2.0;
+            let centre = Point::new(
+                ring.center.x + (radius + across) * cos,
+                ring.center.y + (radius + across) * sin,
+            );
+            let rect = Rect::new(
+                centre.x - w / 2.0,
+                centre.y - h / 2.0,
+                centre.x + w / 2.0,
+                centre.y + h / 2.0,
+            );
+            if !ring.holds(rect, turn, air) {
+                fits = false;
+                break;
+            }
+            lines.push((text, rect));
+            top += h;
         }
-        let first_box = Rect::new(
-            anchor.x - w1 / 2.0,
-            block.y0,
-            anchor.x + w1 / 2.0,
-            block.y0 + h1,
-        );
-        let second_box = Rect::new(
-            anchor.x - w2 / 2.0,
-            first_box.y1,
-            anchor.x + w2 / 2.0,
-            first_box.y1 + h2,
-        );
-        return Some(ShownLabel {
-            lines: vec![(first, first_box), (second, second_box)],
-        });
+        if fits {
+            return Some(ShownLabel { lines, turn });
+        }
     }
     None
 }
@@ -788,7 +773,6 @@ mod tests {
             &mut tr,
             "Integration tests for the desktop clients",
             &ring,
-            Point::new(0.0, 300.0),
             &label_style(&theme),
             air,
         )
@@ -796,15 +780,18 @@ mod tests {
         assert_eq!(shown.lines.len(), 2, "{:?}", shown.text());
         assert_eq!(shown.text(), "Integration tests for the desktop clients");
         for (_, at) in &shown.lines {
-            assert!(ring.holds(*at, air), "{at:?} lies outside the band");
+            assert!(
+                ring.holds(*at, shown.turn, air),
+                "{at:?} lies outside the band"
+            );
         }
     }
 
-    /// Every label a segment shows names something: no cut leaves fewer than four letters
-    /// before its ellipsis, and two segments of one ring never show the same cut, so the words
-    /// on screen tell the segments apart at a laptop's width and at a phone's. Where a label
-    /// cannot be read, the segment is left unnamed — its tooltip and accessible name still read
-    /// its whole path.
+    /// Every label a segment shows names something: it is the segment's whole name, or whole
+    /// words of it on either side of one ellipsis — a cut never splits a word — and two segments
+    /// of one ring never show the same reading, so the words on screen tell the segments apart
+    /// at a laptop's width and at a phone's. Where a label cannot be read, the segment is left
+    /// unnamed, and its tooltip and accessible name still read its whole path.
     #[test]
     fn segment_labels_stay_readable_at_every_width() {
         for root in [week_root(), long_names_root()] {
@@ -835,14 +822,14 @@ mod tests {
                         };
                         shown += 1;
                         let text = label.text();
-                        if let Some((head, _)) = text.split_once('…') {
-                            let letters = head.chars().filter(|c| c.is_alphanumeric()).count();
-                            assert!(
-                                letters >= crate::widget::chart_labels::MIN_READABLE_LETTERS,
-                                "{width}: {:?} shows the stub {text:?}",
-                                segment.label
-                            );
-                        }
+                        assert!(
+                            crate::widget::chart_labels::reads_as_whole_words(
+                                &segment.label,
+                                &text
+                            ),
+                            "{width}: {:?} shows {text:?}, which is not whole words of it",
+                            segment.label
+                        );
                         by_siblings
                             .entry((segment.depth, segment.parent.as_str()))
                             .or_default()
