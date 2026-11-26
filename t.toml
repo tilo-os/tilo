@@ -1363,28 +1363,6 @@ image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" 
 requires = ["arch=x86_64"]
 isolation = "vm"
 
-# The developer docs' code examples, run the way a reader runs them: every block of an example
-# is a whole program that reaches the API with TILO_API_URL and TILO_API_KEY (tools/docs/
-# doc_examples.py). The host that serves them is the api-on-server example of
-# tilo-agent-session, and sh examples run the tilo command, so both are built here and
-# handed to the check that runs the examples in the SDKs' image, with the font catalog this
-# build sets text from: the binaries name it beside themselves.
-[[check]]
-name = "docs-examples-build"
-on = ["idle", "stable"]
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-session --example api-on-server\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/api-on-server\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\ncp -a \"$CARGO_TARGET_DIR/debug/font-catalogs\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
-requires = ["arch=x86_64"]
-outputs = ["/target/docs-examples/**"]
-
-[[check]]
-name = "docs-examples"
-on = ["idle", "stable"]
-run = "bash tools/ci/docs-examples.sh /target/docs-examples"
-needs = ["docs-examples-build"]
-image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
-requires = ["arch=x86_64"]
-
 # The SDKs' release to npm and PyPI, tools/ci/publish/sdks.sh: both packages publish under the
 # one name tilo-sdk (on PyPI plain `tilo` belongs to an unrelated project, on npm the @tilo scope
 # is not available), and the version is the release tag's, never a number in the tree. The check
@@ -8481,9 +8459,9 @@ default = false
 # The developer docs' hosted-Browser example (example `hosted-browser` in
 # docs/developers/one-workspace-per-customer.md): the same stack and VM host tilo-sh-local-vm
 # runs, brought up for one program, an agent's key opening a workspace's Browser in the
-# workspace's own VM and driving a page through the SDKs' generic action call. The docs-examples
-# check runs the book's other examples against api-on-server and leaves this one out; this check
-# is the one that runs it, so the example proves itself instead of sitting in the page.
+# workspace's own VM and driving a page through the SDKs' generic action call. It is the
+# stack a local Tilo serves the book's examples from, so this check runs the one example that
+# asks for it rather than reading about it.
 #
 # Its setup's dnf installs from Fedora's mirrors, which are no fixed host list; the run meets the
 # stack, the page it drives and the VM's session on loopback alone.

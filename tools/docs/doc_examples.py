@@ -14,11 +14,10 @@ the API server every other example shares: its check brings that environment
 up and runs it with `--host <name>`, and `run` without `--host` leaves it out.
 
 `check` enforces the conventions and runs nothing. `list` prints what the pages
-carry. `run` executes every block against a local Tilo: `--api` names the
-`api-on-server` example of `tilo-agent-session`, which serves a host with its
-API and runs the program with `TILO_API_URL`, `TILO_API_KEY`, `TILO_KEY_FILE`
-and `TILO_INVITEE` set, so an example reaches the API the way the published one
-reaches tilo.sh.
+carry. `run` executes every block against a local Tilo: `--api` names a program
+that serves a host with its API and runs the program with `TILO_API_URL`,
+`TILO_API_KEY`, `TILO_KEY_FILE` and `TILO_INVITEE` set, so an example reaches
+the API the way the published one reaches tilo.sh.
 With `--host`, the examples of that host run instead, in the environment as it
 is (a stack's check exports `TILO_API_URL` and `TILO_API_KEY`), and `--api` is
 not needed. Python runs
@@ -423,7 +422,7 @@ def run(
         selected = [example for example in book.examples if example.host is None]
         elsewhere = [example for example in book.examples if example.host is not None]
         if api is None:
-            raise DocsError("run needs --api (the api-on-server example) or --host (the examples of one host)")
+            raise DocsError("run needs --api (a program that serves a host with its API) or --host (the examples of one host)")
         if not api.exists():
             raise DocsError(f"{api}: no API server to serve the examples with")
     else:
@@ -477,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     running = commands.add_parser("run", help="run every example against a local Tilo")
     running.add_argument(
         "--api", type=Path,
-        help="the api-on-server example: it serves a host with its API and sets TILO_API_URL, TILO_API_KEY and TILO_KEY_FILE",
+        help="a program that serves a host with its API and sets TILO_API_URL, TILO_API_KEY and TILO_KEY_FILE",
     )
     running.add_argument(
         "--host", metavar="NAME",

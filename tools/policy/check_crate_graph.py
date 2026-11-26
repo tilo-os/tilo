@@ -26,11 +26,11 @@ toolkit nor the media stack; either one compiled back in is megabytes a
 ``tilo mcp`` holds for as long as an agent keeps it. A task's programs go to
 the tilolang host's own program, which ``tilo`` starts and does not link.
 
-``tilo-agent-session`` drives a workspace's apps on a server, and its
-``api-on-server`` example is the program a server serves them with. Its whole
-graph, an example's dev-dependencies included, stays clear of the compositor,
-the keyboard stack and the media stack: any of them compiled in is a device
-driver, a Wayland server or a codec stack that no server has.
+``tilo-agent-session`` drives a workspace's apps on a server, and serves them
+with the daemon a server runs. Its whole graph, an example's dev-dependencies
+included, stays clear of the compositor, the keyboard stack and the media
+stack: any of them compiled in is a device driver, a Wayland server or a codec
+stack that no server has.
 
 ``tilo-runtime`` is the device daemon, on every device and every platform.
 It reaches an app in the app's own process, through the action registry and

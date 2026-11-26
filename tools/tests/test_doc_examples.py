@@ -59,7 +59,7 @@ console.log(Tilo);
 
 API = """\
 #!/bin/sh
-# Stands in for api-on-server: its program runs with the environment it was handed.
+# Stands in for a program that serves a host: its program runs with the environment it was handed.
 shift
 exec "$@"
 """
