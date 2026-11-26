@@ -574,6 +574,33 @@ def asked_once(socket_path: Path, path: str, args: dict) -> tuple[dict, int | No
     return said_answer, (handed[0] if handed else None)
 
 
+def native_ask(socket_path: Path, request: dict, within: float = 10.0) -> dict:
+    """Ask this computer's daemon's own endpoint a request that is not one of its actions, as the
+    account this process runs as, and answer its line as data. A session's founding link is
+    established this way."""
+    line = json.dumps(request)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(within)
+        stream.connect(str(socket_path))
+        stream.sendall((line + "\n").encode())
+        answered = b""
+        while b"\n" not in answered:
+            data = stream.recv(1 << 16)
+            if not data:
+                break
+            answered += data
+    said = answered.split(b"\n", 1)[0].decode(errors="replace")
+    if not said:
+        raise Failed(f"the machine's daemon answered nothing to {request.get('native')}")
+    try:
+        answer = json.loads(said)
+    except ValueError:
+        raise Failed(f"the machine's daemon's answer is not JSON: {said}") from None
+    if "error" in answer:
+        raise Failed(f"the machine's daemon refused {request.get('native')}: {said}")
+    return answer
+
+
 class MachineDaemon:
     """This computer's device daemon, started the way Tilo OS's system unit starts it, and the
     login that starts the session as the person.
@@ -697,10 +724,18 @@ class MachineDaemon:
         uid = self.account.pw_uid
         person, _ = self._signed_in(uid)
         if person.get("founding"):
-            # The account's first command founds the person here, as a device's does: the
-            # daemon admits the call by the account it comes from, so the account makes it.
+            # The sign-in answered the account's session a founding link. The first command runs
+            # as the account, redeems that link, and founds the person through it, as the session
+            # a sign-in started does: only the process the sign-in's secret was handed to may
+            # make the person.
+            token = person.get("token")
+            if not token:
+                raise Failed(
+                    "the sign-in answered no founding link for the account's first command: "
+                    f"{json.dumps(person)}")
             run([*as_account(self.account), sys.executable, "-I", "-B",
-                 str(Path(__file__).resolve()), "--found-device", str(self.NATIVE)],
+                 str(Path(__file__).resolve()), "--found-device", str(self.NATIVE),
+                 "--founding-link", token],
                 env={**os.environ, **session_env, **self._account_env()})
         deadline = time.monotonic() + self.LINK_WITHIN
         while True:
@@ -3861,11 +3896,17 @@ def walks() -> list[str]:
     return sorted(path.stem for path in WALKS.glob("*.json") if path != MOVED)
 
 
-def found_device(socket_path: Path) -> int:
-    """Found this computer's person as the account this runs as: the first command a computer
-    answers for itself (`devices#found`), which the daemon admits by the account it comes from.
-    Run as the session's account, never as root."""
+def found_device(socket_path: Path, founding_token: str | None = None) -> int:
+    """Found this computer's person as the account this runs as, through the founding link its
+    sign-in answered (`devices#found`). The link ties this process to the sign-in, and the daemon
+    admits the founding call from it alone. Run as the session's account, never as root."""
     try:
+        if founding_token:
+            linked = native_ask(socket_path,
+                                {"native": "shells#link", "token": founding_token})
+            if linked.get("founding") is not True:
+                raise Failed(
+                    f"the sign-in's founding link is not this account's to redeem: {linked}")
         daemon_ask(socket_path, "devices#found", {})
     except Failed as error:
         print(f"app-walk: {error}", file=sys.stderr)
@@ -3902,12 +3943,15 @@ def main() -> int:
     parser.add_argument("--found-device", type=Path, metavar="SOCKET",
                         help="found this computer's person through the daemon at SOCKET, as the "
                              "account this runs as (the walk's login runs this as its account)")
+    parser.add_argument("--founding-link", metavar="TOKEN",
+                        help="with --found-device: the one-use secret the sign-in answered, which "
+                             "this process redeems for the link the founding call is admitted by")
     parser.add_argument("--opens", type=Path, metavar="WALKS",
                         help="hold every open the walks under WALKS recorded to the open bar, "
                              f"{OPEN_BAR_MS} ms, writing opens.md to --out (the app-walk/open check)")
     options = parser.parse_args()
     if options.found_device:
-        return found_device(options.found_device)
+        return found_device(options.found_device, options.founding_link)
     if options.opens:
         return hold_opens(options.opens.resolve(), (options.out or Path.cwd()).resolve())
     if options.side_by_side:
