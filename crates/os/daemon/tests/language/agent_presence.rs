@@ -497,7 +497,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             ),
             "{stopped:?}"
         );
-        let after = mcp_server(&host, &host.workspace()).await;
+        let after = mcp_server(&host, host.workspace()).await;
         assert_eq!(after.grants.len(), 1, "the agent stays: {after:?}");
         assert!(
             after.grants[0].sessions.is_empty(),
@@ -522,7 +522,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         let again = host.agent();
         let (said, failed) = ls(&again, None).await;
         assert!(!failed, "the agent comes back: {said}");
-        let back = mcp_server(&host, &host.workspace()).await;
+        let back = mcp_server(&host, host.workspace()).await;
         assert_eq!(back.grants.len(), 1, "one agent, not two: {back:?}");
         assert_eq!(back.grants[0].sessions.len(), 1, "{back:?}");
         // Nobody else stops its runs. A server is read over the shell link the daemon makes for
@@ -534,10 +534,10 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             .invoke(&stranger, stop(mcp_server::STOP))
             .await;
         assert!(
-            refused.as_ref().is_none_or(|answer| answer.is_err()),
+            refused.as_ref().is_none_or(Result::is_err),
             "another person stops nothing: {refused:?}"
         );
-        let still = mcp_server(&host, &host.workspace()).await;
+        let still = mcp_server(&host, host.workspace()).await;
         assert_eq!(still.grants[0].sessions.len(), 1, "{still:?}");
         // The person revokes the key their agent runs under: its run ends, it leaves the
         // listing, and its key is refused from then on.

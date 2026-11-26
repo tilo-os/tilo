@@ -16,6 +16,8 @@ use super::Host;
 pub struct Second {
     _root: tempfile::TempDir,
     daemon: Child,
+    /// The files daemons the person's mounts started, let go of as this computer is.
+    mounts: std::cell::RefCell<Vec<Child>>,
     env: Vec<(String, OsString)>,
     log: PathBuf,
     home: PathBuf,
@@ -29,6 +31,10 @@ impl Drop for Second {
     fn drop(&mut self) {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
+        for mount in self.mounts.get_mut() {
+            let _ = mount.kill();
+            let _ = mount.wait();
+        }
     }
 }
 
@@ -110,6 +116,7 @@ impl Second {
         let mut second = Self {
             _root: root,
             daemon,
+            mounts: std::cell::RefCell::new(Vec::new()),
             env,
             log,
             home,
@@ -186,7 +193,7 @@ impl Second {
         let cache = self.home.join(".cache").join("tilo-fs");
         std::fs::create_dir_all(&cache).expect("the mount's cache");
         let log = self.home.join("fs.log");
-        Command::new(tilo_test_env::sibling_binary("tilo-fs", "fs"))
+        let files = Command::new(tilo_test_env::sibling_binary("tilo-fs", "fs"))
             .args([
                 "serve",
                 "--mount-point",
@@ -209,6 +216,7 @@ impl Second {
             .stderr(std::fs::File::create(self.home.join("fs.err")).unwrap())
             .spawn()
             .expect("the files daemon starts");
+        self.mounts.borrow_mut().push(files);
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let mounted = std::fs::read_to_string("/proc/self/mountinfo")

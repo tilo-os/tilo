@@ -226,8 +226,10 @@ fn an_agent_reads_a_window_calls_the_action_it_names_and_reads_the_change() {
             .map(str::trim)
             .find(|line| line.starts_with("button \"Increment\""))
             .and_then(|line| line.split_once(" → "))
-            .map(|(_, address)| address.to_owned())
-            .unwrap_or_else(|| panic!("the Increment button names its action: {lines}"));
+            .map_or_else(
+                || panic!("the Increment button names its action: {lines}"),
+                |(_, address)| address.to_owned(),
+            );
 
         let (done, failed) = act(&agent, &increment, json!({})).await;
         assert!(!failed, "the action the window names runs as named: {done}");

@@ -311,7 +311,7 @@ async fn run_check(
             }
         }
         match status.take() {
-            Some(ReceiptStatus::Accepted) => {}
+            Some(ReceiptStatus::Accepted) | None => {}
             Some(ReceiptStatus::Completed { output }) => {
                 return Ok((name, output.value.unwrap_or(Value::Null)));
             }
@@ -326,7 +326,6 @@ async fn run_check(
                     reason: "the check was cancelled".into(),
                 });
             }
-            None => {}
         }
         assert!(Instant::now() < deadline, "the check never ended");
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -437,16 +436,13 @@ fn start_user_manager() -> UserManager {
                 "is-system-running",
             ])
             .output_locked();
-        let said = state.as_ref().map_or_else(
-            |error| error.to_string(),
-            |state| {
-                format!(
-                    "{:?} {}",
-                    state.status,
-                    String::from_utf8_lossy(&state.stdout)
-                )
-            },
-        );
+        let said = state.as_ref().map_or_else(ToString::to_string, |state| {
+            format!(
+                "{:?} {}",
+                state.status,
+                String::from_utf8_lossy(&state.stdout)
+            )
+        });
         if let Ok(state) = &state
             && (state.status.success()
                 || String::from_utf8_lossy(&state.stdout).trim() == "degraded")

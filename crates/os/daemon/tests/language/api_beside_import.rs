@@ -19,7 +19,9 @@
     clippy::indexing_slicing,
     clippy::too_many_lines,
     clippy::arithmetic_side_effects,
-    reason = "in a test these are the assertion, not a hazard; one scenario in order"
+    clippy::large_futures,
+    reason = "in a test these are the assertion, not a hazard; one scenario in order, its future \
+              spanning the daemon it starts"
 )]
 
 use std::sync::Arc;
