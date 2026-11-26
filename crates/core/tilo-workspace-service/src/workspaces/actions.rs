@@ -4879,7 +4879,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         drop(asking);
         let mut log = server.log();
         if log
-            .get(caller, &invocation)
+            .admitted(caller, &invocation)
             .is_some_and(invocation_states::waits_an_answer)
         {
             log.complete(
@@ -4906,7 +4906,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         drop(asking);
         let mut log = server.log();
         if !log
-            .get(caller, &invocation)
+            .admitted(caller, &invocation)
             .is_some_and(invocation_states::waits_an_answer)
         {
             return Err(not_waiting());

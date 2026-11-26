@@ -44,10 +44,12 @@ pub(super) fn waits_asked(state: &InvocationState) -> bool {
 
 /// Whether an answer finds `state` a call that waits: recorded as waiting, or still under way
 /// because its asked record was written before the call was recorded as waiting ([`ended`]).
-/// The call's entry among the host's asked calls is what says it waits; this is what the log
-/// says while that entry is being taken.
-pub(super) fn waits_an_answer(state: &InvocationState) -> bool {
-    waits_asked(state) || !state.is_terminal()
+/// `None` is a call whose start has not answered yet: its work wrote the record within the
+/// caller's wait, so nothing of it is recorded until [`ended`] records it. The call's entry
+/// among the host's asked calls is what says it waits; this is what the log says while that
+/// entry is being taken.
+pub(super) fn waits_an_answer(state: Option<&InvocationState>) -> bool {
+    state.is_none_or(|state| waits_asked(state) || !state.is_terminal())
 }
 
 /// The call whose work ended, as [`ended`] keeps it.

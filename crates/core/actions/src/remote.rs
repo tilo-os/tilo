@@ -2891,13 +2891,14 @@ impl<T> InvocationLog<T> {
     /// Admit `request` again under its id where its person approved the asked record it waits
     /// in: the entry `caller` admitted for the same target and arguments, whose handle `waits`
     /// says is still asked, is reserved again carrying their answer, and the caller completes or
-    /// abandons it as after [`Self::reserve`]. False where nothing of that waits, which a reserve
-    /// then refuses as another invocation.
+    /// abandons it as after [`Self::reserve`]. `waits` is handed `None` while the entry's first
+    /// start is still in flight. False where nothing of that waits, which a reserve then refuses
+    /// as another invocation.
     pub fn readmit(
         &mut self,
         caller: &Caller,
         request: &InvokeRequest,
-        waits: impl FnOnce(&T) -> bool,
+        waits: impl FnOnce(Option<&T>) -> bool,
     ) -> bool {
         let Some(entry) = self.entries.get_mut(&request.invocation) else {
             return false;
@@ -2905,7 +2906,7 @@ impl<T> InvocationLog<T> {
         let again = request.approval().is_some()
             && caller.continues(&entry.caller)
             && asked::same_call(&entry.request, request)
-            && entry.handle.as_ref().is_some_and(waits);
+            && waits(entry.handle.as_ref());
         if again {
             entry.request = InvokeRequest {
                 wait_ms: None,
@@ -2952,6 +2953,16 @@ impl<T> InvocationLog<T> {
             .get(id)
             .filter(|entry| caller.follows(&entry.caller))
             .and_then(|entry| entry.handle.as_ref())
+    }
+
+    /// The invocation `caller` admitted under `id`, as its handle: `Some(None)` while its start
+    /// is still in flight, `None` where `caller` admitted nothing under `id`.
+    #[must_use]
+    pub fn admitted(&self, caller: &Caller, id: &InvocationId) -> Option<Option<&T>> {
+        self.entries
+            .get(id)
+            .filter(|entry| caller.follows(&entry.caller))
+            .map(|entry| entry.handle.as_ref())
     }
 
     /// Mutable access to the handle for an invocation `caller` admitted.
