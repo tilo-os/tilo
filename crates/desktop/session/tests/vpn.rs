@@ -527,6 +527,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             relays: test_server::loopback(),
             lan: None,
             live: None,
+            devices: None,
         },
         Vec::new(),
     )
@@ -683,6 +684,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             relays: test_server::loopback(),
             lan: None,
             live: None,
+            devices: None,
         },
         shell_vpn.served(),
     )
@@ -700,6 +702,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             relays: test_server::loopback(),
             lan: None,
             live: None,
+            devices: None,
         },
         Vec::new(),
     )

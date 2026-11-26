@@ -1273,10 +1273,7 @@ impl Service for ResourceService {
             return Err("the workspace's policy has not reached this device yet".to_owned());
         }
         let port: std::rc::Rc<dyn tilolang_tilo::resources::Port> =
-            std::rc::Rc::new(WorkspacePort {
-                store: std::rc::Rc::clone(store),
-                app: app.clone(),
-            });
+            std::rc::Rc::new(WorkspacePort::new(std::rc::Rc::clone(store), &app));
         let deciding = std::rc::Rc::clone(store);
         // The service moves only once the workspace took the seed: one it refused leaves the
         // service reading the resources it held, and the move is asked again.
@@ -1522,10 +1519,23 @@ impl Service for ResourceService {
     }
 }
 
-/// The workspace's store as one app's resources reach it ([`Service::keep_in_workspace`]).
-struct WorkspacePort {
+/// The workspace's store as one app's resources reach it ([`Service::keep_in_workspace`]): every
+/// app the session runs itself keeps its resources in a workspace through it, the shell's own
+/// included.
+pub struct WorkspacePort {
     store: std::rc::Rc<dyn tilo_service::WorkspaceStore>,
     app: String,
+}
+
+impl WorkspacePort {
+    /// The resources of `app` in the workspace whose store `store` is.
+    #[must_use]
+    pub fn new(store: std::rc::Rc<dyn tilo_service::WorkspaceStore>, app: &str) -> Self {
+        Self {
+            store,
+            app: app.to_owned(),
+        }
+    }
 }
 
 impl tilolang_tilo::resources::Port for WorkspacePort {

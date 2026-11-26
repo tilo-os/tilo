@@ -2897,7 +2897,7 @@ fn unsent_checkout(me: &tilo_resource::MemberId) -> DocumentCheckout {
     let id = me
         .person_id()
         .and_then(|person| DocumentId::of_member(person, UNSENT_KIND))
-        .unwrap_or_else(|| ui_core::resource::person::document_id(&kind));
+        .unwrap_or_else(|| DocumentId::derived(kind.as_str(), &DocumentId::for_tab(0)));
     DocumentCheckout::new(id, kind)
 }
 

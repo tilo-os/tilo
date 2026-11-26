@@ -837,9 +837,6 @@ pub struct ApplicationOwner {
     permissions: tilo_ui_base::permissions::SharedPermissions,
     author: MemberId,
     action_context: tilo_actions::ActionContext,
-    /// Where the person records are kept: through the host's store, on the person's own
-    /// workspace's routes.
-    person: ResourceOwners,
 }
 
 impl ApplicationOwner {
@@ -900,7 +897,6 @@ impl ApplicationOwner {
             permissions,
             author,
             action_context,
-            person: self.person.clone(),
         })
     }
 
@@ -963,7 +959,6 @@ impl ApplicationOwner {
         Ok(Self {
             package_id: None,
             models: crate::models::Models::default(),
-            person: owners.clone(),
             owners,
             views,
             device_id,
@@ -973,20 +968,9 @@ impl ApplicationOwner {
         })
     }
 
-    fn with_person_resources(
-        &mut self,
-        definition: &ApplicationDefinition,
-        mut context: ProcessContext,
-    ) -> ProcessContext {
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
-        match crate::resource::person::PersonResources::open(
-            &mut self.person,
-            package_id,
-            self.author.clone(),
-        ) {
-            Ok(records) => context.provide_person_resources(records),
-            Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
-        }
+    /// `context` with the records every app of its workspace opens, which the person's own
+    /// records are too where the window is in their own workspace.
+    fn with_workspace_resources(&self, mut context: ProcessContext) -> ProcessContext {
         context.provide_workspace_resources(
             crate::resource::workspace::WorkspaceResources::in_workspace(
                 self.owners.clone(),
@@ -1140,7 +1124,7 @@ impl ApplicationOwner {
                 })
                 .map_or(RestoreInput::None, RestoreInput::Local);
             return Ok(PreparedComponentInputs {
-                context: self.with_person_resources(definition, context),
+                context: self.with_workspace_resources(context),
                 target,
                 restore,
                 runner_inputs,
@@ -1159,7 +1143,7 @@ impl ApplicationOwner {
             initial_view,
         )?;
         Ok(PreparedComponentInputs {
-            context: self.with_person_resources(definition, context),
+            context: self.with_workspace_resources(context),
             target,
             restore,
             runner_inputs,
@@ -1194,7 +1178,7 @@ impl ApplicationOwner {
         let (context, target, restore) =
             self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
         Ok(PreparedComponentInputs {
-            context: self.with_person_resources(definition, context),
+            context: self.with_workspace_resources(context),
             target,
             restore,
             runner_inputs,

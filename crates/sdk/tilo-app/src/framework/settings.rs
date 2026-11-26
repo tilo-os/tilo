@@ -150,11 +150,13 @@ pub(crate) struct ViewStorage {
     session: Option<tilo_ui_base::collaboration::browser_service_sessions::Client>,
 }
 
-/// What the host gives a live window beside its record: the person's own
-/// records and this device's id. Neither reaches a view of a past version.
+/// What the host gives a live window beside its record: where the person's own
+/// records are and this device's id. Neither reaches a view of a past version.
 #[derive(Default)]
 pub(crate) struct Hosted {
-    pub(crate) person: Option<ui_core::resource::person::PersonResources>,
+    /// The person at the window and where their own records are; `None` for a private window,
+    /// which keeps nothing of theirs.
+    pub(crate) person: Option<(tilo_resource::MemberId, super::person::PersonRecords)>,
     pub(crate) device: Option<String>,
     /// The store of the app's records in the workspace, who edits there and
     /// what they may do (`None`: a past version, where nobody edits).
@@ -209,9 +211,9 @@ impl Hosted {
         Attached {
             workspace,
             emoji,
-            person: self
-                .person
-                .map(|records| super::person::PersonState::new(records, app_id, app_title, wake)),
+            person: self.person.map(|(me, records)| {
+                super::person::PersonState::new(records, me, app_id, app_title, wake)
+            }),
             device: self.device,
             records: self.records.map(|(store, me, permissions)| {
                 super::chain::WorkspaceResources {
@@ -353,14 +355,13 @@ impl ViewStorage {
         self.device.as_deref()
     }
 
-    /// Open the record `P` the person keeps for themselves, in their own scope
-    /// rather than in a workspace: presentation data only they use on their own
-    /// devices.
+    /// Open the record `P` the person keeps for themselves, in their own workspace
+    /// rather than the window's: presentation data only they use.
     pub(crate) fn profile_resource<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonResource<P>> {
-        // It lives in the person's own scope, as a settings section does: a surface report
-        // lists it as the person's.
+        // It is the person's own, as a settings section is: a surface report lists it as the
+        // person's.
         super::controls::opened_section::<P>();
         self.person.as_ref()?.open_profile::<P>()
     }
@@ -758,8 +759,9 @@ impl ViewStorage {
         })
     }
 
-    /// The person's records and settings sections the window answers for:
-    /// another provider runs what it keeps; the window never does.
+    /// The person's records and settings sections the window answers for. A record of theirs
+    /// kept in their own workspace is answered here too, which sends each of its changes to the
+    /// app there.
     fn answering_apis(&self) -> Vec<Rc<dyn ResourceApi>> {
         let mut apis = self
             .person
@@ -941,9 +943,6 @@ impl ViewStorage {
     /// records that arrived: in a frame's settle, where the store takes the writer opening it
     /// needs, so the views' next sync reads it.
     pub(crate) fn settle(&self) {
-        if let Some(person) = &self.person {
-            person.settle();
-        }
         // A workspace record shares the app's store, which the view's sync reads: what arrived
         // for one, or was asked for while that store was in use, opens here, where it is free.
         if let Some(workspace) = &self.workspace {

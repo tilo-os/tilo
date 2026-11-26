@@ -3154,18 +3154,27 @@ fn perform_resource_action(
                     if reroute.is_some_and(|reroute| reroute(resource, spec)) {
                         return Err(BoundActionError::Rerouted { arguments });
                     }
-                    let (answer, spent) = binding.permissions.borrow().invocation_verdict(
-                        &binding.app_id,
-                        resource,
-                        spec,
-                        arguments.as_ref(),
-                        argument,
-                    );
                     // An invocation the workspace delivers was admitted there, the person's yes
                     // included where it waited for one; what this window was told of its actions
                     // only shows its controls.
                     if !broker_admitted {
                         press_asks(spec, arguments.as_ref(), argument, approval)?;
+                    }
+                    // A record another workspace holds is decided there: its grants and the
+                    // person's answers about it are the workspace's, and this window's view of
+                    // them is its controls, never the call. A settings section is the person's
+                    // own, decided by its model and kept by the settings store.
+                    if !broker_admitted
+                        && resource.workspace.is_none()
+                        && !resource.kind.starts_with("settings.")
+                    {
+                        let (answer, spent) = binding.permissions.borrow().invocation_verdict(
+                            &binding.app_id,
+                            resource,
+                            spec,
+                            arguments.as_ref(),
+                            argument,
+                        );
                         let asker = binding.permissions.borrow().asker();
                         match tilo_ui_base::permissions::admit_in_window(answer, spec, asker) {
                             Err(tilo_actions::ApiError::ConfirmationRequired)
@@ -3181,18 +3190,18 @@ fn perform_resource_action(
                                 }
                             })?,
                         }
+                        // A grant given once is spent by admitting this call,
+                        // before it runs: the host revokes it, and this API never
+                        // relies on it again.
+                        binding
+                            .permissions
+                            .update(|permissions| permissions.spend_once(&spent))
+                            .map_err(|_| denied(spec))?;
                     }
                     crate::invocation_scope::check_continuation(
                         spec,
                         spec.need_for(arguments.as_ref(), argument).kind,
                     )?;
-                    // A grant given once is spent by admitting this call,
-                    // before it runs: the host revokes it, and this API never
-                    // relies on it again.
-                    binding
-                        .permissions
-                        .update(|permissions| permissions.spend_once(&spent))
-                        .map_err(|_| denied(spec))?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     crate::invocation_scope::check_shown_here(actor, &binding.author, resource, spec)?;

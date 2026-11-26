@@ -32,9 +32,6 @@ impl crate::Shared {
             return;
         }
         let workspace = workspace.to_string();
-        if !self.document_reads.workspaces().contains(&workspace) {
-            return waits("the device's daemon does not read the workspace yet");
-        }
         let Some(store) = (self.held_stores)(workspace, runtime) else {
             return waits("this device's workspace service holds no store of the workspace");
         };

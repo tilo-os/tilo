@@ -210,6 +210,30 @@ impl Opener {
         );
     }
 
+    /// [`Self::invoke_own`], answering with the call's outcome: for an effect that calls an
+    /// action of the window's own record and waits for what it made.
+    pub(crate) fn call_own(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> InvocationCall {
+        self.0
+            .borrow_mut()
+            .api
+            .get_or_insert_with(RemoteActions::current)
+            .invoke_continuing(
+                parent,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                    address,
+                },
+                InvokeArgument::Json(arguments),
+                None,
+            )
+    }
+
     pub(crate) fn invoke(
         &self,
         target: tilo_actions::remote::RemoteActionTarget,

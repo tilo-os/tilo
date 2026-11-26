@@ -642,22 +642,19 @@ impl SessionNotifications {
         self.daemon.clone()
     }
 
-    /// Keep this device's notifications in the record of the person's devices `resources` reads
-    /// and writes from now on, while their `continuity` lets them continue, and show what their
-    /// other devices keep there: each move of the record wakes the session's pass with `wake`.
+    /// Keep this device's notifications in the record of the person's devices followed as
+    /// `devices` from now on, as the device `cert` names, while their `continuity` lets them
+    /// continue, and show what their other devices keep there: the follow wakes the session's pass
+    /// each time the record moves.
     pub(crate) fn attach_record(
         &self,
-        resources: crate::PersonResources,
+        devices: crate::followed_resource::FollowedResource<
+            tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+        >,
+        cert: &tilo_user_identity::DeviceCert,
         continuity: crate::platform::fabric::Continuity,
-        wake: tilo_service::Wake,
     ) {
-        let mut moved = resources.changes();
-        tilo_rt::app().spawn(async move {
-            while moved.changed().await.is_ok() {
-                wake();
-            }
-        });
-        self.mirror.attach(resources, continuity);
+        self.mirror.attach(devices, cert, continuity);
     }
 
     /// Show here what the record of the person's devices says moved: what they answered elsewhere

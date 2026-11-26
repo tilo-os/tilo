@@ -1160,140 +1160,67 @@ tilo_test_env::scenario! {
 
 // ---- Notifications that continue on the person's other devices ----
 
-/// The person's own workspace as their devices reach it: one store each of them writes to as
-/// itself, which tells every one of them what moved.
-#[derive(Default)]
+/// The person's own workspace as the device's daemon keeps it: one daemon, holding it, that each
+/// of the person's devices here reads the record of their devices through and changes it at, as
+/// the session does. The daemon's person is the fixture's root, `[1; 32]`.
 struct PersonsWorkspace {
-    docs: Mutex<BTreeMap<(String, String), automerge::AutoCommit>>,
-    told: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<tilo_workspace_service::workspaces::Moved>>>,
+    daemon: crate::daemon_fixture::TestDaemon,
+    /// The person's root, which certifies their devices.
+    root: ed25519_dalek::SigningKey,
+    /// Their workspace's id.
+    workspace: String,
 }
 
-/// One device of the person, reaching their own workspace as itself.
-struct AsDevice {
-    workspace: Arc<PersonsWorkspace>,
-    cert: tilo_user_identity::DeviceCert,
-}
-
-impl tilo_workspace_service::workspaces::PersonStore for AsDevice {
-    fn certificate(&self) -> tilo_user_identity::DeviceCert {
-        self.cert.clone()
-    }
-
-    fn held(&self) -> tilo_workspace_service::workspaces::Answer<'_, bool> {
-        Box::pin(async { true })
-    }
-
-    fn routes(
-        &self,
-    ) -> tilo_workspace_service::workspaces::Answer<'_, Result<Vec<(String, String)>, String>> {
-        let routes = self
-            .workspace
-            .docs
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
-        Box::pin(async move { Ok(routes) })
-    }
-
-    fn document<'a>(
-        &'a self,
-        app: &'a str,
-        name: &'a str,
-    ) -> tilo_workspace_service::workspaces::Answer<'a, Result<Option<Vec<u8>>, String>> {
-        let saved = self
-            .workspace
-            .docs
-            .lock()
-            .unwrap()
-            .get_mut(&(app.to_owned(), name.to_owned()))
-            .map(automerge::AutoCommit::save);
-        Box::pin(async move { Ok(saved) })
-    }
-
-    fn author(
-        &self,
-        app: String,
-        name: String,
-        authoring: tilo_workspace_service::workspaces::Authoring,
-    ) -> tilo_workspace_service::workspaces::Answer<'_, Result<(), String>> {
-        let made = {
-            let mut docs = self.workspace.docs.lock().unwrap();
-            let key = (app.clone(), name.clone());
-            if !docs.contains_key(&key) {
-                let genesis = authoring
-                    .genesis
-                    .ok_or_else(|| "a first write founds the resource".to_owned());
-                match genesis {
-                    Ok(genesis) => {
-                        docs.insert(key.clone(), *genesis);
-                    }
-                    Err(error) => return Box::pin(async move { Err(error) }),
-                }
-            }
-            let doc = docs.get_mut(&key).expect("founded above");
-            let made = (authoring.edit)(doc);
-            drop(docs);
-            made
-        };
-        if made.is_ok() {
-            self.workspace.told.lock().unwrap().retain(|told| {
-                told.send(tilo_workspace_service::workspaces::Moved::Resource(
-                    app.clone(),
-                    name.clone(),
-                ))
-                .is_ok()
-            });
+impl PersonsWorkspace {
+    /// The daemon of one of the person's devices, once it holds the person's own workspace.
+    fn start() -> Self {
+        let daemon = crate::daemon_fixture::TestDaemon::start();
+        let workspaces = daemon.workspaces().clone();
+        tilo_rt::app()
+            .block_on(async move {
+                tilo_workspace_service::workspaces::person_workspace::found(&workspaces).await
+            })
+            .expect("the app runtime runs the step")
+            .expect("the daemon holds the person's own workspace");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let workspace =
+            tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
+        Self {
+            daemon,
+            root,
+            workspace,
         }
-        Box::pin(async move { made })
     }
 
-    fn moves(
-        &self,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<tilo_workspace_service::workspaces::Moved> {
-        let (tell, told) = tokio::sync::mpsc::unbounded_channel();
-        self.workspace.told.lock().unwrap().push(tell);
-        told
+    /// The record of the person's devices, followed as the session follows it.
+    fn record(&self) -> crate::followed_resource::FollowedResource<Devices> {
+        let member =
+            tilo_action_policy::PersonId::from_root(self.root.verifying_key().to_bytes());
+        crate::followed_resource::FollowedResource::follow(
+            &self.daemon.shell(),
+            (&self.workspace, DEVICES.0, DEVICES.1),
+            member.as_str(),
+            None,
+            Arc::new(|| {}),
+        )
     }
-}
 
-/// Where the person's workspace writes run: one thread, so each device's writes land in the order
-/// it made them.
-fn test_runtime() -> tokio::runtime::Handle {
-    static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
-    RUNTIME
-        .get_or_init(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("a runtime");
-            let handle = runtime.handle().clone();
-            std::thread::spawn(move || runtime.block_on(std::future::pending::<()>()));
-            handle
-        })
-        .clone()
-}
-
-/// A device of the person whose root is `root`, called `label`, its key drawn from `seed`.
-fn device_of(
-    root: &ed25519_dalek::SigningKey,
-    label: &str,
-    seed: u8,
-) -> tilo_user_identity::DeviceCert {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root signs");
-    cert
+    /// A device of the person, called `label`, its key drawn from `seed`.
+    fn device(&self, label: &str, seed: u8) -> tilo_user_identity::DeviceCert {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: self.root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &self.root).expect("the root signs");
+        cert
+    }
 }
 
 /// Continuity as the person set it: on, or `off` in Settings.
@@ -1319,33 +1246,25 @@ struct TwoDevices {
     desktop_cert: tilo_user_identity::DeviceCert,
     /// The desktop's switch for notifications continuing.
     desktop_continuity: crate::platform::fabric::Continuity,
-    workspace: Arc<PersonsWorkspace>,
+    /// The record, as the test reads it.
+    record: crate::followed_resource::FollowedResource<Devices>,
+    /// Dropped last: the daemon both devices reach the record through.
+    _workspace: PersonsWorkspace,
 }
 
 fn two_devices() -> TwoDevices {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let workspace = Arc::new(PersonsWorkspace::default());
-    let desktop_cert = device_of(&root, "Desktop", 2);
-    let laptop_cert = device_of(&root, "Laptop", 3);
+    let workspace = PersonsWorkspace::start();
+    let desktop_cert = workspace.device("Desktop", 2);
+    let laptop_cert = workspace.device("Laptop", 3);
     let desktop_continuity = continuity(true);
     let attached = |cert: &tilo_user_identity::DeviceCert,
                     continuity: crate::platform::fabric::Continuity| {
-        let resources = crate::PersonResources::default();
-        resources.attach(
-            Arc::new(AsDevice {
-                workspace: Arc::clone(&workspace),
-                cert: cert.clone(),
-            }),
-            &test_runtime(),
-        );
-        let kept = cert.clone();
-        resources.apply(DEVICES, move || {
-            Devices::keeping(&kept).expect("a certificate the record keeps")
-        });
+        let record = workspace.record();
+        record
+            .invoke(&Devices::keeping(cert).expect("a certificate the record keeps"))
+            .expect("the record keeps the device");
         let rig = rig();
-        rig.bridge
-            .borrow()
-            .attach_record(resources, continuity, Arc::new(|| {}));
+        rig.bridge.borrow().attach_record(record, cert, continuity);
         rig
     };
     let desktop = attached(&desktop_cert, desktop_continuity.clone());
@@ -1355,7 +1274,8 @@ fn two_devices() -> TwoDevices {
         laptop,
         desktop_cert,
         desktop_continuity,
-        workspace,
+        record: workspace.record(),
+        _workspace: workspace,
     }
 }
 
@@ -1381,17 +1301,8 @@ impl TwoDevices {
 
     /// The notifications the record of the person's devices shows now.
     fn in_record(&self) -> usize {
-        let docs = self.workspace.docs.lock().unwrap();
-        let count = docs
-            .get(&(DEVICES.0.to_owned(), DEVICES.1.to_owned()))
-            .map_or(0, |doc| {
-                tilo_resource::Replica::<Devices>::from_doc(doc.clone())
-                    .in_app("so.tilo.model", "Model")
-                    .state()
-                    .map_or(0, |devices| devices.notices.len())
-            });
-        drop(docs);
-        count
+        self.record.read_now();
+        self.record.get().notices.len()
     }
 }
 

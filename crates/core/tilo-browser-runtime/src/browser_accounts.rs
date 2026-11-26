@@ -1,9 +1,10 @@
 //! The accounts this browser's profiles keep, read for the entry page from
-//! the Settings record of a person's accounts each profile's store keeps as
-//! its page value `browser-accounts` (`web/browser-accounts.mjs`).
+//! the Settings record of a person's accounts in their own workspace, which
+//! each profile's store keeps as its page value `browser-accounts`
+//! (`web/browser-accounts.mjs`).
 use automerge::{AutoCommit, LoadOptions, OnPartialLoad};
 use collab_types::document::identity::{home, identity};
-use collab_types::document::{DocumentId, PERSONAL_SCOPE, ResourceType, personal_document_id};
+use collab_types::document::{DocumentId, ResourceType};
 use wasm_bindgen::prelude::*;
 
 #[allow(
@@ -26,20 +27,23 @@ pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Resul
         return Err(error("account projection exceeds its read budget"));
     }
     let kind = ResourceType::new("tilo.accounts");
-    if DocumentId::of_member(root, kind.as_str()).is_none() {
+    let Some(workspace) = DocumentId::of_member(root, kind.as_str())
+        .and_then(|_| collab_types::person_workspace_of(root))
+    else {
         return Err(error("invalid root identity"));
-    }
+    };
     let doc = AutoCommit::load_with_options(
         bytes,
         LoadOptions::new().on_partial_load(OnPartialLoad::Error),
     )
     .map_err(error)?;
-    // The person's record of this kind (`personal_document_id`): one per
-    // kind, the same on every device.
-    let id = personal_document_id(&kind);
+    // The workspace's record of this kind: one per kind and workspace, kept
+    // in the person's own workspace, which their root names alone.
+    let id = DocumentId::parse(&collab_types::workspace_document_id(kind.as_str()))
+        .ok_or_else(|| error("the accounts record has no id"))?;
     let home = home(&doc);
     if identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
-        || home.as_deref() != Some(PERSONAL_SCOPE)
+        || home.as_deref() != Some(workspace.to_string().as_str())
     {
         return Err(error(
             "account document belongs to another identity or record",

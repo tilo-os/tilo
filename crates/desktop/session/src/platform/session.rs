@@ -744,11 +744,24 @@ impl Session {
                 live.through(link.clone(), view.clone(), turned, sessions);
             }
         }
+        // The person's session on their devices is followed in the record of their devices in
+        // their own workspace: the one follow of it that every part of the session reads and
+        // changes it through, the peer network's included.
+        let owner_devices = crate::sync::device_identity().map(|identity| {
+            crate::owner_session::OwnerDevices::follow(
+                &daemon,
+                identity.device_cert,
+                options.wake.handle(),
+            )
+        });
         let sync = start_collaboration(
             &options,
             continuity.clone(),
             beside,
             Rc::clone(&live_sessions),
+            owner_devices
+                .as_ref()
+                .map(|devices| devices.record().0.shared()),
         );
         if let Some(sync) = &sync {
             sync.attach_view(view.clone());
@@ -776,21 +789,6 @@ impl Session {
         // The stores of the workspaces the daemon keeps, as the apps the session runs itself read
         // and write their resources in them.
         let held_stores = crate::app_stores::held_stores(daemon.clone(), view.clone());
-        // What is the person's alone is kept in their own workspace, which the device's daemon
-        // keeps: the session reads and writes it there.
-        if let (Some(store), Some(identity)) = (
-            sync.as_ref().map(|sync| sync.person_resources()),
-            crate::sync::device_identity(),
-        ) {
-            store.attach(
-                std::sync::Arc::new(crate::person_store::DaemonPersonStore::new(
-                    daemon.clone(),
-                    daemon_writes.clone(),
-                    identity.device_cert,
-                )),
-                daemon.runtime(),
-            );
-        }
         // The content the workspaces' records reference: the device's daemon keeps it on the one
         // shelf its records' content lives on, beside their records, and serves it on its
         // document-media socket, where this session reads and keeps it.
@@ -819,13 +817,12 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
-        if let Some(sync) = sync.as_ref() {
+        if let Some(devices) = &owner_devices {
             // Notifications continue on the person's other devices, through the record of them.
-            notifications.borrow().attach_record(
-                sync.person_resources(),
-                continuity.clone(),
-                options.wake.handle(),
-            );
+            let (record, _) = devices.record();
+            notifications
+                .borrow()
+                .attach_record(record, devices.cert(), continuity.clone());
         }
         // The person's one keyboard and pointer, across the screens of their devices.
         let shared_input = fabric.as_ref().map(|link| {
@@ -834,8 +831,9 @@ impl Session {
                 sync.as_ref()
                     .and_then(|sync| sync.own_devices())
                     .map(|own| Arc::new(own) as Arc<dyn crate::shared_input::Carrier>),
-                sync.as_ref().map(|sync| sync.person_resources()),
-                options.wake.handle(),
+                sync.as_ref()
+                    .and_then(|sync| sync.person_devices())
+                    .map(|(record, _)| record),
                 continuity.clone(),
                 placed,
             ))
@@ -1785,14 +1783,32 @@ impl Session {
             Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
             Rc::clone(&directory_store),
         );
-        // The person's session on their devices is followed in the record of their devices.
-        let owner_devices = crate::sync::device_identity().map(|identity| {
-            crate::owner_session::OwnerDevices::follow(
-                &daemon,
-                identity.device_cert,
-                options.wake.handle(),
+        // The shell's record is kept in the person's own workspace, and what another of their
+        // devices writes there is drawn here.
+        let shell_home = crate::sync::device_identity().map(|identity| {
+            (
+                tilo_server_protocol::servers::person_workspace_id(
+                    &identity.device_cert.user_public_key,
+                ),
+                RefCell::new(daemon_writes.follow()),
             )
         });
+        // What the person answers about this device's camera, screen and the rest outlasts the
+        // session in their own workspace, kept there through the daemon.
+        if let (Some(devices), Some(consents)) = (
+            &owner_devices,
+            options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents()),
+        ) {
+            consents.grants().keep_in(crate::options::answers_record(
+                &daemon,
+                devices.cert().clone(),
+                devices.record().0.shared(),
+                options.wake.handle(),
+            ));
+        }
         // What the person did to their devices, what they answered when one of them asked to be
         // unlocked among it, reads in every workspace's history from that same record.
         if let Some(devices) = &owner_devices {
@@ -1874,6 +1890,7 @@ impl Session {
             keyboard,
             owner_session: crate::owner_session::SessionFollow::default(),
             owner_devices,
+            shell_home,
             display_confirm,
             notices,
             moves: crate::window_move::Moves::new(

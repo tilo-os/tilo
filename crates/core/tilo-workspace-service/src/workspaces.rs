@@ -175,11 +175,11 @@ pub mod membership;
 mod naming_tests;
 pub mod person_list;
 pub mod person_workspace;
-// The person's own workspace's resources, as a part of a session reads and writes them.
+// One record followed as it changes: what a part of the daemon reads without waiting.
 #[cfg(not(target_arch = "wasm32"))]
-pub mod person_resources;
+mod followed_record;
 #[cfg(not(target_arch = "wasm32"))]
-pub use person_resources::{ActionCall, Answer, Authoring, Moved, PersonResources, PersonStore};
+pub use followed_record::{FollowedRecord, Saved};
 // The person's region and formats and their zone: what a view rendered here for them shows
 // dates in.
 mod readings;

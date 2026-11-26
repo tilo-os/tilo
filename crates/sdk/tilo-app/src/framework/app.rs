@@ -353,7 +353,7 @@ pub trait ResourceApp: 'static {
     /// A shared one ([`PersonKind::shared`](super::PersonKind::shared)) is a
     /// record one app keeps for every app of the workspace; a profile one
     /// ([`PersonKind::profile`](super::PersonKind::profile)) is the person's
-    /// own, kept in their own scope instead of a workspace's.
+    /// own, kept in their own workspace rather than the window's.
     ///
     /// ```ignore
     /// const PERSON_RESOURCES: &'static [PersonKind] =
@@ -1339,7 +1339,14 @@ pub(crate) fn hosted(context: &ProcessContext) -> super::settings::Hosted {
         // A private window keeps nothing of the person's: their own
         // records are not even opened.
         person: (!context.is_private())
-            .then(|| context.person_resources().cloned())
+            .then(|| {
+                let me = context.author().clone();
+                let records =
+                    super::person::PersonRecords::of(&me, &context.records().home(), || {
+                        context.workspace_resources().cloned()
+                    })?;
+                Some((me, records))
+            })
             .flatten(),
         device: Some(context.device_id().to_owned()),
         records: Some((

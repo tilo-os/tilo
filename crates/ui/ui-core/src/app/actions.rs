@@ -1821,7 +1821,13 @@ impl App {
         )?;
         // The local presence's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
-        if actor.member_id() == Some(&self.local_author) {
+        // A record another workspace holds is decided there, by its grants and the person's
+        // answers about it: this window's view of them is its controls, not the call. A
+        // settings section is the person's own, decided by its model and kept by the settings
+        // store, not by the workspace grants of the app that shows it.
+        let decided_elsewhere =
+            resource.workspace.is_some() || resource.kind.starts_with("settings.");
+        if actor.member_id() == Some(&self.local_author) && !decided_elsewhere {
             match crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
                 (
@@ -2888,6 +2894,11 @@ impl App {
         &self,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
+        // A settings section is the person's own, filtered by its model and the settings store,
+        // not by the workspace grants of the app that shows it.
+        if resource.kind.starts_with("settings.") {
+            return Some(resource);
+        }
         self.permission_ctx
             .permitted_resource(&tilo_ui_base::collaboration::local_app_id(), resource)
     }

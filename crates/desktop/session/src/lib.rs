@@ -331,10 +331,6 @@ mod pass;
 pub mod people;
 mod people_device;
 #[cfg(target_os = "linux")]
-mod person_store;
-#[cfg(target_os = "linux")]
-pub(crate) use tilo_workspace_service::workspaces::PersonResources;
-#[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]
 mod power;
@@ -405,8 +401,6 @@ mod shared_storage;
 mod sheets;
 #[cfg(target_os = "linux")]
 pub mod shell;
-#[cfg(target_os = "linux")]
-mod shell_document;
 #[cfg(target_os = "linux")]
 mod sockets;
 #[cfg(target_os = "linux")]

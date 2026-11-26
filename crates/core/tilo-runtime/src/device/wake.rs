@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspaces::PersonResources;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 use tilo_workspace_service::workspaces::person_workspace::wake::{
     self, Ipv4Subnet, MAGIC_PACKET_PORT, WAKE_FACT, WakeRoute,
@@ -23,13 +22,17 @@ use tilo_workspace_service::workspaces::person_workspace::wake::{
 use tilo_workspace_service::workspaces::person_workspace::wake::{
     MAX_WAKE_ROUTES, WakeInterfaceKind,
 };
+use tilo_workspace_service::workspaces::{FollowedRecord, Workspaces, person_workspace};
 
 /// How often the device reads its own interfaces again.
 pub const ROUTE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
 /// This device's wakes, kept and answered by its daemon.
 pub(crate) struct Wake {
-    personal: PersonResources,
+    /// The workspaces that keep the person's own, where the record is written.
+    workspaces: Workspaces,
+    /// The record of the person's devices there, as it changes.
+    devices: FollowedRecord,
     cert: DeviceCert,
     /// Its interfaces as last read, the wakes it already took up, and the interfaces it last asked
     /// the record to keep, so a write still waiting for the person's workspace is asked once.
@@ -41,15 +44,17 @@ pub(crate) struct Wake {
 type Kept = (Vec<WakeRoute>, BTreeSet<(String, i64)>, String);
 
 impl Wake {
-    /// Keep and answer this device's wakes in `personal`, as the device `cert` certifies, on the
-    /// daemon's runtime for as long as it runs.
-    pub(crate) fn start(personal: PersonResources, cert: DeviceCert) {
+    /// Keep and answer this device's wakes in `devices`, the record of the person's devices in
+    /// their own workspace that `workspaces` keep, as the device `cert` certifies, on the daemon's
+    /// runtime for as long as it runs.
+    pub(crate) fn start(workspaces: Workspaces, devices: FollowedRecord, cert: DeviceCert) {
         let wake = Arc::new(Self {
-            personal,
+            workspaces,
+            devices,
             cert,
             state: Mutex::default(),
         });
-        let mut changes = wake.personal.changes();
+        let mut changes = wake.devices.changes();
         tilo_rt::app().handle().spawn(async move {
             let mut scan = tokio::time::interval(ROUTE_SCAN_INTERVAL);
             loop {
@@ -77,7 +82,7 @@ impl Wake {
     /// Read this device's interfaces again when `rescan`, keep them in the record where it says
     /// something else, and answer the wakes the record holds at `now_ns`.
     fn pass(&self, rescan: bool, now_ns: u64) {
-        let Some(record) = self.personal.read::<Devices>(DEVICES) else {
+        let Ok(record) = self.devices.state::<Devices>() else {
             return;
         };
         let own = hex::encode(self.cert.device_public_key);
@@ -102,14 +107,26 @@ impl Wake {
             };
             let keep =
                 Devices::KEEP_FACT.with((own.clone(), certificate, WAKE_FACT.to_owned(), encoded));
-            self.personal.apply(DEVICES, move || keep.clone());
+            self.apply(keep);
         }
         let now_ns = i64::try_from(now_ns).unwrap_or(i64::MAX);
         let writes = wake::answering(&record, &own, &routes, now_ns, &mut state.1, send);
         drop(state);
         for write in writes {
-            self.personal.apply(DEVICES, move || write.clone());
+            self.apply(write);
         }
+    }
+
+    /// Make `action` on the record, once this device holds the person's workspace.
+    fn apply(&self, action: tilo_resource::Invoke<Devices>) {
+        let workspaces = self.workspaces.clone();
+        tilo_rt::app().spawn(async move {
+            if let Err(error) =
+                person_workspace::apply_when_held(&workspaces, DEVICES, action).await
+            {
+                tracing::warn!(%error, "the record of the person's devices was not written");
+            }
+        });
     }
 }
 

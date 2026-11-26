@@ -3130,7 +3130,7 @@ pub(crate) mod framework_history_tests;
 mod tree_record_tests;
 
 #[cfg(test)]
-mod person_resource_tests;
+mod stored_resource_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;

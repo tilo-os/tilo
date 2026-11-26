@@ -3,8 +3,8 @@
 //! workspace, kept by one app, read and changed from any app's window.
 //!
 //! The workspace's emoji are one: any view draws `:name:` from them, in
-//! Notes as in Chat. A window holds such a record the way it holds one of
-//! the person's ([`super::person`]): opened beside its own record, in the
+//! Notes as in Chat. A window holds such a record as it holds any beside its
+//! own ([`super::stored`]): opened beside its own record, in the
 //! store its owner keeps in the workspace, edited with attribution and undo and
 //! synced on the owner's route. The workspace's grants on the owner's resource
 //! decide each change, wherever it is made.
@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 
-use super::person::StoredResource;
+use super::stored::StoredResource;
 use super::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceStore, ResourceType,
 };
@@ -201,16 +201,8 @@ impl WorkspaceResources {
         }
         let store = (self.open)(owner)?;
         let checkout = DocumentCheckout::new(id, ResourceType::new(kind));
-        super::person::open_in(&store, &checkout, initialize)?;
-        // Every app of the workspace publishes the record, whichever app wrote
-        // it first: the workspace's grants on the owner's resource decide each
-        // change.
-        Ok(StoredResource::new(
-            store,
-            checkout,
-            self.author.clone(),
-            true,
-        ))
+        super::stored::open_in(&store, &checkout, initialize)?;
+        Ok(StoredResource::new(store, checkout, self.author.clone()))
     }
 }
 

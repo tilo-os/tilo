@@ -29,7 +29,11 @@ use tilo_server_protocol::WorkspaceId;
 
 use crate::workspaces::WeakWorkspaces;
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_workspace::devices::{DEVICES, Devices};
+use crate::workspaces::person_workspace::{
+    self,
+    device_answers::{DEVICE_ANSWERS, DeviceAnswers},
+    devices::{DEVICES, Devices},
+};
 use crate::workspaces::providers::Reach;
 
 /// Apply the typed actions of the resources [`Declared`] names on this device from now on, for
@@ -42,6 +46,7 @@ pub fn register(workspaces: &Workspaces) {
         Arc::new(ResourceActions {
             workspaces: workspaces.downgrade(),
             declared: Arc::from(Declared::all()),
+            taken_up: TakenUp::default(),
         }),
     );
 }
@@ -52,6 +57,72 @@ struct ResourceActions {
     /// Held without keeping them alive: this answers from a provider they keep.
     workspaces: WeakWorkspaces,
     declared: Arc<[Declared]>,
+    taken_up: TakenUp,
+}
+
+/// The person's writes to their own workspace this device answered as taken up before it held
+/// the workspace, by invocation: who asked, and how each stands, so following one hears it was
+/// made or why not.
+#[derive(Clone, Default)]
+struct TakenUp {
+    states:
+        Arc<std::sync::Mutex<std::collections::HashMap<InvocationId, (Caller, InvocationState)>>>,
+    /// Moves each time one of them settles.
+    settled: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+impl TakenUp {
+    fn keep(
+        &self,
+        caller: &Caller,
+        invocation: InvocationId,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                invocation,
+                (caller.clone(), InvocationState::new(invocation, update)),
+            );
+        self.settled
+            .send_modify(|moves| *moves = moves.wrapping_add(1));
+    }
+
+    fn state(&self, caller: &Caller, invocation: &InvocationId) -> Option<InvocationState> {
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(invocation)
+            .filter(|(owner, _)| caller.continues(owner))
+            .map(|(_, state)| state.clone())
+    }
+}
+
+/// How an invocation that ran stands, by its receipt's `status`.
+fn settled_update(
+    invocation: InvocationId,
+    status: ReceiptStatus,
+) -> tilo_actions::InvocationUpdate {
+    use tilo_actions::InvocationUpdate;
+    match status {
+        ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded { invocation, output },
+        ReceiptStatus::Failed { error } => InvocationUpdate::Failed { invocation, error },
+        ReceiptStatus::Rejected { error } => InvocationUpdate::Failed {
+            invocation,
+            error: ActionFailure {
+                code: "refused".to_owned(),
+                message: error.to_string(),
+                details: None,
+                retryable: false,
+            },
+        },
+        ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+            invocation,
+            message,
+        },
+        ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
+    }
 }
 
 /// A resource its owner declares by the app it is of and its id, with the type its actions are:
@@ -97,6 +168,14 @@ impl Declared {
                 app: Some(DEVICES.0),
                 id: DEVICES.1.to_owned(),
                 kind: tilo_resource::ResourceKind::of::<Devices>().hosted_by(DEVICES.0, "Devices"),
+            },
+            // What the person answered about their devices' cameras and microphones, kept by the
+            // device that asked them.
+            Self {
+                app: Some(DEVICE_ANSWERS.0),
+                id: DEVICE_ANSWERS.1.to_owned(),
+                kind: tilo_resource::ResourceKind::of::<DeviceAnswers>()
+                    .hosted_by(DEVICE_ANSWERS.0, "Devices"),
             },
         ]
     }
@@ -284,6 +363,12 @@ impl ResourceActions {
         self.workspaces.upgrade()
     }
 
+    /// Whether `caller` is this device's person asking in their own workspace of `workspaces`.
+    fn own_workspace_of(workspaces: &Workspaces, caller: &Caller) -> bool {
+        caller.workspace() == Some(person_workspace::workspace_id(workspaces).as_str())
+            && caller.user_public_key() == Some(&workspaces.device_cert().user_public_key)
+    }
+
     async fn applied(
         &self,
         caller: &Caller,
@@ -312,11 +397,19 @@ impl ResourceActions {
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
         let workspace_id =
             WorkspaceId::parse(&workspace).ok_or_else(|| invalid("that is not a workspace"))?;
-        let arguments = named_arguments(&request.argument).map_err(|status| *status)?;
-        // Whoever the workspace does not admit is refused before anything of it is read.
         let workspaces = self
             .here()
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
+        // The person's devices write into their own workspace before this device is taken in
+        // (what its desktop says of it, as it starts): the person's own write waits until it is,
+        // and is decided then as every other.
+        if Self::own_workspace_of(&workspaces, caller)
+            && !person_workspace::when_held(&workspaces).await
+        {
+            return Err(failed("not_written", person_workspace::STOPPED.to_owned()));
+        }
+        let arguments = named_arguments(&request.argument).map_err(|status| *status)?;
+        // Whoever the workspace does not admit is refused before anything of it is read.
         let policy = workspaces
             .workspace_policy(workspace_id, caller)
             .await
@@ -436,7 +529,9 @@ impl ActionProvider for ResourceActions {
     }
 
     /// Answered once the action ran: its receipt says how it ended, and nothing is left to
-    /// follow.
+    /// follow. The person's own write to their workspace before this device holds it is
+    /// answered accepted at once, since the device may never be taken in: it is written once
+    /// the device is, and following the invocation ([`Self::observe`]) hears how it went.
     fn invoke(
         &self,
         caller: &Caller,
@@ -450,20 +545,61 @@ impl ActionProvider for ResourceActions {
         let (done, answer) = tilo_actions::remote::pending();
         let (actions, caller) = (self.clone(), caller.clone());
         runtime.spawn(async move {
+            let receipt = |status| {
+                Ok(InvocationReceipt {
+                    invocation: request.invocation,
+                    status,
+                })
+            };
+            let mut done = Some(done);
+            if let Some(workspaces) = actions.here()
+                && Self::own_workspace_of(&workspaces, &caller)
+                && !person_workspace::holds_person_workspace(&workspaces).await
+                && let Some(done) = done.take()
+            {
+                let invocation = request.invocation;
+                actions.taken_up.keep(
+                    &caller,
+                    invocation,
+                    tilo_actions::InvocationUpdate::Accepted { invocation },
+                );
+                done.complete(receipt(ReceiptStatus::Accepted));
+            }
             let status = match Box::pin(actions.applied(&caller, &request)).await {
                 Ok(output) => ReceiptStatus::Completed { output },
                 Err(status) => status,
             };
-            done.complete(Ok(InvocationReceipt {
-                invocation: request.invocation,
-                status,
-            }));
+            match done {
+                Some(done) => done.complete(receipt(status)),
+                None => actions.taken_up.keep(
+                    &caller,
+                    request.invocation,
+                    settled_update(request.invocation, status),
+                ),
+            }
         });
         answer
     }
 
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
+    /// Only a write taken up before this device held the person's workspace runs on after its
+    /// receipt; every other is answered once it ran.
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.taken_up.state(caller, id)
+    }
+
+    /// Resolves when one of the writes taken up settles, or within a second regardless, as a
+    /// waiter's deadline is looked at only when it wakes.
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.taken_up.state(caller, id)?;
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let mut settled = self.taken_up.settled.subscribe();
+        let (done, changed) = tilo_actions::remote::pending();
+        runtime.spawn(async move {
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(1), settled.changed()).await;
+            done.complete(());
+        });
+        Some(changed)
     }
 
     fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {

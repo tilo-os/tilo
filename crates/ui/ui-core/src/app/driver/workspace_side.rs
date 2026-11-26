@@ -1,12 +1,14 @@
 //! What the workspace answers a driven app beyond its own calls, as the driver's peer plays it
 //! ([`Driver::connect_peer`]): another provider's action is answered by what serves it
-//! ([`Driver::serve_provider`]), and the actions a window shows are decided by what stands for the
+//! ([`Driver::serve_provider`]), a record of another workspace is read from what serves that
+//! workspace ([`Driver::serve_records`]), and the actions a window shows are decided by what stands for the
 //! device's daemon ([`Driver::decide_shown_actions`]), again whenever permissions change.
 
 use std::collections::HashMap;
 
 use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
+    ResourceReadRequest,
 };
 use tilo_actions::{ActionOutput, Actor, ApiError};
 
@@ -28,6 +30,10 @@ pub struct ProvidedInvocation<'a> {
 /// What answers another provider's action in place of the workspace.
 pub type ServedProvider = Box<dyn FnMut(&ProvidedInvocation<'_>) -> Result<ActionOutput, ApiError>>;
 
+/// What answers the reads of one workspace's records in place of the workspace: the readings
+/// (`{"revision", "records": [...]}`) as the record API answers the read, or why it cannot.
+pub type ServedReads = Box<dyn Fn(&ResourceReadRequest) -> Result<serde_json::Value, String>>;
+
 /// What decides, in place of the device's daemon, the actions a window shows.
 pub type ShownHost = Box<dyn FnMut(&[ShownAction]) -> Vec<ActionDecision>>;
 
@@ -35,6 +41,11 @@ pub type ShownHost = Box<dyn FnMut(&[ShownAction]) -> Vec<ActionDecision>>;
 #[derive(Default)]
 pub(super) struct Served {
     providers: HashMap<String, ServedProvider>,
+    /// What answers the reads of each workspace's records, by the workspace.
+    reads: HashMap<String, ServedReads>,
+    /// Reads waiting for a write past the revision they name, by their correlation: answered once
+    /// the record moved, as the workspace holds a followed read.
+    held: Vec<(u64, ResourceReadRequest)>,
     /// What decides the shown actions, the actions the window last asked about, and the
     /// permissions revision they were decided at.
     shown: Option<(ShownHost, Vec<ShownAction>, Option<u64>)>,
@@ -48,7 +59,18 @@ impl Served {
         request: &InvokeRequest,
         actor: &Actor,
     ) -> Option<RemoteActionMessage> {
-        let serve = self.providers.get_mut(&request.target.provider)?;
+        // A record of an app in a workspace is the app's there: what serves the app in that
+        // workspace answers each of its records, as the workspace delivers them to it.
+        let provider = &request.target.provider;
+        let token = tilo_actions::remote::application_provider(provider).map(|(workspace, app)| {
+            tilo_actions::remote::application_provider_token(workspace, app)
+        });
+        let serve = match token {
+            Some(token) if !self.providers.contains_key(provider) => {
+                self.providers.get_mut(&token)?
+            }
+            _ => self.providers.get_mut(provider)?,
+        };
         let status = match serve(&ProvidedInvocation {
             address: &request.target.address,
             argument: &request.argument,
@@ -69,6 +91,61 @@ impl Served {
             invocation: request.invocation,
             status,
         }))
+    }
+
+    /// Answer the read `read`, asked under `correlation`, from what serves its workspace: at once,
+    /// or once the record moved past the revision a followed read names. `None` when nothing
+    /// serves that workspace.
+    pub(super) fn read(
+        &mut self,
+        correlation: u64,
+        read: &ResourceReadRequest,
+    ) -> Option<Option<RemoteActionMessage>> {
+        let Some(serve) = self.reads.get(&read.workspace) else {
+            // Nothing serves that workspace yet: the host may still be told of it, as a test
+            // host's is once its window is built, so the read waits for it rather than being
+            // refused.
+            self.held.push((correlation, read.clone()));
+            return Some(None);
+        };
+        let result = serve(read);
+        if let (Ok(readings), Some(after)) = (&result, &read.after)
+            && readings["revision"].as_str() == Some(after.as_str())
+        {
+            self.held.push((correlation, read.clone()));
+            return Some(None);
+        }
+        Some(Some(reading(correlation, result)))
+    }
+
+    /// The followed reads whose record moved since they were held, answered.
+    pub(super) fn moved(&mut self) -> Vec<RemoteActionMessage> {
+        let mut answers = Vec::new();
+        let reads = &self.reads;
+        self.held.retain(|(correlation, read)| {
+            let Some(serve) = reads.get(&read.workspace) else {
+                // Still nothing serves it: the read waits.
+                return true;
+            };
+            let result = serve(read);
+            let held = matches!(&result, Ok(readings)
+                if readings["revision"].as_str() == read.after.as_deref());
+            if !held {
+                answers.push(reading(*correlation, result));
+            }
+            held
+        });
+        answers
+    }
+
+    /// Whether a held read's record moved: an answer a frame is owed to bring to the app.
+    pub(super) fn owes_reading(&self) -> bool {
+        self.held.iter().any(|(_, read)| {
+            self.reads.get(&read.workspace).is_some_and(|serve| {
+                !matches!(serve(read), Ok(readings)
+                    if readings["revision"].as_str() == read.after.as_deref())
+            })
+        })
     }
 
     /// Take the window's question about the actions it shows; the verdicts, when something
@@ -112,12 +189,32 @@ impl Served {
     }
 }
 
+/// The answer to the read asked under `correlation`.
+fn reading(correlation: u64, result: Result<serde_json::Value, String>) -> RemoteActionMessage {
+    RemoteActionMessage::ResourceReading {
+        correlation,
+        result: result
+            .map(|readings| readings.to_string())
+            .map_err(|reason| tilo_actions::remote::ActionCallError::Unavailable { reason }),
+    }
+}
+
 impl Driver {
     /// Answer `provider`'s actions with `serve`, as the workspace delivers them to it: what the
     /// app's controls bound to another provider's actions ([`tilo_actions::ActionSpec::run_by`])
     /// invoke. Connects the driver's peer when it is not.
     pub fn serve_provider(&mut self, provider: impl Into<String>, serve: ServedProvider) {
         self.served_mut().providers.insert(provider.into(), serve);
+    }
+
+    /// Answer the reads of `workspace`'s records with `reads`, as the workspace answers a window
+    /// reading a record of another workspace than its own (the person's own records): a followed
+    /// read is held until the record moves past the revision it names. Reads asked before this
+    /// workspace was served were held for it, and are answered now. Connects the driver's peer
+    /// when it is not.
+    pub fn serve_records(&mut self, workspace: impl Into<String>, reads: ServedReads) {
+        self.served_mut().reads.insert(workspace.into(), reads);
+        self.run_frame();
     }
 
     /// Stop answering `provider`'s actions: what the app invokes there goes to the window's

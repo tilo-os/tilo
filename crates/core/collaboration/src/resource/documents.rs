@@ -45,10 +45,6 @@ pub use actions::{ResourceActions, ToolkitActions};
 pub use history_access::HistoryUnavailable;
 pub use sync::{DocumentSync, Outbound};
 
-/// The scope of the person's own resources, `(app, personal)`: theirs and not a workspace's, so
-/// their own workspace's route carries them.
-pub use collab_types::document::PERSONAL_SCOPE;
-
 /// How long a flush waits for the workspace to take what the store wrote.
 const FLUSH_WAIT: crate::time::Duration = crate::time::Duration::from_secs(10);
 
@@ -279,8 +275,6 @@ pub struct ResourceSet {
     /// The workspace these records are opened in, which is the cluster its route names. Stamped
     /// as a record's home when it is first created here.
     home: String,
-    /// The person's own workspace, for records kept in their own scope: their route names it.
-    person: Option<uuid::Uuid>,
     open: HashMap<DocumentId, Parked>,
     pending: HashMap<DocumentId, Reserved>,
     /// The records lent out to an action frame: their documents are with the frame, so the other
@@ -358,7 +352,6 @@ impl ResourceSet {
     fn new(
         app_id: AppId,
         home: String,
-        person: Option<uuid::Uuid>,
         port: Option<Rc<dyn DocumentPort>>,
         writes: bool,
         writer: automerge::ActorId,
@@ -368,7 +361,6 @@ impl ResourceSet {
             generation: Cell::new(0),
             app_id,
             home,
-            person,
             open: HashMap::new(),
             pending: HashMap::new(),
             lent: HashSet::new(),
@@ -396,7 +388,6 @@ impl ResourceSet {
         Self::new(
             AppId::default(),
             uuid::Uuid::new_v4().to_string(),
-            None,
             None,
             false,
             automerge::ActorId::random(),
@@ -456,18 +447,14 @@ impl ResourceSet {
 
     /// The workspace a record of this store is kept in, which its founding and steps are derived
     /// within ([`tilo_resource::founding::Scope`]): the cluster its route names, or the store's
-    /// home where that names none (a person's records on a device that knows no person yet).
+    /// home where that names none.
     fn workspace(&self) -> String {
         self.cluster()
             .map_or_else(|_| self.home.clone(), |cluster| cluster.to_string())
     }
 
-    /// The cluster a record's route names: the workspace it is kept in, or the person's own
-    /// workspace for a record kept in their own scope.
+    /// The cluster a record's route names: the workspace it is kept in.
     fn cluster(&self) -> Result<uuid::Uuid, ResourceOpenError> {
-        if let Some(person) = self.person {
-            return Ok(person);
-        }
         uuid::Uuid::parse_str(&self.home).map_err(|_| ResourceOpenError::IdentityMismatch)
     }
 
@@ -916,19 +903,7 @@ impl ResourceOwners {
         app_id: &str,
         workspace_id: &str,
     ) -> Result<ResourceStore, ResourceOpenError> {
-        self.open_scoped(app_id, workspace_id, None)
-    }
-
-    /// The store of `app_id`'s records of the person, kept in `scope`.
-    ///
-    /// # Errors
-    /// Rejects an invalid app or scope.
-    pub fn open_person(
-        &mut self,
-        app_id: &str,
-        scope: &str,
-    ) -> Result<ResourceStore, ResourceOpenError> {
-        self.open_scoped(app_id, scope, None)
+        self.open_scoped(app_id, workspace_id)
     }
 
     /// The store of `app_id`'s resources in `workspace` that a window of another app opens beside
@@ -941,38 +916,14 @@ impl ResourceOwners {
         app_id: &str,
         workspace: &str,
     ) -> Result<ResourceStore, ResourceOpenError> {
-        self.open_scoped(app_id, workspace, None)
-    }
-
-    /// The store of `app_id`'s records of one person, kept in their own scope. Those carry one
-    /// route per `(app, record)` in the person's own workspace, so every device of theirs opens
-    /// the same document; one that names no person keeps them here.
-    ///
-    /// # Errors
-    /// Rejects an invalid app or scope.
-    pub fn open_personal(
-        &mut self,
-        app_id: &str,
-        author: &crate::MemberId,
-    ) -> Result<ResourceStore, ResourceOpenError> {
-        self.open_scoped(
-            app_id,
-            PERSONAL_SCOPE,
-            author
-                .person_id()
-                .and_then(collab_types::person_workspace_of),
-        )
+        self.open_scoped(app_id, workspace)
     }
 
     fn open_scoped(
         &self,
         app_id: &str,
         workspace_id: &str,
-        person: Option<uuid::Uuid>,
     ) -> Result<ResourceStore, ResourceOpenError> {
-        // A cluster of the person's own routes their own scope only: a workspace's records name
-        // the workspace.
-        let person = person.filter(|_| workspace_id == PERSONAL_SCOPE);
         if !valid_name(app_id) || !valid_name(workspace_id) {
             return Err(ResourceOpenError::IdentityMismatch);
         }
@@ -988,7 +939,6 @@ impl ResourceOwners {
         let store = ResourceStore::new(ResourceSet::new(
             app_id.into(),
             workspace_id.to_owned(),
-            person,
             self.port.clone(),
             self.writes,
             self.device

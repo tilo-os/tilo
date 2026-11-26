@@ -287,6 +287,11 @@ impl OwnerDevices {
         )
     }
 
+    /// This device's certificate, as the record keeps it.
+    pub(crate) fn cert(&self) -> &DeviceCert {
+        &self.cert
+    }
+
     /// Who this device is: its person's root and its own key (hex).
     pub(crate) fn who(&self) -> ([u8; 32], String) {
         (

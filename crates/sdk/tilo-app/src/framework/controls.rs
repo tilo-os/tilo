@@ -721,6 +721,23 @@ impl<R: Resource> Actions<R> {
             .ok()
     }
 
+    /// The published action `invoke` runs as on the record these actions are published on:
+    /// its id and the arguments it is published with, for a call of it as the record's own.
+    #[must_use]
+    pub fn published_call(
+        &self,
+        invoke: &Invoke<R>,
+    ) -> Option<(String, serde_json::Map<String, serde_json::Value>)> {
+        if invoke.refusal().is_some() {
+            return None;
+        }
+        let (key, arguments) = self.table().as_published(
+            tilo_resource::ActionKey::new(R::APP_ID, R::KIND, invoke.id),
+            invoke.arguments.clone(),
+        );
+        Some((key.action, arguments))
+    }
+
     /// The id the resource is published at: the resource an action address
     /// on it names, as a surface binding a control of its own to one of its
     /// actions says where that action lands

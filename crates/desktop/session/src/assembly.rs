@@ -284,6 +284,14 @@ pub(crate) struct Shared {
     /// others and says its own; none where this device has no identity.
     #[cfg(target_os = "linux")]
     pub(crate) owner_devices: Option<crate::owner_session::OwnerDevices>,
+    /// The person's own workspace, where the shell keeps its record, and the daemon's writes as
+    /// the shell follows them for another device's write to it; none where this device has no
+    /// identity.
+    #[cfg(target_os = "linux")]
+    pub(crate) shell_home: Option<(
+        String,
+        RefCell<tokio::sync::broadcast::Receiver<runtime_collab::wire::shell::DocumentWritten>>,
+    )>,
     /// The desktop's own notices: what the session tells the person, such as
     /// leaving a workspace.
     pub(crate) notices: tilo_session_core::desktop::state::DesktopNotifications,

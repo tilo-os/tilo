@@ -471,7 +471,123 @@ pub struct HeadlessApp<A: ResourceApp, H: Host = Alone> {
     /// The window is a capture: every motion in it reads arrived while this
     /// is held, so what it photographs is the window at rest.
     _settled: Option<tilo_ui_base::motion::testing::Settled>,
+    /// The app in the person's own workspace, with no window of its own, where this window is
+    /// in another one and the app keeps records of the person's: it holds those records and
+    /// answers this window's reads and changes of them, as the app the device starts there does.
+    persons_own: Option<Rc<std::cell::RefCell<HeadlessApp<A>>>>,
     marker: std::marker::PhantomData<(A, H)>,
+}
+
+/// Stand in for the person's own workspace, for a window of `author`'s in another one whose app
+/// keeps records of theirs: the app runs there with no window, on the same profile, and answers
+/// what the window reads of those records and the changes it invokes on them, as the app the
+/// device starts in the person's workspace does. `None` where the window is in that workspace,
+/// the author has no identity, or the app keeps nothing of the person's.
+fn serve_persons_own<A: ResourceApp>(
+    driver: &mut Driver,
+    profile: &Profile,
+    author: &str,
+) -> Result<Option<Rc<std::cell::RefCell<HeadlessApp<A>>>>, LaunchError> {
+    let Some(own) = tilo_actions::policy::roles::workspace_of_person(author) else {
+        return Ok(None);
+    };
+    let (kept, device) = match profile {
+        Profile::Temporary(kept, workspace, device)
+        | Profile::Window(kept, workspace, device, _)
+            if !own.eq_ignore_ascii_case(workspace) =>
+        {
+            (kept, device)
+        }
+        _ => return Ok(None),
+    };
+    let mut declared = super::Resources::declaring();
+    A::resources(&mut declared);
+    let keeps = declared.declares_profile()
+        || A::PERSON_RESOURCES
+            .iter()
+            .any(|record| record.owner().is_none());
+    if !keeps {
+        return Ok(None);
+    }
+    let provider = Rc::new(std::cell::RefCell::new(HeadlessApp::<A>::open(
+        Profile::Temporary(Rc::clone(kept), own.clone(), device.clone()),
+        Role::Owner,
+        author,
+        &[],
+        None,
+        None,
+        None,
+        |_| {},
+    )?));
+    let invoked = Rc::clone(&provider);
+    driver.serve_provider(
+        tilo_actions::remote::application_provider_token(&own, A::ID),
+        Box::new(move |invocation| {
+            // Who called, as the workspace admitted them: an agent acts for the person its
+            // certificate chains to.
+            let invoker = match invocation.actor.member_id() {
+                Some(MemberId::Agent { id, person }) => {
+                    tilo_actions::ActionInvoker::agent(id.clone(), person.clone())
+                        .acting_for(person.clone())
+                }
+                Some(member) => tilo_actions::ActionInvoker::member(member.clone()),
+                None => {
+                    return Err(tilo_actions::ApiError::Unavailable {
+                        code: "permission_denied".into(),
+                        reason: "only a member changes their own records".into(),
+                    });
+                }
+            };
+            let arguments = match invocation.argument {
+                tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+                tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+                tilo_actions::remote::InvokeArgument::Text(_) => {
+                    return Err(tilo_actions::ApiError::InvalidArguments(
+                        "a change to a record carries typed arguments".into(),
+                    ));
+                }
+            };
+            invoked.borrow_mut().call_by(
+                invoker,
+                &invocation.address.resource,
+                &invocation.address.action,
+                serde_json::Value::Object(arguments),
+            )
+        }),
+    );
+    let read = Rc::clone(&provider);
+    driver.serve_records(
+        own,
+        Box::new(move |request| {
+            let id = DocumentId::parse(&request.record)
+                .ok_or_else(|| format!("`{}` names no record", request.record))?;
+            let held = read.try_borrow().map_err(|_| "the app is busy".to_owned())?;
+            // The record as the app there holds it now: a step it has not committed yet is
+            // committed first, as a save is, so a reader in another workspace sees what the app
+            // shows.
+            let reading = held.records.replication_snapshot(&id).ok().map(|(document, mut heads)| {
+                heads.sort_unstable();
+                (
+                    heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("."),
+                    document,
+                )
+            });
+            Ok(match reading {
+                Some((revision, document)) => serde_json::json!({
+                    "revision": revision,
+                    "records": [{
+                        "record": request.record,
+                        "document": document.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                    }],
+                }),
+                None => serde_json::json!({
+                    "revision": "",
+                    "records": [{"record": request.record, "absent": true}],
+                }),
+            })
+        }),
+    );
+    Ok(Some(provider))
 }
 
 /// Stand in for the hosts keeping the records `A` declares kept by them
@@ -638,47 +754,16 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         )
     }
 
-    /// The app as `person` opens it in a host that keeps the person's
-    /// shared records itself, in `held`, and lends them to the apps it
-    /// shows in its process (a session showing Settings).
-    pub fn for_person_shown_by(
-        person: &str,
-        held: &ui_core::resource::person::PersonResources,
-    ) -> Result<Self, LaunchError> {
-        Self::for_person_with_role_shown_by(person, Role::Owner, held)
-    }
-
-    /// [`Self::for_person_shown_by`], with `role` in the workspace.
-    pub fn for_person_with_role_shown_by(
-        person: &str,
-        role: Role,
-        held: &ui_core::resource::person::PersonResources,
-    ) -> Result<Self, LaunchError> {
-        let profile = Kept::fresh()?;
-        let held = held.clone();
-        Self::open(
-            Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
-            role,
-            person,
-            &[],
-            None,
-            None,
-            None,
-            move |context| {
-                if let Some(own) = context.person_resources().cloned() {
-                    context.provide_person_resources(own.sharing(&held));
-                }
-            },
-        )
-    }
-
-    /// How many of the person's records the window holds open, the records
-    /// a settings section keeps among them: a section's opens only when it
-    /// is first written or stepped.
-    pub fn open_person_resources(&mut self) -> usize {
-        self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.storage.person_owners().len())
-            .unwrap_or_default()
+    /// Run `act` on the app as it runs in the person's own workspace with no window, where this
+    /// window is in another one and keeps records of theirs there: what holds those records, as
+    /// another device of theirs or the app the device starts there. `None` where there is none.
+    pub fn in_persons_own_workspace<T>(
+        &self,
+        act: impl FnOnce(&mut HeadlessApp<A>) -> T,
+    ) -> Option<T> {
+        self.persons_own
+            .as_ref()
+            .map(|provider| act(&mut provider.borrow_mut()))
     }
 
     /// The record `P` every app of the workspace opens that `owner` keeps, as
@@ -1043,6 +1128,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         )?;
         let mut driver = opened.driver;
         serve_kept::<A>(&mut driver, &opened.profile.settings(), author);
+        let persons_own = serve_persons_own::<A>(&mut driver, &opened.profile, author)?;
         H::opened(&mut driver, author);
         Ok(Self {
             driver,
@@ -1059,6 +1145,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             workspace: None,
             permissions: opened.permissions,
             _settled: settled,
+            persons_own,
             marker: std::marker::PhantomData,
         })
     }
@@ -1144,6 +1231,14 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         self.launch_again(arguments)
+    }
+
+    /// Close the app and open it again on the same profile as `author`: the person who signed in
+    /// on the device since it last ran.
+    pub fn relaunch_as(mut self, author: &str) -> Result<Self, LaunchError> {
+        self.close()?;
+        self.author = author.to_owned();
+        self.launch_again(&[])
     }
 
     /// Open the app again without closing it, as a reloaded page does: its window's view is
@@ -1463,6 +1558,12 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         &self.checkout().id
     }
 
+    /// The person this window is open for, by their id: whose steps what it changes are.
+    #[must_use]
+    pub fn author(&self) -> &str {
+        &self.author
+    }
+
     /// The document the window shows now: the one it was opened on, or one
     /// its view opened in its place ([`ResourceEnv::open_here`](super::ResourceEnv::open_here)).
     pub fn checkout(&self) -> &DocumentCheckout {
@@ -1491,6 +1592,9 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             self.driver.flush_component_resources().map_err(operation)?;
             self.driver.close_components();
             self.closed = true;
+        }
+        if let Some(persons_own) = &self.persons_own {
+            persons_own.borrow_mut().close()?;
         }
         Ok(())
     }
@@ -2062,6 +2166,12 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// test may have changed what its views read past the framework
     /// ([`tilo_ui_base::component_inputs`]).
     pub fn settle(&mut self) {
+        // The app in the person's own workspace keeps their records: settle it first, so what
+        // this window's call changed there is committed, and the readings this window takes
+        // below see it.
+        if let Some(persons_own) = &self.persons_own {
+            persons_own.borrow_mut().driver.persist_tick();
+        }
         // The frame takes up what the event brought, the record's writer is offered what it
         // changed, and the frame after takes up what that answered.
         let driver = self.harness();

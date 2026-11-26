@@ -13,21 +13,17 @@
 
 use serde::de::DeserializeOwned;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 
 use super::{DeviceAbout, PersonDevice};
-use crate::PersonResources;
 use crate::platform::fabric::DeviceId;
 
 /// What a device is: its [`DeviceAbout`].
 pub(crate) const ABOUT: &str = "about";
 
-/// What the person's devices keep of themselves: each device of `person` whose certificate holds,
-/// with what it said of itself.
-pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<PersonDevice> {
-    let Some(state) = resources.read::<Devices>(DEVICES) else {
-        return Vec::new();
-    };
+/// What the person's devices keep of themselves in their record `state`: each device of `person`
+/// whose certificate holds, with what it said of itself.
+pub(crate) fn kept(state: &Devices, person: &[u8; 32]) -> Vec<PersonDevice> {
     let now = tilo_clock::unix_now_ns();
     state
         .devices

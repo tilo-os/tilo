@@ -24,8 +24,8 @@ pub trait BoundWidget: ComponentBoundary {
     }
 
     /// Records this widget keeps open beside the document it shows, each
-    /// synced on its own route: a framework app's records in the person's own
-    /// workspace ([`crate::resource::person`]).
+    /// synced on its own route: a framework app's records beside its own
+    /// ([`crate::resource::StoredResource`]).
     fn resource_owners(&self) -> Vec<HistoryOwner> {
         Vec::new()
     }

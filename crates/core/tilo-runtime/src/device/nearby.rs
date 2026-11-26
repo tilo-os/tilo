@@ -42,8 +42,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::FOLLOW_DEADLINE;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::content::ContentScope;
-use tilo_workspace_service::workspaces::PersonResources;
-use tilo_workspace_service::workspaces::person_workspace::devices::KeyKind;
+use tilo_workspace_service::workspaces::FollowedRecord;
+use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, KeyKind};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use super::reading::{Changes, Read, Served};
@@ -91,8 +91,8 @@ pub(crate) struct Nearby {
 
 struct Inner {
     workspaces: Arc<ServiceWorkspaces>,
-    /// The person's devices, as their own workspace lists them: where an offer can go.
-    personal: PersonResources,
+    /// The record of the person's devices in their own workspace: where an offer can go.
+    devices: FollowedRecord,
     /// Where a transfer's bytes wait on this device until they are checked and
     /// kept: a file far larger than one read holds.
     scratch: std::path::PathBuf,
@@ -159,10 +159,11 @@ impl Transfer {
 }
 
 impl Nearby {
-    /// The offers and transfers of this device, moved over the content shelf `workspaces` keeps.
+    /// The offers and transfers of this device, moved over the content shelf `workspaces` keeps,
+    /// to the person's devices `devices` keeps, the record of them in their own workspace.
     pub(crate) fn new(
         workspaces: &Arc<ServiceWorkspaces>,
-        personal: PersonResources,
+        devices: FollowedRecord,
         scratch: std::path::PathBuf,
     ) -> Arc<Self> {
         let _ = std::fs::create_dir_all(&scratch);
@@ -170,7 +171,7 @@ impl Nearby {
         Arc::new(Self {
             inner: Arc::new(Inner {
                 workspaces: Arc::clone(workspaces),
-                personal,
+                devices,
                 scratch,
                 state: Mutex::new(State::default()),
                 changed,
@@ -205,7 +206,7 @@ impl Nearby {
     fn reading_for(&self, workspace: Option<&str>) -> Reading {
         let here = self.inner.workspaces.device_cert();
         let mut reading = Reading::default();
-        for cert in self.inner.personal.kept_devices() {
+        for cert in self.kept_devices() {
             if KeyKind::of(&cert) != KeyKind::Device
                 || cert.device_public_key == here.device_public_key
             {
@@ -297,11 +298,19 @@ impl Nearby {
                 .is_some_and(|device| *device != cert.device_public_key)
     }
 
+    /// The person's devices whose certificates hold now, as their own workspace keeps them.
+    fn kept_devices(&self) -> Vec<DeviceCert> {
+        let person = self.inner.workspaces.device_cert().user_public_key;
+        self.inner
+            .devices
+            .state::<Devices>()
+            .map(|kept| kept.certified_at(&person, tilo_clock::unix_now_ns()))
+            .unwrap_or_default()
+    }
+
     /// The device `device` names, as the person's own workspace lists it.
     fn other_device(&self, device: [u8; 32]) -> Option<DeviceCert> {
-        self.inner
-            .personal
-            .kept_devices()
+        self.kept_devices()
             .into_iter()
             .find(|cert| cert.device_public_key == device && KeyKind::of(cert) == KeyKind::Device)
     }

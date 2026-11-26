@@ -447,6 +447,65 @@ pub(crate) async fn with_root_caller<F: std::future::Future>(
     ROOT_CALLER.scope(person, future).await
 }
 
+/// The person's record of the answers they gave about their devices, followed in their own
+/// workspace that `workspaces` keep and changed there once this device holds it. `devices` is the
+/// record of their devices, which names the device each answer is on.
+fn device_answers(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    devices: &tilo_workspace_service::workspaces::FollowedRecord,
+) -> tilo_peer_state::AnswersRecord {
+    use tilo_workspace_service::workspaces::person_workspace::device_answers::{
+        DEVICE_ANSWERS, DeviceAnswers,
+    };
+    let cert = workspaces.device_cert().clone();
+    let (moved, changes) = tokio::sync::watch::channel(0_u64);
+    let answers = {
+        let _entered = tilo_rt::app().handle().enter();
+        workspaces.follow_record(&person_workspace::workspace_id(workspaces), DEVICE_ANSWERS)
+    };
+    let mut saved = answers.changes();
+    tilo_rt::app().spawn(async move {
+        while saved.changed().await.is_ok() && !moved.is_closed() {
+            moved.send_modify(|count| *count = count.wrapping_add(1));
+        }
+    });
+    let apply = {
+        let workspaces = workspaces.clone();
+        move |action: tilo_resource::Invoke<DeviceAnswers>| {
+            let workspaces = workspaces.clone();
+            tilo_rt::app().spawn(async move {
+                let applied =
+                    person_workspace::apply_when_held(&workspaces, DEVICE_ANSWERS, action).await;
+                if let Err(error) = applied {
+                    tracing::warn!(%error, "an answer about a device was not kept");
+                }
+            });
+        }
+    };
+    let (person, devices) = (cert.user_public_key, devices.clone());
+    let take_back = apply.clone();
+    tilo_peer_state::AnswersRecord {
+        cert,
+        kept: Arc::new(move || {
+            answers
+                .state::<DeviceAnswers>()
+                .map(|kept| kept.kept())
+                .unwrap_or_default()
+        }),
+        changes,
+        devices: Arc::new(move || {
+            devices
+                .state::<Devices>()
+                .map(|kept| kept.certified_at(&person, tilo_clock::unix_now_ns()))
+                .unwrap_or_default()
+        }),
+        answer: Arc::new(move |answer| apply(DeviceAnswers::answering(&answer))),
+        take_back: Arc::new(move |device, app, cap| {
+            take_back(DeviceAnswers::taking_back(device, app, cap));
+        }),
+    }
+}
+
 /// The person whose root-only call runs here, while one does.
 pub(crate) fn root_caller() -> Option<[u8; 32]> {
     ROOT_CALLER.try_with(|person| *person).ok().flatten()
@@ -2453,36 +2512,46 @@ impl Daemon {
         if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
-        // What is the person's alone is kept in their own workspace, read and written here on
-        // this daemon's runtime once its service holds it: their devices, and the answers they
-        // gave about this device's camera and microphone, which their other devices see and can
-        // take back.
-        let personal = tilo_workspace_service::workspaces::PersonResources::default();
-        personal.attach(
-            std::sync::Arc::new(workspaces.copies().clone()),
-            tilo_rt::app().handle(),
-        );
+        // What is the person's alone is kept in their own workspace, read here as it changes and
+        // written once this device holds it: their devices, and the answers they gave about this
+        // device's camera and microphone, which their other devices see and can take back.
+        let person_devices = {
+            let _entered = tilo_rt::app().handle().enter();
+            workspaces.copies().follow_record(
+                &person_workspace::workspace_id(workspaces.copies()),
+                devices::DEVICES,
+            )
+        };
         // The Wi-Fi passphrases the person's devices share are kept there too, sealed to each of
         // them: the desktop session shares and joins with them through the device's dispatch.
-        super::wifi::Wifi::new(personal.clone(), identity.key.clone())
-            .register(&workspaces.copies().providers());
+        super::wifi::Wifi::new(
+            workspaces.copies().clone(),
+            person_devices.clone(),
+            identity.key.clone(),
+        )
+        .register(&workspaces.copies().providers());
         // Nearby Send between the person's devices: the offers and transfers answered over the
         // action service this daemon already serves, staged and kept on the device's content
         // shelf, and read by their shell as the resource it lists.
         let nearby = super::nearby::Nearby::new(
             &workspaces,
-            personal.clone(),
+            person_devices.clone(),
             identity.place.dir().join("nearby"),
         );
         nearby.register(&workspaces.copies().providers());
         // The interfaces this computer wakes through are kept there too, and the wakes of the
         // person's devices asked there are answered from here: the packets for a device on one
         // of this computer's networks, and the word that this computer is back.
-        super::wake::Wake::start(personal.clone(), identity.cert.clone());
+        super::wake::Wake::start(
+            workspaces.copies().clone(),
+            person_devices.clone(),
+            identity.cert.clone(),
+        );
         // The person's other devices drive this one's keyboard and pointer through its relay,
         // admitted by the record of their devices.
-        live.follow_person(personal.clone());
-        apps.device_grants().keep_in(std::sync::Arc::new(personal));
+        live.follow_person(person_devices.clone());
+        apps.device_grants()
+            .keep_in(device_answers(workspaces.copies(), &person_devices));
         // The person's devices, as the record of their own workspace holds them, each revocation
         // the root's own signature: what `tilo-identity` admits a device by, and the one copy of it.
         // Each start of the daemon reads them from its own workspaces; a confined device, which

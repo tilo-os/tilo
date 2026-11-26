@@ -2259,7 +2259,11 @@ impl AppBrokerState {
                 // runs the app, so the caller may launch it.
                 (workspace.to_owned(), app_id.to_owned(), None, None)
             } else if let Some((workspace, app_id, offered)) = self.application_offer(request) {
-                let record = application_provider_resource(&request.target.provider);
+                // A person's record of a kind is no record of the app's windows: any instance of
+                // the app in the person's workspace serves it, started there with no record when
+                // none runs, as the workspace's `start` of the app starts one.
+                let record = application_provider_resource(&request.target.provider)
+                    .filter(|record| collab_types::person_resource_type(record).is_none());
                 (workspace, app_id, record.map(str::to_owned), offered)
             } else {
                 let retained = self

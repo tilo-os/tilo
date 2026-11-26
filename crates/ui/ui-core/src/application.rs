@@ -138,9 +138,6 @@ pub struct ProcessContext {
     open_file: Option<OpenFile>,
     capture: Option<Capture>,
     settings: crate::storage::SettingsDocument,
-    /// Where the app keeps the person records on this device, when the host keeps them
-    /// ([`Self::provide_person_resources`]).
-    person: Option<crate::resource::person::PersonResources>,
     /// Where the app opens the records every app of the workspace opens, when the host keeps them
     /// ([`Self::provide_workspace_resources`]).
     workspace: Option<crate::resource::workspace::WorkspaceResources>,
@@ -371,7 +368,6 @@ pub struct Reopener {
     services: crate::process::ProcessServices,
     content: Option<tilo_content::ContentStore>,
     settings: crate::storage::SettingsDocument,
-    person: Option<crate::resource::person::PersonResources>,
     workspace: Option<crate::resource::workspace::WorkspaceResources>,
     files: Option<crate::storage::AppFiles>,
     private: bool,
@@ -430,7 +426,6 @@ impl Reopener {
         context.services = self.services.clone();
         context.content.clone_from(&self.content);
         context.settings = self.settings.clone();
-        context.person.clone_from(&self.person);
         context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
@@ -491,7 +486,6 @@ impl ProcessContext {
             services: self.services.clone(),
             content: self.content.clone(),
             settings: self.settings.clone(),
-            person: self.person.clone(),
             workspace: self.workspace.clone(),
             files: self.files.clone(),
             private: self.private,
@@ -645,7 +639,6 @@ impl ProcessContext {
             open_file: None,
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
-            person: None,
             workspace: None,
             files: None,
             replacement: Rc::default(),
@@ -874,11 +867,6 @@ impl ProcessContext {
     pub fn provide_files(&mut self, files: crate::storage::AppFiles) {
         self.files = Some(files);
     }
-    /// Give the component the person records of this app ([`crate::resource::person`]), kept beside the
-    /// record it shows.
-    pub fn provide_person_resources(&mut self, records: crate::resource::person::PersonResources) {
-        self.person = Some(records);
-    }
     /// Give the component the records every app of its workspace opens ([`crate::resource::workspace`]),
     /// kept beside the record it shows.
     pub fn provide_workspace_resources(
@@ -895,10 +883,6 @@ impl ProcessContext {
     /// the person's devices.
     pub fn device_id(&self) -> &str {
         &self.device_id
-    }
-    /// The person records of this app, when the host keeps them.
-    pub fn person_resources(&self) -> Option<&crate::resource::person::PersonResources> {
-        self.person.as_ref()
     }
     /// Bring the record up to the storage version its app reads, before it
     /// is read: `migrate` makes at most one deterministic housekeeping change

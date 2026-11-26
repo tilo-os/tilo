@@ -25,6 +25,7 @@ use super::Workspaces;
 
 pub mod accessory;
 pub mod connected;
+pub mod device_answers;
 pub mod devices;
 pub mod speaker;
 pub mod wake;
@@ -52,6 +53,57 @@ pub async fn holds_person_workspace_of(workspaces: &Workspaces, person: &[u8; 32
         .iter()
         .any(|hint| hint.host.device_public_key == own.device_public_key)
 }
+
+/// How often [`when_held`] looks again while a change it did not hear of may be what admits this
+/// device: a workspace's devices are read from what it holds as it is bound, which its governance
+/// names no decision of.
+const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Wait until this device holds its person's workspace: `false` when these workspaces stopped
+/// first. The person's devices write into it before this device is taken in, and what they write
+/// lands once it is ([`apply_when_held`]).
+///
+/// What admits this device is read again on each of the two moves that can change it — the
+/// workspace taken into this device, and a governance decision on it — and every so often besides:
+/// a workspace bound here is admitted to by the devices its governance names, which can be read
+/// from the workspace after it is held without a decision anyone is told of.
+pub async fn when_held(workspaces: &Workspaces) -> bool {
+    use tokio::sync::broadcast::error::RecvError;
+    // Subscribed before the first look, so a change between the look and the wait wakes it.
+    let mut governance = workspaces.governance_changes();
+    let mut holds = workspaces.holds_changed();
+    loop {
+        if holds_person_workspace(workspaces).await {
+            return true;
+        }
+        let stopped = tokio::select! {
+            changed = governance.recv() => matches!(changed, Err(RecvError::Closed)),
+            changed = holds.changed() => changed.is_err(),
+            () = tokio::time::sleep(LOOK_AGAIN) => false,
+        };
+        if stopped {
+            return false;
+        }
+    }
+}
+
+/// [`apply`], once this device holds its person's workspace ([`when_held`]).
+///
+/// # Errors
+/// As [`apply`], or these workspaces stopped before this device held it.
+pub async fn apply_when_held<R: Resource>(
+    workspaces: &Workspaces,
+    resource: (&str, &str),
+    action: Invoke<R>,
+) -> Result<(), String> {
+    if !when_held(workspaces).await {
+        return Err(STOPPED.to_owned());
+    }
+    apply(workspaces, resource, action).await
+}
+
+/// Why a write waiting for the person's workspace was never made.
+pub(crate) const STOPPED: &str = "this device stopped before it held your own workspace";
 
 /// Found this device's person's workspace here, unless this device holds it
 /// already, and answer its id. Only one device founds it: one whose person's
@@ -252,7 +304,10 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
     declare(
         surfaces,
         devices::DEVICES.0,
-        &[surface_of::<devices::Devices>()],
+        &[
+            surface_of::<devices::Devices>(),
+            surface_of::<device_answers::DeviceAnswers>(),
+        ],
     )?;
     declare(
         surfaces,
@@ -325,11 +380,6 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
     // A workspace's files are records of the store: its tree's own record and its chunks.
     #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
     surfaces.declare_system(fs_protocol::tree::FILES_APP, fs_protocol::tree::declared());
-    // What the person answered about their devices' capabilities.
-    surfaces.declare_system(
-        tilo_peer_state::PERSON_RECORDS_APP,
-        tilo_peer_state::device_answers::declared(),
-    );
     // The workspace's own record of its agents: its kinds and verbs, kept as an installed
     // package's surface is, so this device decides the changes that name them.
     #[cfg(feature = "agents")]
@@ -358,75 +408,6 @@ fn declare(
 ) -> Result<(), String> {
     let file = collab_types::surface::canonical(&serde_json::json!({ "resources": resources }));
     super::keep_surface(surfaces, app, file.as_bytes())
-}
-
-/// [`edit_on`] where this device holds `workspace` as a member copy another of the person's
-/// devices keeps: `edit` changes `doc`, the record `(app, name)` as this device holds it, from
-/// `genesis` where the workspace holds none yet, and the change is this device's own write,
-/// carried to the device keeping the workspace.
-///
-/// # Errors
-/// This device holds no copy of the workspace, the edit or the founding was refused, or the
-/// write could not be kept.
-pub(in crate::workspaces) async fn edit_as_member<F>(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, name): (&str, &str),
-    genesis: Option<Box<automerge::AutoCommit>>,
-    edit: F,
-) -> Result<(), String>
-where
-    F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-{
-    let (mut doc, heads) = match workspaces
-        .resource_document(workspace, app, name)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        Some(bytes) => {
-            let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-            let heads = doc.get_heads();
-            (doc, Some(heads))
-        }
-        None => (
-            genesis.map_or_else(automerge::AutoCommit::new, |start| *start),
-            None,
-        ),
-    };
-    edit(&mut doc)?;
-    if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(super::authored::own_edit(&workspaces.signing_device().cert)),
-        );
-    }
-    let founding = heads.is_none();
-    if founding && !super::authored::founds_as_read(&doc, (app, name), workspace) {
-        return Err(format!(
-            "{app} {name} would be founded without the identity every reader of the \
-             workspace's own records checks; it starts from its genesis"
-        ));
-    }
-    let changes = match &heads {
-        Some(heads) => doc.save_after(heads),
-        None => doc.save(),
-    };
-    if changes.is_empty() {
-        return Ok(());
-    }
-    // Boxed: committing a write can apply a change of the person's own workspace in turn.
-    Box::pin(workspaces.own_write(
-        workspace,
-        (app, name),
-        None,
-        &changes,
-        founding,
-        founding,
-        None,
-    ))
-    .await
-    .map(drop)
-    .map_err(|refusal| refusal.to_string())
 }
 
 /// Apply `action` to `doc`, a resource `R` of the app `app`, as `cert`'s person on

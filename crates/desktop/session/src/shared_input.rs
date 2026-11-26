@@ -38,9 +38,9 @@ use tilo_compositor::{Compositor, InputEvent, ObservedInput};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surface::Scroll;
-use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, InputHand};
+use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, InputHand};
 
-use crate::PersonResources;
+use crate::followed_resource::SharedFollow;
 
 use crate::platform::fabric::{Continuity, DeviceId, SharedLink, nonzero};
 
@@ -152,8 +152,8 @@ pub(crate) struct SharedInput {
     fabric: SharedLink,
     /// What carries the input itself, once this session has a live link.
     carrier: Option<std::sync::Arc<dyn Carrier>>,
-    /// The person's own workspace, whose record of their devices says who drives whom.
-    hands: Option<PersonResources>,
+    /// The record of the person's devices, as the session follows it: it says who drives whom.
+    hands: Option<SharedFollow<Devices>>,
     continuity: Continuity,
     placed: PlacementWatch,
     state: std::sync::Mutex<State>,
@@ -280,28 +280,29 @@ struct Active {
     push: f64,
 }
 
+/// Make `invoke` on the record of the person's devices at the device's daemon, without waiting.
+fn change(record: &SharedFollow<Devices>, invoke: &tilo_resource::Invoke<Devices>) {
+    let action = invoke.id;
+    record.invoke_unwaited(invoke, move |made| {
+        if let Err(error) = made {
+            tracing::warn!(%error, action, "who drives whose keyboard and pointer was not kept");
+        }
+    });
+}
+
 impl SharedInput {
     /// The person's keyboard and pointer here: `fabric` says which device this is and which of
-    /// theirs are online, `carrier` carries the input, and the record of their devices in `hands`
-    /// says who drives whom. Each move of the record wakes the session's pass with `wake`, so an
-    /// ask of this device is answered and a hand-over it got is taken up though nothing happens on
-    /// its own screen.
+    /// theirs are online, `carrier` carries the input, and the record of their devices `hands`
+    /// follows says who drives whom. The follow wakes the session's pass each time the record
+    /// moves, so an ask of this device is answered and a hand-over it got is taken up though
+    /// nothing happens on its own screen.
     pub(crate) fn new(
         fabric: SharedLink,
         carrier: Option<std::sync::Arc<dyn Carrier>>,
-        hands: Option<PersonResources>,
-        wake: tilo_service::Wake,
+        hands: Option<SharedFollow<Devices>>,
         continuity: Continuity,
         placed: PlacementWatch,
     ) -> Self {
-        if let Some(resources) = &hands {
-            let mut moved = resources.changes();
-            tilo_rt::app().spawn(async move {
-                while moved.changed().await.is_ok() {
-                    wake();
-                }
-            });
-        }
         Self {
             fabric,
             carrier,
@@ -695,9 +696,10 @@ impl SharedInput {
             return;
         };
         let asked_ms = unix_ms(tilo_clock::unix_now_ms());
-        resources.apply(DEVICES, move || {
-            Devices::asking_input(&target, &controller, asked_ms)
-        });
+        change(
+            resources,
+            &Devices::asking_input(&target, &controller, asked_ms),
+        );
     }
 
     /// Ask every other device whose screens stand in the placement for a lease, so the pointer
@@ -803,7 +805,7 @@ impl SharedInput {
         let Some(resources) = &self.hands else {
             return;
         };
-        let moved = *resources.changes().borrow();
+        let moved = resources.revision();
         if state.hands_read == Some(moved) {
             return;
         }
@@ -812,7 +814,7 @@ impl SharedInput {
             state.hands_read = None;
             return;
         };
-        let devices = resources.read::<Devices>(DEVICES).unwrap_or_default();
+        let devices = resources.get();
         let mut granted = BTreeMap::new();
         let mut asked_here = Vec::new();
         let mut kept_here = BTreeSet::new();
@@ -904,7 +906,7 @@ impl SharedInput {
             granted_ms: unix_ms(lease.issued_unix_ms),
             until_ms: unix_ms(lease.expires_unix_ms),
         };
-        resources.apply(DEVICES, move || Devices::granting_input(&driven, &hand));
+        change(resources, &Devices::granting_input(&driven, &hand));
         state.issued.insert(lease.nonce, lease);
     }
 
@@ -1255,9 +1257,10 @@ impl SharedInput {
                 key_of(&lease.controller),
             ) {
                 let nonce = hex::encode(nonce);
-                resources.apply(DEVICES, move || {
-                    Devices::ending_input(&target, &controller, &nonce)
-                });
+                change(
+                    resources,
+                    &Devices::ending_input(&target, &controller, &nonce),
+                );
             }
         }
     }
@@ -1598,7 +1601,6 @@ mod tests {
             fabric as SharedLink,
             Some(std::sync::Arc::clone(&recorded) as std::sync::Arc<dyn Carrier>),
             None,
-            std::sync::Arc::new(|| {}),
             Continuity::default(),
             PlacementWatch::default(),
         );

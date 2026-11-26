@@ -695,6 +695,22 @@ impl<P: Resource> WorkspaceResource<P> {
         self.shared.live.clone()
     }
 
+    /// The record's state as a control follows it.
+    pub(crate) fn state(&self) -> LocalState<Rc<P::State>> {
+        self.shared.state.clone()
+    }
+
+    /// Follow the record when it moved. Whether it did.
+    pub(crate) fn refresh(&self) -> bool {
+        self.shared.refresh()
+    }
+
+    /// Why the record stopped reading as `P`, if it did: the state is then the last one that
+    /// read.
+    pub(crate) fn unreadable(&self) -> Option<String> {
+        self.shared.live.unreadable().map(|why| why.reason)
+    }
+
     /// Read the record's document as it is now: what a reader needs beyond
     /// the resource's state, such as a text document's file, which a
     /// workspace's tree holds as a document of its own.

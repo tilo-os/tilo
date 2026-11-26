@@ -99,7 +99,7 @@ impl Sending {
 }
 
 /// One followed resource of a workspace, of the type `P`. Cloning shares it; the follow stops once
-/// the last clone goes.
+/// the last clone, and the last [`SharedFollow`] of it, goes.
 pub(crate) struct FollowedResource<P: Resource> {
     shared: Rc<Shared<P>>,
 }
@@ -113,28 +113,92 @@ impl<P: Resource> Clone for FollowedResource<P> {
 }
 
 struct Shared<P: Resource> {
-    daemon: DaemonShell,
-    workspace: String,
-    app: &'static str,
-    id: String,
+    core: Arc<Core>,
     me: tilo_resource::MemberId,
     /// The grants it was followed at, where the session knows them: what decides whether the
     /// person may invoke an action.
     permissions: Option<PermissionContext>,
-    latest: Arc<Mutex<Latest>>,
     /// Its state as of the reading it was made from.
     state: RefCell<Option<(u64, Rc<P::State>)>>,
+}
+
+/// What one follow is, whichever thread reads it: the resource it reads, the last reading, and
+/// the way to the daemon that changes it. The session's thread holds it through a
+/// [`FollowedResource`]; a part of the session that runs elsewhere holds the same follow through a
+/// [`SharedFollow`].
+struct Core {
+    daemon: DaemonShell,
+    workspace: String,
+    app: &'static str,
+    id: String,
+    readings: Arc<Readings>,
     follow: tokio::task::AbortHandle,
-    /// What tells the session the reading moved.
-    wake: tilo_service::Wake,
-    /// A read asked for now ([`FollowedResource::refresh`]) is on its way: another is not asked
-    /// until it answers.
+    /// A read asked for now ([`Core::refresh`]) is on its way: another is not asked until it
+    /// answers.
     refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl<P: Resource> Drop for Shared<P> {
+impl Drop for Core {
     fn drop(&mut self) {
         self.follow.abort();
+    }
+}
+
+/// The last reading of a follow, and who hears that it moved.
+struct Readings {
+    latest: Mutex<Latest>,
+    /// Moves to the count of readings each time the reading moves: what a part of the session off
+    /// its thread waits on.
+    moved: tokio::sync::watch::Sender<u64>,
+    /// What tells the session the reading moved.
+    wake: tilo_service::Wake,
+}
+
+impl Readings {
+    /// Take `readings` in as what the resource says now, telling whoever follows it when it moved.
+    fn take(&self, readings: &serde_json::Value) {
+        let revision = readings["revision"].as_str().map(str::to_owned);
+        let copy = match tilo_session_client::daemon_documents::document_read(readings) {
+            Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) => {
+                Reading::Document(bytes)
+            }
+            Ok(tilo_peer_state::workspace_documents::DocumentRead::Absent) => Reading::Absent,
+            Ok(_) => Reading::Arriving,
+            Err(error) => {
+                tracing::warn!(%error, "a resource's reading does not read");
+                Reading::Arriving
+            }
+        };
+        let moved = {
+            let mut latest = self.latest.lock_recover();
+            if latest.revision.is_some() && latest.revision == revision {
+                return;
+            }
+            latest.revision = revision;
+            latest.copy = copy;
+            latest.readings = latest.readings.wrapping_add(1);
+            latest.readings
+        };
+        self.moved.send_replace(moved);
+        (self.wake)();
+    }
+
+    fn held(&self) -> Option<bool> {
+        match self.latest.lock_recover().copy {
+            Reading::Arriving => None,
+            Reading::Absent => Some(false),
+            Reading::Document(_) => Some(true),
+        }
+    }
+
+    fn revision(&self) -> u64 {
+        self.latest.lock_recover().readings
+    }
+
+    /// How many readings moved it, and the last one.
+    fn last(&self) -> (u64, Reading) {
+        let latest = self.latest.lock_recover();
+        (latest.readings, latest.copy.clone())
     }
 }
 
@@ -151,30 +215,6 @@ fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> Resou
     }
 }
 
-/// Take `readings` in as what `latest` says now. Whether it moved.
-fn take(latest: &Mutex<Latest>, readings: &serde_json::Value) -> bool {
-    let revision = readings["revision"].as_str().map(str::to_owned);
-    let copy = match tilo_session_client::daemon_documents::document_read(readings) {
-        Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) => {
-            Reading::Document(bytes)
-        }
-        Ok(tilo_peer_state::workspace_documents::DocumentRead::Absent) => Reading::Absent,
-        Ok(_) => Reading::Arriving,
-        Err(error) => {
-            tracing::warn!(%error, "a resource's reading does not read");
-            Reading::Arriving
-        }
-    };
-    let mut latest = latest.lock_recover();
-    if latest.revision.is_some() && latest.revision == revision {
-        return false;
-    }
-    latest.revision = revision;
-    latest.copy = copy;
-    latest.readings = latest.readings.wrapping_add(1);
-    true
-}
-
 impl<P: Resource> FollowedResource<P> {
     /// Follow `app`'s resource `id` of `workspace` from now on, as `person` at the grants
     /// `policy` gives them where the session reads them, calling `wake` each time it moved.
@@ -185,9 +225,13 @@ impl<P: Resource> FollowedResource<P> {
         policy: Option<tilo_action_policy::WorkspacePolicy>,
         wake: tilo_service::Wake,
     ) -> Self {
-        let latest = Arc::new(Mutex::new(Latest::default()));
+        let readings = Arc::new(Readings {
+            latest: Mutex::new(Latest::default()),
+            moved: tokio::sync::watch::Sender::new(0),
+            wake,
+        });
         let follow = {
-            let (daemon, latest, wake) = (daemon.clone(), Arc::clone(&latest), Arc::clone(&wake));
+            let (daemon, readings) = (daemon.clone(), Arc::clone(&readings));
             let (workspace, id) = (workspace.to_owned(), id.to_owned());
             daemon.runtime().clone().spawn(async move {
                 let mut after = None;
@@ -196,14 +240,12 @@ impl<P: Resource> FollowedResource<P> {
                         .read(read_of(&workspace, app, &id, after.clone()))
                         .await
                     {
-                        Ok(readings) => {
-                            after = readings
+                        Ok(answer) => {
+                            after = answer
                                 .get("revision")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_owned);
-                            if take(&latest, &readings) {
-                                wake();
-                            }
+                            readings.take(&answer);
                         }
                         Err(error) => {
                             tilo_failure::ignored!(
@@ -225,33 +267,41 @@ impl<P: Resource> FollowedResource<P> {
         });
         Self {
             shared: Rc::new(Shared {
-                daemon: daemon.clone(),
-                workspace: workspace.to_owned(),
-                app,
-                id: id.to_owned(),
+                core: Arc::new(Core {
+                    daemon: daemon.clone(),
+                    workspace: workspace.to_owned(),
+                    app,
+                    id: id.to_owned(),
+                    readings,
+                    follow: follow.abort_handle(),
+                    refreshing: Arc::default(),
+                }),
                 me: tilo_resource::MemberId::person(person.to_owned()),
                 permissions,
-                latest,
                 state: RefCell::default(),
-                follow: follow.abort_handle(),
-                wake,
-                refreshing: Arc::default(),
             }),
+        }
+    }
+
+    /// The same follow, for a part of the session that reads and changes the resource off the
+    /// session's thread: it reads the one reading this does, and keeps the follow going while
+    /// it is held.
+    pub(crate) fn shared(&self) -> SharedFollow<P> {
+        SharedFollow {
+            core: Arc::clone(&self.shared.core),
+            state: Arc::default(),
+            kind: std::marker::PhantomData,
         }
     }
 
     /// Whether the workspace has the resource: `None` until it was read, or while it is on its way.
     pub(crate) fn held(&self) -> Option<bool> {
-        match self.shared.latest.lock_recover().copy {
-            Reading::Arriving => None,
-            Reading::Absent => Some(false),
-            Reading::Document(_) => Some(true),
-        }
+        self.shared.core.readings.held()
     }
 
     /// A number that moves each time the reading does.
     pub(crate) fn revision(&self) -> u64 {
-        self.shared.latest.lock_recover().readings
+        self.shared.core.readings.revision()
     }
 
     /// Who the session reads and acts as.
@@ -261,10 +311,7 @@ impl<P: Resource> FollowedResource<P> {
 
     /// Its state as of the last reading; its first state while the workspace has none of it.
     pub(crate) fn get(&self) -> Rc<P::State> {
-        let (readings, copy) = {
-            let latest = self.shared.latest.lock_recover();
-            (latest.readings, latest.copy.clone())
-        };
+        let (readings, copy) = self.shared.core.readings.last();
         if let Some((at, state)) = self.shared.state.borrow().as_ref()
             && *at == readings
         {
@@ -278,7 +325,7 @@ impl<P: Resource> FollowedResource<P> {
     /// Its document as of the last reading, with the history of its changes: `None` while the
     /// workspace has none of it, or it is on its way.
     pub(crate) fn document(&self) -> Option<automerge::AutoCommit> {
-        let Reading::Document(bytes) = self.shared.latest.lock_recover().copy.clone() else {
+        let (_, Reading::Document(bytes)) = self.shared.core.readings.last() else {
             return None;
         };
         automerge::AutoCommit::load(&bytes)
@@ -291,11 +338,12 @@ impl<P: Resource> FollowedResource<P> {
         let Some(declared) = P::declarations().into_iter().find(|decl| decl.id == verb) else {
             return false;
         };
-        let route = ui::resource::DocumentId::parse(&self.shared.id)
-            .map_or_else(|| self.shared.id.clone(), |id| id.route().to_owned());
+        let core = &self.shared.core;
+        let route = ui::resource::DocumentId::parse(&core.id)
+            .map_or_else(|| core.id.clone(), |id| id.route().to_owned());
         let node = tilo_actions::action_node(
             &TreePath::root(),
-            self.shared.app,
+            core.app,
             P::KIND,
             &route,
             declared.field,
@@ -347,7 +395,9 @@ impl<P: Resource> FollowedResource<P> {
         invoke: &Invoke<P>,
         done: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
-        self.unwaited(std::slice::from_ref(invoke), |went| done(went.result()));
+        self.shared
+            .core
+            .unwaited(std::slice::from_ref(invoke), |went| done(went.result()));
     }
 
     /// Run `invokes` at the device's daemon, in order, as the person, without waiting for them:
@@ -356,22 +406,119 @@ impl<P: Resource> FollowedResource<P> {
     /// woken then.
     pub(crate) fn send(&self, invokes: &[Invoke<P>]) -> Sending {
         let sending = Sending::default();
-        let (finished, wake) = (sending.clone(), Arc::clone(&self.shared.wake));
-        self.unwaited(invokes, move |went| {
+        let (finished, wake) = (sending.clone(), Arc::clone(&self.shared.core.readings.wake));
+        self.shared.core.unwaited(invokes, move |went| {
             finished.finish(went);
             wake();
         });
         sending
     }
 
-    fn unwaited(&self, invokes: &[Invoke<P>], done: impl FnOnce(Went) + Send + 'static) {
+    /// Read it again now and wait for the answer: what a test reads its next step against.
+    #[cfg(test)]
+    pub(crate) fn read_now(&self) {
+        self.shared.core.read_now();
+    }
+
+    fn run(
+        &self,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        invoker: Option<tilo_actions::ActionInvoker>,
+    ) -> Result<(), String> {
+        let core = &self.shared.core;
+        let request = core.request::<P>(address, arguments, invoker);
+        went_by(
+            core.daemon
+                .invoke_receipt_blocking(Some(&core.workspace), request),
+        )
+        .result()?;
+        core.refresh();
+        Ok(())
+    }
+
+    /// Ask for its reading again now, rather than when the follow next reads it: what a change
+    /// just made shows as soon as the daemon answers, and the session is woken then. The caller
+    /// never waits for the daemon, whose store may be slow; until the answer comes, the last
+    /// reading stands.
+    pub(crate) fn refresh(&self) {
+        self.shared.core.refresh();
+    }
+}
+
+/// How an action went, by its receipt. One the daemon took up without finishing (the person's
+/// write to their own workspace before this device holds it) is made once it can be: a caller
+/// that waits for it hears that, rather than waiting on a device that may never be taken in.
+fn went_by(receipt: Result<tilo_actions::remote::InvocationReceipt, String>) -> Went {
+    match receipt.map(|receipt| receipt.status) {
+        Ok(ReceiptStatus::Completed { .. }) => Went::Made,
+        Ok(ReceiptStatus::Rejected { error }) => Went::Refused(error.to_string()),
+        Ok(ReceiptStatus::Failed { error }) => Went::Refused(error.message),
+        Ok(ReceiptStatus::Accepted) => {
+            Went::Unreached("the action was taken up and has not finished yet".to_owned())
+        }
+        Ok(ReceiptStatus::Cancelled { message }) => {
+            Went::Refused(message.unwrap_or_else(|| "the action was stopped".to_owned()))
+        }
+        Err(error) => Went::Unreached(error),
+    }
+}
+
+/// How the write `invocation`, answered [`ReceiptStatus::Accepted`], went: the daemon's record of
+/// the invocation says once it ran, or why it could not, so a caller that follows one hears
+/// either rather than taking the write as made. A daemon that keeps no record of it is one whose
+/// provider answered at once: the write is then heard as this resource's reading moving.
+async fn taken_up(
+    daemon: &DaemonShell,
+    workspace: &str,
+    invocation: tilo_actions::InvocationId,
+    moved: &mut tokio::sync::watch::Receiver<u64>,
+) -> Went {
+    loop {
+        match daemon
+            .observe(Some(workspace), invocation, Some(FOLLOW_WAIT_MS))
+            .await
+        {
+            Ok(Some(state)) => match state.update {
+                tilo_actions::InvocationUpdate::Succeeded { .. } => return Went::Made,
+                tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                    return Went::Refused(error.message);
+                }
+                tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                    return Went::Refused(
+                        message.unwrap_or_else(|| "the action was stopped".to_owned()),
+                    );
+                }
+                tilo_actions::InvocationUpdate::Accepted { .. }
+                | tilo_actions::InvocationUpdate::Progress { .. }
+                | tilo_actions::InvocationUpdate::Item { .. } => {}
+            },
+            Ok(None) => {
+                return match moved.changed().await {
+                    Ok(()) => Went::Made,
+                    Err(_) => Went::Unreached("the follow stopped".to_owned()),
+                };
+            }
+            Err(error) => return Went::Unreached(error),
+        }
+    }
+}
+
+impl Core {
+    /// Run `invokes` at the daemon, in order, without waiting for them, and read the resource
+    /// again once they ran; `done` hears how they went then.
+    fn unwaited<P: Resource>(
+        &self,
+        invokes: &[Invoke<P>],
+        done: impl FnOnce(Went) + Send + 'static,
+    ) {
         let requests: Result<Vec<(&'static str, InvokeRequest)>, String> = invokes
             .iter()
             .map(|invoke| match invoke.refusal() {
                 Some(refusal) => Err(refusal.to_owned()),
                 None => Ok((
                     invoke.id,
-                    self.request(invoke.address(), invoke.arguments.clone(), None),
+                    self.request::<P>(invoke.address(), invoke.arguments.clone(), None),
                 )),
             })
             .collect();
@@ -382,25 +529,30 @@ impl<P: Resource> FollowedResource<P> {
                 return;
             }
         };
-        let shared = &self.shared;
-        let (daemon, workspace, latest, wake) = (
-            shared.daemon.clone(),
-            shared.workspace.clone(),
-            Arc::clone(&shared.latest),
-            Arc::clone(&shared.wake),
+        let (daemon, workspace, readings) = (
+            self.daemon.clone(),
+            self.workspace.clone(),
+            Arc::clone(&self.readings),
         );
-        let read = read_of(&shared.workspace, shared.app, &shared.id, None);
-        shared.daemon.runtime().spawn(async move {
+        let read = read_of(&self.workspace, self.app, &self.id, None);
+        // Seen before the first is sent, so a write taken up and made before its receipt is
+        // looked at still counts as having moved the reading.
+        let mut moved = self.readings.moved.subscribe();
+        moved.borrow_and_update();
+        self.daemon.runtime().spawn(async move {
             let mut went = Went::Made;
             for (action, request) in requests {
-                went = match daemon.invoke_receipt(Some(&workspace), request).await {
-                    Ok(receipt) => match receipt.status {
-                        ReceiptStatus::Completed { .. } => Went::Made,
-                        ReceiptStatus::Rejected { error } => Went::Refused(error.to_string()),
-                        ReceiptStatus::Failed { error } => Went::Refused(error.message),
-                        status => Went::Unreached(format!("the action did not settle: {status:?}")),
-                    },
-                    Err(error) => Went::Unreached(error),
+                let invocation = request.invocation;
+                let receipt = daemon.invoke_receipt(Some(&workspace), request).await;
+                went = match receipt {
+                    // Taken up and made once the daemon can (the person's write to their own
+                    // workspace before the device holds it): it is never sent again meanwhile,
+                    // and the daemon's record of the invocation says once it ran, or why it
+                    // could not.
+                    Ok(receipt) if receipt.status == ReceiptStatus::Accepted => {
+                        taken_up(&daemon, &workspace, invocation, &mut moved).await
+                    }
+                    receipt => went_by(receipt),
                 };
                 if let Went::Refused(error) | Went::Unreached(error) = &went {
                     tracing::warn!(%error, kind = P::KIND, action, "a resource was not changed");
@@ -410,11 +562,7 @@ impl<P: Resource> FollowedResource<P> {
             // What they changed, or what a refusal left, shows before the caller hears how they
             // went.
             match daemon.read(read).await {
-                Ok(readings) => {
-                    if take(&latest, &readings) {
-                        wake();
-                    }
-                }
+                Ok(answer) => readings.take(&answer),
                 Err(error) => tilo_failure::ignored!(
                     "the follow reads what the writes changed a moment later",
                     tracing::debug!(%error, "a resource was not read again after its writes")
@@ -424,44 +572,18 @@ impl<P: Resource> FollowedResource<P> {
         });
     }
 
-    /// Read it again now and wait for the answer: what a test reads its next step against.
-    #[cfg(test)]
-    pub(crate) fn read_now(&self) {
-        let shared = &self.shared;
-        let readings = shared
-            .daemon
-            .read_blocking(read_of(&shared.workspace, shared.app, &shared.id, None))
-            .expect("the resource reads");
-        take(&shared.latest, &readings);
-    }
-
-    fn run(
-        &self,
-        address: tilo_actions::ActionAddress,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        invoker: Option<tilo_actions::ActionInvoker>,
-    ) -> Result<(), String> {
-        let request = self.request(address, arguments, invoker);
-        self.shared
-            .daemon
-            .invoke_blocking(&self.shared.workspace, request)?;
-        self.refresh();
-        Ok(())
-    }
-
     /// The request that runs `address` with `arguments` on this resource, as `invoker` where one
     /// acts for the person.
-    fn request(
+    fn request<P: Resource>(
         &self,
         address: tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
         invoker: Option<tilo_actions::ActionInvoker>,
     ) -> InvokeRequest {
-        let shared = &self.shared;
         InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
-                provider: format!("{RESOURCE_PROVIDER}:{}:{}", shared.app, shared.id),
+                provider: format!("{RESOURCE_PROVIDER}:{}:{}", self.app, self.id),
                 address,
             },
             argument: InvokeArgument::Json(arguments),
@@ -476,34 +598,25 @@ impl<P: Resource> FollowedResource<P> {
         }
     }
 
-    /// Ask for its reading again now, rather than when the follow next reads it: what a change
-    /// just made shows as soon as the daemon answers, and the session is woken then. The caller
-    /// never waits for the daemon, whose store may be slow; until the answer comes, the last
-    /// reading stands.
-    pub(crate) fn refresh(&self) {
-        let shared = &self.shared;
-        if shared
+    /// Ask for the reading again now; see [`FollowedResource::refresh`].
+    fn refresh(&self) {
+        if self
             .refreshing
             .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             return;
         }
-        let (daemon, latest, wake, refreshing) = (
-            shared.daemon.clone(),
-            Arc::clone(&shared.latest),
-            Arc::clone(&shared.wake),
-            Arc::clone(&shared.refreshing),
+        let (daemon, readings, refreshing) = (
+            self.daemon.clone(),
+            Arc::clone(&self.readings),
+            Arc::clone(&self.refreshing),
         );
-        let read = read_of(&shared.workspace, shared.app, &shared.id, None);
-        shared.daemon.runtime().spawn(async move {
+        let read = read_of(&self.workspace, self.app, &self.id, None);
+        self.daemon.runtime().spawn(async move {
             let read = daemon.read(read).await;
             refreshing.store(false, std::sync::atomic::Ordering::Release);
             match read {
-                Ok(readings) => {
-                    if take(&latest, &readings) {
-                        wake();
-                    }
-                }
+                Ok(answer) => readings.take(&answer),
                 Err(error) => {
                     // A resource read on every pass may answer before this device holds it, or
                     // the daemon may be busy: the follow asks again a moment later, so this is
@@ -515,6 +628,80 @@ impl<P: Resource> FollowedResource<P> {
                 }
             }
         });
+    }
+
+    /// Read it again now and wait for the answer.
+    #[cfg(test)]
+    fn read_now(&self) {
+        let answer = self
+            .daemon
+            .read_blocking(read_of(&self.workspace, self.app, &self.id, None))
+            .expect("the resource reads");
+        self.readings.take(&answer);
+    }
+}
+
+/// A [`FollowedResource`]'s follow as a part of the session that runs off the session's thread
+/// holds it: the network actor answering another device's boot, the link onto the person's other
+/// devices, the watcher of who drives whose keyboard. It reads the one reading the session reads,
+/// and changes the resource the one way the session does, through its typed actions at the
+/// daemon. Cloning shares it. It is `pub` only so the session's entry into the peer network
+/// ([`crate::sync::Entry`]) can carry it; nothing outside the session names it.
+pub struct SharedFollow<P: Resource> {
+    core: Arc<Core>,
+    /// Its state as of the reading it was made from.
+    state: Arc<Mutex<Option<(u64, Arc<P::State>)>>>,
+    kind: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: Resource> Clone for SharedFollow<P> {
+    fn clone(&self) -> Self {
+        Self {
+            core: Arc::clone(&self.core),
+            state: Arc::clone(&self.state),
+            kind: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<P: Resource> SharedFollow<P>
+where
+    P::State: Clone + Send + Sync,
+{
+    /// Its state as of the last reading; its first state while the workspace has none of it.
+    pub(crate) fn get(&self) -> Arc<P::State> {
+        let (readings, copy) = self.core.readings.last();
+        let mut kept = self.state.lock_recover();
+        if let Some((at, state)) = kept.as_ref()
+            && *at == readings
+        {
+            return Arc::clone(state);
+        }
+        let state = Arc::new(P::State::clone(&state_of::<P>(&copy)));
+        *kept = Some((readings, Arc::clone(&state)));
+        state
+    }
+
+    /// A number that moves each time the reading does.
+    pub(crate) fn revision(&self) -> u64 {
+        self.core.readings.revision()
+    }
+
+    /// Moves each time the reading does, to [`Self::revision`]: what a watcher off the session's
+    /// thread waits on.
+    pub(crate) fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.core.readings.moved.subscribe()
+    }
+
+    /// Run `invoke` at the device's daemon, as the person, without waiting for it; `done` hears
+    /// how it went, on the daemon link's runtime, once the resource was read again.
+    pub(crate) fn invoke_unwaited(
+        &self,
+        invoke: &Invoke<P>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        self.core
+            .unwaited(std::slice::from_ref(invoke), |went| done(went.result()));
     }
 }
 

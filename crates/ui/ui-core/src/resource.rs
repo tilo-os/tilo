@@ -11,9 +11,9 @@ pub use collab_types::document::{
 };
 pub use collab_types::person_workspace_of;
 pub mod capability;
-pub mod person;
 pub(crate) mod reads;
-pub use person::StoredResource;
+pub mod stored;
+pub use stored::StoredResource;
 pub mod workspace;
 
 #[cfg(test)]

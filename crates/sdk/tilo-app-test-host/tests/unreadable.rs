@@ -131,15 +131,19 @@ tilo_test_env::scenario! {
                 .contains("learned 0")
         );
 
-        // A change the model cannot read arrives from another device, on the
-        // route that carries the person's records.
-        app.profile_resource::<Learned>()
-            .expect("the person's record")
-            .record()
-            .edit(false, |doc| {
-                doc.put(ROOT, "words", "many").map_err(|e| e.to_string())
-            })
-            .expect("the change lands");
+        // A change the model cannot read arrives from another device, in the
+        // person's own workspace, which keeps their records.
+        app.in_persons_own_workspace(|own| {
+            own.profile_resource::<Learned>()
+                .expect("the person's record")
+                .record()
+                .expect("held in their own workspace")
+                .edit(false, |doc| {
+                    doc.put(ROOT, "words", "many").map_err(|e| e.to_string())
+                })
+                .expect("the change lands");
+        })
+        .expect("the app runs in the person's own workspace");
         app.settle();
         let reason = availability(&mut app, &address, "forget").expect("the record is published");
         assert!(reason.contains("words"), "{reason}");

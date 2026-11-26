@@ -234,11 +234,14 @@ struct Following {
     unread: bool,
     /// When the read in flight was sent to wait for a write past `revision`.
     waiting: Option<Instant>,
-    /// When the record is read again: after a read its provider could not answer, and on the interval
-    /// for a provider that holds no read.
+    /// When the record is read again: after a read its provider could not answer, after the first
+    /// read while nothing answers it, and on the interval for a provider that holds no read.
     read_at: Option<Instant>,
     /// How long it is left after the next read its provider cannot answer.
     retry: Duration,
+    /// The correlation of the read in flight. A read asked again replaces it: its answer, arriving
+    /// late, is not this follow's, so one record is never read twice over for one follow.
+    in_flight: Option<u64>,
 }
 
 struct Inner {
@@ -325,6 +328,19 @@ impl RemoteActions {
                 client.lock().unbound = true;
                 client
             },
+            |(provider, caller)| Self::with_provider(provider, caller),
+        )
+    }
+
+    /// The client a window's root carries for the app's life: served by the provider entered on
+    /// this thread, else one of its own. Never another window's client, which this thread's
+    /// carried stack holds while a window is built inside another (a test host's app in the
+    /// person's own workspace, a component another window shows): the requests of one window
+    /// are its own to send and answer.
+    #[must_use]
+    pub fn window() -> Self {
+        SERVED.with(|served| served.borrow().clone()).map_or_else(
+            || Self::new(Transport::Session),
             |(provider, caller)| Self::with_provider(provider, caller),
         )
     }
@@ -595,6 +611,7 @@ impl RemoteActions {
                     waiting: None,
                     read_at: None,
                     retry: FOLLOW_INTERVAL,
+                    in_flight: None,
                 },
             );
             (follow, next_read(&mut inner, follow, false, now))
@@ -898,16 +915,27 @@ fn next_read(
     hold: bool,
     now: Instant,
 ) -> Option<RemoteActionMessage> {
+    let previous = inner.following.get(&follow)?.in_flight;
+    if let Some(previous) = previous {
+        inner.reads.remove(&previous);
+    }
+    let correlation = inner.next_correlation;
+    inner.next_correlation = inner.next_correlation.wrapping_add(1);
     let following = inner.following.get_mut(&follow)?;
     let hold = hold && following.revision.is_some();
-    following.read_at = None;
+    // A first read nothing answers is asked again: the workspace it reads from may be served,
+    // or told of, after the window asked. One that waits for a write is its provider's to answer.
+    let again = !hold && following.revision.is_none();
+    following.read_at = again.then(|| now + FOLLOW_INTERVAL);
     following.waiting = hold.then_some(now);
+    following.in_flight = Some(correlation);
     let mut read = following.read.clone();
     read.after = following.revision.clone().filter(|_| hold);
     read.wait_ms = hold.then_some(FOLLOW_WAIT_MS);
     let on_behalf_of = following.on_behalf_of;
-    let correlation = inner.next_correlation;
-    inner.next_correlation = inner.next_correlation.wrapping_add(1);
+    if again {
+        crate::background::Background::current().wake_after(FOLLOW_INTERVAL, inner.wake.clone());
+    }
     inner.reads.insert(correlation, Reading::Followed(follow));
     Some(RemoteActionMessage::ResourceRead {
         correlation,

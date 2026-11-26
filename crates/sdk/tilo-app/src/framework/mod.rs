@@ -192,9 +192,8 @@
 //!   keeps for every app of the workspace — its accounts, its contacts, what
 //!   it browsed — is declared with [`Resources::shared_workspace`] or the app
 //!   ([`ResourceApp::PERSON_RESOURCES`], [`PersonKind::shared`]). Records that
-//!   are a person's alone — the words taught to the keyboard, the signature
-//!   they sign with — are kept in their own scope and carried to their other
-//!   devices by their personal store ([`PersonKind::profile`]).
+//!   are a person's alone — the signature they sign with — are kept in their
+//!   own workspace and reach their devices from there ([`PersonKind::profile`]).
 //! * **What grows without end** — a chat's messages, a log — is a chain of
 //!   part records of another resource type kept beside the app's own in its
 //!   workspace ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],

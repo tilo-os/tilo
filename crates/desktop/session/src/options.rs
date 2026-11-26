@@ -269,12 +269,18 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// `beside` is what else this device answers on its endpoint — its exit for the person's other
 /// devices. A caller that hands its own client ([`Options::sync`]) has already said what that
 /// endpoint serves.
-/// The peer network is the one `options` hands, or this device's own.
+/// The peer network is the one `options` hands, or this device's own, which keeps what lasts of
+/// the person's devices in the record of them the session follows as `devices`.
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     beside: tilo_network_actor::own_service::Protocols,
     live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
+    devices: Option<
+        crate::followed_resource::SharedFollow<
+            tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+        >,
+    >,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -355,24 +361,11 @@ pub(crate) fn start_collaboration(
                 .clone()
                 .unwrap_or_else(tilo_endpoint_reachability::relays),
             live: Some(live),
+            devices,
         },
         beside,
     ) {
-        Ok(sync) => {
-            // What is the person's alone is kept in their own workspace: the answers they gave
-            // about this device's camera, screen and the rest.
-            {
-                let store = std::sync::Arc::new(sync.person_resources());
-                if let Some(consents) = options
-                    .desktop
-                    .as_ref()
-                    .and_then(|desktop| desktop.consents())
-                {
-                    consents.grants().keep_in(store);
-                }
-            }
-            Some(Rc::new(sync))
-        }
+        Ok(sync) => Some(Rc::new(sync)),
         Err(error) => {
             tracing::warn!(%error, "the peer network");
             None
@@ -465,5 +458,61 @@ impl Default for Options {
             #[cfg(target_os = "linux")]
             wifi_sharing: crate::wifi_continuity::WifiSharing::default(),
         }
+    }
+}
+
+/// The person's record of the answers they gave about this device's camera, screen and the rest,
+/// in their own workspace, followed at the device's daemon as the device `cert` and changed through
+/// its typed actions there, calling `wake` each time it moved. The devices each answer is on are
+/// read from the record of the person's devices the session follows as `devices`.
+pub(crate) fn answers_record(
+    daemon: &tilo_session_client::daemon_documents::DaemonShell,
+    cert: tilo_user_identity::DeviceCert,
+    devices: crate::followed_resource::SharedFollow<
+        tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+    >,
+    wake: tilo_service::Wake,
+) -> tilo_peer_state::AnswersRecord {
+    use tilo_workspace_service::workspaces::person_workspace::device_answers::{
+        DEVICE_ANSWERS, DeviceAnswers,
+    };
+    let person = cert.user_public_key;
+    let record = crate::followed_resource::FollowedResource::<DeviceAnswers>::follow(
+        daemon,
+        (
+            &tilo_server_protocol::servers::person_workspace_id(&person),
+            DEVICE_ANSWERS.0,
+            DEVICE_ANSWERS.1,
+        ),
+        tilo_action_policy::PersonId::from_root(person).as_str(),
+        None,
+        wake,
+    )
+    .shared();
+    let kept = record.clone();
+    let answering = record.clone();
+    let taking_back = record.clone();
+    tilo_peer_state::AnswersRecord {
+        cert,
+        kept: std::sync::Arc::new(move || kept.get().kept()),
+        changes: record.changes(),
+        devices: std::sync::Arc::new(move || {
+            devices
+                .get()
+                .certified_at(&person, tilo_clock::unix_now_ns())
+        }),
+        answer: std::sync::Arc::new(move |answer| {
+            answering.invoke_unwaited(&DeviceAnswers::answering(&answer), warn_unkept);
+        }),
+        take_back: std::sync::Arc::new(move |device, app, cap| {
+            taking_back.invoke_unwaited(&DeviceAnswers::taking_back(device, app, cap), warn_unkept);
+        }),
+    }
+}
+
+/// Say an answer about this device that the person's record did not take.
+fn warn_unkept(went: Result<(), String>) {
+    if let Err(error) = went {
+        tracing::warn!(%error, "an answer about this device was not kept");
     }
 }

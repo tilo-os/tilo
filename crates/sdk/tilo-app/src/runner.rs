@@ -112,7 +112,7 @@ impl Presentation {
     /// a caller, and says so where one was asked for rather than leaving it unexplained.
     pub(crate) fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &ui_core::automerge::AutoCommit,
         content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {

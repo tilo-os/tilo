@@ -58,6 +58,10 @@ impl ResourceApp for PlayerApp {
     const ID: &'static str = "so.tilo.test-jukebox";
     const TITLE: &'static str = "Player";
 
+    fn resources(resources: &mut Resources<'_>) {
+        resources.profile_resource::<Played>();
+    }
+
     fn view(cx: &mut ViewCx<Player>) -> Element {
         let played = cx.profile_resource::<Played>();
         let shown = played.map_or_else(
@@ -80,7 +84,9 @@ fn her_agent() -> tilo_actions::ActionInvoker {
 
 #[test]
 fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
-    let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
+    // The app's own code applies it where it holds the record: in the person's own workspace.
+    let own = tilo_app::tilo_actions::policy::roles::workspace_of_person(&ada()).unwrap();
+    let mut app = TestApp::<PlayerApp>::for_person_in(&ada(), &own).unwrap();
     let played = app.profile_resource::<Played>().unwrap();
     played.invoke(&Played::NOTE.with("as ada")).unwrap();
     played
@@ -93,7 +99,6 @@ fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
 
     // Each is a change in the record's history, by who the app named.
     let authors: Vec<tilo_app::tilo_actions::Actor> = played
-        .record()
         .read(|doc| {
             tilo_app::tilo_resource::history::versions(&mut doc.clone())
                 .into_iter()
@@ -111,4 +116,22 @@ fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
     );
     // It is still housekeeping: nothing of the person's to take back.
     assert!(!played.undo());
+}
+
+#[test]
+fn a_window_in_another_workspace_applies_no_by_app_verb_to_the_persons_record() {
+    let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
+    let played = app.profile_resource::<Played>().unwrap();
+    let refused = played.invoke(&Played::NOTE.with("from elsewhere"));
+    assert!(
+        matches!(&refused, Err(tilo_app::tilo_actions::ActionError::Refused(why)) if why.contains("your own workspace")),
+        "{refused:?}"
+    );
+    played.invoke(&Played::STAR.with("from elsewhere")).unwrap();
+    app.settle();
+    assert_eq!(
+        played.with(|state| state.starred.clone()),
+        ["from elsewhere"]
+    );
+    assert!(played.with(|state| state.noted.is_empty()));
 }

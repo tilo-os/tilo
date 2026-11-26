@@ -28,7 +28,6 @@ mod link_proof;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod loopback;
 pub mod membership;
-mod person_records;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod sealed_records;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
@@ -82,11 +81,7 @@ pub mod transport;
 mod verified_certificate;
 pub mod workspace;
 /// The person's answers about the devices of their machines, kept in their own workspace.
-pub use device_answers::{
-    DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, PERSON_RECORDS_APP, Refusal,
-};
-/// The person's own workspace, as a part of a session reads and writes its documents.
-pub use person_records::{DocumentEdit, PersonDocuments};
+pub use device_answers::{AnswersRecord, DeviceAnswer, DeviceGrants, Kept, Refusal};
 pub use state::CallGate;
 pub use state::ChangeRefused;
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).

@@ -1441,6 +1441,20 @@ impl<R: Resource> Dispatcher<R> {
         Ok(self.core.opener.call(parent, target, argument))
     }
 
+    /// Invoke `address`, an action of the window's own record, as the person, continuing
+    /// `parent`: for an effect that calls another of its record's actions and waits for it.
+    pub(crate) fn call_own(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_ui_base::InvocationCall, String> {
+        if self.core.past {
+            return Err("a past version calls nothing".into());
+        }
+        Ok(self.core.opener.call_own(parent, address, arguments))
+    }
+
     /// Read `read`, a record of the window's workspace, through the host's
     /// record API, continuing `parent` as [`Self::call_published`] does.
     pub(crate) fn read_resource(

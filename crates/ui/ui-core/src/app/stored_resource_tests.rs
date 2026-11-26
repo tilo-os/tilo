@@ -1,8 +1,10 @@
-//! The person's own records and the routes they ride.
+//! The records a window holds beside the one it shows, in the person's own workspace, and the
+//! routes they ride: a person's records are their workspace's, opened as any workspace's are.
 
 use super::*;
-use crate::resource::person::{PersonResources, StoredResource};
-use crate::resource::{ResourceOwners, ResourceType};
+use crate::resource::ResourceOwners;
+use crate::resource::StoredResource;
+use crate::resource::workspace::WorkspaceResources;
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use std::rc::Rc;
@@ -15,17 +17,48 @@ fn person() -> tilo_ui_base::permissions::MemberId {
     tilo_ui_base::permissions::MemberId::person(hex::encode(ROOT_KEY))
 }
 
-/// One device's copy of the person's watched list in their own scope.
+/// The person's own workspace, which their root names alone.
+fn own_workspace() -> uuid::Uuid {
+    collab_types::person_workspace_of(&hex::encode(ROOT_KEY)).expect("a person workspace")
+}
+
+/// The type of the watched list: one map of the videos watched, which every device founds the
+/// record with.
+fn watched_type() -> tilo_actions::surface::Surface {
+    serde_json::from_value(serde_json::json!({
+        "kind": "test.watched",
+        "label": "Watched",
+        "version": 1,
+        "fields": [{ "path": "watched", "type": { "map": "bool" } }],
+    }))
+    .expect("a surface")
+}
+
+/// The person's watched list `APP` keeps in their own workspace, opened from `owners`.
+fn watched_in(owners: ResourceOwners) -> StoredResource {
+    let workspace = own_workspace().to_string();
+    owners
+        .clone()
+        .open_beside(APP, &workspace)
+        .expect("the app's store in the person's workspace")
+        .declare_type("test.watched", watched_type);
+    WorkspaceResources::in_workspace(owners, workspace, person())
+        .open_resource_at(
+            APP,
+            &collab_types::person_document_id("test.watched"),
+            "test.watched",
+            &|doc| {
+                doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .unwrap()
+}
+
+/// One device's copy of the person's watched list in their own workspace.
 fn personal_device() -> StoredResource {
-    let mut owners = ResourceOwners::in_memory();
-    PersonResources::open(&mut owners, APP, person())
-        .unwrap()
-        .open_resource(ResourceType::new("test.watched"), &|doc| {
-            doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        })
-        .unwrap()
+    watched_in(ResourceOwners::in_memory())
 }
 
 fn watch(record: &StoredResource, video: &str) {
@@ -142,12 +175,11 @@ fn from_device(route: &tilo_ui_base::collaboration::RouteSpec, document: Vec<u8>
 tilo_test_env::scenario! {
     fn a_persons_records_ride_their_own_routes_and_converge;
 
-    phase the_persons_records_ride_the_persons_own_cluster;
-    // The person's own records — their accounts, their contacts, what they
-    // watched — belong to them and to no workspace: their route names the
-    // person's own cluster, which every device of theirs derives from their
+    phase the_persons_records_ride_their_own_workspace;
+    // What is the person's alone is a record of their own workspace: its route
+    // names that workspace, which every device of theirs derives from their
     // identity root alone, so the same record opened by the same app on another
-    // device is the same document and the person's store carries it there.
+    // device is the same document and the workspace carries it there.
     {
         let laptop = personal_device();
         watch(&laptop, "watched-on-the-laptop");
@@ -157,7 +189,7 @@ tilo_test_env::scenario! {
         assert_eq!(route.app_id, APP);
         assert_eq!(
             route.cluster_id,
-            collab_types::person_workspace_of(&hex::encode(ROOT_KEY)).expect("a person workspace")
+            own_workspace()
         );
         assert_eq!(route.document.as_deref(), Some(laptop.checkout().id.as_str()));
 
@@ -176,27 +208,6 @@ tilo_test_env::scenario! {
                 .iter()
                 .all(|(sent, _)| sent == &route)
         );
-    }
-
-    phase a_device_without_an_identity_keeps_the_persons_records_on_itself;
-    // A device whose identity derives no cluster keeps the person's records on
-    // itself, as it does without a root identity.
-    {
-        let mut owners = ResourceOwners::in_memory();
-        let record = PersonResources::open(&mut owners, APP, tilo_ui_base::permissions::MemberId::person("local"))
-            .unwrap()
-            .open_resource(ResourceType::new("test.watched"), &|doc| {
-                doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        watch(&record, "kept-here");
-        assert_eq!(record.route(), None, "no route names a personal record");
-        assert!(record.content().is_none(), "and none carries its content");
-        let mut app = app_holding(&record);
-        app.publish_owned_documents();
-        assert!(app.document_routes.sent.is_empty());
     }
 
     phase a_device_that_was_away_catches_up_when_its_route_returns;
@@ -246,17 +257,9 @@ tilo_test_env::scenario! {
     {
         let port = Rc::new(crate::resource::MemoryWorkspace::default());
         let open = |port: &Rc<crate::resource::MemoryWorkspace>| {
-            let mut owners = ResourceOwners::writing(
+            watched_in(ResourceOwners::writing(
                 Rc::clone(port) as Rc<dyn crate::resource::DocumentPort>,
-            );
-            PersonResources::open(&mut owners, APP, person())
-                .unwrap()
-                .open_resource(ResourceType::new("test.watched"), &|doc| {
-                    doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                })
-                .unwrap()
+            ))
         };
         let first = open(&port);
         let second = open(&port);
@@ -351,37 +354,6 @@ impl tilo_ui_base::collaboration::CollabTransport for RecordingTransport {
     }
 }
 
-/// The person's watched list as its owner app keeps it, and the copy of it a
-/// window of this process's app (`APP`) holds. The owner's copy is the
-/// keeper's; the other app opens the same record beside its own, and the
-/// store refuses it the writer, so it follows the record as the in-memory
-/// replica a second window or another app gets.
-#[cfg(unix)]
-fn owned_and_read(kind: &str) -> (StoredResource, StoredResource) {
-    const OWNER_APP: &str = "so.tilo.test-record-owner";
-    let port = Rc::new(crate::resource::MemoryWorkspace::default());
-    let initialize = |doc: &mut crate::automerge::AutoCommit| {
-        doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    };
-    let mut owner_owners =
-        ResourceOwners::writing(Rc::clone(&port) as Rc<dyn crate::resource::DocumentPort>);
-    let owned = PersonResources::open(&mut owner_owners, OWNER_APP, person())
-        .unwrap()
-        .open_resource(ResourceType::new(kind), &initialize)
-        .unwrap();
-    let mut reader_owners =
-        ResourceOwners::writing(Rc::clone(&port) as Rc<dyn crate::resource::DocumentPort>);
-    let read = PersonResources::open(&mut reader_owners, APP, person())
-        .unwrap()
-        .of_app(OWNER_APP)
-        .unwrap()
-        .open_resource(ResourceType::new(kind), &initialize)
-        .unwrap();
-    (owned, read)
-}
-
 /// A window of `app` holding `record` beside the document it shows, on a
 /// `Recording` transport that stands in for its broker.
 #[cfg(unix)]
@@ -418,31 +390,7 @@ fn recording_window(app: &str, record: &StoredResource) -> (App, Arc<Mutex<Recor
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    fn an_app_publishes_only_the_record_it_keeps;
-
-    phase a_reader_of_another_apps_record_publishes_nothing;
-    // Another app holds the person's shared record its keeper keeps: one record,
-    // and only its keeper publishes it. A change another app offered on a route
-    // is one the identity service refuses to sign, and a refusal stops all of
-    // the app's collaboration.
-    {
-        let (owned, read) = owned_and_read("test.watched");
-        assert!(owned.publishes(), "the keeper publishes its record");
-        assert!(
-            !read.publishes(),
-            "the app that only reads the record does not"
-        );
-        assert_eq!(
-            read.checkout().id,
-            owned.checkout().id,
-            "one record, as every device derives it"
-        );
-        assert_eq!(
-            read.route(),
-            owned.route(),
-            "one route per app and record: the reader follows it like the keeper"
-        );
-    }
+    fn an_app_publishes_the_record_it_keeps;
 
     phase an_app_publishes_the_record_it_keeps_on_its_route;
     // The app that keeps a record of a kind publishes it on the route it syncs

@@ -82,7 +82,7 @@ pub(crate) struct ShareLinks {
 
 impl Default for ShareLinks {
     fn default() -> Self {
-        let remote = RemoteActions::current();
+        let remote = RemoteActions::window();
         Self {
             _carried: RemoteActions::carrying(remote.clone()),
             remote,

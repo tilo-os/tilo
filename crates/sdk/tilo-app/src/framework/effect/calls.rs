@@ -72,6 +72,21 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         )
     }
 
+    /// Call `address`, an action of the record this effect's resource is published on, as the
+    /// person, then `then` with what it answered: the effect stays running until the call
+    /// ends, so the call continues it and is theirs.
+    pub fn call_own(
+        &mut self,
+        address: tilo_actions::ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        then: impl FnOnce(&mut H, Result<ActionOutput, String>, &mut Self) -> EffectAnswer
+        + 'static,
+    ) -> Effected {
+        let action = address.action.clone();
+        let answer = self.env.dispatch.call_own(self.inv.delivered, address, arguments);
+        self.wait_answer(answer, move |called| called_outcome(called, &action), then)
+    }
+
     /// Read a record of the workspace, any app's, through the host's record
     /// API, then `then` with its readings (`{"revision", "records": [...]}`,
     /// each record `{"record", "value" | "absent" | "arriving"}`) or why it

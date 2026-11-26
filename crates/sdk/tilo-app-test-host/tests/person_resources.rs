@@ -1,6 +1,8 @@
-//! Records a person keeps for themselves beside the one an app shows: edited
-//! through their actions with attribution, history and undo, the same on each
-//! of their devices, and apart from the record the app shows.
+//! Records a person keeps for themselves beside the one an app shows: kept in
+//! their own workspace, edited through their actions with attribution, history
+//! and undo, and apart from the record the app shows. A window in another
+//! workspace holds none of them: it follows them there and its changes are
+//! made there, by the app in the person's own workspace.
 
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
@@ -50,6 +52,7 @@ impl ResourceApp for QueueApp {
     type Resource = Queue;
     const ID: &'static str = "so.tilo.test-queue";
     const TITLE: &'static str = "Queue";
+    const PERSON_RESOURCES: &'static [PersonKind] = &[PersonKind::profile::<Watched>()];
 
     fn view(cx: &mut ViewCx<Queue>) -> Element {
         let watched = cx.profile_resource::<Watched>();
@@ -82,8 +85,27 @@ tilo_test_env::scenario! {
             .unwrap()
             .invoke(&Watched::WATCH.with("kept"))
             .unwrap();
+        app.settle();
         let mut app = app.reopen().unwrap();
+        app.settle();
         assert_eq!(videos(&app.profile_resource::<Watched>().unwrap()), ["kept"]);
+    }
+
+    phase a_window_in_another_workspace_reads_the_genesis_until_the_record_answers;
+    {
+        let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+        let watched = app.profile_resource::<Watched>().unwrap();
+        assert!(watched.record().is_none(), "the window holds none of it");
+        assert!(videos(&watched).is_empty(), "the genesis, as nothing answered yet");
+        app.in_persons_own_workspace(|own| {
+            own.profile_resource::<Watched>()
+                .unwrap()
+                .invoke(&Watched::WATCH.with("from-their-own"))
+                .unwrap();
+        })
+        .expect("the app runs in the person's own workspace");
+        app.settle();
+        assert_eq!(videos(&watched), ["from-their-own"]);
     }
 
     phase the_palette_and_agents_take_back_the_persons_own_steps;
@@ -92,6 +114,7 @@ tilo_test_env::scenario! {
         let watched = app.profile_resource::<Watched>().unwrap();
         watched.invoke(&Watched::WATCH.with("first")).unwrap();
         watched.invoke(&Watched::WATCH.with("second")).unwrap();
+        app.settle();
         app.harness().relayout();
 
         // The record is published beside the app's resource, with its verbs
@@ -116,9 +139,11 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         assert_eq!(undone, Some(serde_json::json!({ "steps": 2 })));
+        app.settle();
         assert!(videos(&watched).is_empty());
         app.call_on("person:test.watched", "redo", serde_json::json!({}))
             .unwrap();
+        app.settle();
         assert_eq!(videos(&watched), ["first"]);
 
         // The queue's history is another record's: its undo has nothing of
@@ -126,6 +151,7 @@ tilo_test_env::scenario! {
         app.invoke(Queue::ADD.with("shared")).unwrap();
         app.call_on("person:test.watched", "undo", serde_json::json!({}))
             .unwrap();
+        app.settle();
         assert!(videos(&watched).is_empty());
         assert_eq!(app.state().items, ["shared"]);
         assert!(
@@ -135,47 +161,59 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy;
+    phase a_change_from_a_window_in_another_workspace_lands_in_the_persons_own;
     {
-        use tilo_app::resource::{ResourceType, ResourceOwners, person::PersonResources};
-
-        let mut owners = ResourceOwners::in_memory();
-        let held = PersonResources::open(
-            &mut owners,
-            QueueApp::ID,
-            tilo_app::permissions::MemberId::person(ada()),
-        )
-        .unwrap();
-        let mut app = TestApp::<QueueApp>::for_person_shown_by(&ada(), &held).unwrap();
+        let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
         let owned = app.profile_resource::<Watched>().unwrap();
-        owned.invoke(&Watched::WATCH.with("saved-in-the-app")).unwrap();
+        owned.invoke(&Watched::WATCH.with("saved-in-their-own")).unwrap();
+        app.settle();
 
-        let kept = held
-            .open_existing_resource(ResourceType::new(Watched::KIND))
-            .unwrap()
-            .expect("the host keeps the record the app changed");
+        let kept = app
+            .in_persons_own_workspace(|own| {
+                let kept = own.profile_resource::<Watched>().unwrap();
+                (videos(&kept), kept.record().map(|record| record.heads()))
+            })
+            .expect("the app runs in the person's own workspace");
+        assert_eq!(kept.0, ["saved-in-their-own"], "the edit is made where the record is kept");
         assert_eq!(
-            kept.heads(),
-            owned.record().heads(),
-            "the app's edit is in the copy the host stores and syncs"
+            kept.1,
+            owned.read(|doc| {
+                let mut heads = doc.clone().get_heads();
+                heads.sort_unstable();
+                heads
+            }),
+            "and the window reads that copy"
+        );
+
+        // An agent of hers changes it only in a window of her own workspace: this one's
+        // connection is hers alone.
+        let agent = tilo_app::tilo_actions::ActionInvoker::agent("scout", ada()).acting_for(ada());
+        assert!(
+            owned
+                .invoke_as(&agent, &Watched::WATCH.with("by-the-agent"))
+                .is_err()
         );
     }
 
     phase a_change_to_the_persons_record_from_another_device_wakes_the_window_reading_it;
     {
-        let mut app = TestApp::<UndeclaredApp>::for_person(&ada()).unwrap();
+        let mut app = TestApp::<ShowingApp>::for_person(&ada()).unwrap();
         app.settle();
-        let read = app.profile_resource::<Watched>().unwrap();
         assert!(shows(&mut app, "0 watched"), "nothing is watched yet: {}", shown(&mut app));
 
-        // Their other device watches one: its copy of the record arrives here,
-        // as the person's own store carries it between their devices. Nothing
-        // else tells this window, which has been idle since it opened.
-        let mut theirs = Replica::<Watched>::load(&read.record().document().unwrap()).unwrap().in_app("so.tilo.model", "Model");
-        theirs.apply(Watched::WATCH.with("from-their-phone")).unwrap();
-        read.record()
-            .merge_peer_document(theirs.save())
-            .unwrap();
+        // Their other device watches one: its copy of the record arrives in their own
+        // workspace, which carries it between their devices. Nothing else tells this
+        // window, which has been idle since it opened.
+        app.in_persons_own_workspace(|own| {
+            let kept = own.profile_resource::<Watched>().unwrap();
+            let record = kept.record().unwrap();
+            let mut theirs = Replica::<Watched>::load(&record.document().unwrap())
+                .unwrap()
+                .in_app("so.tilo.model", "Model");
+            theirs.apply(Watched::WATCH.with("from-their-phone")).unwrap();
+            record.merge_peer_document(theirs.save()).unwrap();
+        })
+        .expect("the app runs in the person's own workspace");
 
         assert!(
             app.frame_if_owed(),
@@ -203,11 +241,40 @@ tilo_test_env::scenario! {
             });
         assert_eq!(declared["person"], true, "{declared:?}");
 
-        // The declared record is open with the window, whether or not a view
+        // The declared record is open and published with the window, whether or not a view
         // shows it.
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
-        assert_eq!(app.open_person_resources(), 1);
+        app.harness().relayout();
+        let published = app
+            .agent_surface()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["resource"] == "person:test.watched" && row["action"] == "watch");
+        assert!(published, "the declared record is published");
         assert!(app.profile_resource::<Watched>().is_some());
+    }
+
+    phase without_an_identity_the_persons_record_opens_nothing_and_says_why;
+    {
+        // A device nobody signed in on: the person has no workspace of their own to keep it in.
+        let mut app = TestApp::<DeclaringApp>::new().unwrap();
+        assert!(app.profile_resource::<Watched>().is_none(), "nothing is opened");
+        assert!(app.in_persons_own_workspace(|_| ()).is_none());
+        app.harness().relayout();
+        let reason = app
+            .actions()
+            .unwrap()
+            .into_iter()
+            .find(|entry| {
+                entry.address.resource == "person:test.watched" && entry.address.action == "watch"
+            })
+            .map(|entry| match entry.contract.availability {
+                tilo_app::tilo_actions::Availability::Unavailable { reason, .. } => reason,
+                tilo_app::tilo_actions::Availability::Available => String::new(),
+            })
+            .expect("the declared record is published");
+        assert!(reason.contains("Sign in"), "{reason}");
     }
 
     phase an_agent_reads_the_persons_own_record_now_and_at_a_version;
@@ -215,8 +282,8 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
         let watched = app.profile_resource::<Watched>().unwrap();
         watched.invoke(&Watched::WATCH.with("first")).unwrap();
+        app.settle();
         let after_first = watched
-            .record()
             .read(|doc| {
                 let heads = doc.clone().get_heads();
                 heads
@@ -227,6 +294,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         watched.invoke(&Watched::WATCH.with("second")).unwrap();
+        app.settle();
         app.harness().relayout();
 
         let read = app
@@ -261,7 +329,7 @@ tilo_test_env::scenario! {
 }
 
 /// Whether the window the app shows names `label` to assistive technology.
-fn shows(app: &mut TestApp<UndeclaredApp>, label: &str) -> bool {
+fn shows(app: &mut TestApp<ShowingApp>, label: &str) -> bool {
     app.harness()
         .a11y_nodes()
         .iter()
@@ -269,7 +337,7 @@ fn shows(app: &mut TestApp<UndeclaredApp>, label: &str) -> bool {
 }
 
 /// What the window the app shows announces, for a failure to say.
-fn shown(app: &mut TestApp<UndeclaredApp>) -> String {
+fn shown(app: &mut TestApp<ShowingApp>) -> String {
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -293,13 +361,17 @@ impl ResourceApp for DeclaringApp {
     }
 }
 
-/// An app reading the person's watch history without declaring it.
-struct UndeclaredApp;
+/// An app showing the person's watch history, which it declares in its records.
+struct ShowingApp;
 
-impl ResourceApp for UndeclaredApp {
+impl ResourceApp for ShowingApp {
     type Resource = Queue;
-    const ID: &'static str = "so.tilo.test-undeclared";
-    const TITLE: &'static str = "Undeclared";
+    const ID: &'static str = "so.tilo.test-showing";
+    const TITLE: &'static str = "Showing";
+
+    fn resources(resources: &mut Resources<'_>) {
+        resources.profile_resource::<Watched>();
+    }
 
     fn view(cx: &mut ViewCx<Queue>) -> Element {
         let shown = match cx.profile_resource::<Watched>() {

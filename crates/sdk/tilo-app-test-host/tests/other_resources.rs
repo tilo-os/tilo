@@ -108,6 +108,7 @@ impl ResourceApp for BoardApp {
     type Resource = Board;
     const ID: &'static str = "so.tilo.test-board";
     const TITLE: &'static str = "Board";
+    const PERSON_RESOURCES: &'static [PersonKind] = &[PersonKind::profile::<Playback>()];
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
         let mut column = Column::new();
@@ -161,6 +162,23 @@ fn section<T: SettingsSchema>(app: &str) -> String {
         section,
         ui_core::settings_placement::per_app(section).then_some(app),
     )
+}
+
+/// The person's records the window publishes, by their address.
+fn person_records<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<String> {
+    app.harness().relayout();
+    let mut records: Vec<String> = app
+        .agent_surface()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["resource"].as_str())
+        .filter(|resource| resource.starts_with("person:"))
+        .map(str::to_owned)
+        .collect();
+    records.sort();
+    records.dedup();
+    records
 }
 
 fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String> {
@@ -431,9 +449,13 @@ tilo_test_env::scenario! {
 
     phase the_persons_record_is_edited_by_path_as_the_person_whatever_their_role;
     {
+        // Her own workspace keeps the record; the board is another workspace's, whose window
+        // reads it there and changes it there.
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+        app.settle();
         let control = checkbox(&mut app, "autoplay");
         app.harness().click_named(&control).unwrap();
+        app.settle();
         let playback = app.profile_resource::<Playback>().unwrap();
         assert!(playback.with(|state| state.autoplay));
 
@@ -450,14 +472,17 @@ tilo_test_env::scenario! {
             serde_json::json!({ "channel": "news" }),
         )
         .unwrap();
+        app.settle();
         assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
 
         // Recorded in the record's history, one step of the person's each.
         app.call_on("person:test.playback", "undo", serde_json::json!({}))
             .unwrap();
+        app.settle();
         assert!(playback.with(|state| state.muted.is_empty()));
         app.call_on("person:test.playback", "undo", serde_json::json!({}))
             .unwrap();
+        app.settle();
         assert!(!playback.with(|state| state.autoplay));
 
         // Someone else in the workspace does not change it; software acting for
@@ -481,14 +506,28 @@ tilo_test_env::scenario! {
             serde_json::json!({ "channel": "music" }),
         )
         .unwrap();
+        app.settle();
         assert!(playback.with(|state| state.muted.contains(&"music".to_owned())));
         assert!(!playback.with(|state| state.muted.contains(&"sports".to_owned())));
+
+        // The agent's step is the agent's: the person's undo leaves it, the agent's takes it
+        // back.
+        app.call_by(
+            tilo_actions::ActionInvoker::agent("helper", ada()).acting_for(ada()),
+            "person:test.playback",
+            "undo",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        app.settle();
+        assert!(playback.with(|state| state.muted.is_empty()));
 
         // A viewer of the workspace still changes their own record.
         app.set_role(Role::Viewer);
         app.harness().relayout();
         let control = checkbox(&mut app, "autoplay");
         app.harness().click_named(&control).unwrap();
+        app.settle();
         assert!(playback.with(|state| state.autoplay));
         assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
     }
@@ -531,9 +570,11 @@ tilo_test_env::scenario! {
         app.call_on("person:test.playback", "unmute-all", serde_json::json!({}))
             .unwrap();
         assert_eq!(app.asking(), None);
+        app.settle();
         assert!(playback.with(|state| state.muted.is_empty()));
         app.call_on("person:test.playback", "undo", serde_json::json!({}))
             .unwrap();
+        app.settle();
         assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
     }
 
@@ -542,7 +583,7 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
         // The person record of playback is declared and kept open; the display section is the
         // settings document's, with no record of its own.
-        assert_eq!(app.open_person_resources(), 1);
+        assert_eq!(person_records(&mut app), ["person:test.playback"]);
         let display = section::<Display>(DeclaringApp::ID);
         assert!(published(&mut app, &display).contains(&"set-high-contrast".to_owned()));
         app.call_on(
@@ -551,7 +592,11 @@ tilo_test_env::scenario! {
             serde_json::json!({ "value": true }),
         )
         .unwrap();
-        assert_eq!(app.open_person_resources(), 1, "a write keeps no record");
+        assert_eq!(
+            person_records(&mut app),
+            ["person:test.playback"],
+            "a write keeps no record"
+        );
         assert!(app.settings::<Display>().get().high_contrast);
         app.call_on(
             &display,
@@ -569,6 +614,7 @@ tilo_test_env::scenario! {
             serde_json::json!({ "channel": "news" }),
         )
         .unwrap();
+        app.settle();
         let playback = app.profile_resource::<Playback>().unwrap();
         assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
 

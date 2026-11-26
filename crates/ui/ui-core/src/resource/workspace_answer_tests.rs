@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
         // The "open it, or create it where nothing holds it" every stored
         // record goes through waits for the host's answer.
         assert!(matches!(
-            super::person::open_in(&store, &want, &|doc| {
+            super::stored::open_in(&store, &want, &|doc| {
                 put_text(doc, "body", "a fresh one");
                 Ok(())
             }),
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
             Err(ResourceOpenError::Arriving)
         ));
         assert_eq!(store.wanted_resources(), std::slice::from_ref(&other.id));
-        super::person::open_in(&store, &new, &|doc| {
+        super::stored::open_in(&store, &new, &|doc| {
             put_text(doc, "body", "mine");
             Ok(())
         })
@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
         );
         assert!(store.wanted_resources().is_empty(), "not asked for again");
         assert!(
-            super::person::open_in(&store, &theirs, &|doc| {
+            super::stored::open_in(&store, &theirs, &|doc| {
                 put_text(doc, "body", "a fresh one");
                 Ok(())
             })

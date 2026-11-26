@@ -273,6 +273,12 @@ impl Peer {
         let granted = match (request.approval(), &continued, grants) {
             (None, None, Some(grants)) => {
                 tilo_actions::api::locate(resources, address).map_or(Ok(()), |(resource, spec)| {
+                    // A record another workspace holds is decided there, never by this
+                    // window's grants; a settings section is the person's own, decided by its
+                    // model and the settings store.
+                    if resource.workspace.is_some() || resource.kind.starts_with("settings.") {
+                        return Ok(());
+                    }
                     let typed = match &request.argument {
                         InvokeArgument::Json(arguments) => Some(arguments),
                         _ => None,
@@ -767,6 +773,7 @@ impl Driver {
     pub(super) fn peer_owes_frame(&self) -> bool {
         self.peer.as_ref().is_some_and(|peer| {
             peer.served_by_caller.owes_decision()
+                || peer.served_by_caller.owes_reading()
                 || peer.receipts_owed.iter().any(|invocation| {
                     peer.exchange.borrow().sent.iter().any(|request| {
                         matches!(request, CollabRequest::UpdateInvocation { update, .. }
@@ -803,7 +810,8 @@ impl Driver {
                     matches!(
                         request,
                         CollabRequest::RemoteAction {
-                            message: RemoteActionMessage::Invoke(_),
+                            message: RemoteActionMessage::Invoke(_)
+                                | RemoteActionMessage::ResourceRead { .. },
                             ..
                         } | CollabRequest::DecideShownActions { .. }
                     )
@@ -814,8 +822,11 @@ impl Driver {
             asked
         };
         let receipted = peer.answer_owed_receipts();
+        for reading in peer.served_by_caller.moved() {
+            peer.answer(Some(reading));
+        }
         if asked.is_empty() && peer.forwarded.is_empty() && !peer.served_by_caller.owes_decision() {
-            return receipted;
+            return receipted || !peer.exchange.borrow().inbound.is_empty();
         }
         // The broker admits against the surface the app published to it, where a hosted
         // component's resources stand at the addresses it binds. A resource the app publishes
@@ -859,6 +870,21 @@ impl Driver {
             else {
                 continue;
             };
+            // An effect of the app's names another of its own actions by the record's own id,
+            // not the alias the transport binds it under: the record is admitted by that name,
+            // as it is delivered back by it.
+            let named = !request
+                .target
+                .address
+                .resource
+                .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX);
+            if named
+                && !resources
+                    .iter()
+                    .any(|known| known.id.as_str() == resource.id.as_str())
+            {
+                resources.push(resource.clone());
+            }
             let Ok(resource) = self
                 .app
                 .actions
@@ -880,6 +906,24 @@ impl Driver {
                     message: RemoteActionMessage::Invoke(request),
                     ..
                 } => request,
+                CollabRequest::RemoteAction {
+                    message:
+                        RemoteActionMessage::ResourceRead {
+                            correlation, read, ..
+                        },
+                    ..
+                } => {
+                    match peer.served_by_caller.read(correlation, &read) {
+                        Some(answer) => peer.answer(answer),
+                        None => peer.answer(Some(RemoteActionMessage::ResourceReading {
+                            correlation,
+                            result: Err(ActionCallError::Unavailable {
+                                reason: "nothing here keeps that workspace's records".into(),
+                            }),
+                        })),
+                    }
+                    continue;
+                }
                 asked => {
                     if let Some(verdicts) = peer.served_by_caller.asked(&asked) {
                         peer.exchange.borrow_mut().inbound.push_back(verdicts);

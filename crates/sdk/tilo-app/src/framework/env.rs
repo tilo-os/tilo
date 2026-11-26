@@ -464,13 +464,13 @@ impl<R: Resource> ResourceEnv<R> {
         }
     }
 
-    /// The record `P` the person keeps for themselves, in their own scope
-    /// rather than in the window's workspace: presentation data only they use
-    /// on their own devices, such as the signature they sign documents with or
-    /// the words they taught the on-screen keyboard. No other member reads or
-    /// changes it, and it reaches the person's other devices with their
-    /// personal store. A record the workspace keeps is
-    /// [`Self::shared_workspace`]'s.
+    /// The record `P` the person keeps for themselves, in their own workspace
+    /// rather than the window's: presentation data only they use, such as the
+    /// signature they sign documents with. No other member reads or changes it,
+    /// and it reaches the person's devices from their workspace. `None` in a
+    /// private window; on a device with no identity it opens nothing, and the
+    /// window publishes it unavailable until the person signs in. A record the
+    /// workspace keeps is [`Self::shared_workspace`]'s.
     pub fn profile_resource<P: Resource>(&self) -> Option<super::PersonResource<P>> {
         self.storage.profile_resource::<P>()
     }

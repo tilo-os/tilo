@@ -99,6 +99,7 @@ fn device_with(
             relays,
             lan,
             live: None,
+            devices: None,
         },
         Vec::new(),
     )

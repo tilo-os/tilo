@@ -739,7 +739,8 @@ impl Session {
                 (cert.user_public_key, cert.device_public_key)
             });
         // Whether a write to a workspace is sealed yet: the device's daemon seals what it keeps,
-        // so until it keeps the workspace, a setting is kept on the device.
+        // so until it keeps the workspace, a setting is kept on the device. The daemon's own
+        // reading of what it holds, followed: the loop reads no store of the daemon to learn it.
         let sealing = |workspace: &str| {
             view.zip(tilo_desktop_model::WorkspaceId::parse(workspace))
                 .is_some_and(|(view, id)| view.holds(id))

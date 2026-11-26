@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::PersonResources;
+use crate::followed_resource::SharedFollow;
 use iroh::EndpointId;
 use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
 use tilo_resource::Invoke;
-use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 
 use super::live::Live;
 use super::store;
@@ -113,12 +113,12 @@ pub(crate) fn about(label: &str) -> DeviceAbout {
 /// way this device's frames leave.
 pub(crate) struct SessionFabric {
     live: Mutex<Live>,
-    /// The person's own workspace, where what lasts of each of their devices is kept, and this
-    /// device's certificate there. A session without it keeps nothing of its own and reads only
-    /// this device.
-    personal: Option<(PersonResources, tilo_user_identity::DeviceCert)>,
-    /// The person's devices as the workspace last read, and its change count then: read again
-    /// only when it moved.
+    /// The record of the person's devices in their own workspace, where what lasts of each of
+    /// them is kept, as the session follows it, and this device's certificate there. A session
+    /// without it keeps nothing of its own and reads only this device.
+    personal: Option<(SharedFollow<Devices>, tilo_user_identity::DeviceCert)>,
+    /// The person's devices as the record last read, and its reading then: read again only when
+    /// it moved.
     kept: Mutex<Option<(u64, PersonDevices)>>,
     /// Whether the copies this device offers moved since the person's other devices were last
     /// told.
@@ -181,12 +181,12 @@ impl Reach {
 
 impl SessionFabric {
     /// The link of `device`, called `label`, onto the person's devices, with what lasts of them in
-    /// `personal`. What this device is reaches the record through its daemon
+    /// the record `personal` follows. What this device is reaches the record through its daemon
     /// ([`crate::owner_session::OwnerDevices`]).
     pub(crate) fn new(
         device: DeviceId,
         label: String,
-        personal: Option<(PersonResources, tilo_user_identity::DeviceCert)>,
+        personal: Option<(SharedFollow<Devices>, tilo_user_identity::DeviceCert)>,
         reach: Reach,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -311,29 +311,34 @@ impl SessionFabric {
 
 impl FabricLink for SessionFabric {
     fn person_devices(&self) -> Option<Devices> {
-        let (resources, _) = self.personal.as_ref()?;
-        resources.read::<Devices>(DEVICES)
+        let (record, _) = self.personal.as_ref()?;
+        Some(Devices::clone(&record.get()))
     }
 
     fn apply_person_devices(&self, action: Invoke<Devices>) -> Result<(), String> {
-        let (resources, _) = self
+        let (record, _) = self
             .personal
             .as_ref()
             .ok_or_else(|| "this device holds no record of the person's devices".to_owned())?;
-        resources.apply(DEVICES, move || action.clone());
+        let kind = action.id;
+        record.invoke_unwaited(&action, move |made| {
+            if let Err(error) = made {
+                tracing::warn!(%error, action = kind, "the record of the person's devices was not changed");
+            }
+        });
         Ok(())
     }
 
     fn devices(&self) -> PersonDevices {
         let mut kept = match &self.personal {
-            Some((resources, _)) => {
-                let seen = *resources.changes().borrow();
+            Some((record, _)) => {
+                let seen = record.revision();
                 let mut cache = self.kept.lock_recover();
                 match cache.as_ref() {
                     Some((at, devices)) if *at == seen => devices.clone(),
                     _ => {
                         let devices =
-                            PersonDevices::new(store::kept(resources, &self.user_public_key));
+                            PersonDevices::new(store::kept(&record.get(), &self.user_public_key));
                         *cache = Some((seen, devices.clone()));
                         devices
                     }

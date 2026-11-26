@@ -98,10 +98,14 @@ pub(crate) struct Shell {
     /// Lent last to every part, by the workspace in front and the media it was opened over: a
     /// part told the same one again keeps the store it has.
     lent_content: Option<(String, Option<ui::content::ContentStore>)>,
-    /// The shell's own resources, shared by every part: one display draws what another wrote, so
-    /// a change any part writes is the whole shell's. Where they live on this device and how they
-    /// reach the person's other devices ([`crate::shell_document`]).
-    record_kept: crate::shell_document::ShellRecord,
+    /// The shell's own resources (`resources: .own`, the person's shell choices), shared by every
+    /// part: one display draws what another wrote, so a change any part writes is the whole
+    /// shell's. In this session's memory until the device's daemon holds the person's own
+    /// workspace, then, for a shell the daemon runs ([`Self::kept_elsewhere`]), drawn from there
+    /// ([`Self::keep_record_in`]), which carries them to the person's other devices.
+    record: tilolang_tilo::resources::ResourceStore,
+    /// Whether the record is kept in the person's own workspace yet.
+    record_kept: bool,
     /// One part per output, in the order the outputs are known: each stands on its own display, and
     /// a display added (or taken away) has its part made (or dropped) to follow.
     parts: Vec<(String, Rc<RefCell<ShellPart>>)>,
@@ -119,13 +123,11 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
-    /// Their own workspace's revision the shell's resources were last taken in at: an unchanged
-    /// one is not read again, which is what every pass runs.
-    record_synced: std::cell::Cell<Option<u64>>,
     /// Whether the shell's records are the person's, kept in their own workspace by the device's
     /// daemon: the installed shell, which the daemon runs too, on a session the daemon started.
     /// A change of them is then the person's call of the shell's action on the device's dispatch
-    /// ([`Self::own_calls`]); without one the session keeps them for itself.
+    /// ([`Self::own_calls`]), and the record is drawn from their workspace once the daemon holds
+    /// it ([`Self::keep_record_in`]); without one the session keeps them for itself, in memory.
     kept_elsewhere: bool,
     /// What the device's dispatch refused of those calls, as the calls settle off the loop: said
     /// with the shell's other refusals on the next pass.
@@ -209,10 +211,6 @@ impl Shell {
             .map(|compiled| compiled.meta.app.clone())
             .ok_or("the shell package did not compile")?;
         let link = Rc::new(SessionLink::default());
-        // The shell's own record is the person's, kept where every app's own record of theirs is
-        // kept and carried to their other devices as one: read back from what an earlier session
-        // kept, or the shell's defaults on a device that never showed the shell.
-        let record = crate::shell_document::ShellRecord::open(kept_elsewhere);
         let mut shell = Self {
             lists,
             link,
@@ -225,7 +223,8 @@ impl Shell {
             republish: false,
             styles_seen: None,
             rounds: 0,
-            record_kept: record,
+            record: tilolang_tilo::resources::ResourceStore::in_memory(),
+            record_kept: false,
             parts: Vec::new(),
             lent_content: None,
             packages,
@@ -234,7 +233,6 @@ impl Shell {
             bands: std::cell::Cell::new(None),
             wells,
             services_seen: None,
-            record_synced: std::cell::Cell::new(None),
             kept_elsewhere,
             dispatch_refusals: std::sync::Arc::default(),
             theme,
@@ -358,6 +356,75 @@ impl Shell {
             .collect()
     }
 
+    /// A part of the shell over its record at `scale`, which makes and seeds the shell's roots when
+    /// `seed`, drawing the shell's theme and the windows' pictures.
+    fn part(&self, compositor: &Compositor, scale: f64, seed: bool) -> ShellPart {
+        let wake = compositor.waker();
+        let mut part = ShellPart::new(
+            crate::platform::surfaces::ShellIdentity {
+                app: &self.app,
+                packages: self.packages.clone(),
+                person: &self.person,
+                link: Rc::clone(&self.link),
+                store: self.record.clone(),
+                seed,
+                kept_elsewhere: self.kept_elsewhere,
+            },
+            scale,
+            std::sync::Arc::new(move || wake.wake_by_ref()),
+            self.wells.clone(),
+        );
+        part.set_theme(self.theme.clone());
+        // The windows the views picture, each display's own: the reading's window keys stand for
+        // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
+        // its view shows the app's mark instead of its pixels.
+        let handle = self.lists.handle.clone();
+        part.carry_floats(handle.clone());
+        part.show_pictures(
+            ui::widget::Previews::new(),
+            Rc::new(move |key: &str| pictured(&handle, key)),
+        );
+        part
+    }
+
+    /// Keep the shell's record in the person's own workspace, whose store `store` is, from now on,
+    /// as an app the session runs itself is kept in a workspace once the device's daemon holds it
+    /// ([`tilolang_service::WorkspacePort`]): each part is made again over it, the first seeding
+    /// what the workspace holds none of yet, and stands where it stood.
+    pub(crate) fn keep_record_in(
+        &mut self,
+        store: Rc<dyn tilo_service::WorkspaceStore>,
+        compositor: &mut Compositor,
+        surfaces: &mut Surfaces,
+    ) {
+        let started = std::time::Instant::now();
+        self.record = tilolang_tilo::resources::ResourceStore::new(Rc::new(
+            tilolang_service::WorkspacePort::new(store, &self.app),
+        ));
+        self.record_kept = true;
+        for (index, (_, part)) in self.parts.iter().enumerate() {
+            let scale = part.borrow().part_scale();
+            let made = self.part(compositor, scale, index == 0);
+            *part.borrow_mut() = made;
+        }
+        self.follow_outputs(compositor, surfaces, &[]);
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            parts = self.parts.len(),
+            "the shell's record is kept in the person's own workspace"
+        );
+    }
+
+    /// Whether the shell's record is kept in the person's own workspace yet.
+    pub(crate) fn record_kept(&self) -> bool {
+        self.record_kept
+    }
+
+    /// Another of the person's devices wrote the shell's record: what was read of it is read again.
+    pub(crate) fn record_moved(&self) {
+        self.record.moved();
+    }
+
     /// Make the shell's part on `output` (its connector name and logical rectangle), sharing the
     /// shell's record with every other part, and hand it to `compositor` and its surfaces.
     fn mount_part(
@@ -370,36 +437,12 @@ impl Shell {
         fullscreen: &[String],
         screen: Option<tilo_session_core::shell::LayoutDisplayReading>,
     ) {
-        let wake = compositor.waker();
-        let mut part = ShellPart::new(
-            crate::platform::surfaces::ShellIdentity {
-                app: &self.app,
-                packages: self.packages.clone(),
-                person: &self.person,
-                link: Rc::clone(&self.link),
-                store: self.record_kept.store(),
-                // The first part of the shell makes the shell's roots and seeds them; every other
-                // display's part draws the ones the shell already has.
-                seed: self.parts.is_empty(),
-                kept_elsewhere: self.kept_elsewhere,
-            },
-            scale,
-            std::sync::Arc::new(move || wake.wake_by_ref()),
-            self.wells.clone(),
-        );
-        part.set_theme(self.theme.clone());
+        // The first part of the shell makes the shell's roots and seeds them; every other
+        // display's part draws the ones the shell already has.
+        let mut part = self.part(compositor, scale, self.parts.is_empty());
         part.set_display(Some((output.to_owned(), rect)), scale);
         part.set_screen(screen);
         part.set_fullscreen(fullscreen.to_vec());
-        // The windows the views picture, each display's own: the reading's window keys stand for
-        // the tabs of the workspace in front, and a window whose app holds secrets is left out, so
-        // its view shows the app's mark instead of its pixels.
-        let handle = self.lists.handle.clone();
-        part.carry_floats(handle.clone());
-        part.show_pictures(
-            ui::widget::Previews::new(),
-            Rc::new(move |key: &str| pictured(&handle, key)),
-        );
         let part = Rc::new(RefCell::new(part));
         compositor.add_surface(part.clone());
         // Each display's part is its own surface on the API: what the person, a script or an agent
@@ -915,7 +958,7 @@ impl Shell {
             Some((root, field))
         })?;
         let host = tilolang_tilo::host::Host::open(
-            self.record_kept.store(),
+            self.record.clone(),
             tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
                 self.person.as_str(),
             )),
@@ -931,27 +974,6 @@ impl Shell {
         );
         let value = host.runtime().read(&at, &held.id).ok()?;
         tilolang_tilo::runtime::value::to_json(&value).ok()
-    }
-
-    /// Take in the shell's resources as the person's own workspace holds them (`store`): what
-    /// another of their devices or the device's dispatch arranged (an agent's `show-style`, a
-    /// press on a desktop page) is merged here, so the shell this session draws is the one they
-    /// have everywhere. The session writes nothing there: a change to the person's workspace is
-    /// an action the daemon records with who made it, never a document this session merges in.
-    ///
-    /// Cheap when nothing moved, which is what every pass runs.
-    pub(crate) fn sync_resource(&self, store: &crate::PersonResources) {
-        let revision = *store.changes().borrow();
-        if self.record_synced.get() == Some(revision) {
-            return;
-        }
-        let app = self.app.as_str();
-        for doc in store.documents(app) {
-            if let Some(bytes) = store.document((app, &doc)) {
-                self.record_kept.take_in(&doc, &bytes);
-            }
-        }
-        self.record_synced.set(Some(revision));
     }
 
     /// The shell's package as the session runs it, its compiled module and description: what its
@@ -979,7 +1001,7 @@ impl Shell {
         let Some(compiled) = self.package() else {
             return;
         };
-        let store = self.record_kept.store();
+        let store = self.record.clone();
         let taken = services.borrow_mut().share(&tilo_service::Share {
             app: &compiled.meta.app,
             wasm: &compiled.wasm,
@@ -1084,7 +1106,7 @@ impl Shell {
     /// calls of the shell's actions in `workspace`, the one in front: the call an agent or a
     /// press on their desktop page makes. The daemon runs each on the record in their own
     /// workspace and keeps who made it; the shell draws the change as it takes the record back
-    /// in ([`Self::sync_resource`]). Nothing waits for the answer; what the dispatch refuses is
+    /// in ([`Self::record_moved`]). Nothing waits for the answer; what the dispatch refuses is
     /// said with the shell's refusals.
     pub(crate) fn own_calls(
         &self,
@@ -1951,20 +1973,49 @@ impl crate::Session {
         }
     }
 
-    /// Keep the shell's own record: say once if the copy this device kept could not be opened,
-    /// write what the parts committed into the copy on this device, and carry it to the person's
-    /// other devices and take in what theirs holds. Cheap when nothing moved, which every pass runs.
-    ///
-    /// The person's store is borrowed only for it, so the parts' displays after it borrow the
-    /// session freely.
-    fn follow_shell_record(shell: &Shell, shared: &crate::Shared) {
-        let store = shared.sync.as_ref().map(|sync| sync.person_resources());
-        // The shell's resources are the person's on every device of theirs: what they arranged here
-        // reaches their others through their own workspace, and what they arranged there reaches
-        // this session.
-        if let Some(store) = store {
-            shell.sync_resource(&store);
+    /// Draw the shell's own record from the person's own workspace once the device's daemon holds
+    /// it, as the apps the session runs itself keep their resources in the workspace the person
+    /// is in ([`crate::Shared::keep_app_stores`]), and draw what another of their devices or the
+    /// device's dispatch (an agent's `show-style`, a press on a desktop page) wrote to it since the
+    /// last pass. The store to draw it from, once the daemon holds the workspace.
+    fn follow_shell_record(
+        shell: &Shell,
+        shared: &crate::Shared,
+    ) -> Option<Rc<dyn tilo_service::WorkspaceStore>> {
+        // A shell the daemon does not run (one no daemon started, or this build's own copy) keeps
+        // its record in this session's memory.
+        if !shell.kept_elsewhere {
+            return None;
         }
+        let (workspace, writes) = shared.shell_home.as_ref()?;
+        if shell.record_kept() {
+            use tokio::sync::broadcast::error::TryRecvError;
+            let mut moved = false;
+            loop {
+                match writes.borrow_mut().try_recv() {
+                    // A write that names no workspace is the feed falling behind.
+                    Ok(write) => {
+                        moved |= write.workspace.is_empty()
+                            || (write.workspace == *workspace && write.app == shell.app);
+                    }
+                    Err(TryRecvError::Lagged(_)) => moved = true,
+                    Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                }
+            }
+            if moved {
+                shell.record_moved();
+            }
+            return None;
+        }
+        // The daemon's own reading of what it holds, followed, rather than an ask on the loop: a
+        // store is offered once the workspace is held here, and the pass never waits on it.
+        let held = shared.view.as_ref().is_some_and(|view| {
+            tilo_desktop_model::WorkspaceId::parse(workspace).is_some_and(|id| view.holds(id))
+        });
+        if !held {
+            return None;
+        }
+        (shared.held_stores)(workspace.clone(), tilo_rt::app().handle())
     }
 
     /// What the screen says of its edges, as the displays publish it: it moves without the
@@ -2033,7 +2084,9 @@ impl crate::Session {
         }
         // The shell's own record: what survives the session ending, and what the person's other
         // devices draw.
-        Self::follow_shell_record(shell, &self.shared);
+        if let Some(store) = Self::follow_shell_record(shell, &self.shared) {
+            shell.keep_record_in(store, &mut self.compositor, &mut self.shared.published);
+        }
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
         shell.follow_displays(&mut self.compositor, &mut self.shared.published, &identify);
@@ -2081,6 +2134,13 @@ impl crate::Session {
     #[must_use]
     pub fn shell_link(&self) -> Option<Rc<crate::platform::surfaces::SessionLink>> {
         self.shell.as_ref().map(Shell::link)
+    }
+
+    /// Whether the shell's own record is kept in the person's own workspace: what a test waits for
+    /// before it proves a shell choice survives the session.
+    #[must_use]
+    pub fn shell_record_kept(&self) -> bool {
+        self.shell.as_ref().is_some_and(Shell::record_kept)
     }
 
     /// The shell's own record as a setting's value, by the field's name in its type (`dock_edge`,

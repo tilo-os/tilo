@@ -265,10 +265,10 @@ pub(crate) struct Local {
     /// This device's fabric, when it is a certified device of the person's: `None` on a session
     /// that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
-    /// What is the person's alone, in their own workspace: the session's view of it, written
-    /// through the device's daemon ([`crate::person_store::DaemonPersonStore`]), whether this
-    /// session keeps a fabric or not.
-    person: crate::PersonResources,
+    /// The record of the person's devices in their own workspace, as the session follows it at
+    /// the device's daemon, and this device's certificate there, whether this session keeps a
+    /// fabric or not.
+    person: Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)>,
     /// The workspaces' live resources, told which devices this session reaches in each: a row
     /// live on a device that went away goes with it.
     live_rows: tilo_workspace_service::live::LiveRows,
@@ -636,12 +636,13 @@ impl Local {
             .map(|fabric| Arc::clone(fabric) as crate::platform::fabric::SharedLink)
     }
 
-    /// The person's own workspace's resources, read and written through this device's daemon,
-    /// which keeps the workspace: the one place what is theirs alone is read and written,
-    /// whether this session keeps a fabric or not.
+    /// The record of the person's devices in their own workspace, as the session follows it, and
+    /// this device's certificate there.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn person_resources(&self) -> crate::PersonResources {
+    pub(crate) fn person_devices(
+        &self,
+    ) -> Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)> {
         self.person.clone()
     }
 
@@ -1084,6 +1085,12 @@ impl Drop for Client {
     }
 }
 
+/// The record of the person's devices, as the session follows it.
+#[cfg(target_os = "linux")]
+type PersonDevicesRecord = crate::followed_resource::SharedFollow<
+    tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+>;
+
 /// What this device brings as it enters the peer network: the identity its endpoint runs on,
 /// where it dials, and how it hears back.
 #[cfg(target_os = "linux")]
@@ -1113,6 +1120,10 @@ pub struct Entry {
     /// for a client that runs its own on this process's endpoint (a test's), rather than through
     /// a device daemon's.
     pub live: Option<Rc<std::cell::RefCell<Option<crate::live::Live>>>>,
+    /// The record of the person's devices in their own workspace, as the session follows it at
+    /// the device's daemon: what lasts of each of their devices, read and changed there. `None`
+    /// where the session follows none (one that reaches no daemon, or a test's).
+    pub devices: Option<PersonDevicesRecord>,
 }
 
 impl Client {
@@ -1131,7 +1142,7 @@ impl Client {
         entry: Entry,
         beside: tilo_network_actor::own_service::Protocols,
     ) -> std::io::Result<Self> {
-        let (identity, wake) = (entry.identity, entry.wake);
+        let (identity, wake, devices) = (entry.identity, entry.wake, entry.devices);
         let live_rows = tilo_workspace_service::live::LiveRows::default();
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
@@ -1145,12 +1156,14 @@ impl Client {
             commands: commands.clone(),
         };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
-        // What is the person's alone, read from their own workspace once the session reaches the
-        // device's daemon that keeps it ([`crate::person_store::DaemonPersonStore`]).
-        let person = crate::PersonResources::default();
+        let person = devices.clone().zip(
+            identity
+                .as_ref()
+                .map(|identity| identity.device_cert.clone()),
+        );
         let fabric = fabric_of(
             identity.as_ref(),
-            person.clone(),
+            devices,
             host_outbox,
             entry.continuity,
             lan.clone(),
@@ -1548,15 +1561,19 @@ impl Client {
     /// what they hold, and carries their device fabric.
     #[cfg(target_os = "linux")]
     pub(crate) fn follow_person(&self, runtime: &tokio::runtime::Handle, wake: tilo_service::Wake) {
-        let Some(dials) = self.sibling_dials() else {
+        let (Some(dials), Some((record, cert))) = (self.sibling_dials(), self.person_devices())
+        else {
             return;
         };
-        let store = self.person_resources();
+        let person = cert.user_public_key;
         runtime.spawn(async move {
-            let mut changes = store.changes();
+            let mut changes = record.changes();
             let mut again = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
-                for (device, addresses) in store.kept_devices_at() {
+                for (device, addresses) in record
+                    .get()
+                    .certified_at_with_endpoints(&person, tilo_clock::unix_now_ns())
+                {
                     dials.dial(device.device_public_key, &addresses);
                 }
                 wake();
@@ -1572,12 +1589,14 @@ impl Client {
         });
     }
 
-    /// The person's own workspace's resources, which this session reads and writes what is theirs
-    /// alone through once its service holds the workspace.
+    /// The record of the person's devices in their own workspace, as the session follows it, and
+    /// this device's certificate there.
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn person_resources(&self) -> crate::PersonResources {
-        self.hosting.local.person_resources()
+    pub(crate) fn person_devices(
+        &self,
+    ) -> Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)> {
+        self.hosting.local.person_devices()
     }
 
     /// The way to the person's other devices over the live link, and from them to this one;
@@ -1753,7 +1772,7 @@ struct Hosted {
     desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     fabric: Option<Arc<SessionFabric>>,
-    person: crate::PersonResources,
+    person: Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)>,
     live_rows: tilo_workspace_service::live::LiveRows,
     reachability: Reachability,
     live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
@@ -1824,7 +1843,7 @@ impl Local {
             versions,
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,
-            person: crate::PersonResources::default(),
+            person: None,
             live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
             live,
@@ -1908,11 +1927,11 @@ fn certified_as(identity: Option<&DeviceIdentity>) -> (Option<[u8; 32]>, String)
 
 /// This device's link onto the person's other devices before the endpoint runs, so a device that
 /// proves itself at the actor's first tick is heard: named by this device's certificate, with what
-/// lasts of the person's devices in their own workspace's `resources`.
+/// lasts of the person's devices in the record of them the session follows as `devices`.
 #[cfg(target_os = "linux")]
 fn fabric_of(
     identity: Option<&DeviceIdentity>,
-    resources: crate::PersonResources,
+    devices: Option<PersonDevicesRecord>,
     outgoing: HostOutbox,
     continuity: Continuity,
     lan: tilo_endpoint_reachability::Nearby,
@@ -1928,7 +1947,7 @@ fn fabric_of(
     Some(SessionFabric::new(
         device,
         identity.device_cert.device_label.clone(),
-        Some((resources, identity.device_cert.clone())),
+        devices.map(|devices| (devices, identity.device_cert.clone())),
         reach,
     ))
 }

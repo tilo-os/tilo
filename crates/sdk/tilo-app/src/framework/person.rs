@@ -1,317 +1,292 @@
-//! The records a person keeps for themselves, in their own scope rather than a
-//! workspace's: presentation data only they use on their own devices, such as
-//! the words they taught the on-screen keyboard or the signature they sign
-//! documents with. A record the workspace keeps, one for every member, is
-//! opened as the workspace's ([`super::WorkspaceResource`]).
+//! The records a person keeps for themselves, in their own workspace rather than the one a window
+//! shows: presentation data only they use, such as the signature they sign documents with. A
+//! record the workspace keeps, one for every member, is opened as the workspace's
+//! ([`super::WorkspaceResource`]).
+//!
+//! A window in the person's own workspace holds their records as it holds its own: the record is
+//! a plain [`super::WorkspaceResource`] at the person's record id, so its publication, sync,
+//! migration and history are the generic ones. A window in another workspace holds none of them:
+//! it follows each through the record API, and its changes are invoked at the app that serves the
+//! person's own workspace, which keeps and syncs the record there. With no identity on the device
+//! there is no such workspace, and nothing of the person's is kept.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_actions::{ActionContext, ActionError, ActionInvoker, ChangeKind};
+use tilo_actions::remote::{InvokeArgument, ReadAnswer, ResourceReadRequest};
+use tilo_actions::{ActionError, ActionInvoker, InvocationUpdate};
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
-use super::workspace::Pending;
+use super::workspace::{Unopened, WorkspaceResource};
 use tilo_resource::{Invoke, Resource};
 use tilo_ui_base::LocalState;
 use ui_core::history_mode::HistoryOwner;
-use ui_core::resource::ResourceType;
 use ui_core::resource::StoredResource;
-use ui_core::resource::person::PersonResources;
+use ui_core::resource::workspace::WorkspaceResources;
+use tilo_ui_base::{Arrival, FollowedRead, InvocationCall, RemoteActions};
 
-/// A record the person keeps for themselves, in their own scope rather than a
-/// workspace's: the words taught to the keyboard, the signature they sign with.
-/// The same on each of the person's devices, carried by their personal store,
-/// and no other member's.
+/// A record the person keeps for themselves, in their own workspace rather than the one the
+/// window shows: the signature they sign with. The same on each of the person's devices, and no
+/// other member's.
 ///
-/// It is a resource like the app's own: its edits are its actions, applied
-/// by the replayable executor, attributed to the person, written into its
-/// history and undone per step ([`Self::undo`]). It is created with the
-/// resource's genesis ([`Resource::initialize`]) where it does not exist
-/// yet. Read it through [`Self::state`] or [`Self::with`]; an edit from
-/// another window or device reaches it on the next frame.
+/// In a window of their own workspace it is the record itself, a
+/// [`WorkspaceResource`](super::WorkspaceResource), held and published as such. In a window of
+/// another workspace it is followed through the record API and changed at the app serving their
+/// own workspace.
 pub struct PersonResource<P: Resource> {
-    shared: Rc<Shared<P>>,
+    held: Rc<Held<P>>,
+    me: tilo_resource::MemberId,
+    backing: Backing<P>,
+}
+
+/// Where a window holds the person's record: its own workspace's copy, or one followed in the
+/// person's own workspace.
+enum Backing<P: Resource> {
+    Own(Rc<WorkspaceResource<P>>),
+    There(Rc<There<P>>),
 }
 
 impl<P: Resource> Clone for PersonResource<P> {
     fn clone(&self) -> Self {
         Self {
-            shared: Rc::clone(&self.shared),
+            held: Rc::clone(&self.held),
+            me: self.me.clone(),
+            backing: match &self.backing {
+                Backing::Own(resource) => Backing::Own(Rc::clone(resource)),
+                Backing::There(there) => Backing::There(Rc::clone(there)),
+            },
         }
     }
 }
 
-/// What a person's record is whatever its type: where it is kept, whose it is and the edits
-/// that wait for its store. The typed record ([`PersonResource`]) hands its work here, so each
-/// record type an app opens compiles only what reads its own state.
-struct Core {
-    record: StoredResource,
-    app_id: &'static str,
-    app_title: &'static str,
-    me: tilo_resource::MemberId,
-    /// The record's type, as its changes name it.
-    kind: &'static str,
-    label: &'static str,
-    /// Edits asked for while the record's store was in use, applied in order
-    /// once it is free.
-    waiting: RefCell<std::collections::VecDeque<(Pending, ActionInvoker)>>,
-    /// What the state shown was read with while edits waited: the record's
-    /// heads and how many waited. The state then holds them, so what is
-    /// read after an edit holds it although the store has not taken it yet.
-    ahead: RefCell<Option<(Vec<ui_core::automerge::ChangeHash>, usize)>>,
-    /// The window the record is opened for: woken while edits wait for the
-    /// store, so a frame's settle makes them and its next pass shows them,
-    /// rather than whichever pass comes next.
+/// A person's record in their own workspace, seen from a window in another one: followed
+/// through the record API, changed by invoking its actions at the app that serves that
+/// workspace, which holds, stores and syncs it.
+struct Remote {
+    /// The person's own workspace.
+    workspace: String,
+    /// The app whose record it is.
+    app: &'static str,
+    /// Its id there.
+    id: ui_core::resource::DocumentId,
+    remote: RemoteActions,
+    /// The record, followed: answered again after every write to it.
+    followed: FollowedRead,
+    /// The record as read so far, from its genesis: each reading is merged in, so it only grows,
+    /// as the record does in the person's workspace.
+    doc: RefCell<ui_core::automerge::AutoCommit>,
+    /// The revision of the readings `doc` holds.
+    revision: RefCell<Option<String>>,
+    /// The changes and steps sent and not yet answered, by what they were.
+    sent: RefCell<Vec<(String, InvocationCall)>>,
+}
+
+impl Remote {
+    /// The provider that serves the record: the app in the person's workspace, on this record.
+    fn provider(&self) -> String {
+        tilo_actions::remote::application_resource_target(
+            &self.workspace,
+            self.app,
+            self.id.as_str(),
+            "",
+            "",
+        )
+        .provider
+    }
+
+    /// Invoke `action` with `arguments` on the record's published resource `resource`, at the
+    /// app in the person's workspace.
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        let target = tilo_actions::remote::application_resource_target(
+            &self.workspace,
+            self.app,
+            self.id.as_str(),
+            resource,
+            action,
+        );
+        let call = self
+            .remote
+            .invoke(target, InvokeArgument::Json(arguments), None);
+        self.sent.borrow_mut().push((action.to_owned(), call));
+    }
+
+    /// Take up what the person's workspace answered since: a newer reading of the record merged
+    /// into the copy read so far, and each answered change let go, a refused one told. Whether
+    /// the copy moved.
+    fn take_answers(&self, kind: &'static str) -> bool {
+        self.sent.borrow_mut().retain(|(action, call)| {
+            call.with(|answer| match answer {
+                Arrival::Pending { .. }
+                | Arrival::Ready(
+                    InvocationUpdate::Accepted { .. }
+                    | InvocationUpdate::Progress { .. }
+                    | InvocationUpdate::Item { .. },
+                ) => true,
+                Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
+                    refused_person_change(kind, action, &error.message);
+                    false
+                }
+                Arrival::Failed(error) => {
+                    refused_person_change(kind, action, &error.to_string());
+                    false
+                }
+                Arrival::Ready(_) => false,
+            })
+        });
+        let Some((revision, document)) = self.followed.call().with(|answer| match answer {
+            Arrival::Ready(readings) => Some(reading_of(readings, self.id.as_str())),
+            Arrival::Pending { .. } | Arrival::Failed(_) => None,
+        }) else {
+            return false;
+        };
+        if self.revision.borrow().as_deref() == Some(revision.as_str()) {
+            return false;
+        }
+        *self.revision.borrow_mut() = Some(revision);
+        // Absent or still arriving there: the genesis read so far is what it holds.
+        let Some(document) = document else {
+            return false;
+        };
+        match ui_core::automerge::AutoCommit::load(&document) {
+            Ok(mut read) => {
+                let mut doc = self.doc.borrow_mut();
+                let before = doc.get_heads();
+                if let Err(error) = doc.merge(&mut read) {
+                    unreadable_person_resource(kind, &error);
+                    return false;
+                }
+                doc.get_heads() != before
+            }
+            Err(error) => {
+                unreadable_person_resource(kind, &error);
+                false
+            }
+        }
+    }
+}
+
+/// The person's record followed in their own workspace, as a window in another workspace reads
+/// it: the readings merged so far, read as `P` and followed change by change.
+struct There<P: Resource> {
+    remote: Remote,
+    live: Live<P>,
+    state: LocalState<Rc<P::State>>,
+    /// The window this record is opened for: woken when a change of it was asked and when a
+    /// reading shows it moved.
     wake: Option<ui_core::wake::WakeHandle>,
 }
 
-/// One typed record's [`Core`] and its state, followed change by change.
-struct Shared<P: Resource> {
-    core: Core,
-    /// The state, followed change by change: what views of the record read.
-    live: Live<P>,
-    /// The same state, for controls bound to it.
-    state: LocalState<Rc<P::State>>,
-    /// The record as views and the API edit it.
-    held: RefCell<Option<Rc<Held<P>>>>,
-}
-
-impl Core {
-    /// Whether edits still wait for the store.
-    fn owes(&self) -> bool {
-        !self.waiting.borrow().is_empty()
-    }
-
-    /// Make what waited for the store, in a frame's settle, where the store
-    /// is free, and wake the window so its next pass reads what it made.
-    #[inline(never)]
-    fn settle(&self) {
-        if !self.owes() {
-            return;
-        }
-        self.apply_waiting();
-        self.wake();
-    }
-
+impl<P: Resource> There<P> {
     fn wake(&self) {
         if let Some(wake) = &self.wake {
             wake.wake();
         }
     }
 
-    /// `read` the record's document with the edits waiting for its store
-    /// made in a copy of it, which is then let go here: the generic code
-    /// that reads never holds a document, so a document's teardown is
-    /// compiled once rather than in every app. Whether there was one.
-    #[inline(never)]
-    fn read_with_waiting(&self, read: &mut dyn FnMut(&ui_core::automerge::AutoCommit)) -> bool {
-        let Some(mut doc) = self.record.read(Clone::clone) else {
-            return false;
-        };
-        for (action, invoker) in self.waiting.borrow().iter() {
-            if let Err(error) = self.apply_to(&mut doc, action, invoker) {
-                tracing::warn!(kind = self.kind, %error, "a waiting edit does not apply");
-            }
-        }
-        read(&doc);
-        true
-    }
-
-    /// Refuse `action` now if, after the edits waiting for the store, it
-    /// would be refused once the store takes it.
-    #[inline(never)]
-    fn admits_after_waiting(
-        &self,
-        action: &Pending,
-        invoker: &ActionInvoker,
-    ) -> Result<(), ActionError> {
-        let Some(mut doc) = self.record.read(Clone::clone) else {
-            return Ok(());
-        };
-        for (waiting, by) in self.waiting.borrow().iter() {
-            let _ = self.apply_to(&mut doc, waiting, by);
-        }
-        self.apply_to(&mut doc, action, invoker)
-            .map_err(ActionError::Refused)
-    }
-
-    /// Apply the edits that waited for the store, in the order they were
-    /// asked for, while it is free.
-    #[inline(never)]
-    fn apply_waiting(&self) {
-        loop {
-            let Some((action, invoker)) = self.waiting.borrow_mut().pop_front() else {
-                return;
-            };
-            match self.edit(&action, &invoker) {
-                Err(unavailable) if unavailable.is_momentary() => {
-                    self.waiting.borrow_mut().push_front((action, invoker));
-                    return;
-                }
-                Err(unavailable) => {
-                    tracing::warn!(kind = self.kind, %unavailable, "a waiting edit was not made");
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(kind = self.kind, %error, "a waiting edit was refused");
-                }
-                Ok(Ok(())) => {}
-            }
-        }
-    }
-
-    /// Apply `action` as `invoker` after what waits for the store, or keep it
-    /// for the store's next free moment when the store is in use.
-    #[inline(never)]
-    fn apply_as(&self, action: Pending, invoker: &ActionInvoker) -> Result<(), ActionError> {
-        // What waited for the store goes first, so edits land in the order
-        // they were asked for.
-        self.apply_waiting();
-        let waits = !self.waiting.borrow().is_empty()
-            || match self.edit(&action, invoker) {
-                Ok(result) => {
-                    result.map_err(ActionError::Refused)?;
-                    false
-                }
-                // The store is read by whatever runs now (a pass of the
-                // app's view): the edit is made once it lets go, in the
-                // window's next settle, and what is read until then holds it.
-                Err(unavailable) if unavailable.is_momentary() => true,
-                Err(unavailable) => return Err(ActionError::Refused(unavailable.to_string())),
-            };
-        if waits {
-            self.admits_after_waiting(&action, invoker)?;
-            self.waiting
-                .borrow_mut()
-                .push_back((action, invoker.clone()));
-        }
-        Ok(())
-    }
-
-    /// Make `action` one change of the record, as `invoker`; why not, when
-    /// the record cannot be changed now.
-    fn edit(
-        &self,
-        action: &Pending,
-        invoker: &ActionInvoker,
-    ) -> Result<Result<(), String>, ui_core::resource::HistoryUnavailable> {
-        let content = action.action.change_kind() == ChangeKind::Content;
-        self.record
-            .try_edit(content, |doc| self.apply_to(doc, action, invoker))
-    }
-
-    /// Make `action` one change of `doc`, as `invoker`.
-    #[inline(never)]
-    fn apply_to(
-        &self,
-        doc: &mut ui_core::automerge::AutoCommit,
-        action: &Pending,
-        invoker: &ActionInvoker,
-    ) -> Result<(), String> {
-        let encoded = action.encoded.clone()?;
-        let context = ActionContext::for_resource(self.kind, self.kind, self.label)
-            .with_app(self.app_id, self.app_title)
-            .with_invoker(invoker.clone())
-            .with_change(action.action.change_kind());
-        let writer =
-            ui_core::history_source::authors::device_actor(&self.me.actor_bytes(), doc.get_actor());
-        tilo_actions::apply_local_with_context(
-            doc,
-            &*action.action,
-            encoded,
-            Some(&writer),
-            context,
-        )
-        .map(|_| ())
-        .map_err(|error| error.to_string())
-    }
-
-    /// What `refresh` sets the state to while edits wait for the store:
-    /// `Some(read)` names the heads and count a new state is read for, `None`
-    /// when the state shown already holds them or nothing waits.
-    fn waiting_read(&self) -> Option<(Vec<ui_core::automerge::ChangeHash>, usize)> {
-        let waiting = self.waiting.borrow().len();
-        if waiting == 0 {
-            return None;
-        }
-        let read = (self.record.heads(), waiting);
-        (self.ahead.borrow().as_ref() != Some(&read)).then_some(read)
-    }
-}
-
-impl<P: Resource> Shared<P> {
-    /// Follow the record when it moved, reading only what changed. Whether
-    /// it did.
+    /// Follow the record when it moved. Whether it did.
     fn refresh(&self) -> bool {
-        let core = &self.core;
-        core.apply_waiting();
-        if core.owes() {
-            core.wake();
-        }
-        let mut moved = match core.record.read(|doc| self.live.sync(doc)) {
-            Some(Ok(moved)) => moved,
-            Some(Err(error)) => {
+        self.remote.take_answers(P::KIND);
+        let mut moved = match self.live.sync(&self.remote.doc.borrow()) {
+            Ok(moved) => moved,
+            Err(error) => {
                 unreadable_person_resource(P::KIND, &error);
                 false
             }
-            None => false,
         };
         if !moved && self.live.unreadable().is_none() {
-            // The record is small and read whole, so a change it cannot
-            // read is noticed here rather than by whoever publishes it. The
-            // reader reads it again only when the document moved since it
-            // last read it whole; what that read found is the state too.
-            match core.record.read(|doc| self.live.reread(doc)) {
-                Some(Ok(reread)) => moved = reread,
-                Some(Err(error)) => unreadable_person_resource(P::KIND, &error),
-                None => {}
+            // The record is small and read whole, so a change it cannot read is noticed here.
+            match self.live.reread(&self.remote.doc.borrow()) {
+                Ok(reread) => moved = reread,
+                Err(error) => unreadable_person_resource(P::KIND, &error),
             }
         }
         // Views of the record follow it whole: it is small.
         let _ = self.live.take_change();
-        if core.owes() {
-            let Some(read) = core.waiting_read() else {
-                return moved;
-            };
-            if let Some(state) = self.with_waiting() {
-                self.state.set(state);
-                *core.ahead.borrow_mut() = Some(read);
-                return true;
-            }
-        }
-        if core.ahead.borrow_mut().take().is_some() || moved {
+        if moved {
             self.state.set(self.live.get());
-            return true;
         }
         moved
     }
+}
 
-    /// The state the record has once the edits waiting for the store are
-    /// made: read from a copy of it they are made in, which is then let go.
-    fn with_waiting(&self) -> Option<Rc<P::State>> {
-        let mut state = None;
-        self.core.read_with_waiting(&mut |doc| {
-            state = match tilo_resource::Reader::<P>::read(doc) {
-                Ok(reader) => Some(Rc::clone(reader.state())),
-                Err(error) => {
-                    unreadable_person_resource(P::KIND, &error);
-                    None
-                }
-            };
-        });
-        state
+/// Take back (`undo`) or bring back `author`'s last step on `record`. Whether there was one.
+fn step_as(record: &StoredResource, author: &tilo_resource::MemberId, undo: bool) -> bool {
+    if undo {
+        record.undo_as(author)
+    } else {
+        record.redo_as(author)
     }
+}
+
+/// Whether the record kept in the person's own workspace has a step of theirs to take back,
+/// as the copy this window follows holds its history: the record is undone where it is kept,
+/// so what it holds decides whether that is asked at all. A redo can only bring back an undo
+/// taken where the record is kept, so it is always asked, and the keeper answers what it took.
+fn step_held<P: Resource>(
+    there: &There<P>,
+    author: &tilo_resource::MemberId,
+    undo: bool,
+) -> bool {
+    // Opening a history opens an undo step on this thread; this one takes no step, so the
+    // step open before it stays open.
+    let open = tilo_actions::current_step();
+    let mut doc = there.remote.doc.borrow_mut();
+    let history = ui_core::UndoLog::new(&mut doc).on_any_device();
+    let held = !undo || history.can_undo_as(&doc, Some(author));
+    tilo_actions::open_step(open);
+    held
+}
+
+/// The revision of `readings` and the document of the record `record` in them, when the
+/// workspace holds one.
+fn reading_of(readings: &serde_json::Value, record: &str) -> (String, Option<Vec<u8>>) {
+    let revision = readings["revision"].as_str().unwrap_or_default().to_owned();
+    let document = readings["records"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|reading| reading["record"].as_str() == Some(record))
+        .and_then(|reading| reading["document"].as_str())
+        .and_then(unhex);
+    (revision, document)
+}
+
+/// The bytes `text` writes in hexadecimal, as a reading carries a document.
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    let digits = text.as_bytes();
+    if digits.len() % 2 != 0 {
+        return None;
+    }
+    digits
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = char::from(pair[0]).to_digit(16)?;
+            let low = char::from(pair[1]).to_digit(16)?;
+            u8::try_from(high * 16 + low).ok()
+        })
+        .collect()
 }
 
 impl<P: Resource> PersonResource<P> {
     /// The current state.
     #[must_use]
     pub fn get(&self) -> Rc<P::State> {
-        self.shared.refresh();
-        self.shared.state.with(Rc::clone)
+        match &self.backing {
+            Backing::Own(resource) => resource.get(),
+            Backing::There(there) => {
+                there.refresh();
+                there.state.with(Rc::clone)
+            }
+        }
     }
 
     /// Read the current state.
@@ -321,7 +296,10 @@ impl<P: Resource> PersonResource<P> {
 
     /// Read the record's document; `None` while its owner is busy.
     pub fn read<T>(&self, read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T) -> Option<T> {
-        self.record().read(read)
+        match &self.backing {
+            Backing::Own(resource) => resource.read(read),
+            Backing::There(there) => Some(read(&there.remote.doc.borrow())),
+        }
     }
 
     /// Why the record stopped reading as `P`, if it did: the state is then
@@ -329,29 +307,42 @@ impl<P: Resource> PersonResource<P> {
     /// published actions say the same.
     #[must_use]
     pub fn unreadable(&self) -> Option<String> {
-        self.shared.refresh();
-        self.shared.live.unreadable().map(|why| why.reason)
+        match &self.backing {
+            Backing::Own(resource) => resource.unreadable(),
+            Backing::There(there) => {
+                there.refresh();
+                there.live.unreadable().map(|why| why.reason)
+            }
+        }
     }
 
     /// The state as view state that follows every change, for a control
     /// bound to it.
     #[must_use]
     pub fn state(&self) -> LocalState<Rc<P::State>> {
-        self.shared.state.clone()
+        match &self.backing {
+            Backing::Own(resource) => resource.state(),
+            Backing::There(there) => there.state.clone(),
+        }
     }
 
     /// Increases whenever the state changes.
     #[must_use]
     pub fn revision(&self) -> u64 {
-        self.shared.refresh();
-        self.shared.live.revision()
+        match &self.backing {
+            Backing::Own(resource) => resource.revision(),
+            Backing::There(there) => {
+                there.refresh();
+                there.live.revision()
+            }
+        }
     }
 
     /// Apply `action` now: one change of the record, attributed to the
     /// person (or to whoever the invocation carried out here is for), recorded in its history and — for content the person made —
     /// one undo step of theirs.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        self.apply_as(action, &super::resources::acting(&self.shared.core.me))
+        self.apply_as(action, &super::resources::acting(&self.me))
     }
 
     /// [`Self::apply`] by `invoker`: the person, or software acting for
@@ -361,14 +352,14 @@ impl<P: Resource> PersonResource<P> {
         action: &P::Action,
         invoker: &ActionInvoker,
     ) -> Result<(), ActionError> {
-        let encoded = tilo_resource::encode::<P>(action)?;
-        let pending = Pending {
-            action: Box::new(action.clone()),
-            encoded: Ok(encoded),
-        };
-        self.shared.core.apply_as(pending, invoker)?;
-        self.shared.refresh();
-        Ok(())
+        match &self.backing {
+            Backing::Own(resource) => resource.act_as(invoker, action),
+            Backing::There(there) => {
+                let invoke = Invoke::<P>::apply(action)
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                send_there(there, &self.me, &invoke, invoker)
+            }
+        }
     }
 
     /// Apply the action `invoke` names, as [`Self::apply`].
@@ -377,10 +368,7 @@ impl<P: Resource> PersonResource<P> {
     /// resource keeps for itself (`#[action(by_app)]`): such an action is
     /// declared to no caller, and the record's API refuses it.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
-        let action = invoke
-            .build(tilo_resource::origin_now_ms())
-            .map_err(ActionError::Refused)?;
-        self.apply(&action)
+        self.invoke_as(&super::resources::acting(&self.me), invoke)
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script the host admitted),
@@ -394,31 +382,49 @@ impl<P: Resource> PersonResource<P> {
         invoker: &ActionInvoker,
         invoke: &Invoke<P>,
     ) -> Result<(), ActionError> {
-        let action = invoke
-            .build(tilo_resource::origin_now_ms())
-            .map_err(ActionError::Refused)?;
-        self.apply_as(&action, invoker)
+        match &self.backing {
+            Backing::Own(resource) => resource.invoke_as(invoker, invoke),
+            Backing::There(there) => send_there(there, &self.me, invoke, invoker),
+        }
     }
 
-    /// Undo the person's last edit of the record. Whether there was one.
+    /// Undo the person's last edit of the record. Whether there was one, or, for a record
+    /// kept in their own workspace while the window shows another, whether the undo was asked
+    /// of it.
     pub fn undo(&self) -> bool {
-        let undone = self.shared.core.record.undo();
-        self.shared.refresh();
-        undone
+        self.step(true)
     }
 
-    /// Redo the person's last undone edit of the record.
+    /// Redo the person's last undone edit of the record, as [`Self::undo`].
     pub fn redo(&self) -> bool {
-        let redone = self.shared.core.record.redo();
-        self.shared.refresh();
-        redone
+        self.step(false)
     }
 
-    /// Whether the record reaches other devices: it has a route. One kept
-    /// on this device only has none.
-    #[must_use]
-    pub fn syncs(&self) -> bool {
-        self.shared.core.record.syncs()
+    fn step(&self, undo: bool) -> bool {
+        match &self.backing {
+            Backing::Own(resource) => {
+                let by = super::resources::acting(&self.me);
+                let stepped = step_as(
+                    resource.record(),
+                    by.acting.by.member_id().unwrap_or(&self.me),
+                    undo,
+                );
+                resource.refresh();
+                stepped
+            }
+            Backing::There(there) => {
+                let held = step_held(there, &self.me, undo);
+                if held {
+                    there.remote.invoke(
+                        &resource_id(P::KIND),
+                        if undo { "undo" } else { "redo" },
+                        serde_json::Map::new(),
+                    );
+                    there.wake();
+                }
+                held
+            }
+        }
     }
 
     /// Where the content this record references — a picture its state
@@ -427,15 +433,128 @@ impl<P: Resource> PersonResource<P> {
     /// content.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        self.shared.core.record.content()
+        match &self.backing {
+            Backing::Own(resource) => resource.record().content(),
+            Backing::There(there) => ui_core::resource::stored::content_of(
+                there.remote.app.to_owned(),
+                &there.remote.workspace,
+                &there.remote.id,
+            ),
+        }
     }
 
-    /// The record underneath, for a test or host that carries it between
-    /// devices itself.
+    /// The record underneath where the window holds it, in the person's own workspace, for a
+    /// test or host that carries it between devices itself. `None` in a window of another
+    /// workspace, which holds none of it.
     #[must_use]
-    pub fn record(&self) -> &StoredResource {
-        &self.shared.core.record
+    pub fn record(&self) -> Option<&StoredResource> {
+        match &self.backing {
+            Backing::Own(resource) => Some(resource.record()),
+            Backing::There(_) => None,
+        }
     }
+}
+
+/// Send `invoke` to the app that keeps the record in the person's own workspace, which
+/// applies it as whoever this window's connection is: the person. The record shows it once
+/// that workspace answers the next reading.
+fn send_there<P: Resource>(
+    there: &There<P>,
+    me: &tilo_resource::MemberId,
+    invoke: &Invoke<P>,
+    invoker: &ActionInvoker,
+) -> Result<(), ActionError> {
+    let action = invoke
+        .build(tilo_resource::origin_now_ms())
+        .map_err(ActionError::Refused)?;
+    // What the app keeps for itself it applies only where it holds the record: the app in
+    // the person's workspace takes from a caller only what the record offers callers.
+    if P::by_app(&action) {
+        return Err(ActionError::Refused(format!(
+            "Your {} changes this way only in a window of your own workspace",
+            P::LABEL.to_lowercase()
+        )));
+    }
+    if invoker.acting.by.member_id() != Some(me) {
+        return Err(ActionError::Refused(format!(
+            "Only you change your {} from a window in another workspace",
+            P::LABEL.to_lowercase()
+        )));
+    }
+    there
+        .remote
+        .invoke(&resource_id(P::KIND), invoke.id, invoke.arguments.clone());
+    there.wake();
+    Ok(())
+}
+
+/// The record `resource` as views and the API edit it: read as the window reads it, changed as
+/// the person.
+fn held<P: Resource>(resource: &Rc<WorkspaceResource<P>>) -> Rc<Held<P>> {
+    let following = Rc::downgrade(resource);
+    let applying = Rc::downgrade(resource);
+    let reading = Rc::downgrade(resource);
+    Rc::new(
+        Held::new(
+            resource_id(P::KIND),
+            format!("Your {}", P::LABEL.to_lowercase()),
+            true,
+            resource.live(),
+            move |_: &Live<P>| {
+                if let Some(resource) = following.upgrade() {
+                    resource.refresh();
+                }
+            },
+            move |action: &P::Action, invoker: &ActionInvoker| {
+                let resource = applying
+                    .upgrade()
+                    .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
+                resource.act_as(invoker, action)
+            },
+        )
+        .reading(move |read| {
+            if let Some(resource) = reading.upgrade() {
+                resource.read(|doc| read(doc));
+            }
+        }),
+    )
+}
+
+/// The record `there` as views and the API edit it: read as this window read it, changed by
+/// invoking its actions at the app in the person's own workspace.
+fn held_there<P: Resource>(there: &Rc<There<P>>, me: &tilo_resource::MemberId) -> Rc<Held<P>> {
+    let following = Rc::downgrade(there);
+    let applying = Rc::downgrade(there);
+    let reading = Rc::downgrade(there);
+    let me = me.clone();
+    let workspace = there.remote.workspace.clone();
+    Rc::new(
+        Held::new(
+            resource_id(P::KIND),
+            format!("Your {}", P::LABEL.to_lowercase()),
+            true,
+            there.live.clone(),
+            move |_: &Live<P>| {
+                if let Some(there) = following.upgrade() {
+                    there.refresh();
+                }
+            },
+            move |action: &P::Action, invoker: &ActionInvoker| {
+                let there = applying
+                    .upgrade()
+                    .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
+                let invoke = Invoke::<P>::apply(action)
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                send_there(&there, &me, &invoke, invoker)
+            },
+        )
+        .reading(move |read| {
+            if let Some(there) = reading.upgrade() {
+                read(&there.remote.doc.borrow());
+            }
+        })
+        .held_in(Some(workspace)),
+    )
 }
 
 /// An open record: the app that keeps it and its kind.
@@ -444,10 +563,9 @@ type OpenKey = (&'static str, String);
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonResource`] per resource kind.
 pub(crate) struct PersonState {
-    /// The person's records kept in their own scope; none for a host that
-    /// keeps only the settings sections, whose history is the settings
-    /// document's.
-    records: Option<PersonResources>,
+    /// Where the person's records are, seen from this window; none for a host that keeps only
+    /// the settings sections, whose history is the settings document's.
+    records: Option<PersonRecords>,
     app_id: &'static str,
     app_title: &'static str,
     me: tilo_resource::MemberId,
@@ -458,14 +576,13 @@ pub(crate) struct PersonState {
     /// change to one of the records arrives in the store that holds it,
     /// which nothing else tells it of.
     wake: Option<ui_core::wake::WakeHandle>,
+    /// The client the person's records in their own workspace are followed and changed over,
+    /// for a window in another one.
+    remote: Option<RemoteActions>,
     /// The open records, by the app that owns them and their kind.
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
-    /// The records of the person's other apps keep, held here too.
-    others: RefCell<HashMap<&'static str, PersonResources>>,
     owners: Rc<RefCell<Vec<HistoryOwner>>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
-    /// What each open record makes in a frame's settle ([`Self::settle`]).
-    settlers: RefCell<Vec<Box<dyn Fn()>>>,
     /// The open records' undo and redo, as the palette and agents reach
     /// them.
     published: RefCell<Vec<Published>>,
@@ -476,10 +593,42 @@ pub(crate) struct PersonState {
     unavailable: RefCell<HashMap<(String, &'static str), tilo_actions::ResourceSpec>>,
 }
 
+/// Where a window finds the person's records.
+pub(crate) enum PersonRecords {
+    /// The device has no identity: the person has no workspace of their own, and keeps nothing.
+    Unsigned,
+    /// The window is in the person's own workspace: their records are the app's records there.
+    Here(WorkspaceResources),
+    /// The window is in another workspace: their records are in this one, their own.
+    There(String),
+}
+
+impl PersonRecords {
+    /// Where `me`'s records are for a window in `workspace`, which holds its records in `here`;
+    /// `None` for a window in the person's own workspace that holds none.
+    pub(crate) fn of(
+        me: &tilo_resource::MemberId,
+        workspace: &str,
+        here: impl FnOnce() -> Option<WorkspaceResources>,
+    ) -> Option<Self> {
+        let own = me
+            .person_id()
+            .and_then(tilo_actions::policy::roles::workspace_of_person);
+        Some(match own {
+            None => Self::Unsigned,
+            Some(own) if own.eq_ignore_ascii_case(workspace) => Self::Here(here()?),
+            Some(own) => Self::There(own),
+        })
+    }
+}
+
 /// One open record as the root publishes it.
 struct Published {
     id: String,
     label: String,
+    /// The provider that runs its actions, when another one does: the app in the person's own
+    /// workspace.
+    run_by: Option<String>,
     /// Its field edits and verbs, as the API reaches them.
     api: Rc<dyn ResourceApi>,
     /// Take back (`true`) or redo (`false`) one of the person's steps, for
@@ -489,14 +638,6 @@ struct Published {
 
 /// Take back (`true`) or redo (`false`) one step for the invoker named.
 type Step = Box<dyn Fn(bool, &tilo_actions::Actor) -> bool>;
-
-/// A person record just opened as its type: its shared state, its API and
-/// its undo and redo.
-struct Opened {
-    shared: Rc<dyn Any>,
-    api: Rc<dyn ResourceApi>,
-    step: Step,
-}
 
 /// The operation type of a person record's undo and redo.
 pub(crate) const HISTORY_TYPE: &str = "tilo.app.person-history";
@@ -527,8 +668,7 @@ pub(crate) fn resource_id(kind: &str) -> String {
 /// of the workspace ([`collab_types::WORKSPACE_DOCUMENTS`]): the same record
 /// for every member, its changes decided by the workspace's grants. One this
 /// app keeps itself ([`Self::profile`]) is the person's own: kept in their own
-/// scope, carried to their other devices by their personal store, and never
-/// reaching a member. The app's committed surface names either whether or not a
+/// workspace, carried to their devices from there, and never reaching a member. The app's committed surface names either whether or not a
 /// view of it is showing, so the host admits the app's changes to it — and its
 /// reads of it — against the surface.
 #[derive(Clone, Copy)]
@@ -556,7 +696,7 @@ impl PersonKind {
         }
     }
 
-    /// The record `P` the person keeps for themselves, in their own scope.
+    /// The record `P` the person keeps for themselves, in their own workspace.
     #[must_use]
     pub const fn profile<P: Resource>() -> Self {
         Self {
@@ -603,7 +743,7 @@ fn profile_surface<P: Resource>() -> tilo_resource::Surface {
 }
 
 /// `P`'s surface as a record the workspace keeps for every app of it.
-fn workspace_surface<P: Resource>() -> tilo_resource::Surface {
+fn workspace_surface<P: tilo_resource::SharedResource>() -> tilo_resource::Surface {
     tilo_resource::Surface {
         person: false,
         ..P::surface()
@@ -677,13 +817,18 @@ fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::A
 
 impl PersonState {
     pub(crate) fn new(
-        records: PersonResources,
+        records: PersonRecords,
+        me: tilo_resource::MemberId,
         app_id: &'static str,
         app_title: &'static str,
         wake: Option<ui_core::wake::WakeHandle>,
     ) -> Self {
-        let me = records.author().clone();
-        Self::named(Some(records), me, Vec::new(), app_id, app_title, wake)
+        let mut state = Self::named(Some(records), me, Vec::new(), app_id, app_title, wake);
+        if matches!(state.records, Some(PersonRecords::There(_))) {
+            // The window's own client: the root carries its requests and answers.
+            state.remote = Some(RemoteActions::current());
+        }
+        state
     }
 
     /// The person `me`, whose records this host does not hold: their
@@ -701,7 +846,7 @@ impl PersonState {
     }
 
     fn named(
-        records: Option<PersonResources>,
+        records: Option<PersonRecords>,
         me: tilo_resource::MemberId,
         earlier: Vec<String>,
         app_id: &'static str,
@@ -715,192 +860,207 @@ impl PersonState {
             me,
             earlier,
             wake,
+            remote: None,
             opened: RefCell::default(),
-            others: RefCell::default(),
             owners: Rc::default(),
             refreshers: RefCell::default(),
-            settlers: RefCell::default(),
             published: RefCell::default(),
             unavailable: RefCell::default(),
         }
     }
 
-    /// The person's own workspace, which holds their profile records and decides their changes.
-    fn workspace(&self) -> Option<String> {
-        tilo_actions::policy::roles::workspace_of_person(self.me.person_id()?)
-    }
-
-    /// The record `P` the person keeps for themselves, in their own scope.
+    /// The record `P` the person keeps for themselves, in their own workspace.
     pub(crate) fn open_profile<P: Resource>(&self) -> Option<PersonResource<P>> {
         debug_assert!(
             collab_types::workspace_document_of_kind(P::KIND).is_none(),
             "{} is a record the workspace keeps: open it with `shared_workspace`",
             P::KIND
         );
-        self.open_of::<P>(self.app_id, true)
-    }
-
-    /// The record `P` the person keeps for themselves, opened on first use and
-    /// published when it is this app's own (`publish`).
-    fn open_of<P: Resource>(
-        &self,
-        owner: &'static str,
-        publish: bool,
-    ) -> Option<PersonResource<P>> {
-        let open = |record: StoredResource| -> Result<Opened, String> {
-            let shared = self.shared_of::<P>(record)?;
-            let held = Rc::new(held::<P>(&shared).held_in(self.workspace()));
-            *shared.held.borrow_mut() = Some(Rc::clone(&held));
-            let weak = Rc::downgrade(&shared);
-            Ok(Opened {
-                shared: shared as Rc<dyn Any>,
-                api: held,
-                step: Box::new(move |undo, _| {
-                    weak.upgrade().is_some_and(|shared| {
-                        let record = PersonResource { shared };
-                        if undo { record.undo() } else { record.redo() }
-                    })
-                }),
-            })
-        };
-        let shared = self.open_kind(
-            owner,
-            &PersonResourceType {
-                kind: P::KIND,
-                label: P::LABEL,
-                surface: P::surface,
-                unreadable: &|reason| {
-                    tilo_resource::resource::unreadable_parts::<P>(
-                        &resource_id(P::KIND),
-                        P::LABEL,
-                        reason,
-                    )
-                },
+        let kind = P::KIND;
+        let key = (self.app_id, kind.to_owned());
+        if let Some(opened) = self.opened.borrow().get(&key) {
+            return Rc::clone(opened)
+                .downcast::<PersonResource<P>>()
+                .ok()
+                .map(|person| (*person).clone());
+        }
+        let id = collab_types::person_document_id(kind);
+        let of = PersonResourceType {
+            kind,
+            unreadable: &|reason| {
+                tilo_resource::resource::unreadable_parts::<P>(
+                    &resource_id(P::KIND),
+                    P::LABEL,
+                    reason,
+                )
             },
-            &|doc| P::initialize(doc).map_err(|error| error.to_string()),
-            &open,
-            publish,
-        )?;
-        shared
-            .downcast::<Shared<P>>()
-            .ok()
-            .map(|shared| PersonResource { shared })
-    }
-
-    /// The open record of `kind` that the app `owner` keeps, or the one
-    /// `open` makes of it, created by `initialize` where it does not exist
-    /// yet, kept and (for this app's own, when `publish`) published: the
-    /// part of opening a record that does not depend on its type.
-    fn open_kind(
-        &self,
-        owner: &'static str,
-        of: &PersonResourceType<'_>,
-        initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-        open: &dyn Fn(StoredResource) -> Result<Opened, String>,
-        publish: bool,
-    ) -> Option<Rc<dyn Any>> {
-        let (kind, label) = (of.kind, of.label);
-        let key = (owner, kind.to_owned());
-        if let Some(open) = self.opened.borrow().get(&key) {
-            return Some(Rc::clone(open));
-        }
-        let opened = {
-            let records = self.resources_of(owner)?;
-            records.declare_type(kind, of.surface);
-            open_resource(&records, kind.to_owned(), kind, initialize)
         };
-        let record = match opened {
-            Ok(record) => record,
-            Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
-        };
-        let Opened { shared, api, step } = match open(record) {
-            Ok(opened) => opened,
-            Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
-        };
-        if owner != self.app_id || !publish {
-            self.opened.borrow_mut().insert(key, Rc::clone(&shared));
-            return Some(shared);
-        }
-        self.publish(
-            key,
-            Rc::clone(&shared),
-            Published {
-                id: resource_id(kind),
-                label: label.to_owned(),
-                api,
-                step,
-            },
-        );
-        Some(shared)
-    }
-
-    /// `record` read as `P`, followed from now on.
-    ///
-    /// # Errors
-    /// Why the record does not read as `P`: it could not be migrated to the
-    /// storage version the app reads, or what it holds is not a `P`.
-    fn shared_of<P: Resource>(&self, record: StoredResource) -> Result<Rc<Shared<P>>, String> {
-        // An older record is brought up to the resource's storage version
-        // before it is read, as the app's record is when it opens: once, as
-        // the same housekeeping change on every device, nobody's undo step.
-        let older = record
-            .read(tilo_resource::evolution::needs_migrate::<P>)
-            .ok_or_else(|| "the record cannot be read".to_owned())?;
-        let id = record.checkout().id.route().to_owned();
-        // The person's records are kept in their own workspace, and in the personal scope where
-        // this device knows no person yet, as their store keeps them.
-        let workspace = self
-            .workspace()
-            .unwrap_or_else(|| collab_types::document::PERSONAL_SCOPE.to_owned());
-        if older
-            && let Err(error) = record.edit(false, |doc| {
-                tilo_resource::founding::bring_up_resource::<P>(&workspace, &id, doc)
-                    .map_err(|error| error.to_string())
-            })
-        {
-            return Err(format!(
-                "it could not be brought up to this app's storage version: {error}"
-            ));
-        }
-        let reader = record
-            .read(tilo_resource::Reader::<P>::read)
-            .ok_or_else(|| "the record cannot be read".to_owned())?
-            .map_err(|error| format!("it does not read: {error}"))?;
-        let live = Live::new(reader);
-        if let Some(wake) = &self.wake {
-            // The record is kept for the person, not the app's window: another
-            // device's or app's change to it arrives in its store, and nothing
-            // else would tell this window to read it.
-            record.wake_on_arrival(wake.clone());
-        }
-        self.owners.borrow_mut().push(record.history_owner());
-        let shared = Rc::new(Shared::<P> {
-            core: Core {
-                record,
-                app_id: self.app_id,
-                app_title: self.app_title,
-                me: self.me.clone(),
-                kind: P::KIND,
-                label: P::LABEL,
-                waiting: RefCell::default(),
-                ahead: RefCell::default(),
-                wake: self.wake.clone(),
-            },
-            state: LocalState::new(live.get()),
-            live,
-            held: RefCell::new(None),
-        });
-        let weak = Rc::downgrade(&shared);
-        self.refreshers.borrow_mut().push(Box::new(move || {
-            weak.upgrade().is_some_and(|shared| shared.refresh())
-        }));
-        let weak = Rc::downgrade(&shared);
-        self.settlers.borrow_mut().push(Box::new(move || {
-            if let Some(shared) = weak.upgrade() {
-                shared.core.settle();
+        match self.records.as_ref() {
+            None => {
+                let _ = self.note_unavailable(
+                    self.app_id,
+                    &of,
+                    "this window keeps none of your records",
+                );
+                return None;
             }
-        }));
-        Ok(shared)
+            Some(PersonRecords::Unsigned) => {
+                let reason = format!(
+                    "Sign in to keep your {}: it is kept with your identity, and this device has none",
+                    P::LABEL.to_lowercase()
+                );
+                let _ = self.note_unavailable(self.app_id, &of, &reason);
+                return None;
+            }
+            Some(PersonRecords::Here(records)) => {
+                let resource = match WorkspaceResource::try_open_at(
+                    records,
+                    self.app_id,
+                    &id,
+                    (self.app_id, self.app_title),
+                    None,
+                    self.wake.clone(),
+                ) {
+                    Ok(resource) => Rc::new(resource),
+                    Err(why) => {
+                        let reason = match why {
+                            Unopened::Arriving => "it has not reached this device yet".to_owned(),
+                            Unopened::InUse => "it cannot be read right now".to_owned(),
+                            Unopened::Failed => {
+                                format!("it does not read as {}", P::LABEL.to_lowercase())
+                            }
+                        };
+                        let _ = self.note_unavailable(self.app_id, &of, &reason);
+                        return None;
+                    }
+                };
+                let held = held(&resource);
+                let me = self.me.clone();
+                let stepping = Rc::downgrade(&resource);
+                let following = Rc::downgrade(&resource);
+                self.owners
+                    .borrow_mut()
+                    .push(resource.record().history_owner());
+                self.refreshers.borrow_mut().push(Box::new(move || {
+                    following
+                        .upgrade()
+                        .is_some_and(|resource| resource.refresh())
+                }));
+                let opened = PersonResource {
+                    held: Rc::clone(&held),
+                    me: self.me.clone(),
+                    backing: Backing::Own(resource),
+                };
+                self.publish(
+                    key,
+                    Rc::new(opened.clone()) as Rc<dyn Any>,
+                    Published {
+                        id: resource_id(kind),
+                        label: P::LABEL.to_owned(),
+                        run_by: None,
+                        api: Rc::clone(&held) as Rc<dyn ResourceApi>,
+                        step: Box::new(move |undo, by| {
+                            stepping.upgrade().is_some_and(|resource| {
+                                let stepped =
+                                    step_as(resource.record(), by.member_id().unwrap_or(&me), undo);
+                                resource.refresh();
+                                stepped
+                            })
+                        }),
+                    },
+                );
+                Some(opened)
+            }
+            Some(PersonRecords::There(workspace)) => {
+                let Some(remote_actions) = self.remote.clone() else {
+                    let _ =
+                        self.note_unavailable(self.app_id, &of, "this window reaches no workspace");
+                    return None;
+                };
+                // The record is the keeper's: this window reads a replica of it, and writes no
+                // genesis of its own, which would meet the keeper's as a second document.
+                let doc = ui_core::automerge::AutoCommit::new();
+                let live = match tilo_resource::Reader::<P>::read(&doc) {
+                    Ok(reader) => Live::new(reader),
+                    Err(error) => {
+                        let reason = format!("it does not read: {error}");
+                        let _ = self.note_unavailable(self.app_id, &of, &reason);
+                        return None;
+                    }
+                };
+                let followed = remote_actions.follow_resource(
+                    None,
+                    ResourceReadRequest {
+                        workspace: workspace.clone(),
+                        app: self.app_id.to_owned(),
+                        record: id.clone(),
+                        joined: false,
+                        after: None,
+                        wait_ms: None,
+                        answer: ReadAnswer::Document,
+                    },
+                );
+                let Some(document) = ui_core::resource::DocumentId::parse(&id) else {
+                    let reason = format!("{kind} names no record");
+                    let _ = self.note_unavailable(self.app_id, &of, &reason);
+                    return None;
+                };
+                let there = Rc::new(There {
+                    remote: Remote {
+                        workspace: workspace.clone(),
+                        app: self.app_id,
+                        id: document,
+                        remote: remote_actions,
+                        followed,
+                        doc: RefCell::new(doc),
+                        revision: RefCell::default(),
+                        sent: RefCell::default(),
+                    },
+                    state: LocalState::new(live.get()),
+                    live,
+                    wake: self.wake.clone(),
+                });
+                let provider = there.remote.provider();
+                let held = held_there(&there, &self.me);
+                let stepping = Rc::downgrade(&there);
+                let following = Rc::downgrade(&there);
+                let mine = self.me.clone();
+                self.refreshers.borrow_mut().push(Box::new(move || {
+                    following.upgrade().is_some_and(|there| there.refresh())
+                }));
+                let opened = PersonResource {
+                    held: Rc::clone(&held),
+                    me: self.me.clone(),
+                    backing: Backing::There(there),
+                };
+                self.publish(
+                    key,
+                    Rc::new(opened.clone()) as Rc<dyn Any>,
+                    Published {
+                        id: resource_id(kind),
+                        label: P::LABEL.to_owned(),
+                        run_by: Some(provider),
+                        api: Rc::clone(&held) as Rc<dyn ResourceApi>,
+                        step: Box::new(move |undo, by| {
+                            stepping.upgrade().is_some_and(|there| {
+                                let held = step_held(&there, by.member_id().unwrap_or(&mine), undo);
+                                if held {
+                                    there.remote.invoke(
+                                        &resource_id(P::KIND),
+                                        if undo { "undo" } else { "redo" },
+                                        serde_json::Map::new(),
+                                    );
+                                    there.wake();
+                                    there.refresh();
+                                }
+                                held
+                            })
+                        }),
+                    },
+                );
+                Some(opened)
+            }
+        }
     }
 
     /// The settings section `kind` held as a record, opened on first use and
@@ -927,6 +1087,7 @@ impl PersonState {
             Published {
                 id: api.id().to_owned(),
                 label: api.label().to_owned(),
+                run_by: None,
                 api: Rc::clone(&api) as Rc<dyn ResourceApi>,
                 step: Box::new(move |undo, by| {
                     stepping.upgrade().is_some_and(|api| api.step(undo, by))
@@ -934,31 +1095,6 @@ impl PersonState {
             },
         );
         api
-    }
-
-    /// The person's records `owner` keeps: this app's own, or another app's,
-    /// opened once.
-    fn resources_of(&self, owner: &'static str) -> Option<PersonResources> {
-        // A host that keeps the person's shared records lends this app its
-        // own as well: a second writer of them here would store nowhere the
-        // host stores or syncs.
-        if owner == self.app_id && !self.records.as_ref()?.shared_by_host() {
-            return self.records.clone();
-        }
-        let mut others = self.others.borrow_mut();
-        if let Some(records) = others.get(owner) {
-            return Some(records.clone());
-        }
-        let records = self
-            .records
-            .as_ref()?
-            .of_app(owner)
-            .map_err(|error| {
-                tracing::warn!(owner, %error, "the person's records of another app are unavailable");
-            })
-            .ok()?;
-        others.insert(owner, records.clone());
-        Some(records)
     }
 
     /// Note that the record `P` that `owner` keeps could not be opened, for
@@ -970,13 +1106,12 @@ impl PersonState {
         owner: &'static str,
         of: &PersonResourceType<'_>,
         reason: &str,
-        publish: bool,
     ) -> Option<Rc<dyn Any>> {
         unreadable_person_resource(of.kind, &reason);
         // Only the record this app would have published is published for
         // the reason: one another app keeps and this one reads is that
         // app's surface, which registers the actions its own record has.
-        if owner == self.app_id && publish {
+        if owner == self.app_id {
             let published = (of.unreadable)(reason);
             self.unavailable
                 .borrow_mut()
@@ -998,15 +1133,6 @@ impl PersonState {
         self.opened.borrow_mut().insert(key, open);
     }
 
-    /// Make what waited for each open record's store (an edit asked for
-    /// during a pass of the view): in a frame's settle, where the store is
-    /// free.
-    pub(crate) fn settle(&self) {
-        for settle in self.settlers.borrow().iter() {
-            settle();
-        }
-    }
-
     /// Read every open record that moved. Whether one did.
     pub(crate) fn refresh(&self) -> bool {
         self.refreshers
@@ -1023,16 +1149,24 @@ impl PersonState {
             .borrow()
             .iter()
             .map(|published| {
-                published
+                let mut resource = published
                     .api
                     .publish()
                     .with_action(history_spec(&published.id, &published.label, true))
-                    .with_action(history_spec(&published.id, &published.label, false))
+                    .with_action(history_spec(&published.id, &published.label, false));
+                // Kept in the person's own workspace: this window still publishes and answers
+                // what the record offers, sending each change to the app there, and that
+                // workspace decides it.
+                resource.workspace = published.run_by.as_deref().and_then(|provider| {
+                    tilo_actions::remote::application_provider(provider)
+                        .map(|(workspace, _)| workspace.to_owned())
+                });
+                resource
             })
             .collect()
     }
 
-    /// The open records of the person's own, as the API changes them.
+    /// The open records of the person's own, as they are published.
     pub(crate) fn apis(&self) -> Vec<Rc<dyn ResourceApi>> {
         self.published
             .borrow()
@@ -1103,76 +1237,18 @@ impl PersonState {
     }
 }
 
-/// The record `kind` that `records` keeps, made by `initialize` where it
-/// does not exist yet.
-///
-/// # Errors
-/// Why the record cannot be opened: the store refused it, or it cannot be
-/// created.
-fn open_resource(
-    records: &PersonResources,
-    kind: String,
-    of: &str,
-    initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-) -> Result<StoredResource, String> {
-    records
-        .open_resource(ResourceType::new(kind), initialize)
-        .map_err(|error| format!("{of}'s record cannot be opened: {error}"))
-}
-
-/// The record `shared` as views and the API edit it: read into a state of
-/// its own that follows the record, changed as the person.
-fn held<P: Resource>(shared: &Rc<Shared<P>>) -> Held<P> {
-    let following = Rc::downgrade(shared);
-    let applying = Rc::downgrade(shared);
-    let reading = Rc::downgrade(shared);
-    Held::new(
-        resource_id(P::KIND),
-        format!("Your {}", P::LABEL.to_lowercase()),
-        true,
-        shared.live.clone(),
-        move |_: &Live<P>| {
-            if let Some(shared) = following.upgrade() {
-                shared.refresh();
-            }
-        },
-        move |action: &P::Action, invoker: &ActionInvoker| {
-            let shared = applying
-                .upgrade()
-                .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
-            PersonResource { shared }.apply_as(action, invoker)
-        },
-    )
-    .reading(move |read| {
-        if let Some(shared) = reading.upgrade() {
-            shared.core.record.read(|doc| read(doc));
-        }
-    })
-}
-
 impl<P: Resource> super::resources::sealed::Hold<P> for PersonResource<P> {
     fn held(&self, _storage: super::resources::sealed::Storage<'_>) -> Option<Rc<Held<P>>> {
-        self.shared.held.borrow().clone()
+        Some(Rc::clone(&self.held))
     }
 
     fn api(
         &self,
         _storage: super::resources::sealed::Storage<'_>,
     ) -> Option<super::resources::sealed::Api> {
-        self.shared
-            .held
-            .borrow()
-            .clone()
-            .map(|held| super::resources::sealed::Api(held as Rc<dyn ResourceApi>))
-    }
-}
-
-impl Drop for PersonState {
-    /// The window closes: what the person did is stored before it goes.
-    fn drop(&mut self) {
-        if let Some(Err(error)) = self.records.as_ref().map(PersonResources::flush) {
-            tracing::warn!(%error, "the records beside the app's own could not be stored");
-        }
+        Some(super::resources::sealed::Api(
+            Rc::clone(&self.held) as Rc<dyn ResourceApi>
+        ))
     }
 }
 
@@ -1184,13 +1260,23 @@ fn unreadable_person_resource(kind: &'static str, error: &dyn std::fmt::Display)
     tracing::warn!(kind, %error, "person record unreadable");
 }
 
+/// Log that the person's own workspace refused a change to their record of `kind`: the app that
+/// keeps it there decided, and the record shows what it holds.
+#[cold]
+#[inline(never)]
+fn refused_person_change(kind: &'static str, action: &str, reason: &str) {
+    tracing::warn!(
+        kind,
+        action,
+        reason,
+        "the person's own workspace refused a change"
+    );
+}
+
 /// A person record's type, as the part of opening one that does not depend
 /// on it reads it: compiled once, not into every app.
 struct PersonResourceType<'a> {
     kind: &'static str,
-    label: &'static str,
-    /// The record's type, which it is founded by.
-    surface: fn() -> tilo_resource::surface::Surface,
     /// What the record publishes when it could not be opened, for why.
     unreadable: &'a dyn Fn(&str) -> tilo_actions::ResourceSpec,
 }

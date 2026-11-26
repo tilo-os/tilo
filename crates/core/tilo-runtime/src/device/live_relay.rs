@@ -47,8 +47,8 @@ use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::workspace_keys::{Device, admitted_devices};
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
-use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
-use tilo_workspace_service::workspaces::{Held, PersonResources};
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
+use tilo_workspace_service::workspaces::{FollowedRecord, Held};
 
 use super::workspaces::ServiceWorkspaces;
 
@@ -327,7 +327,7 @@ fn keys_epoch_held(workspaces: &ServiceWorkspaces, workspace: WorkspaceId) -> u6
 
 fn members(
     workspaces: &ServiceWorkspaces,
-    person: Option<&PersonResources>,
+    person: Option<&FollowedRecord>,
     own: &DeviceCert,
     scope: &Scope,
     now_ns: u64,
@@ -344,7 +344,7 @@ fn members(
     if workspace != person_workspace(&root) {
         return None;
     }
-    let Some(record) = person.and_then(|person| person.read::<Devices>(DEVICES)) else {
+    let Some(Ok(record)) = person.map(FollowedRecord::state::<Devices>) else {
         return Some((
             false,
             Err("the record of the person's devices is not here yet".to_owned()),
@@ -387,7 +387,7 @@ type CallsByTag =
 struct Permit {
     workspaces: Arc<ServiceWorkspaces>,
     /// The record of this device's person's devices: who this device's own scope admits.
-    record: Option<PersonResources>,
+    record: Option<FollowedRecord>,
     /// This device's certificate.
     own: DeviceCert,
     /// The scope the session was admitted to.
@@ -557,7 +557,7 @@ struct Shared {
     cert: DeviceCert,
     /// The record of this device's person's devices, once the daemon holds it
     /// ([`Live::follow_person`]).
-    person: std::sync::OnceLock<PersonResources>,
+    person: std::sync::OnceLock<FollowedRecord>,
     /// The newest content-key epoch this device holds of each workspace: a grant that predates a
     /// rotation this device already applied is refused.
     epochs: Mutex<BTreeMap<WorkspaceId, u64>>,
@@ -938,7 +938,7 @@ impl Live {
 
     /// Admit this device's person's devices to its own scope by `person`, the record of them, from
     /// now on: a device they took back is cut as the record says so. Only the first call counts.
-    pub(crate) fn follow_person(&self, person: PersonResources) {
+    pub(crate) fn follow_person(&self, person: FollowedRecord) {
         let mut moved = person.changes();
         if self.shared.person.set(person).is_err() {
             return;

@@ -486,6 +486,40 @@ impl DaemonShell {
         }
     }
 
+    /// How the invocation `invocation` stands, as the daemon's dispatch keeps its record of it:
+    /// the record asks the provider the call went to, so an action answered before it ran (the
+    /// person's write to their own workspace before this device holds it) says here once it was
+    /// made, or why it could not be. The answer waits up to `wait_ms` for the invocation to
+    /// settle, and holds no thread meanwhile. `None` for an invocation the daemon keeps none of,
+    /// or one whose caller this connection is not.
+    ///
+    /// # Errors
+    /// As [`Self::ask`], or the dispatch answered something else.
+    pub async fn observe(
+        &self,
+        workspace: Option<&str>,
+        invocation: tilo_actions::InvocationId,
+        wait_ms: Option<u32>,
+    ) -> Result<Option<tilo_actions::remote::InvocationState>, String> {
+        let message = RemoteActionMessage::Observe {
+            correlation: 0,
+            invocation,
+            wait_ms,
+            seen: None,
+        };
+        let call = dispatched(workspace, &message)?;
+        let ShellReply::Action(frame) = self.ask(call).await? else {
+            return Err("the daemon answered something else".to_owned());
+        };
+        let message = RemoteActionFrame::decode(&frame)
+            .map_err(|error| error.to_string())?
+            .message;
+        match message {
+            RemoteActionMessage::Update { state, .. } => Ok(state),
+            other => Err(format!("the dispatch answered something else: {other:?}")),
+        }
+    }
+
     /// The readings of `read`, as the device reads them for the person.
     ///
     /// # Errors

@@ -99,6 +99,9 @@ tilo-devices-offer-speaker-playback = Die Wiedergabe einer Gruppe einem ihrer Mi
 tilo-devices-admit-speaker-playback = Die Wiedergabe einer Gruppe auf einem Mitgliedsgerät zulassen
 tilo-devices-refuse-speaker-playback = Die Wiedergabe einer Gruppe auf einem Mitgliedsgerät ablehnen
 tilo-devices-stop-speaker-playback = Die Wiedergabe einer Gruppe beenden
+tilo-device-answers = Deine Antworten zu deinen Geräten
+tilo-device-answers-answer = Behalten, was eine App auf einem Gerät nutzen darf
+tilo-device-answers-take-back = Zurücknehmen, was eine App auf einem Gerät nutzen darf
 
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.

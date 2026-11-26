@@ -39,6 +39,7 @@ struct Computer {
 impl Computer {
     /// Start the daemon over a profile of the test's own, and wait for the person's services.
     fn start() -> Self {
+        crate::common::people::install_log();
         let crate::common::Device {
             daemon,
             person,

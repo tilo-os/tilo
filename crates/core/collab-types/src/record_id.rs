@@ -32,8 +32,8 @@ pub fn personal_cluster(root: &[u8; 32]) -> uuid::Uuid {
     uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
-// The id of the person's record of `kind`: one per kind, the same on every device, derived from
-// the app's base record (`ui::resource::person::document_id`).
+// The id of the person's record of `kind`: one per kind, the same on every device, kept in their
+// own workspace and derived from the app's base record.
 pub use app_fleet::derived_record as person_document_id;
 
 /// A personal record that remembers which workspace its contents refer to.

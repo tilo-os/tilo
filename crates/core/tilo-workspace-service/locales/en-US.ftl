@@ -99,6 +99,9 @@ tilo-devices-offer-speaker-playback = Offer a group's playback to one of its mem
 tilo-devices-admit-speaker-playback = Admit a group's playback on a member device
 tilo-devices-refuse-speaker-playback = Refuse a group's playback on a member device
 tilo-devices-stop-speaker-playback = End a group's playback
+tilo-device-answers = Your answers about your devices
+tilo-device-answers-answer = Keep what an app may use on a device
+tilo-device-answers-take-back = Take back what an app may use on a device
 
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.

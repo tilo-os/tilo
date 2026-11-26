@@ -667,6 +667,37 @@ impl Devices {
             .max_by_key(|grant| grant.issued_at_ns)
     }
 
+    /// The certificates of `person`'s keys the record keeps that hold at `now_ns`: what one of
+    /// their devices seals to, offers a file to or dials as theirs. One another root signed, or
+    /// that ran out, is left out.
+    #[must_use]
+    pub fn certified_at(&self, person: &[u8; 32], now_ns: u64) -> Vec<DeviceCert> {
+        self.certified_at_with_endpoints(person, now_ns)
+            .into_iter()
+            .map(|(cert, _)| cert)
+            .collect()
+    }
+
+    /// [`Self::certified_at`], each with where its entry says its endpoint answers
+    /// ([`Device::endpoint_addrs`]): the addresses another of the person's devices dials it at
+    /// when no relay and no discovery find it.
+    #[must_use]
+    pub fn certified_at_with_endpoints(
+        &self,
+        person: &[u8; 32],
+        now_ns: u64,
+    ) -> Vec<(DeviceCert, Vec<std::net::SocketAddr>)> {
+        self.devices
+            .iter()
+            .filter_map(|(_, device)| Some((device.cert()?, device)))
+            .filter(|(cert, _)| {
+                cert.user_public_key == *person
+                    && tilo_user_identity::verify_device_cert_at(cert, now_ns).is_ok()
+            })
+            .map(|(cert, device)| (cert, device.endpoint_addrs()))
+            .collect()
+    }
+
     /// The devices `person`'s root certified, as each entry holds it: an entry
     /// whose certificate does not read, or that another root signed, is left
     /// out.

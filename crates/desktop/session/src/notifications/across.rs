@@ -13,14 +13,15 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use tilo_resource::Invoke;
 use tilo_session_core::desktop::notifications::{
     ContinuityNotificationId, Notification, NotificationSeverity, RemoteNotificationRoute,
 };
 use tilo_workspace_service::workspaces::person_workspace::devices::{
-    DEVICES, Devices, MAX_NOTICE_SHOWN_MS, NoticeAction, SharedNotice,
+    Devices, MAX_NOTICE_SHOWN_MS, NoticeAction, SharedNotice,
 };
 
-use crate::PersonResources;
+use crate::followed_resource::FollowedResource;
 use crate::platform::fabric::Continuity;
 
 /// One notification of this device the record keeps.
@@ -48,8 +49,30 @@ struct State {
 
 /// The person's devices as this session reads and writes their record.
 struct Record {
-    resources: PersonResources,
+    attached: Attached,
     continuity: Continuity,
+}
+
+/// The record, and who this device is in it.
+#[derive(Clone)]
+struct Attached {
+    devices: FollowedResource<Devices>,
+    /// This device's person's root key.
+    person: [u8; 32],
+    /// This device's own key.
+    local: [u8; 32],
+}
+
+impl Attached {
+    /// Make `invoke` on the record at the device's daemon, without waiting for it.
+    fn change(&self, invoke: &Invoke<Devices>) {
+        let action = invoke.id;
+        self.devices.invoke_unwaited(invoke, move |made| {
+            if let Err(error) = made {
+                tracing::warn!(%error, action, "a notification's place in the record of the person's devices was not changed");
+            }
+        });
+    }
 }
 
 /// What the record says this session has to do since it was last read.
@@ -80,24 +103,33 @@ impl Across {
         }
     }
 
-    /// Keep this device's notifications in the record `resources` reads and writes from now on,
-    /// while the person's `continuity` lets them continue.
-    pub(crate) fn attach(&self, resources: PersonResources, continuity: Continuity) {
+    /// Keep this device's notifications in the record of the person's devices followed as
+    /// `devices` from now on, as the device `cert` names, while the person's `continuity` lets
+    /// them continue.
+    pub(crate) fn attach(
+        &self,
+        devices: FollowedResource<Devices>,
+        cert: &tilo_user_identity::DeviceCert,
+        continuity: Continuity,
+    ) {
         *self.record.borrow_mut() = Some(Record {
-            resources,
+            attached: Attached {
+                devices,
+                person: cert.user_public_key,
+                local: cert.device_public_key,
+            },
             continuity,
         });
     }
 
-    /// The record and this device's key, while the person lets notifications continue.
-    fn record(&self) -> Option<(PersonResources, [u8; 32])> {
+    /// The record and who this device is in it, while the person lets notifications continue.
+    fn record(&self) -> Option<Attached> {
         let record = self.record.borrow();
         let record = record.as_ref()?;
-        let local = record.resources.certificate()?.device_public_key;
         record
             .continuity
             .notifications_permitted()
-            .then(|| (record.resources.clone(), local))
+            .then(|| record.attached.clone())
     }
 
     /// Show the notification app `app` sent here on the person's other devices, `notification`
@@ -112,7 +144,8 @@ impl Across {
         previews: bool,
         now_ms: i64,
     ) -> Option<ContinuityNotificationId> {
-        let (resources, local) = self.record()?;
+        let record = self.record()?;
+        let local = record.local;
         let (app_id, app_name) = app;
         let mut state = self.state.borrow_mut();
         // A notification replaced under the id the app sent it with keeps the id it had, so the
@@ -166,7 +199,7 @@ impl Across {
             },
         );
         drop(state);
-        resources.apply(DEVICES, move || Devices::showing_notice(&key, &notice));
+        record.change(&Devices::showing_notice(&key, &notice));
         Some(id)
     }
 
@@ -218,11 +251,11 @@ impl Across {
         if ids.is_empty() {
             return;
         }
-        let Some((resources, _)) = self.record() else {
+        let Some(record) = self.record() else {
             return;
         };
         for id in ids {
-            resources.apply(DEVICES, move || Devices::retiring_notice(&id));
+            record.change(&Devices::retiring_notice(&id));
         }
     }
 
@@ -230,16 +263,16 @@ impl Across {
     /// this device's notifications, and what the other devices show now. `None` when it did not
     /// move, or this session reaches no record.
     pub(crate) fn follow(&self, now_ms: i64) -> Option<Followed> {
-        let (resources, local) = self.record()?;
-        let moved = *resources.changes().borrow();
+        let attached = self.record()?;
+        let moved = attached.devices.revision();
         let mut state = self.state.borrow_mut();
         if state.read == Some(moved) {
             return None;
         }
         state.read = Some(moved);
-        let record = resources.read::<Devices>(DEVICES)?;
-        let local = hex::encode(local);
-        let person = resources.certificate()?.user_public_key;
+        let record = attached.devices.get();
+        let local = hex::encode(attached.local);
+        let person = attached.person;
         let labels: BTreeMap<String, String> = record
             .listed(&person)
             .into_iter()
@@ -339,12 +372,10 @@ impl Across {
     }
 
     fn answer(&self, id: String, chosen: String) {
-        let Some((resources, local)) = self.record() else {
+        let Some(record) = self.record() else {
             return;
         };
-        resources.apply(DEVICES, move || {
-            Devices::answering_notice(&id, &local, &chosen)
-        });
+        record.change(&Devices::answering_notice(&id, &record.local, &chosen));
     }
 }
 

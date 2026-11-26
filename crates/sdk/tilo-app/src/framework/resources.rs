@@ -671,6 +671,8 @@ pub struct Resources<'a> {
     provider: Option<&'static str>,
     /// What [`Self::kept_by`] declared, with the provider keeping it.
     kept: Vec<(&'static str, Declare)>,
+    /// Whether a record of the person's own was declared ([`Self::profile_resource`]).
+    profiles: bool,
 }
 
 /// A declaration of records ([`ResourceApp::records`](super::ResourceApp::records)).
@@ -699,6 +701,7 @@ impl<'a> Resources<'a> {
             sections: None,
             provider: None,
             kept: Vec::new(),
+            profiles: false,
         }
     }
 
@@ -715,6 +718,7 @@ impl<'a> Resources<'a> {
             sections: None,
             provider: None,
             kept: Vec::new(),
+            profiles: false,
         }
     }
 
@@ -730,6 +734,7 @@ impl<'a> Resources<'a> {
             sections: Some(sections),
             provider: None,
             kept: Vec::new(),
+            profiles: false,
         }
     }
 
@@ -743,6 +748,12 @@ impl<'a> Resources<'a> {
     /// The resource types of the chains declared.
     pub(crate) fn into_chains(self) -> Vec<tilo_resource::ResourceKind> {
         self.chains
+    }
+
+    /// Whether the app declared a record of the person's own ([`Self::profile_resource`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) const fn declares_profile(&self) -> bool {
+        self.profiles
     }
 
     /// What was declared kept by another provider ([`Self::kept_by`]),
@@ -838,6 +849,7 @@ impl<'a> Resources<'a> {
     /// Declare the app's record of `P` in the person's profile
     /// ([`ResourceEnv::profile_resource`](super::ResourceEnv::profile_resource)).
     pub fn profile_resource<P: Resource>(&mut self) -> &mut Self {
+        self.profiles = true;
         let Some(storage) = self.storage else {
             // Declared, not opened: a host that reads the record without the
             // window ([`super::resource_index`]) reads it by its kind.

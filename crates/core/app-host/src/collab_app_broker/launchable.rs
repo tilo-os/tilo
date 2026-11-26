@@ -2194,6 +2194,39 @@ mod tests {
             );
         }
 
+        phase an_action_on_a_person_record_starts_the_app_without_a_window;
+        // A person's record of a kind is served by the app running in their workspace, not by a
+        // window on it: an action on it, with no instance running, starts one with no record,
+        // as the workspace's `start` does, and lands there.
+        {
+            let (state, workspace) = broker(&workspace());
+            let launches = app_comes_up_later(&state);
+            let (mut windowless, asked) = app_starts_windowless(&state, 9);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_resource_target(
+                &workspace,
+                APP,
+                &collab_types::person_document_id("files.places"),
+                "files.app",
+                "new-window",
+            );
+            invoke(&state, &owner, &target.provider, "new-window", None)
+                .expect("the action lands");
+            assert_eq!(
+                windowless.try_recv().expect("delivered without a window").action,
+                "new-window"
+            );
+            assert_eq!(
+                *asked.lock().expect("asked"),
+                [(APP.to_owned(), workspace.clone())],
+                "the app was started in the workspace"
+            );
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "no window was launched on the record"
+            );
+        }
+
         phase a_start_where_nothing_runs_without_a_window_launches_as_before;
         // Where the host runs no app without a window, its `start` launches a
         // window as an action of it would, and names that.

@@ -127,6 +127,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             relays: test_server::loopback(),
             lan: None,
             live: None,
+            devices: None,
         },
         Vec::new(),
     )

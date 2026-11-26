@@ -250,6 +250,7 @@ impl App {
     pub fn permission_ctx(&self) -> &PermissionContext {
         &self.permission_ctx
     }
+
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         let _entry = self.enter_wake_scope();
         self.permission_ctx = ctx;

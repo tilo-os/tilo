@@ -21,10 +21,10 @@ use tilo_actions::contract::{ActionContract, ActionKind, ConfirmationPolicy, Ris
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending};
 use tilo_actions::{ActionFailure, ActionOutput, ExecutionLocus, OperationKind};
-use tilo_workspace_service::workspaces::PersonResources;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, KeyKind};
 use tilo_workspace_service::workspaces::person_workspace::wifi::{Credential, Security, Zeroizing};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
+use tilo_workspace_service::workspaces::{FollowedRecord, Workspaces, person_workspace};
 
 /// The provider the shared passphrases are answered under on the device's dispatch.
 pub const PROVIDER: &str = "tilo.wifi";
@@ -43,14 +43,26 @@ pub const THE_PERSONS_OWN: &str =
 
 /// The person's shared Wi-Fi passphrases as this device keeps and opens them.
 pub(crate) struct Wifi {
-    personal: PersonResources,
+    /// The workspaces that keep the person's own, where a shared passphrase is written.
+    workspaces: Workspaces,
+    /// The record of the person's devices there, as it changes.
+    devices: FollowedRecord,
     key: SigningKey,
 }
 
 impl Wifi {
-    /// The passphrases kept in `personal`, opened and sealed with this device's `key`.
-    pub(crate) fn new(personal: PersonResources, key: SigningKey) -> Arc<Self> {
-        Arc::new(Self { personal, key })
+    /// The passphrases kept in `devices`, the record of the person's devices in their own
+    /// workspace that `workspaces` keep, opened and sealed with this device's `key`.
+    pub(crate) fn new(
+        workspaces: Workspaces,
+        devices: FollowedRecord,
+        key: SigningKey,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            workspaces,
+            devices,
+            key,
+        })
     }
 
     /// Answer the shared passphrases on the device's dispatch, for callers on this device alone.
@@ -67,7 +79,7 @@ impl Wifi {
     fn password(&self, ssid: &str, security: Security) -> Option<Zeroizing<String>> {
         permitted().ok()?;
         lookup(
-            &self.personal.read::<Devices>(DEVICES)?,
+            &self.devices.state::<Devices>().ok()?,
             &self.key,
             ssid,
             security,
@@ -82,9 +94,12 @@ impl Wifi {
         // device certified later opens it once a device that knows the passphrase shares it again.
         // A device confined to one workspace (a workspace's VM) is no machine of theirs that
         // joins their networks, and opens none.
+        let person = self.workspaces.device_cert().user_public_key;
         let recipients = self
-            .personal
-            .kept_devices()
+            .devices
+            .state::<Devices>()
+            .map(|kept| kept.certified_at(&person, tilo_clock::unix_now_ns()))
+            .unwrap_or_default()
             .into_iter()
             .filter(|cert| {
                 KeyKind::of(cert) == KeyKind::Device && cert.capabilities.workspace.is_none()
@@ -100,9 +115,14 @@ impl Wifi {
             tilo_clock::unix_now_ms(),
         )
         .map_err(|refused| refused.to_string())?;
-        let (network, kept) = (credential.network(), credential.to_hex());
-        self.personal.apply(DEVICES, move || {
-            Devices::KEEP_WIFI.with((network.clone(), kept.clone()))
+        let keep = Devices::KEEP_WIFI.with((credential.network(), credential.to_hex()));
+        // Kept once this device holds the person's workspace, which it may not yet as it starts.
+        let workspaces = self.workspaces.clone();
+        tilo_rt::app().spawn(async move {
+            if let Err(error) = person_workspace::apply_when_held(&workspaces, DEVICES, keep).await
+            {
+                tracing::warn!(%error, "a shared Wi-Fi passphrase was not kept");
+            }
         });
         Ok(())
     }
@@ -389,16 +409,12 @@ mod tests {
         let own = tilo_workspace_service::workspaces::person_workspace::found(&workspaces)
             .await
             .expect("the person's own workspace");
-        let personal = PersonResources::default();
-        personal.attach(
-            std::sync::Arc::new(workspaces),
-            &tokio::runtime::Handle::current(),
-        );
-        let wifi = Wifi::new(personal.clone(), key.clone());
+        let devices = workspaces.follow_record(&own, DEVICES);
+        let wifi = Wifi::new(workspaces.clone(), devices.clone(), key.clone());
         let caller =
             Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(own);
 
-        shares_a_sealed_passphrase(&wifi, &caller, &personal, &key).await;
+        shares_a_sealed_passphrase(&wifi, &caller, &devices, &key).await;
         refuses_a_passphrase_to_every_other(&wifi, &caller, cert.user_public_key).await;
     }
 
@@ -406,7 +422,7 @@ mod tests {
     async fn shares_a_sealed_passphrase(
         wifi: &Wifi,
         caller: &Caller,
-        personal: &PersonResources,
+        devices: &FollowedRecord,
         key: &SigningKey,
     ) {
         assert_eq!(
@@ -438,9 +454,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         assert_eq!(answer, json!({"password": "a passphrase"}));
-        let kept = personal
-            .read::<Devices>(DEVICES)
-            .expect("the devices record");
+        let kept = devices.state::<Devices>().expect("the devices record");
         assert!(
             !kept.wifi.is_empty()
                 && kept.wifi.iter().all(|(_, network)| {
