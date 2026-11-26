@@ -2,7 +2,7 @@
 
 Tilo's programmatic interface is a JSON API over HTTP, versioned under `/v1`. Everything in a
 workspace is a resource with fields and actions, and the API names them by path, as people and
-agents do: `pdf-viewer/application.pdf`, and its action `read-form-fields`. The account is a
+agents do: `pdf-viewer/application.pdf`, and its action `read_fields`. The account is a
 resource too: its workspaces and its keys.
 
 Three things serve it:

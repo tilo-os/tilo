@@ -295,7 +295,7 @@ configuration:
 
 The agent sees that one workspace's apps through the same tools a person's agent gets: `tilo_ls`,
 `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status` and `tilo`. It fills the PDF's form fields
-(`pdf-viewer/application.pdf#field-edit`) and writes a cover letter in Writer (`word-processor#append_paragraph`,
+(`pdf-viewer/application.pdf#fill_field`) and writes a cover letter in Writer (`word-processor#append_paragraph`,
 then `#export_document` as docx). It cannot list, read or act in any other workspace: another workspace's
 MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
 tool call naming another workspace reaches nothing, and the account's paths (`account/...` apart from the
@@ -358,8 +358,8 @@ A key the host turns away says why: `KeyRevoked`, `KeyExpired` (a minted key pas
 tilo do account/workspaces#create name="Applicant: Jane Doe"
 tilo do account/workspaces#branch workspace="Onboarding template" name="Applicant: Amir Haddad"   # or start from one set up once
 tilo files put passport.png -w "Applicant: Jane Doe"
-tilo -w "Applicant: Jane Doe" do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
-tilo -w "Applicant: Jane Doe" do pdf-viewer/application.pdf#read-form-fields
+tilo -w "Applicant: Jane Doe" do pdf-viewer#open_source address=tilo.content:… name=application.pdf
+tilo -w "Applicant: Jane Doe" do pdf-viewer/application.pdf#read_fields
 tilo -w "Applicant: Jane Doe" do word-processor#export_document format=docx
 tilo files get tilo.content:… -w "Applicant: Jane Doe" -o cover-letter.docx
 tilo do account/keys#mint workspace="Applicant: Jane Doe" name="Jane Doe's agent"

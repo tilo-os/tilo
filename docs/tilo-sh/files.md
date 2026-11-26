@@ -75,7 +75,7 @@ the reference:
 | :--- | :--- |
 | Put a file in the workspace's folder | `files#open` with `content`, `name`, and `dir` for a folder |
 | Put a folder of files in it, in one change | `files#open` with `files`: a list of `content`, `name` and `dir` (or a `tilo.content:` reference to one), up to 10 000 |
-| Open a PDF in PDF Viewer | `pdf-viewer#import-pdf-content` with `content` and `name` |
+| Open a PDF in PDF Viewer | `pdf-viewer#open_source` with `address` and `name` |
 | Open a document in Writer | `word-processor#open_document` with `file`: `content` (a `tilo.content:` reference) and `name` |
 | Put a picture in a note | Notes' `keep_image`, or `place_image` with a page |
 
@@ -183,8 +183,8 @@ tilo files put passport.png -w jane-doe                          # passport.png
 tilo files put scan.pdf -w jane-doe --to forms                   # forms/scan.pdf
 tilo files put ./contracts -w jane-doe                           # a folder goes up whole, keeping its structure
 tilo files put config.json -w jane-doe --store                   # the bytes only: prints tilo.content:…
-tilo -w jane-doe do pdf-viewer#import-pdf-content \
-  content=tilo.content:… name=application.pdf                    # an app that takes a reference, by hand
+tilo -w jane-doe do pdf-viewer#open_source \
+  address=tilo.content:… name=application.pdf                    # an app that takes a reference, by hand
 tilo -w jane-doe do word-processor#export_document format=docx   # answers a reference
 tilo files get tilo.content:… -w jane-doe -o cover-letter.docx   # or straight to standard output
 ```

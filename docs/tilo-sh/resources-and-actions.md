@@ -9,10 +9,10 @@ your account. Clicking, an agent and your code all take the same path to the sam
 A path names a resource and, after `#`, one of its actions:
 
 ```text
-notes#new-note                          an action on the app's own record
+notes#new_note                          an action on the app's own record
 notes/Todo                              a resource: the note called Todo
-notes/Todo#rename                       its rename action
-pdf-viewer/application.pdf#read-form-fields
+notes/Todo#retitle                      its rename action
+pdf-viewer/application.pdf#read_fields
 ```
 
 The first segment is the app. What follows is the resource inside it, as the app names it — a title, an
@@ -37,7 +37,7 @@ what the action can reach:
 
 | Kind | What it does | Undo |
 | :--- | :--- | :--- |
-| **Read** | shows or reads: `read-form-fields`, Writer's `export_document` | nothing to undo |
+| **Read** | shows or reads: `pdf-viewer/application.pdf#find_in`, Writer's `export_document` | nothing to undo |
 | **Undoable** | changes the workspace's own records, nothing outside | by construction |
 | **Outside** | reaches outside the records: sends a mail, submits a page, runs a command | asks the person first where it must |
 
@@ -65,7 +65,7 @@ tilo = Tilo()
 workspace = tilo.workspace(tilo.workspaces.create("Snippets and actions").id)
 
 # An action: make a snippet.
-workspace.do("snippets#new-snippet", title="Visa checklist")
+workspace.do("snippets#new_snippet", title="Visa checklist")
 
 # A read: the snippet as a resource, with the fields the app publishes.
 snippet = workspace.read("snippets/Visa checklist")
@@ -85,7 +85,7 @@ const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Snippets and actions")).id);
 
 // An action: make a snippet.
-await workspace.do("snippets#new-snippet", { title: "Visa checklist" });
+await workspace.do("snippets#new_snippet", { title: "Visa checklist" });
 
 // A read: the snippet as a resource, with the fields the app publishes.
 const snippet = await workspace.read("snippets/Visa checklist");
@@ -106,7 +106,7 @@ workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions
 resources=$api/workspaces/$workspace/resources
 
 # An action: make a snippet.
-curl -sS --fail-with-body "$resources/snippets/actions/new-snippet" -H "$auth" \
+curl -sS --fail-with-body "$resources/snippets/actions/new_snippet" -H "$auth" \
   -H "Content-Type: application/json" -d '{"title": "Visa checklist"}' > /dev/null
 
 # A read: the snippet as a resource, with the fields the app publishes. Each path segment is
@@ -151,9 +151,8 @@ tilo sdk gen --lang python -w jane-doe     # writes tilo_types/<app>.py
 tilo sdk gen --lang ts -w jane-doe         # writes tilo-types/<app>.ts
 ```
 
-Then a PDF's document is a `Document` whose `read_form_fields()` answers a typed `FormFields`, and every
-action is a method: `read_form_fields()` in Python, `readFormFields()` in TypeScript — the app's
-`read-form-fields`, in each language's spelling. An assignment is a field edit, and a read-only field has
+Then a PDF's document is a `Document`, and every action is a method: `read_fields()` in Python,
+`readFields()` in TypeScript — the app's `read_fields`, in each language's spelling. An assignment is a field edit, and a read-only field has
 no setter, so the compiler says what the app would have refused.
 
 Without generated types nothing is missing: a path is a string, an action is `ws.do(path, …)`, and a

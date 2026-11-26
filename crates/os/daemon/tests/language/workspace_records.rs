@@ -482,7 +482,7 @@ fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
             &owner
                 .tool(
                     "tilo_do",
-                    &json!({"path": "word-processor#append-paragraph", "args": {"text": "Through the host"}}),
+                    &json!({"path": "word-processor#append_paragraph", "args": {"text": "Through the host"}}),
                 )
                 .await,
         );
@@ -492,7 +492,7 @@ fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
         let seen = editor
             .call(
                 &record("so.tilo.word-processor"),
-                tilo_actions::ActionAddress::new("word-processor.document", "append-paragraph"),
+                tilo_actions::ActionAddress::new("word-processor.document", "append_paragraph"),
                 &json!({"text": "By the member"}),
             )
             .await

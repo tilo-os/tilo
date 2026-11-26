@@ -29,35 +29,35 @@ A page offers the actions a person's Browser offers, addressed as paths:
 | Action | Takes | Answers |
 | :--- | :--- | :--- |
 | `navigate` | `url` | the page it went to |
-| `wait-page-settled` | `quiet_ms`, `timeout_ms` | that the page has settled |
-| `read-page` | — | the page as an outline: its address, its title and its text |
-| `find-page-element` | `role`, `name`, `nth` | the `element` ref to act on |
-| `fill-page` | `element`, `text` | the field filled |
-| `select-page` | `element`, `values` | the choice made |
-| `click-page` | `element` | the click |
-| `capture-page` | — | a picture of the page |
-| `submit-page` | `element` | the submission, once a person allows it |
+| `wait_page_settled` | `quiet_ms`, `timeout_ms` | that the page has settled |
+| `read_page` | — | the page as an outline: its address, its title and its text |
+| `find_page_element` | `role`, `name`, `nth` | the `element` ref to act on |
+| `fill_page` | `element`, `text` | the field filled |
+| `select_page` | `element`, `values` | the choice made |
+| `click_page` | `element` | the click |
+| `capture_page` | — | a picture of the page |
+| `submit_page` | `element` | the submission, once a person allows it |
 
 With a key that carries the page scope — the default — filling a form asks nobody. The agent works like
 this, and every step is a call:
 
 ```text
 navigate https://visa.example/apply
-wait-page-settled quiet_ms=300
-find-page-element role=textbox name="Family name"      → {"element": "d1e4"}
-fill-page element=d1e4 text="Doe"
-find-page-element role=combobox name="Nationality"     → {"element": "d1e7"}
-select-page element=d1e7 values=["NL"]
-find-page-element role=button name="Submit application" → {"element": "d1e9"}
-capture-page                                            → a PNG of the filled form
+wait_page_settled quiet_ms=300
+find_page_element role=textbox name="Family name"      → {"element": "d1e4"}
+fill_page element=d1e4 text="Doe"
+find_page_element role=combobox name="Nationality"     → {"element": "d1e7"}
+select_page element=d1e7 values=["NL"]
+find_page_element role=button name="Submit application" → {"element": "d1e9"}
+capture_page                                            → a PNG of the filled form
 ```
 
-`read-page` is how a caller checks its own work: the outline holds the values that are now in the fields,
+`read_page` is how a caller checks its own work: the outline holds the values that are now in the fields,
 and the page's own words. After a submission it holds the receipt and the reference number the site made.
 
 ## Approve the submission
 
-Then the page is about to leave: `submit-page`, a click on the button that submits, Enter in a field, or
+Then the page is about to leave: `submit_page`, a click on the button that submits, Enter in a field, or
 the page posting on its own. The Browser holds the request where it is — paused, not dropped — and the call
 answers that it needs the person, naming what would leave:
 
@@ -90,6 +90,6 @@ window offers the wait as two actions bound to it, `send-held-request` and `keep
 ## Filling a form without a Browser
 
 Not every form is a web page. When a form is a PDF, the agent fills it in PDF Viewer instead:
-`pdf-viewer#import-pdf-content`, `read-form-fields`, a field edit per answer, and
+`pdf-viewer#open_source`, `read_fields`, `fill_field` per answer, and
 `word-processor#export_document` with `format: docx` for any accompanying document. A person
 reviews both in the same workspace, with the same history and undo.

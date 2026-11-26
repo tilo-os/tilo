@@ -29,7 +29,7 @@ approved as any key is, and writes it as a file `tilo --key-file` acts with; it 
 the computer's own key, which stays in one process).
 
 Every resource has a **path**, `app/resource#action`, as MCP's `tilo_do` takes it:
-`pdf-viewer/application.pdf#read-form-fields`. The account is a resource too:
+`pdf-viewer/application.pdf#read_fields`. The account is a resource too:
 `account/workspaces#create`, `account/workspaces#branch`, `account/keys#mint`. Creating and
 branching workspaces and minting keys are
 ordinary actions, so they appear in the action list, go through the same permission checks,
@@ -53,7 +53,7 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
 - One module per app, and one class per resource kind in it. Fields are typed properties,
   and a read-only field has no setter (a property in Python, `readonly` in TypeScript).
   Actions are methods. Action ids map to `snake_case` in Python and `camelCase` in
-  TypeScript (`read-form-fields` → `read_form_fields` / `readFormFields`); the arguments
+  TypeScript (`find_in` → `find_in` / `findIn`); the arguments
   keep the names the wire takes them under, so a call reads like the surface does.
 - Surface types map directly: `String` → `str`, `Option<T>` → `T | None`, `Collection<T>`
   → a list, `BTreeMap<String, T>` → a mapping, enums → literal unions, and an enum whose
@@ -76,12 +76,11 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
   both call a type `Person`. Without `-w`, `gen` writes the apps of the checkout it runs in.
 
 A surface publishes every action of its app that a caller of another language reads: its
-resource's verbs, and its read effects and conversions (`read-form-fields`, Writer's
-`export_document`) as actions of the resource too, each with its parameters and the value it
-answers with. A read action's return type is part of the surface, so `read_form_fields`
-types the form a script reads its fields from; an action that answers nothing or a job has
-no return type. What a window shows and does to itself (its zoom, the caret) is no action
-of the catalogue.
+resource's verbs, and its reads and conversions (PDF Viewer's `find_in`, Writer's `read_content`
+and `export_document`) as actions of the resource too, each with its parameters and the value it
+answers with. A read action's return type is part of the surface, so `find_in` types what a
+search finds; an action that answers nothing or a job has no return type. What a window shows and
+does to itself (its zoom, the caret) is no action of the catalogue.
 
 ## Async first
 

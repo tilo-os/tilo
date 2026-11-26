@@ -76,14 +76,11 @@ act() { # act PATH ACTION ARGS-JSON: the action's answer
   printf '%s' "$answer"
 }
 act pdf-viewer open '{}' > /dev/null
-act pdf-viewer import-pdf-content "{\"content\": \"$form\", \"name\": \"application.pdf\"}" > /dev/null
-fields=$(act pdf-viewer/application.pdf read-form-fields '{}')
-check 'jq -e ".result.fields | map(.name) | index(\"surname\")" <<<"$fields" > /dev/null' "the form has a surname field"
-path=$(jq -c '[.result.fields[] | select(.name == "surname") | .path][0]' <<<"$fields")
-act pdf-viewer/application.pdf field-edit \
-  "$(jq -cn --argjson path "$path" '{edit: {path: $path, op: "set", value: {kind: "text", value: "Doe"}}}')" > /dev/null
-filled=$(act pdf-viewer/application.pdf read-form-fields '{}')
-check '[[ $(jq -r ".result.fields[] | select(.name == \"surname\") | .value.value" <<<"$filled") == Doe ]]' "the surname holds what the agent set"
+act pdf-viewer open_source "{\"address\": \"$form\", \"name\": \"application.pdf\"}" > /dev/null
+act pdf-viewer/application.pdf read_fields '{}' > /dev/null
+act pdf-viewer/application.pdf fill_field '{"name": "surname", "text": "Doe"}' > /dev/null
+filled=$(call "$agent" GET "$base/resources/pdf-viewer/application.pdf")
+check '[[ $(jq -r ".fields.form_text.surname" <<<"$filled") == Doe ]]' "the surname holds what the agent set"
 act word-processor open '{}' > /dev/null
 act word-processor append_paragraph '{"text": "Dear Visa Officer, I apply for a short-stay business visa."}' > /dev/null
 exported=$(act word-processor export_document '{"format": "docx"}')
