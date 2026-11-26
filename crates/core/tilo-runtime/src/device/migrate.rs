@@ -195,8 +195,11 @@ impl Daemon {
             workspace,
             dir: self.dir(),
         };
-        self.provide(
+        // The engine is the Migrations app's own code, run here for it: the app's calls of it
+        // are its own, on the yes its invocation was given.
+        self.provide_own(
             PROVIDER,
+            tilo_app_id::apps::MIGRATE,
             Arc::new(Migrations::new(
                 resource(&self.device_key()),
                 Arc::new(host),

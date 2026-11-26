@@ -366,9 +366,13 @@ fn device_section(parsed: &Address) -> bool {
         && crate::remote::settings_resources::is_section(&parsed.resource())
 }
 
-/// The segments of a path below the child of the root it starts with.
+/// The segments of a path below the child of the root it starts with: below its app, which a
+/// device's own resources name after the device (`devices/<id>/<app>/…`).
 #[must_use]
 pub fn below_app(parsed: &Address) -> &[Segment] {
+    if is_device_resource(parsed) && !device_section(parsed) {
+        return parsed.segments.get(3..).unwrap_or_default();
+    }
     parsed.segments.get(1..).unwrap_or_default()
 }
 
@@ -1591,8 +1595,13 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         let app = app_of(parsed).to_lowercase();
         // What an action answered is a path the next call takes as it is:
         // `tasks.tracker/issues/7` names one resource whole, where its parts
-        // named one at a time would name every kind that shares a word.
-        if type_address(&app_of(parsed)).is_some() || device_section(parsed) {
+        // named one at a time would name every kind that shares a word. A resource a device
+        // keeps is named by the address its provider answers at (`devices/<id>/<app>`), which no
+        // level of the app's own names.
+        if type_address(&app_of(parsed)).is_some()
+            || device_section(parsed)
+            || is_device_resource(parsed)
+        {
             let address = parsed.resource();
             if let Some(found) = self
                 .by_item_address(&app_id, &provider, &address, levels)

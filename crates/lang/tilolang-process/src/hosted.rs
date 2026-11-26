@@ -253,6 +253,9 @@ struct Surface {
     /// Whether the surface publishes the resources anyone may call on, since no view bounds what
     /// it holds: a call that shows nothing, whose caller names what it calls.
     everything: bool,
+    /// What the device's providers registered for the app, at the addresses they answer at
+    /// ([`Spec::provided`]): the app offers them wherever it runs, as its own code calls them.
+    provided: Vec<ResourceSpec>,
     host: Host,
     planner: Arc<dyn Planner>,
     publications: RefCell<Publications>,
@@ -263,6 +266,7 @@ impl Surface {
         app: &str,
         window: Vec<tilo_actions::ActionSpec>,
         everything: bool,
+        provided: &[tilo_actions::remote::ProvidedPackage],
         host: &Host,
     ) -> Self {
         let handle = Arc::new(
@@ -281,6 +285,15 @@ impl Surface {
             window,
             generation: GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             everything,
+            provided: provided
+                .iter()
+                .flat_map(|package| {
+                    package
+                        .resources
+                        .iter()
+                        .map(|resource| provided_resource(resource, &package.title))
+                })
+                .collect(),
             host: host.clone(),
             planner,
             publications: RefCell::new(publications),
@@ -336,6 +349,18 @@ impl Surface {
             }
             if !resource.actions.is_empty() {
                 out.push(resource);
+            }
+        }
+        // The app's code calls the packages the device provides it by the addresses their
+        // providers answer at, and a caller naming one of their actions reaches the same provider:
+        // the surface offers them where they stand, as the app's own code calls them, whatever
+        // the window shows.
+        for resource in &self.provided {
+            if !out
+                .iter()
+                .any(|have| have.id.as_str() == resource.id.as_str())
+            {
+                out.push(resource.clone());
             }
         }
         out
@@ -445,6 +470,104 @@ impl Publication for Held {
     }
 }
 
+/// What an app's surface offers of one resource a device's provider publishes: the resource at
+/// the address the provider answers at, with the actions its surface declares. Its actions are
+/// the provider's to answer: what they encode as names the provider's own operation, which this
+/// host hands on rather than runs.
+fn provided_resource(
+    resource: &tilo_actions::remote::ProvidedResource,
+    title: &str,
+) -> ResourceSpec {
+    let surface = &resource.surface;
+    // The resource's own label is not carried in the surface its provider publishes: the
+    // package's title names it, as the provider lists it.
+    let label = if surface.label.is_empty() {
+        title.to_owned()
+    } else {
+        surface.label.clone()
+    };
+    let mut spec = ResourceSpec::new(resource.address.clone(), surface.kind.clone(), label);
+    for verb in surface.verbs.iter().filter(|verb| !verb.is_platform()) {
+        let id = verb.offered().to_owned();
+        let operation = format!("{}/{}", surface.kind, id);
+        let params: Vec<tilo_actions::ActionParam> = verb
+            .params
+            .iter()
+            .map(|param| {
+                let mut held = tilo_actions::ActionParam::optional_owned(
+                    param.name.clone(),
+                    param_type(&param.ty),
+                    tilo_actions::field_type::label_of(&param.name),
+                );
+                held.required = param.required;
+                held.schema =
+                    (!param.schema.is_null()).then(|| std::sync::Arc::new(param.schema.clone()));
+                held
+            })
+            .collect();
+        let label = if verb.label.is_empty() {
+            tilo_actions::field_type::label_of(&id)
+        } else {
+            verb.label.clone()
+        };
+        let kind = match verb.kind {
+            tilo_actions::ActionKind::Read => tilo_actions::OperationKind::View,
+            tilo_actions::ActionKind::Undoable | tilo_actions::ActionKind::Outside => {
+                tilo_actions::OperationKind::Effect
+            }
+        };
+        let encoded = operation.clone();
+        let mut action = tilo_actions::ActionSpec::typed_operation(
+            id,
+            label,
+            verb.description.clone().unwrap_or_default(),
+            kind,
+            operation,
+            params,
+            move |_| EncodedAction {
+                type_id: encoded.clone(),
+                payload: Vec::new(),
+            },
+        );
+        action.type_mut().contract.kind = verb.kind;
+        if let Some(returns) = &verb.returns {
+            action.type_mut().contract.result = tilo_actions::ResultSpec::Json {
+                schema: returns.schema.clone(),
+            };
+        }
+        spec = spec.with_action(action);
+    }
+    spec
+}
+
+/// The wire type of a parameter whose surface gives its field type: the schema a provider
+/// publishes carries only for values no field names, so the field type is what a call is read by.
+fn param_type(ty: &tilo_actions::surface::FieldType) -> tilo_actions::ParamType {
+    use tilo_actions::ParamType;
+    use tilo_actions::surface::FieldType;
+    match ty {
+        FieldType::Text | FieldType::RichText | FieldType::Identifier | FieldType::Actor => {
+            ParamType::Text
+        }
+        FieldType::Secret => ParamType::Secret,
+        FieldType::Int => ParamType::Integer,
+        FieldType::Float => ParamType::Number,
+        FieldType::Bool => ParamType::Boolean,
+        FieldType::Date | FieldType::Time => ParamType::DateTime,
+        FieldType::Resource(_) => ParamType::Resource,
+        FieldType::Option(inner) => param_type(inner),
+        FieldType::List(_) | FieldType::Set(_) | FieldType::Collection(_) => ParamType::Array,
+        FieldType::Any
+        | FieldType::Named(_)
+        | FieldType::Json
+        | FieldType::Map(_)
+        | FieldType::Union(_)
+        | FieldType::Reactions
+        | FieldType::Outbox(_)
+        | FieldType::Duration => ParamType::Object,
+    }
+}
+
 /// `resource` with what every app publishes, those it does not offer itself: the history verbs
 /// of its document, `read`, and the verbs of its window where the instance shows one.
 fn with_app_actions(resource: ResourceSpec, window: &[tilo_actions::ActionSpec]) -> ResourceSpec {
@@ -481,6 +604,8 @@ struct HostPlatform {
     /// Whether this instance shows a window: its surface offers "Show this window" only when one
     /// exists to bring forward.
     shows: Shows,
+    /// What the device's providers registered for the app ([`Spec::provided`]).
+    provided: Vec<tilo_actions::remote::ProvidedPackage>,
     /// The words of this window: its app's own and its frames', in the language the window speaks
     /// (the person's where the package ships it), so what its dates and clocks read in is the same
     /// language the toolkit's own say them in.
@@ -770,6 +895,11 @@ impl Platform for HostPlatform {
         self.platform
             .borrow_mut()
             .load(host, &self.bundle.meta.uses, &self.root_wake);
+        // The packages the device's providers publish for this app are descriptions too: the
+        // bundle was compiled against them, and an action reference its code makes to one reads
+        // here as any package's does, then goes out as a child call at the address the provider
+        // answers.
+        self.load_provided(host);
         let installed = |app: &str| self.installed.contains_key(app);
         if let Some(update) = self.builds().and_then(|builds| builds.latest()) {
             match host.load_bundle_using(&update.bundle, installed) {
@@ -1358,14 +1488,52 @@ impl Platform for HostPlatform {
         // A call that shows nothing has no view to bound what it holds: it publishes the app's
         // resources, which is what a caller names when it calls.
         let everything = self.shows == Shows::Nothing;
+        let provided = self.provided_for();
         let surface = Rc::new(Surface::new(
             &self.bundle.meta.app,
             window,
             everything,
+            &provided,
             host,
         ));
         *self.surface.borrow_mut() = Some(Rc::clone(&surface));
         Some(Box::new(Held(surface)))
+    }
+}
+
+impl HostPlatform {
+    /// What the device's providers publish for this app: the packages its own code calls by
+    /// address, and no other app's.
+    fn provided_for(&self) -> Vec<tilo_actions::remote::ProvidedPackage> {
+        self.provided
+            .iter()
+            .filter(|package| {
+                package.app == self.bundle.meta.app
+                    || self.bundle.meta.uses.contains(&package.app)
+                    || self
+                        .bundle
+                        .imports
+                        .iter()
+                        .any(|import| import.meta.app == package.app)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Load each package the device's providers publish for this app into its runtime: the
+    /// description its code was compiled against, so the actions it names resolve here, as a
+    /// platform package's do, and their calls go to the provider that answers them.
+    fn load_provided(&self, host: &Host) {
+        for package in self.provided_for() {
+            let (meta, _) = tilolang_tilo::catalogue::provided(&package);
+            if let Err(error) = host.runtime().load_foreign(meta) {
+                tracing::warn!(
+                    app = package.app,
+                    %error,
+                    "a package the device's providers publish did not load"
+                );
+            }
+        }
     }
 }
 
@@ -1913,6 +2081,7 @@ fn open_instance(
         host: RefCell::new(None),
         installed: spec.installed.clone(),
         shows: spec.shows,
+        provided: spec.provided.clone(),
         phrases: Rc::clone(phrases),
         formats: Rc::clone(formats),
         wake: Arc::clone(wake),
@@ -4436,6 +4605,13 @@ impl Hosted {
         let Some(surface) = self.surface.borrow().clone() else {
             return;
         };
+        // What the store moved since the publication last read it, before what the surface is
+        // built from is read off it: a document that came to exist is an input as much as one
+        // that changed. A write a run made may reach the store after the frame that published
+        // what it offered then, and a publication that listened only to the frame's own moves
+        // would leave that document, and the verbs its root offers, out of the surface and the
+        // catalogue until something else moved.
+        surface.update();
         // Nothing the surface is built from changed since the broker took it: a keystroke into
         // a field nothing published reads, and every turn that changed nothing, cost no more
         // with ten thousand documents or items than with one. What the window shows is read
@@ -4509,7 +4685,7 @@ impl Hosted {
             return Ok(descriptors.clone());
         }
         let resources = surface.resources((!surface.everything).then_some(shown));
-        let handlers: HashSet<String> = HashSet::from([
+        let mut handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             VIEW_TYPE.to_owned(),
@@ -4526,6 +4702,15 @@ impl Hosted {
             // What the window shows, read as lines (`crate::outline`).
             tilo_actions::remote::APPLICATION_OUTLINE_TYPE.to_owned(),
         ]);
+        // What a provider's own actions encode as is the provider's to answer: this host hands
+        // them on, so it declares the handlers they name.
+        for resource in &resources {
+            for action in &resource.actions {
+                if let Some(operation) = &action.operation_type {
+                    handlers.insert(operation.clone());
+                }
+            }
+        }
         let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
         let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
         if !violations.is_empty() {

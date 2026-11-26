@@ -37,6 +37,8 @@ struct Open {
 pub(super) struct Following {
     pub caller: Caller,
     pub origin: Option<InvocationCaller>,
+    /// Whether it is an app's call of its own provider, decided as one at admission.
+    pub own: bool,
     pub workspace: String,
     pub app_id: String,
     pub descriptor: ActionDescriptor,
@@ -254,11 +256,16 @@ impl AppBrokerState {
         &self,
         following: &Following,
     ) -> Result<(), tilo_actions::remote::ActionCallError> {
-        let (workspace, actor, now) = self.current_framework_authority(
+        let (workspace, mut actor, now) = self.current_framework_authority(
             &following.caller,
             following.origin.as_ref(),
             &following.workspace,
         )?;
+        if following.own {
+            // As it was admitted: an app's call of its own provider is not capped by how far
+            // the invocation it continues reached.
+            actor.ceiling = None;
+        }
         self.framework_policy(
             (&workspace, &actor, now),
             (&following.app_id, &following.descriptor),

@@ -787,10 +787,14 @@ impl JoinedChannel {
         }))
     }
 
-    /// The invocation `message` is a declared step of: one delivered to this very connection
-    /// that still runs, whose action, as the app published it, declares the call's action among
-    /// its effects ([`tilo_actions::ActionContract::declares`]). `None` for any other call, which
-    /// is decided as every call is.
+    /// The invocation `message` is a step of: one delivered to this very connection that still
+    /// runs, whose action, as the app published it, declares the call's action among its effects
+    /// ([`tilo_actions::ActionContract::declares`]), or whose app the provider the call reaches
+    /// is the own provider of ([`Registered::is_own_provider_of`]): the app the connection was
+    /// verified as when the invocation was delivered, never one the call names. `None` for any
+    /// other call, which is decided as every call is.
+    ///
+    /// [`Registered::is_own_provider_of`]: tilo_workspace_service::workspaces::providers::Registered::is_own_provider_of
     fn serving(
         &self,
         message: &tilo_actions::remote::RemoteActionMessage,
@@ -805,9 +809,14 @@ impl JoinedChannel {
             super::published_invocation::OriginalInvocation::served(self, parent)
         )
         .ok()?;
-        tilo_actions::remote::Serving::contract(&*served)
+        let app = tilo_actions::remote::Serving::app(&*served);
+        let step = tilo_actions::remote::Serving::contract(&*served)
             .declares(&invoke.target.provider, &invoke.target.address)
-            .then_some(served as Arc<dyn tilo_actions::remote::Serving>)
+            || self
+                .state
+                .provider_of(&invoke.target)
+                .is_some_and(|registered| registered.is_own_provider_of(app));
+        step.then_some(served as Arc<dyn tilo_actions::remote::Serving>)
     }
 
     /// Start handing this app the invocations of its published actions,

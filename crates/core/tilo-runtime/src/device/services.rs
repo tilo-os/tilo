@@ -1585,6 +1585,18 @@ impl Daemon {
         self.workspaces.copies().provide(provider, answers);
     }
 
+    /// [`Self::provide`] for a provider that is the installed app `app`'s own code, which this
+    /// device runs for it under its grants: what the app's own calls of it ask is covered by the
+    /// yes the app's invocation was given.
+    pub fn provide_own(
+        &self,
+        provider: &'static str,
+        app: &'static str,
+        answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    ) {
+        self.workspaces.copies().provide_own(provider, app, answers);
+    }
+
     /// Open a view of the tilolang app `app` in `workspace` for `caller`, whom this device's
     /// dispatch admitted, in an instance this daemon starts with no session
     /// ([`apps::Apps::open_view`]): the device's end of its page window's link

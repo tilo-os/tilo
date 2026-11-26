@@ -2079,6 +2079,21 @@ impl Workspaces {
             .provide(provider, provider, providers::Reach::Devices, answers);
     }
 
+    /// [`Self::provide`] for a provider that is the installed app `app`'s own code, which this
+    /// device runs for it under its grants: the app's own calls of it are its own
+    /// ([`providers::Providers::provide_own`]).
+    pub fn provide_own(
+        &self,
+        provider: &'static str,
+        app: &'static str,
+        answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    ) {
+        self.inner
+            .jobs
+            .providers
+            .provide_own(provider, app, providers::Reach::Devices, answers);
+    }
+
     /// Answer the reads of `app` with `reads` from now on: a resource of this device's own (where
     /// its folders stand, the styles its packages offer), read in the person's own workspace by
     /// this device's own person and, as `readers` says, by whoever else that workspace lets read

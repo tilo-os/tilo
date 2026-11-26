@@ -47,6 +47,31 @@ struct Decided {
     caller: Caller,
     workspace: String,
     origin: Option<super::published_invocation::InvocationCaller>,
+    /// Whether the call is an app's of its own provider ([`own_call`]).
+    own: bool,
+}
+
+impl Decided {
+    /// The actor `policy` a call is decided as, as it stands for this call: for an app's call of
+    /// its own provider ([`own_call`]), not capped by how far the invocation it continues was
+    /// admitted to reach. It is still the caller, by their grants for the app: what they may not
+    /// do is refused, and what a rule of theirs asks first is asked.
+    fn policy(&self, mut policy: tilo_broker_core::BrokerActor) -> tilo_broker_core::BrokerActor {
+        if self.own {
+            policy.ceiling = None;
+        }
+        policy
+    }
+}
+
+/// Whether the call of `registered` that `serving` is a step of is the app's call of its own
+/// provider: the installed app the connection that made it was verified as when the invocation it
+/// continues was delivered there ([`tilo_actions::remote::Serving::app`]) is the one the device
+/// registered the provider as the own code of ([`Registered::is_own_provider_of`]). Neither the
+/// provider's name nor anything the call carries decides it. Its grants decide it under that app
+/// ([`deciding_app`]), as any of the app's steps.
+fn own_call(registered: &Registered, serving: Option<&Arc<dyn Serving>>) -> bool {
+    serving.is_some_and(|serving| registered.is_own_provider_of(serving.app()))
 }
 
 /// The workspace a call of `descriptor` on `registered` is decided in, when it is one of the
@@ -90,6 +115,7 @@ fn decided(
         caller: caller.clone(),
         workspace: caller.workspace().unwrap_or_default().to_owned(),
         origin: origin.cloned(),
+        own: false,
     };
     let Some(own) = device_settings_workspace(caller, registered, descriptor) else {
         return confined();
@@ -126,6 +152,7 @@ fn decided(
             },
         ),
         workspace: own,
+        own: false,
     }
 }
 
@@ -372,6 +399,21 @@ impl AppBrokerState {
         self.services.providers.as_ref()?.get(provider)
     }
 
+    /// The provider registered on this device that a call of `target` from here reaches: the
+    /// one it names, else the one publishing the address it names, as the dispatch finds them.
+    pub(super) fn provider_of(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Option<Registered> {
+        let providers = self.services.providers.as_ref()?;
+        providers.get(&target.provider).or_else(|| {
+            providers.published(
+                target,
+                tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+            )
+        })
+    }
+
     /// Admit one call of a provider registered on this device for `caller` and hand it to the
     /// provider.
     ///
@@ -573,7 +615,10 @@ impl AppBrokerState {
             return Ok(RegisteredAdmission::Undescribed);
         };
         let app_id = deciding_app(registered, serving);
-        let decided = decided(caller, origin, registered, &descriptor, request.invocation);
+        let decided = Decided {
+            own: own_call(registered, serving),
+            ..decided(caller, origin, registered, &descriptor, request.invocation)
+        };
         let (workspace, policy, now) = self
             .current_framework_authority(
                 &decided.caller,
@@ -581,6 +626,7 @@ impl AppBrokerState {
                 &decided.workspace,
             )
             .map_err(abandon)?;
+        let policy = decided.policy(policy);
         // One answer covers both checks of this exact invocation.
         let approved = super::approval::approved_by_person(caller, request.confirmation.as_ref());
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
@@ -685,6 +731,7 @@ impl AppBrokerState {
                 decided.origin.as_ref(),
                 &decided.workspace,
             )?;
+            let policy = decided.policy(policy);
             if !Self::confirmed_as_asked(
                 &policy,
                 &descriptor,
@@ -724,6 +771,7 @@ impl AppBrokerState {
             let following = super::live_views::Following {
                 caller: decided.caller.clone(),
                 origin: decided.origin.clone(),
+                own: decided.own,
                 workspace: decided.workspace,
                 app_id: app_id.to_string(),
                 descriptor,
@@ -1756,6 +1804,7 @@ mod identity_admin_tests {
                                 published: Vec::new(),
                                 placed_for: None,
                                 in_workspace: None,
+                                package: None,
                             };
                             state
                                 .invoke_registered(&caller, Some(&origin), None, &registered, asked)
@@ -2575,6 +2624,7 @@ mod own_device_verdict_tests {
             published: Vec::new(),
             placed_for: None,
             in_workspace: None,
+            package: None,
         }
     }
 
@@ -2671,5 +2721,293 @@ mod own_device_verdict_tests {
             };
             assert_eq!(answered, expected, "{rule:?} answered {refused:?}");
         }
+    }
+}
+
+/// An app's call of its own provider, in a step of an invocation delivered to it: admitted on the
+/// yes that invocation was given, never beyond what the app's grants let its caller do, and only
+/// for the provider the device registered as that very app's own.
+#[cfg(test)]
+mod own_provider_tests {
+    use super::super::AppBrokerState;
+    use super::RegisteredAdmission;
+    use crate::test_support::{
+        Answer, Grantee, KindSet, Role, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::sync::Arc;
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider, Admits, Admitted, Caller, InvokeArgument, InvokeRequest,
+        Outcome, Pending, RemoteActionTarget, Serving, admitted::top_level,
+    };
+    use tilo_workspace_service::workspaces::providers::{Providers, Reach};
+
+    /// The app whose invocation calls the provider.
+    const APP: &str = "so.example.mover";
+    /// Another installed app.
+    const OTHER: &str = "so.example.other";
+    /// The provider's name: the app's, as a device names the provider it runs for an app.
+    const PROVIDER: &str = APP;
+    /// A member of the workspace, who started the app's invocation.
+    const MEMBER: &str = "member-person";
+
+    fn resource() -> String {
+        format!("devices/{}/mover", hex::encode([9u8; 32]))
+    }
+
+    /// `start`: it reaches outside the workspace, further than the app's own invocation, which
+    /// changes a record of the app's, was admitted to reach.
+    fn descriptor() -> tilo_actions::ActionDescriptor {
+        tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(resource(), "start"),
+            resource_kind: "devices.mover".into(),
+            resource_label: "Mover".into(),
+            action_label: "start".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Outside,
+                ..tilo_actions::ActionContract::default()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }
+    }
+
+    /// The provider: only its admission is asked here.
+    struct Mover;
+
+    impl Admits for Mover {
+        const PROVIDER: &'static str = PROVIDER;
+        const APP: &'static str = APP;
+
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            top_level(vec![descriptor()])
+        }
+
+        fn described(
+            &self,
+            address: &tilo_actions::ActionAddress,
+            _argument: Option<&str>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            (address == &descriptor().address).then(descriptor)
+        }
+
+        fn start(
+            &self,
+            _caller: &Caller,
+            _request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            Err("only admission is asked in these tests".into())
+        }
+    }
+
+    /// The app's invocation of its own `start` on a record of its own, delivered to the
+    /// connection the app was verified as `app` on.
+    struct Delivered {
+        app: &'static str,
+        workspace: String,
+        address: tilo_actions::ActionAddress,
+        contract: tilo_actions::ActionContract,
+    }
+
+    impl Serving for Delivered {
+        fn invocation(&self) -> tilo_actions::InvocationId {
+            tilo_actions::InvocationId(uuid::Uuid::nil())
+        }
+        fn app(&self) -> &str {
+            self.app
+        }
+        fn workspace(&self) -> &str {
+            &self.workspace
+        }
+        fn record(&self) -> &'static str {
+            "record"
+        }
+        fn address(&self) -> &tilo_actions::ActionAddress {
+            &self.address
+        }
+        fn kind(&self) -> tilo_actions::OperationKind {
+            tilo_actions::OperationKind::Effect
+        }
+        fn contract(&self) -> &tilo_actions::ActionContract {
+            &self.contract
+        }
+        fn argument(&self) -> Option<&str> {
+            None
+        }
+        fn resource_identity(&self) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
+            Err("none in this test".into())
+        }
+        fn recheck(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// How the provider is registered on the device.
+    enum Registration {
+        /// As the own provider of `package`.
+        OwnOf(&'static str),
+        /// As a provider of the device's, the own provider of no app.
+        Device,
+    }
+
+    /// A broker whose workspace `MEMBER` belongs to, `rule` answering for them at the provider's
+    /// `start` under the app, and the provider registered as `registration` says.
+    fn broker(registration: &Registration, rule: Answer) -> (Arc<AppBrokerState>, String) {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(71), "Mover");
+        workspace.policy.set_owner(hex::encode([71u8; 32]));
+        workspace.policy.add_member(MEMBER, Role::Editor);
+        let workspace_id = workspace.id().to_string();
+        let node = tilo_actions::action_node(
+            &crate::test_support::TreePath::root(),
+            APP,
+            "devices.mover",
+            &resource(),
+            None,
+            "start",
+        );
+        {
+            use crate::test_support::Grants as _;
+            workspace.answer(Grantee::person(MEMBER), &node, KindSet::ALL, rule);
+        }
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let providers = Providers::default();
+        let mover: Arc<dyn ActionProvider + Send + Sync> = Arc::new(Mover);
+        match registration {
+            Registration::OwnOf(package) => {
+                providers.provide_own(PROVIDER, package, Reach::Devices, mover);
+            }
+            Registration::Device => providers.provide(PROVIDER, APP, Reach::Devices, mover),
+        }
+        let (state, _bridge_rx) = AppBrokerState::test_state(
+            Some(tree.shared().authority()),
+            crate::services::ProcessServices {
+                providers: Some(providers),
+                ..Default::default()
+            },
+        );
+        (state, workspace_id)
+    }
+
+    /// The member's call of the provider's `start` as a step of the invocation of the app
+    /// verified as `serving_app` (none when `None`), which changed a record and so reaches no
+    /// further than that without their yes: admitted, or why not.
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "the refusal is the answer under test; any other outcome fails the test"
+    )]
+    fn admitted(
+        registration: &Registration,
+        rule: Answer,
+        serving_app: Option<&'static str>,
+    ) -> Result<(), ActionCallError> {
+        let (state, workspace) = broker(registration, rule);
+        let caller =
+            Caller::own_person(MEMBER)
+                .in_workspace(&workspace)
+                .within(tilo_action_policy::Reach {
+                    kind: tilo_actions::ActionKind::Undoable,
+                    privileged: false,
+                });
+        let serving = serving_app.map(|app| {
+            Arc::new(Delivered {
+                app,
+                workspace: workspace.clone(),
+                address: tilo_actions::ActionAddress::new("record", "start"),
+                contract: tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Undoable,
+                    ..tilo_actions::ActionContract::default()
+                },
+            }) as Arc<dyn Serving>
+        });
+        let registered = state
+            .registered(PROVIDER)
+            .expect("the provider is registered");
+        let request = InvokeRequest {
+            on_behalf_of: Some(tilo_actions::InvocationId::new()),
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(resource(), "start"),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        match state.admit_registered(
+            &caller,
+            (None, serving.as_ref()),
+            &registered,
+            &request,
+            None,
+        )? {
+            RegisteredAdmission::Call(call) => {
+                assert!(call.decided.own, "admitted as the app's own call");
+                Ok(())
+            }
+            RegisteredAdmission::Taken(_) => panic!("a fresh call was taken before"),
+            RegisteredAdmission::Undescribed => panic!("the provider describes `start`"),
+        }
+    }
+
+    fn asks(answer: &Result<(), ActionCallError>) -> bool {
+        matches!(answer, Err(ActionCallError::ConfirmationRequired(_)))
+    }
+
+    #[test]
+    fn an_apps_call_of_its_own_provider_is_admitted_on_its_invocations_yes() {
+        assert_eq!(
+            admitted(&Registration::OwnOf(APP), Answer::Allow, Some(APP)),
+            Ok(()),
+            "the app's own provider runs as the step of the invocation the member asked for"
+        );
+    }
+
+    #[test]
+    fn a_provider_the_app_does_not_own_still_asks() {
+        // A provider of the device's, decided under the app's grants but no app's own code.
+        let answer = admitted(&Registration::Device, Answer::Allow, Some(APP));
+        assert!(asks(&answer), "{answer:?}");
+        // The app's own provider, reached by a call that is no step of the app's invocation.
+        let answer = admitted(&Registration::OwnOf(APP), Answer::Allow, None);
+        assert!(asks(&answer), "{answer:?}");
+    }
+
+    #[test]
+    fn another_package_with_the_same_provider_is_not_the_apps_own() {
+        // Another package registered the provider under the app's name and interface: the app's
+        // call of it is not its own.
+        let answer = admitted(&Registration::OwnOf(OTHER), Answer::Allow, Some(APP));
+        assert!(asks(&answer), "{answer:?}");
+        // Nor is the other package's provider the own of an app verified as something else.
+        let answer = admitted(&Registration::OwnOf(APP), Answer::Allow, Some(OTHER));
+        assert!(asks(&answer), "{answer:?}");
+    }
+
+    #[test]
+    fn an_own_provider_call_goes_no_further_than_the_apps_grants() {
+        assert_eq!(
+            admitted(&Registration::OwnOf(APP), Answer::Deny, Some(APP)),
+            Err(ActionCallError::NotPermitted),
+            "what the member may not do through the app is refused"
+        );
+        let answer = admitted(&Registration::OwnOf(APP), Answer::Ask, Some(APP));
+        assert!(
+            asks(&answer),
+            "what the member's own rule asks first is asked: {answer:?}"
+        );
     }
 }

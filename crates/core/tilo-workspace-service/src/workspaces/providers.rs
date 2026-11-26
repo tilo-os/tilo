@@ -94,6 +94,22 @@ pub struct Registered {
     /// ([`Providers::answer_in_workspaces`]). `None` for a provider every call reaches through
     /// [`Self::answers`] alone.
     pub in_workspace: Option<Arc<dyn WorkspaceAnswers>>,
+    /// The installed app whose own provider this is, as the device's code that registered it
+    /// states it ([`Providers::provide_own`]): never read off the provider's name or anything a
+    /// call carries. A call that app's verified connection makes of it is the app calling its own
+    /// code, admitted on the yes its invocation was given. `None` for every other registration.
+    pub package: Option<Arc<str>>,
+}
+
+impl Registered {
+    /// Whether this is the provider of `app`, the installed app a connection was verified as:
+    /// one the device registered as that app's own ([`Providers::provide_own`]).
+    #[must_use]
+    pub fn is_own_provider_of(&self, app: &str) -> bool {
+        self.package
+            .as_deref()
+            .is_some_and(|package| package == app)
+    }
 }
 
 /// A call as the connection that carried it admitted it: the workspace it was admitted to, and the
@@ -302,6 +318,31 @@ impl Providers {
         reach: Reach,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) {
+        self.register(provider, app, None, reach, answers);
+    }
+
+    /// [`Self::provide`] for a provider that is the installed app `package`'s own code, run by
+    /// this device for it and decided by that app's grants: what the app's own calls of it ask
+    /// is covered by the yes the app's invocation was given ([`Registered::package`]). Only the
+    /// device's own code registers one, for an app it knows the provider belongs to.
+    pub fn provide_own(
+        &self,
+        provider: &str,
+        package: &str,
+        reach: Reach,
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+    ) {
+        self.register(provider, package, Some(package), reach, answers);
+    }
+
+    fn register(
+        &self,
+        provider: &str,
+        app: &str,
+        package: Option<&str>,
+        reach: Reach,
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+    ) {
         let published = answers.published();
         self.0.provided.write_recover().insert(
             Arc::from(provider),
@@ -313,6 +354,7 @@ impl Providers {
                 published,
                 placed_for: None,
                 in_workspace: None,
+                package: package.map(Arc::from),
             },
         );
     }
@@ -339,6 +381,7 @@ impl Providers {
                 published: Vec::new(),
                 placed_for: None,
                 in_workspace: Some(answers),
+                package: None,
             },
         );
     }
@@ -608,6 +651,7 @@ impl Providers {
                 answers,
                 placed_for,
                 in_workspace: None,
+                package: None,
             },
         );
         drop(served);
@@ -1142,8 +1186,10 @@ fn resources(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<
 fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<Registered> {
     let (app, _) = tilo_actions::remote::resource_parts(provider)?;
     let registered = served.get(tilo_actions::remote::RESOURCE_PROVIDER)?;
+    // The app is the one the call names: never the one whose own provider this is.
     Some(Registered {
         app: Arc::from(app),
+        package: None,
         ..registered.clone()
     })
 }

@@ -229,6 +229,17 @@ impl Window {
 #[test]
 fn an_agent_and_the_window_drive_one_migration_on_the_device() {
     host::run_with(&["migrate", "contacts"], |host| async move {
+        // Installed in the workspace as a member installs them: an app keeps its own records
+        // there, and the Migrations app writes its root as it opens.
+        for app in [MIGRATE, "so.tilo.contacts"] {
+            tilo_workspace_service::workspaces::fixtures::install_app(
+                host.daemon().workspaces(),
+                host.workspace(),
+                app,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("the member installs {app}: {error}"));
+        }
         let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
         tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
         host.daemon().serve_migrations();

@@ -2014,7 +2014,7 @@ impl AppBrokerState {
         }
         // A call to an app runs where the app runs: placed first, by where its connection is.
         if application_provider(&request.target.provider).is_some() {
-            return self.invoke_application(caller, origin, request);
+            return self.invoke_application(caller, (origin, serving), request);
         }
         if is_launchable_provider(&request.target.provider)
             || super::windowless_instances::started_app(request).is_some()
@@ -2086,7 +2086,10 @@ impl AppBrokerState {
     pub(super) fn invoke_application_here(
         self: &Arc<Self>,
         caller: &Caller,
-        origin: Option<&super::published_invocation::InvocationCaller>,
+        (origin, serving): (
+            Option<&super::published_invocation::InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // An app's code calls by address, naming its own app or the one it uses: an address a
@@ -2100,7 +2103,7 @@ impl AppBrokerState {
         }) {
             let mut request = request.clone();
             request.target.provider = registered.provider.to_string();
-            return self.invoke_registered(caller, origin, None, &registered, &request);
+            return self.invoke_registered(caller, origin, serving, &registered, &request);
         }
         // The app runs and publishes no live action at the address — one on a record no window
         // shows, as the report a call just filed: its running instance resolves it in its

@@ -310,8 +310,19 @@ async fn root(host: &host::Host) -> String {
 #[test]
 fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
     host::run_with(&["migrate"], |host| async move {
+        // Installed in the workspace as a member installs it: an app keeps its own records
+        // there, and the Migrations app writes its root as it opens.
+        tilo_workspace_service::workspaces::fixtures::install_app(
+            host.daemon().workspaces(),
+            host.workspace(),
+            MIGRATE,
+        )
+        .await
+        .expect("the member installs Migrations");
         let engine = Engine::new();
-        host.daemon().provide(PROVIDER, Arc::clone(&engine) as _);
+        // The engine is the Migrations app's own code, as the device registers it.
+        host.daemon()
+            .provide_own(PROVIDER, MIGRATE, Arc::clone(&engine) as _);
         let open = application_open_target(host.workspace(), MIGRATE);
         let opened = host
             .dispatch()

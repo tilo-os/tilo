@@ -31,11 +31,14 @@ impl AppBrokerState {
     pub(super) fn invoke_application(
         self: &Arc<Self>,
         caller: &Caller,
-        origin: Option<&InvocationCaller>,
+        (origin, serving): (
+            Option<&InvocationCaller>,
+            Option<Arc<dyn tilo_actions::remote::Serving>>,
+        ),
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if self.services.hosted_workspaces.is_none() {
-            return self.invoke_application_here(caller, origin, request);
+            return self.invoke_application_here(caller, (origin, serving), request);
         }
         let runtime = match super::super::launchable::delivery_runtime() {
             Ok(runtime) => runtime,
@@ -56,7 +59,11 @@ impl AppBrokerState {
             match state.placed(&caller, origin.as_ref(), &request).await {
                 Ok(None) => {
                     state.record_brought(&caller, &request);
-                    let here = state.invoke_application_here(&caller, origin.as_ref(), &request);
+                    let here = state.invoke_application_here(
+                        &caller,
+                        (origin.as_ref(), serving),
+                        &request,
+                    );
                     done.complete(here.await.unwrap_or_else(|| {
                         Err(ActionCallError::Unavailable {
                             reason: "the app's answer was dropped before it arrived".into(),
