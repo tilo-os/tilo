@@ -557,9 +557,9 @@ fn described(
         // The device runs the check as this action's own step: the yes the action was given
         // covers it.
         contract.effects.push(tilo_actions::ActionEffect::new(
-            tilo_actions::remote::approved_checks::PROVIDER,
-            tilo_actions::remote::approved_checks::RESOURCE,
-            tilo_actions::remote::approved_checks::RUN,
+            tilo_action_services::approved_checks::PROVIDER,
+            tilo_action_services::approved_checks::RESOURCE,
+            tilo_action_services::approved_checks::RUN,
         ));
     }
     spec.type_mut().contract.settle_confirmation();

@@ -7,6 +7,7 @@ license.workspace = true
 description = "The changes a device makes to its package cache: its daemon's published actions, the apps its workspaces name, and an OS image build's offline store, through one implementation."
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-actions = { path = "../actions" }
 tilo-app-package = { path = "../tilo-app-package" }
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }

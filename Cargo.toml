@@ -66,6 +66,7 @@ members = [
     "crates/core/session-client",
     "crates/desktop/device-surfaces",
     "crates/core/session-actions",
+    "crates/core/action-services",
     "crates/lang/tilolang",
     "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",

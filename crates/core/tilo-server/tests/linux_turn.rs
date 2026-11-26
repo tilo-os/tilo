@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId};
+use tilo_action_services::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::remote::{ActionProvider as _, Caller, InvokeArgument, InvokeRequest};
 use tilo_agent_session::shell::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};

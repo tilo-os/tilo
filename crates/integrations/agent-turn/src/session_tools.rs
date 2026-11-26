@@ -1,5 +1,5 @@
 //! The tools of a turn whose process holds no tool server: asked of the device that serves its
-//! session, as two steps of its agent session ([`tilo_actions::remote::agent_tools`]).
+//! session, as two steps of its agent session ([`tilo_action_services::agent_tools`]).
 //!
 //! That device's session takes each call as the agent, in its agent session, through the same MCP
 //! tools every other agent works through: what it may do, what it asks its person first and how
@@ -8,7 +8,7 @@
 
 use agent_provider_config::protocol::ToolDefinition;
 use serde_json::Value;
-use tilo_actions::remote::agent_tools as wire;
+use tilo_action_services::agent_tools as wire;
 use tilo_actions::remote::{
     ActionProvider, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
 };

@@ -1,0 +1,73 @@
+//! An agent task's tilolang programs (`docs/designs/app-language/agents.md`, "How a program
+//! runs"), served by the session to the Tasks agent's loop.
+//!
+//! The session's API runs every task's programs: an MCP client's through its `tilo` tool, the
+//! Tasks agent's through [`RUN`] under this provider. Both are the same step of the same task
+//! session: the program runs in the task's own tilolang host, what it reads and changes is done
+//! as the agent working on the task, one call is one step that `undo` takes back, and the
+//! answer is tilolang text whose references later programs of the task take.
+
+use tilo_actions::api::ActionAddress;
+use tilo_actions::remote::RemoteActionTarget;
+
+/// The application whose step a task's program is: the agent a run works as.
+pub use tilo_app_id::apps::AGENT as APP;
+/// The provider the session answers a task's programs under.
+pub const PROVIDER: &str = "tilo.task-programs";
+/// The resource the step is an action of.
+pub const RESOURCE: &str = "task";
+/// Run one program as one step of the caller's task: `program`, and `this` (what the person
+/// pointed at, as a resource literal). An agent's program that would change much or destroy
+/// something waits for its person's yes first ([`tilo_actions::remote::asked`]). Answers a [`ProgramAnswer`].
+pub const RUN: &str = "run-program";
+
+/// How a program of a task goes in its host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Go {
+    /// Run provisionally, nothing sent: one that changes nothing has answered, and any other
+    /// answers its preview (`state` `preview`, `asks` whether its person is asked first).
+    Preview,
+    /// Run for real: it has its go-ahead (its person approved it, it is their own, or its
+    /// preview showed nothing to ask them about).
+    Run,
+}
+
+impl Go {
+    /// What the task's host is sent the program under.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Run => "run",
+        }
+    }
+}
+
+#[must_use]
+pub fn target() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(RESOURCE, RUN),
+    }
+}
+
+/// What a program answered.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProgramAnswer {
+    /// What the agent reads: tilolang, each resource named by a short reference.
+    pub text: String,
+    /// What a person reads: the same answer in their words — no reference literals, a day or a
+    /// moment in their formats, a field that is none left out. A reply with `{answer}` in it
+    /// takes these; the model keeps `text` for its next program.
+    #[serde(default)]
+    pub person_text: String,
+    pub failed: bool,
+    /// The task host's answer (`{state, output, detail, steps, changed, apps}`), when the
+    /// program ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<serde_json::Value>,
+    /// Each reference the text shows (`t3`), with the resource literal it names
+    /// (`@tasks.Task:root/items:x`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<(String, String)>,
+}

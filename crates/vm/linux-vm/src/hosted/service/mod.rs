@@ -27,7 +27,7 @@ use super::plan::{AwakeVm, Plans, Refusal, admit};
 use super::valid_name;
 use super::vm::{Clock, HostedVm, Settings, VmError};
 use crate::lifecycle::Phase;
-use tilo_actions::remote::server_account;
+use tilo_action_services::server_account;
 use tilo_server_protocol::hosted_vm::{ENVIRONMENT, VmSize};
 
 /// How often awake VMs are asked what runs in them.

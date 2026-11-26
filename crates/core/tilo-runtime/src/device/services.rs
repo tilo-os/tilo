@@ -32,10 +32,11 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use tilo_action_services::workspace_invocations::Origin;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, RunningTool, device_agent_id, workspace_invocations::Origin,
+    RemoteActionTarget, RunningTool, device_agent_id,
 };
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::grant_key::GrantKey;
@@ -3532,7 +3533,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     let kept_here = || {
         #[cfg(target_os = "linux")]
         let kept = super::published::Published::new().serving(
-            &[tilo_actions::remote::environment_commands::ENVIRONMENTS],
+            &[tilo_action_services::environment_commands::ENVIRONMENTS],
             Arc::clone(&environments),
         );
         #[cfg(not(target_os = "linux"))]
@@ -3592,7 +3593,7 @@ fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
         Arc::clone(&jobs) as Arc<dyn tilo_actions::remote::ResourceReads>,
     );
     parts.workspaces.copies().providers().provide(
-        tilo_actions::remote::approved_checks::PROVIDER,
+        tilo_action_services::approved_checks::PROVIDER,
         tilo_app_id::apps::SETTINGS,
         tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
         Arc::new(super::approved_checks::NativeChecks::new(
@@ -3791,8 +3792,8 @@ fn broker_services(
     // Where an offloadable invocation of the session's broker runs: the session asks this
     // daemon to place it over the shell link, as this daemon's own broker would.
     parts.workspaces.copies().providers().provide(
-        tilo_actions::remote::offload_place::PROVIDER,
-        tilo_actions::remote::offload_place::PROVIDER,
+        tilo_action_services::offload_place::PROVIDER,
+        tilo_action_services::offload_place::PROVIDER,
         tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
         Arc::new(super::offload_place::Placement::new(action_offload.clone())),
     );
@@ -5212,7 +5213,7 @@ struct AgentStop {
 fn stop_named(
     request: &InvokeRequest,
 ) -> Result<
-    tilo_actions::remote::mcp_server::AgentSessionRef,
+    tilo_action_services::mcp_server::AgentSessionRef,
     Pending<Result<InvocationReceipt, ActionCallError>>,
 > {
     match &request.argument {
@@ -5657,7 +5658,7 @@ impl RuntimeActionProvider {
     }
 
     /// What the person's Servers workspace says of their machines, when `request` reads it
-    /// ([`machines`](tilo_actions::remote::machines)): this device's own workspace service answers
+    /// ([`machines`](tilo_action_services::machines)): this device's own workspace service answers
     /// the read, as it answers their desktop's, so a computer with no desktop reads it the same
     /// way. The person reads it, and so do their own programs on this computer; their machines'
     /// disk recovery keys only on a connection the kernel says is theirs. `None` when `request`
@@ -5667,7 +5668,7 @@ impl RuntimeActionProvider {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
-        use tilo_actions::remote::machines;
+        use tilo_action_services::machines;
         let target = &request.target;
         let step = target.address.action.clone();
         if target.provider != machines::PROVIDER
@@ -5735,7 +5736,7 @@ impl RuntimeActionProvider {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
-        use tilo_actions::remote::mcp_server;
+        use tilo_action_services::mcp_server;
         let action = request.target.address.action.as_str();
         if request.target.provider != mcp_server::PROVIDER
             || ![mcp_server::STOP, mcp_server::GO_ON].contains(&action)
@@ -5850,7 +5851,7 @@ impl RuntimeActionProvider {
                 // a walk of the workspace finds, and so is the workspace's own tree.
                 if query.provider.is_none() {
                     page.providers
-                        .push(tilo_actions::remote::workspace_invocations::publisher(
+                        .push(tilo_action_services::workspace_invocations::publisher(
                             &workspace,
                         ));
                     let provider = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
@@ -6128,7 +6129,7 @@ impl RuntimeActionProvider {
         // their accounts and models, their connections and their formats — is the host's to
         // answer, wherever the workspace is kept: a device asks it over the device action
         // service, as the person its transport certified, and never answers it here.
-        if tilo_actions::remote::kept_by_workspace_host(&request.target.provider) {
+        if tilo_action_services::kept_by_workspace_host(&request.target.provider) {
             return self.workspace_kept(session.acting(), request);
         }
         // The person's own act on the workspace's tree (adding to its vault, installing an
@@ -6429,7 +6430,7 @@ fn whichever_first(
 
 impl RuntimeActionProvider {
     /// `request`, one of what the workspace's host keeps for the person
-    /// ([`tilo_actions::remote::kept_by_workspace_host`]), asked of the device that hosts the
+    /// ([`tilo_action_services::kept_by_workspace_host`]), asked of the device that hosts the
     /// workspace as `caller`, a device's person: it is the host's to answer on the device action
     /// service, and nothing of it is decided or kept here.
     fn workspace_kept(
@@ -6578,7 +6579,7 @@ impl ActionProvider for RuntimeActionProvider {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        if query.provider.as_deref() == Some(tilo_actions::remote::workspace_invocations::PROVIDER)
+        if query.provider.as_deref() == Some(tilo_action_services::workspace_invocations::PROVIDER)
         {
             if let Some(session) = &self.session
                 && let Err(refusal) = session.check(caller, &self.workspaces)

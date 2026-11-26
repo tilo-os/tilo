@@ -735,9 +735,9 @@ pub fn shared_invitation(device: &Device, role: &str, person: [u8; 32]) -> Invit
 pub fn shell_answer(device: &Device, args: &serde_json::Value) -> serde_json::Value {
     device.act_wait(
         &at(
-            tilo_actions::remote::session_actions::PROVIDER,
-            tilo_actions::remote::session_actions::INVITE_RESOURCE,
-            tilo_actions::remote::session_actions::ISSUE_INVITATION,
+            tilo_action_services::session_actions::PROVIDER,
+            tilo_action_services::session_actions::INVITE_RESOURCE,
+            tilo_action_services::session_actions::ISSUE_INVITATION,
         ),
         args,
     )
@@ -2041,7 +2041,7 @@ impl Device {
         loop {
             match self.read(
                 workspace,
-                (tilo_actions::remote::workspace_invocations::PROVIDER, ""),
+                (tilo_action_services::workspace_invocations::PROVIDER, ""),
                 None,
                 None,
             ) {
@@ -2493,7 +2493,7 @@ impl Device {
     fn approve(&self, record: &str) {
         let record = record.split_once('/').map_or(record, |(_, record)| record);
         let target = RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(record, tilo_actions::remote::asked::RESOLVE),
         };
         let request = super::invocation(&target, &json!({"resolution": "approve"}), None, None);
@@ -3066,7 +3066,7 @@ pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
 /// The session's own verb that makes a new workspace, as the workspace menu invokes it.
 pub fn new_workspace() -> RemoteActionTarget {
     at(
-        tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+        tilo_action_services::SESSION_ACTIONS_PROVIDER,
         "desktop:chrome",
         "new-workspace",
     )

@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::server_account::{
+use tilo_action_services::server_account::{
     Limits, NextStep, NextStepKind, PlanOffer, Reason, Refusal, ServerAccount, ServerKind,
     Subscription, Usage, WorkspaceUsage,
 };

@@ -773,7 +773,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
         "no route to choose while no conversation is open"
     );
 
-    let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
+    let session = std::sync::Arc::new(tilo_action_services::TestProvider::new());
     harness.set_session_api(
         ui::RemoteActions::with_provider(
             session.clone(),

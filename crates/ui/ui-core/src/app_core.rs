@@ -39,9 +39,9 @@ pub(crate) struct AppTree<'a> {
 }
 
 impl AppTree<'_> {
-    #[cfg(feature = "model")]
     /// The window a palette is asked for from, when the root lays several out (the shell's strip of
     /// app tiles): the tile under the pointer that pressed, else the one holding keyboard focus.
+    #[cfg(feature = "model")]
     pub(crate) fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
         crate::action_palette::invoking_window(
             self.taffy,

@@ -28,8 +28,8 @@ use crate::platform::indexes::Indexes;
 #[cfg(target_os = "linux")]
 mod host;
 
+use tilo_action_services::downloaded_apps as downloaded_wire;
 use tilo_actions::ApiError;
-use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
     ActionCallError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
 };

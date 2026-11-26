@@ -13,7 +13,7 @@
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
 use serde_json::{Map, Value};
-use tilo_actions::remote::machines;
+use tilo_action_services::machines;
 use tilo_server_protocol::servers::{PersonServer, RecoveryKey};
 use tilo_server_protocol::transport::{
     Opening, ServerAnswer, ServerOperationResult, ServerStatus, UnlockMethod,

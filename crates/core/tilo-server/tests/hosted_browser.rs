@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::server_account::{NextStepKind, Reason, Refusal};
+use tilo_action_services::server_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueQuery, Confirmation, InvocationReceipt, InvocationState,
@@ -340,7 +340,7 @@ async fn questions(
     remote: &RemoteDevice,
     caller: &Caller,
 ) -> Vec<tilo_actions::remote::asked::Asked> {
-    use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
+    use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
     let read = tilo_actions::remote::ResourceReadRequest {
         workspace: WS_NAME.to_owned(),
         app: workspace_invocations::PROVIDER.to_owned(),
@@ -403,7 +403,7 @@ async fn answer(
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: ActionAddress::new(
                 &question.record.record,
                 tilo_actions::remote::asked::RESOLVE,
@@ -503,7 +503,7 @@ impl Asks {
                 ("picture", "tilo.content:5f2b"),
             ]
             .into_iter()
-            .map(|(name, value)| tilo_actions::remote::browser::departure_facet(name, value))
+            .map(|(name, value)| tilo_action_services::browser::departure_facet(name, value))
             .collect(),
             Self::Never | Self::Submit | Self::Acting => Vec::new(),
         }
@@ -518,7 +518,7 @@ struct WindowActions {
     asks: Asks,
     /// The host that placed this window: the only device whose word for the
     /// person a page action of this window carries.
-    placement: tilo_actions::remote::browser::Placement,
+    placement: tilo_action_services::browser::Placement,
 }
 
 impl ActionProvider for WindowActions {
@@ -543,7 +543,7 @@ impl ActionProvider for WindowActions {
         // workspace it placed it in, answers for the person; the dispatch that
         // admitted the same call again on the person's approve of its asked
         // record hands the window their own answer.
-        let approved = match tilo_actions::remote::browser::host_answered(
+        let approved = match tilo_action_services::browser::host_answered(
             Some(&self.placement),
             caller,
             request.confirmation.as_ref(),
@@ -562,13 +562,13 @@ impl ActionProvider for WindowActions {
         let status = if self.asks.asks(&request.target.address.action) && !approved {
             // What the person is shown: the departure the call itself states where it states
             // one, the window's own otherwise, and the page it acts on when it states neither.
-            let stated = tilo_actions::remote::browser::departure_facts(request.context.as_ref());
+            let stated = tilo_action_services::browser::departure_facts(request.context.as_ref());
             let stated = if stated.is_empty() {
-                tilo_actions::remote::browser::stated_facts(&self.asks.departure())
+                tilo_action_services::browser::stated_facts(&self.asks.departure())
             } else {
                 stated
             };
-            let mut facts = tilo_actions::remote::browser::departure_asked(stated);
+            let mut facts = tilo_action_services::browser::departure_asked(stated);
             if facts.on.is_none() {
                 facts.on = Some(PAGE_RESOURCE.to_owned());
             }
@@ -639,7 +639,7 @@ async fn window_served(
         Arc::new(WindowActions {
             seen: Arc::clone(&seen),
             asks,
-            placement: tilo_actions::remote::browser::Placement {
+            placement: tilo_action_services::browser::Placement {
                 host,
                 workspace: material.workspace.clone(),
             },
@@ -1749,7 +1749,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
             Arc::new(WindowActions {
                 seen: Arc::new(Mutex::new(Vec::new())),
                 asks: Asks::Never,
-                placement: tilo_actions::remote::browser::Placement {
+                placement: tilo_action_services::browser::Placement {
                     host: [0; 32],
                     workspace: String::new(),
                 },
@@ -2509,7 +2509,7 @@ fn reported_departure(invocation: InvocationId, id: u32) -> InvokeRequest {
                 ("picture", "tilo.content:5f2b"),
             ]
             .into_iter()
-            .map(|(name, value)| tilo_actions::remote::browser::departure_facet(name, value))
+            .map(|(name, value)| tilo_action_services::browser::departure_facet(name, value))
             .collect(),
             ..tilo_actions::ActionContext::default()
         }),
@@ -2683,7 +2683,7 @@ async fn only_the_device_of_the_window_releases_what_it_holds() {
 }
 
 /// What an environment's device asks of the host about itself
-/// ([`tilo_actions::remote::environment_device`]): `action` with `argument`.
+/// ([`tilo_action_services::environment_device`]): `action` with `argument`.
 fn asks_about_itself(
     asker: &TestDevice,
     invocation: InvocationId,
@@ -2695,7 +2695,7 @@ fn asks_about_itself(
         InvokeRequest {
             on_behalf_of: None,
             invocation,
-            target: tilo_actions::remote::environment_device::target(action),
+            target: tilo_action_services::environment_device::target(action),
             argument,
             context: None,
             confirmation: None,
@@ -2710,7 +2710,7 @@ fn asks_about_itself(
 /// The window `tab` of `app`, as [`asks_about_itself`] names it.
 fn window_named(app: &str, tab: u64) -> InvokeArgument {
     let serde_json::Value::Object(map) =
-        serde_json::to_value(tilo_actions::remote::environment_device::WindowShare {
+        serde_json::to_value(tilo_action_services::environment_device::WindowShare {
             app: app.to_owned(),
             tab,
         })
@@ -2736,7 +2736,7 @@ async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may
         asks_about_itself(
             &environment_device,
             id,
-            tilo_actions::remote::environment_device::MEDIA_KEYS,
+            tilo_action_services::environment_device::MEDIA_KEYS,
             InvokeArgument::None,
         ),
     )
@@ -2765,7 +2765,7 @@ async fn an_environment_asks_the_host_for_its_own_media_keys_and_nobody_else_may
         asks_about_itself(
             &fixture.agent,
             id,
-            tilo_actions::remote::environment_device::MEDIA_KEYS,
+            tilo_action_services::environment_device::MEDIA_KEYS,
             InvokeArgument::None,
         ),
     )
@@ -2793,8 +2793,8 @@ async fn an_environment_shares_no_window_it_did_not_mint() {
     )
     .mint();
     for action in [
-        tilo_actions::remote::environment_device::SHARE_WINDOW,
-        tilo_actions::remote::environment_device::END_WINDOW_SHARE,
+        tilo_action_services::environment_device::SHARE_WINDOW,
+        tilo_action_services::environment_device::END_WINDOW_SHARE,
     ] {
         let id = InvocationId::new();
         let refused = ActionProvider::invoke(

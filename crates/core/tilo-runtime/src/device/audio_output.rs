@@ -15,8 +15,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_action_services::{CallLanes, Take, frame_line};
 use tilo_actions::remote::audio_output::{self, Request, Snapshot};
-use tilo_actions::remote::{ActionCallError, CallLanes, RemoteActionMessage, Take, frame_line};
+use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
 use tilo_app_host::collab_app_broker::AudioOutputConnection;
 use tilo_lock::MutexRecover as _;
 
@@ -195,8 +196,9 @@ pub(crate) fn lane_for(daemon: &Arc<Daemon>, at: &AppAt) -> Option<AudioLane> {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+    use tilo_action_services::{LineClient, serve_lines_with};
     use tilo_actions::remote::audio_output::MAX_SAMPLES;
-    use tilo_actions::remote::{Caller, HostedContentPuts, LineClient, serve_lines_with};
+    use tilo_actions::remote::{Caller, HostedContentPuts};
     use tilo_app_host::collab_app_broker::{
         AudioOutputFuture, AudioOutputServices, MediaRequestContext,
     };

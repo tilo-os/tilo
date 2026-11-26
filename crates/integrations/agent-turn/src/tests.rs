@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_provider_config::protocol::Usage;
 use serde_json::json;
+use tilo_action_services::TestProvider;
+use tilo_action_services::agent_tools as wire;
 use tilo_actions::ActionOutput;
-use tilo_actions::remote::agent_tools as wire;
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, TestProvider};
+use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_lock::MutexRecover as _;
 
 use super::*;

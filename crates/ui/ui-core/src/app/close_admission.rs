@@ -12,8 +12,8 @@ use tilo_ui_base::widget::Widget;
 #[path = "../../../../../vendor/winit/src/platform_impl/quit_request.rs"]
 mod native_quit_request;
 
-#[cfg(feature = "model")]
 /// Why the workspace did not take what a window published, in words a person reads.
+#[cfg(feature = "model")]
 fn barrier_failure(error: &tilo_ui_base::collaboration::DocumentPublicationError) -> String {
     use tilo_ui_base::collaboration::DocumentPublicationError;
     match error {
@@ -162,10 +162,10 @@ impl App {
         self.invalidate_close_presentation();
     }
 
-    #[cfg(feature = "model")]
     /// Whether the workspace keeps every change of the window's records, for a close: what the
     /// window published since it checkpointed is answered by a barrier first. A window with
     /// nothing the workspace lacks goes at once, connected or not.
+    #[cfg(feature = "model")]
     fn kept_before_close(&mut self) -> crate::close_admission::Keeping {
         use crate::close_admission::Keeping;
         use crate::resource::ResourceSaveStatus;
@@ -234,10 +234,10 @@ impl App {
         ))
     }
 
-    #[cfg(feature = "model")]
     /// Send again, whole, each record the person asked to try again
     /// ([`crate::resource::ResourceStore::take_resend`]), and with `refused` every record the
     /// workspace refused: the next pump publishes it, and the barrier after it settles it.
+    #[cfg(feature = "model")]
     pub(super) fn resend_refused(&mut self, refused: bool) {
         let barrier = &mut self.close_admission.barrier;
         for entry in self
@@ -261,7 +261,6 @@ impl App {
         }
     }
 
-    #[cfg(feature = "model")]
     /// Take the workspace's answer to the window's barrier, when it came, and ask for
     /// another once a record's route sent changes the workspace has not confirmed, so the save
     /// indicator says Saved only for what the workspace took ([`crate::close_admission::Barrier`]).
@@ -270,6 +269,7 @@ impl App {
     /// # Errors
     /// The workspace did not take what the window published, said in plain words; each record
     /// the barrier covered shows it failed.
+    #[cfg(feature = "model")]
     pub(super) fn watch_barrier(&mut self) -> Result<(), String> {
         use tilo_ui_base::collaboration::DocumentPublicationError;
         let barrier = &mut self.close_admission.barrier;
@@ -367,13 +367,13 @@ impl App {
         }
     }
 
-    #[cfg(feature = "model")]
     /// Whether the window has let go of the invocations the broker hands it, so it may close:
     /// it takes no more and it answered every one it was handed; the close then waits until the
     /// answers reached the broker ([`Self::kept_before_close`]). One left unanswered as the window
     /// goes has an outcome nobody knows, and the
     /// broker never starts it again, so whoever asked is told it may or may not have happened.
     /// Each pass the close waits on it takes it a step further ([`Self::service_close_admission`]).
+    #[cfg(feature = "model")]
     fn left_invocations(&mut self) -> bool {
         use crate::close_admission::Leaving;
         // The window left takes no more of what the broker hands out, though it answers what
@@ -506,9 +506,9 @@ impl App {
         Ok(())
     }
 
-    #[cfg(feature = "model")]
     /// The person keeps editing: the close this window had begun is called off. It takes
     /// invocations again, and a save of its own that later succeeds closes nothing.
+    #[cfg(feature = "model")]
     fn keep_editing(&mut self) {
         use crate::close_admission::Leaving;
         self.close_admission.dismiss();

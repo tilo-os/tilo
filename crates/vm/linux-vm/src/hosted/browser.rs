@@ -3,7 +3,7 @@
 //! starts it through the guest agent with the ticket the placement carries ([`DAEMON`],
 //! [`TICKET`]), learns the device it logged in as, and is done: the sessions are launched and read
 //! on that device through the workspace's dispatch
-//! ([`tilo_actions::remote::environment_window`]). The daemon ends once its last session ended,
+//! ([`tilo_action_services::environment_window`]). The daemon ends once its last session ended,
 //! and the VM sleeps.
 
 use std::fmt;
@@ -57,9 +57,9 @@ pub fn hand_off(material: &str, server: Endpoint) -> Result<Material, String> {
     Ok(material)
 }
 
-#[cfg(test)]
 /// The material a host writes for a workspace's VM, its ticket naming the host at `server`: what
 /// the tests of a hand-off start from.
+#[cfg(test)]
 pub fn test_material(server: &str) -> String {
     let material = Material {
         workspace: "ws1".into(),

@@ -1726,7 +1726,7 @@ impl ActionProvider for Account {
         // This API reads no grants of its own, so the resource an invocation was made from gives
         // nobody here a say: only its caller, or the person its agent works for, stops it.
         let no_origin_grants =
-            |_: &Caller, _: &tilo_actions::remote::workspace_invocations::Origin| false;
+            |_: &Caller, _: &tilo_action_services::workspace_invocations::Origin| false;
         if let Some(stopping) =
             self.handed_on(|invocations| invocations.cancel(caller, id, &no_origin_grants))
         {
@@ -2654,8 +2654,8 @@ fn account_target(
             arguments.clone_from(request);
             model_providers::models::ask()
         }
-        _ => tilo_actions::remote::server_account::target(
-            tilo_actions::remote::server_account::ACCOUNT,
+        _ => tilo_action_services::server_account::target(
+            tilo_action_services::server_account::ACCOUNT,
         ),
     };
     Ok((target, arguments))

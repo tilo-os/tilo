@@ -1,11 +1,11 @@
 //! One program of a task, run for a host that serves the task-programs step
-//! ([`tilo_actions::remote::task_programs`]): a desktop session and the device daemon alike run
+//! ([`tilo_action_services::task_programs`]): a desktop session and the device daemon alike run
 //! it here, off the caller's pass, and answer what it said as the step's outcome.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tilo_actions::remote::task_programs::{self as wire, Go};
+use tilo_action_services::task_programs::{self as wire, Go};
 use tilo_actions::remote::{ActionProvider, Outcome, Pending};
 
 use crate::{McpServer, TaskProgram};

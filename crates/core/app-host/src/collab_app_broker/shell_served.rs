@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 
 use runtime_collab::wire::shell::Typed;
 use runtime_collab::wire::{Answer, Ask, Handle};
-use tilo_actions::remote::session_actions;
+use tilo_action_services::session_actions;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,

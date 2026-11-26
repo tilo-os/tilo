@@ -13,7 +13,7 @@
 //! An account the plans file names has a card on file and is never stopped.
 //! Any other account may run its period's free page actions; past them,
 //! [`BrowserMeter::admit`] answers the refusal whoever ran the action reads:
-//! [`Reason::NoPaymentMethod`](tilo_actions::remote::server_account::Reason::NoPaymentMethod),
+//! [`Reason::NoPaymentMethod`](tilo_action_services::server_account::Reason::NoPaymentMethod),
 //! the free count in words, and the provider's page to add a card. A host
 //! whose plans file sells nothing counts nothing and refuses nothing.
 
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use linux_vm::hosted::plan::{self, Plans};
-use tilo_actions::remote::server_account;
+use tilo_action_services::server_account;
 use tilo_server_account::browser_actions::{Log, PageAction};
 use tilo_server_account::{ACTIONS_LOG_ENV, PLANS_ENV, period};
 

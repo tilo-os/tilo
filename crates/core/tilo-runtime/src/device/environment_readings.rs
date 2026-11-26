@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::store::wire::{Command, Reply};
 use serde_json::{Value, json};
-use tilo_actions::remote::environment_commands::ENVIRONMENTS;
+use tilo_action_services::environment_commands::ENVIRONMENTS;
 use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_environment::{Environment, HomePolicy};
 use tilo_lock::MutexRecover as _;

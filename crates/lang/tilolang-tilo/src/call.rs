@@ -158,7 +158,7 @@ fn invocation_record_call(invocation: &Invocation) -> Option<Result<Json, String
         "app": app,
         // The workspace's invocations provider answers an invocation record's actions; the
         // record's app names it in the catalogue tree, not the provider that runs it.
-        "provider": tilo_actions::remote::workspace_invocations::PROVIDER,
+        "provider": tilo_action_services::workspace_invocations::PROVIDER,
         "workspace": workspace,
         "resource": record,
         "action": action,

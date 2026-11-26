@@ -78,12 +78,12 @@ pub fn runs_approved_check(action: &ActionMeta) -> bool {
 
 /// The name the app's action API offers `action` by: its own, except for the action that runs a
 /// check its project's host approved, which every app offers as the workspace's one
-/// `run-approved-check` (`tilo_actions::remote::approved_checks::ACTION_ID`), the verb the broker runs a
+/// `run-approved-check` (`tilo_action_services::approved_checks::ACTION_ID`), the verb the broker runs a
 /// check for, whatever language the app is written in.
 #[must_use]
 pub fn published_name(action: &ActionMeta) -> &str {
     if runs_approved_check(action) {
-        tilo_actions::remote::approved_checks::ACTION_ID
+        tilo_action_services::approved_checks::ACTION_ID
     } else {
         &action.name
     }

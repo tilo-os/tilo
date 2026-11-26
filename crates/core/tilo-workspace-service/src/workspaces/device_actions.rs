@@ -919,7 +919,7 @@ impl ActionProvider for Answers {
             || provider == HOST_ACTIONS_PROVIDER
             || provider == WORK_PROVIDER
             // The calls that wait for a person's yes, read and answered from their records.
-            || provider == tilo_actions::remote::workspace_invocations::PROVIDER
+            || provider == tilo_action_services::workspace_invocations::PROVIDER
             || self.work.providers.serves(provider)
             || self.apps().is_some()
     }
@@ -1173,11 +1173,11 @@ impl super::Workspaces {
         self.inner.jobs.agents.read_recover().clone()
     }
 
-    #[cfg(feature = "agents")]
     /// A key of this device's own for `statement`: its device key signs a digest of the
     /// statement, and the key is made from that signature, so the device makes the same key every
     /// time and nothing secret is written down. The key never leaves the device; what it offers
     /// of it is its public key, in the ticket that asks for it to be approved.
+    #[cfg(feature = "agents")]
     pub fn derived_device_key(&self, statement: &[u8]) -> ed25519_dalek::SigningKey {
         let digest = blake3::hash(statement);
         let signature = ed25519_dalek::Signer::sign(&self.inner.host.key, digest.as_bytes());
@@ -1381,7 +1381,7 @@ impl Answers {
         // environment's asks reach the app serving that certified it
         // ([`crate::app_serving::AppActionServer::route`]), which decides who may.
         if let Some(placed) = caller.placed_records()
-            && tilo_actions::remote::environment_device::action_of(&request.target).is_none()
+            && tilo_action_services::environment_device::action_of(&request.target).is_none()
             && !self.work.providers.serves(&request.target.provider)
             && self
                 .work
@@ -1562,7 +1562,7 @@ async fn served_invocation_running(
     (workspace, forwarder): (&str, [u8; 32]),
     signed: &tilo_actions::remote::SignedInvocation,
 ) -> Result<(), ActionCallError> {
-    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    use tilo_action_services::workspace_invocations::InvocationStatus;
     let refused = |reason: &str| ActionCallError::Refused {
         reason: reason.into(),
     };
@@ -1583,7 +1583,7 @@ async fn served_invocation_running(
     })?;
     let read = tilo_actions::remote::ResourceReadRequest {
         workspace: workspace.to_owned(),
-        app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+        app: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
         record: signed.statement().invocation.0.to_string(),
         joined: false,
         after: None,
@@ -1610,7 +1610,7 @@ async fn served_invocation_running(
             tilo_failure::ignored!(
                 "a status this device does not know proves nothing, and is refused below",
                 serde_json::from_value::<
-                    tilo_actions::remote::workspace_invocations::InvocationStatus,
+                    tilo_action_services::workspace_invocations::InvocationStatus,
                 >(status)
                 .ok()
             )

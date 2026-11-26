@@ -262,9 +262,9 @@ impl super::services::Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_action_services::task_programs as wire;
     use tilo_actions::ActionAddress;
     use tilo_actions::remote::Admits as _;
-    use tilo_actions::remote::task_programs as wire;
     use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
     const WORKSPACE: &str = "the-workspace";

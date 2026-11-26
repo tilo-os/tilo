@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
-use tilo_actions::remote::session_actions::INVITE_RESOURCE;
+use tilo_action_services::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::join::Role;
@@ -1100,7 +1100,7 @@ impl DeviceLists {
                 .push(DesktopAsk::Intent(ChromeIntent::PairDevice)),
             InviteEffect::ShowConnect => self
                 .handle
-                .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT),
+                .choose_host_action(tilo_action_services::session_actions::CONNECT_AGENT),
             // A link opens where the shell's own open lands: the app that keeps what it names
             // shows it, on the desktop this session runs.
             InviteEffect::OpenLink { link } => self

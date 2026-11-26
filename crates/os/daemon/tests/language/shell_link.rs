@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use runtime_collab::ShellClient;
 use serde_json::{Map, json};
+use tilo_action_services::TestProvider;
 use tilo_actions::remote::{
     ActionProvider as _, CataloguePage, CatalogueRow, Completer, Confirmation, InvocationReceipt,
-    InvokeArgument, InvokeRequest, RemoteActionTarget, TestProvider,
+    InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationUpdate};
 
@@ -19,7 +20,7 @@ use crate::language::host;
 const PROBE: &str = "so.tilo.probe";
 const ASKS: &str = "session.asks";
 const WAITS: &str = "session.waits";
-const SESSION: &str = tilo_actions::remote::session_actions::PROVIDER;
+const SESSION: &str = tilo_action_services::session_actions::PROVIDER;
 
 /// What `provider` offers: `resource#action`, taking an `echo`.
 fn offered(provider: &str, app: &str, resource: &str, action: &str) -> CataloguePage {

@@ -1,0 +1,269 @@
+//! Using an action on another of the person's own devices and hearing its
+//! answer.
+//!
+//! An app on one device names one of the person's enrolled devices, an
+//! application and one of that application's actions; the host on this
+//! device admits the request, carries it to the other device as an ordinary
+//! [`InvokeRequest`] on a workspace both devices
+//! share, follows it there, and records the other device's outcome as this
+//! invocation's. Nothing here is a new wire format: the other device sees
+//! the same request any of the person's devices sends it, and decides it
+//! for the device the transport authenticated.
+//!
+//! Only the person at this device reaches it, for an application's own
+//! actions: an agent, a bot, a Shortcut or another device gets no reach
+//! across devices it lacks here.
+
+use serde::{Deserialize, Serialize};
+
+use tilo_actions::api::ActionAddress;
+use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
+
+/// The provider that answers own-device invocations under.
+pub const PROVIDER: &str = "tilo.own-device";
+/// The resource the invocation is an action of.
+pub const RESOURCE: &str = "identity.device";
+/// Invoke an action on one of the person's devices; answers its outcome.
+pub const INVOKE: &str = "invoke";
+
+#[must_use]
+pub fn target() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(RESOURCE, INVOKE),
+    }
+}
+
+/// What an own-device invocation asks for: application `app`'s action
+/// `action` on its resource `resource`, on the device whose public key is
+/// `device`, with `arguments`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Invocation {
+    /// The other device's public key, as 64 lowercase hex digits.
+    pub device: String,
+    /// The application whose action it is, by package id.
+    pub app: String,
+    pub resource: String,
+    /// The action's id on that resource.
+    pub action: String,
+    /// The action's typed arguments; absent for an action that takes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// One admitted own-device invocation, checked: the device's key, the
+/// application, the action and what the action is given.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checked {
+    pub device: [u8; 32],
+    pub app: String,
+    pub address: ActionAddress,
+    pub argument: InvokeArgument,
+}
+
+impl Invocation {
+    /// The argument an invocation of [`target`] carries.
+    #[must_use]
+    pub fn argument(&self) -> InvokeArgument {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(map)) => InvokeArgument::Json(map),
+            _ => InvokeArgument::None,
+        }
+    }
+
+    /// Read an own-device invocation from what a request carries.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionCallError::InvalidRequest`] when the argument is not one.
+    pub fn from_argument(argument: &InvokeArgument) -> Result<Self, ActionCallError> {
+        let InvokeArgument::Json(map) = argument else {
+            return Err(ActionCallError::invalid_request(
+                "an own-device invocation takes JSON arguments",
+            ));
+        };
+        serde_json::from_value(serde_json::Value::Object(map.clone()))
+            .map_err(|_| ActionCallError::invalid_request("the own-device invocation is malformed"))
+    }
+
+    /// The invocation, checked: a device key, an application id an
+    /// application provider can name, and an action address.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionCallError::InvalidRequest`] naming the part that is not.
+    pub fn check(&self) -> Result<Checked, ActionCallError> {
+        let device = decode_device(&self.device)
+            .ok_or_else(|| ActionCallError::invalid_request("not a device key"))?;
+        if self.app.is_empty() || self.app.contains(':') {
+            return Err(ActionCallError::invalid_request("not an application id"));
+        }
+        // A separator in either half would name another address than the
+        // one checked here once it is carried as one string.
+        let address = ActionAddress::checked(&self.resource, &self.action)
+            .ok_or_else(|| ActionCallError::invalid_request("not an action"))?;
+        Ok(Checked {
+            device,
+            app: self.app.clone(),
+            address,
+            argument: self
+                .arguments
+                .clone()
+                .map_or(InvokeArgument::None, InvokeArgument::Json),
+        })
+    }
+}
+
+impl Checked {
+    /// The request the other device is sent: the application's action in
+    /// workspace `workspace`, which both devices share, under the original
+    /// invocation's id so a retry there observes the first run, carrying the
+    /// confirmation the original carried.
+    #[must_use]
+    pub fn forwarded(&self, workspace: &str, original: &InvokeRequest) -> InvokeRequest {
+        let confirmation = original.confirmation.clone();
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation: original.invocation,
+            target: tilo_actions::remote::application_action_target(
+                workspace,
+                &self.app,
+                self.address.resource.clone(),
+                self.address.action.clone(),
+            ),
+            argument: self.argument.clone(),
+            context: None,
+            confirmation,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+}
+
+/// A device key from its 64 lowercase hex digits.
+#[must_use]
+pub fn decode_device(hex_key: &str) -> Option<[u8; 32]> {
+    if hex_key.len() != 64 || hex_key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return None;
+    }
+    let mut key = [0_u8; 32];
+    hex::decode_to_slice(hex_key, &mut key).ok()?;
+    Some(key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Invocation, PROVIDER, decode_device, target};
+    use {
+        tilo_actions::remote::Confirmation, tilo_actions::remote::InvokeArgument,
+        tilo_actions::remote::InvokeRequest, tilo_actions::remote::application_provider,
+    };
+
+    fn invocation() -> Invocation {
+        Invocation {
+            device: hex::encode([7_u8; 32]),
+            app: "so.tilo.settings".into(),
+            resource: "settings.root".into(),
+            action: "storage-summary".into(),
+            arguments: None,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_own_device_invocation_travels_in_its_argument;
+
+        phase an_own_device_invocation_round_trips_through_its_argument;
+        {
+            let asked = invocation();
+            let read = Invocation::from_argument(&asked.argument()).expect("reads back");
+            assert_eq!(read, asked);
+            let checked = read.check().expect("valid");
+            assert_eq!(checked.device, [7; 32]);
+            assert_eq!(checked.argument, InvokeArgument::None);
+            assert_eq!(target().provider, PROVIDER);
+        }
+
+        phase a_malformed_own_device_invocation_is_refused;
+        {
+            assert!(Invocation::from_argument(&InvokeArgument::Text("x".into())).is_err());
+            let mut extra = invocation().argument();
+            if let InvokeArgument::Json(map) = &mut extra {
+                map.insert("caller".into(), serde_json::json!("someone else"));
+            }
+            assert!(
+                Invocation::from_argument(&extra).is_err(),
+                "nothing beyond the declared fields is read, least of all a caller"
+            );
+            for broken in [
+                Invocation {
+                    device: "AB".repeat(32),
+                    ..invocation()
+                },
+                Invocation {
+                    device: "ab".into(),
+                    ..invocation()
+                },
+                Invocation {
+                    app: "workspace:app".into(),
+                    ..invocation()
+                },
+                Invocation {
+                    action: String::new(),
+                    ..invocation()
+                },
+                Invocation {
+                    resource: format!("settings.root{}other", tilo_actions::KEY_SEP),
+                    ..invocation()
+                },
+                Invocation {
+                    action: format!("storage-summary{}other", tilo_actions::KEY_SEP),
+                    ..invocation()
+                },
+            ] {
+                assert!(broken.check().is_err(), "{broken:?}");
+            }
+            assert_eq!(decode_device(&hex::encode([1; 32])), Some([1; 32]));
+        }
+
+        phase the_forwarded_request_names_the_app_in_the_shared_workspace_under_the_same_id;
+        {
+            let checked = Invocation {
+                arguments: Some(serde_json::Map::from_iter([(
+                    "workspace".into(),
+                    serde_json::json!("w"),
+                )])),
+                ..invocation()
+            }
+            .check()
+            .unwrap();
+            let original = InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: target(),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: Some(Confirmation::Phrase("forget".into())),
+                revision: None,
+                wait_ms: Some(1),
+                appearance: None,
+                signed: None,
+            };
+            let forwarded = checked.forwarded("workspace-1", &original);
+            assert_eq!(forwarded.invocation, original.invocation);
+            assert_eq!(
+                application_provider(&forwarded.target.provider),
+                Some(("workspace-1", "so.tilo.settings"))
+            );
+            assert_eq!(forwarded.target.address.action, "storage-summary");
+            assert!(matches!(forwarded.argument, InvokeArgument::Json(_)));
+            assert_eq!(
+                forwarded.confirmation,
+                Some(Confirmation::Phrase("forget".into())),
+                "the phrase the person typed travels with their call"
+            );
+        }
+    }
+}

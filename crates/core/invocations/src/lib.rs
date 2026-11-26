@@ -7,7 +7,7 @@
 //! hands a call on to another host records where it went ([`Invocations::record`] again), so
 //! following, cancelling and waiting reach the host that runs it with no map of its own.
 //!
-//! [`PROVIDER`]: tilo_actions::remote::workspace_invocations::PROVIDER
+//! [`PROVIDER`]: tilo_action_services::workspace_invocations::PROVIDER
 
 #![cfg_attr(
     test,
@@ -21,11 +21,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use tilo_action_services::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::secret_arguments::{
     SecretAnswers, SecretParameters, secret_arguments, without_secrets,
 };
-use tilo_actions::remote::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
@@ -452,8 +452,8 @@ impl Invocations {
         let run = std::sync::Arc::new(ToolRun::started(id));
         let request = InvokeRequest {
             invocation: id,
-            target: tilo_actions::remote::agent_tools::target(
-                tilo_actions::remote::agent_tools::CALL,
+            target: tilo_action_services::agent_tools::target(
+                tilo_action_services::agent_tools::CALL,
             ),
             argument: InvokeArgument::None,
             context: Some(tilo_actions::ActionContext {
@@ -728,7 +728,7 @@ impl Invocations {
         asked: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A tool call is the session's, not an action with an address to ask again.
-        if recorded.request.target.provider == tilo_actions::remote::agent_tools::PROVIDER {
+        if recorded.request.target.provider == tilo_action_services::agent_tools::PROVIDER {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "a tool call is not run again from its record: its agent asks it again"
                     .to_owned(),

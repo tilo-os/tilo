@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use super::reading::{Changes, Read, Served};
 
-pub use tilo_actions::remote::mcp_server::RESOURCE as SERVER;
+pub use tilo_action_services::mcp_server::RESOURCE as SERVER;
 
 /// The MCP server, published to the apps this device serves, read where the workspaces keep it.
 #[must_use]

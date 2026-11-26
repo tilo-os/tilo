@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
+use tilo_action_services::workspace_invocations;
 use tilo_actions::remote::asked::{Asked, AskedBy, RESOLVE};
-use tilo_actions::remote::workspace_invocations;
 use tilo_actions::remote::{
     ActionProvider, Caller, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReadAnswer, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget, ResourceReadRequest, UpdateMark,

@@ -9,8 +9,8 @@
 //! hold is refused, and nothing is read from anywhere else.
 
 use accounts::vault_items::{ItemError, ItemId, UsedFor};
+use tilo_action_services::environment_commands::VmSecret;
 use tilo_actions::remote::Caller;
-use tilo_actions::remote::environment_commands::VmSecret;
 use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_resource::Resource as _;
 use tilo_workspace_service::workspace_vault::ItemRef;

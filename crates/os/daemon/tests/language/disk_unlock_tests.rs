@@ -25,10 +25,10 @@ use iroh::EndpointAddr;
 use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use serde_json::json;
+use tilo_action_services::workspace_invocations;
 use tilo_actions::ActionAddress;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{Asked, AskedRecords as _, RESOLVE};
-use tilo_actions::remote::workspace_invocations;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_unlock_protocol::published::{UnlockEnrolment, UnlockFabricState};
 use tilo_unlock_protocol::{

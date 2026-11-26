@@ -7,6 +7,7 @@ license.workspace = true
 description = "One agent turn over the workspace's MCP tools: the tools listed are the model's, each call it makes is answered by them (in process on a server, or by the device's session for an agent in a process of its own), until the model answers, its person stops it or its bounds are reached."
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 # The model's neutral request and answer.
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../provider-config" }
 # The provider an agent's process reaches the session's actions by, carried over whatever link

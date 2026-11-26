@@ -301,7 +301,7 @@ impl App {
     ) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(handed) = tilo_actions::remote::handed::connection() else {
+            let Some(handed) = tilo_action_services::handed::connection() else {
                 return;
             };
             let Some(payload) = payload.to_live() else {
@@ -326,10 +326,17 @@ impl App {
     /// Take what the device's live session heard in this window's workspace since the last
     /// frame: the other members' words, as the connection its launcher handed it carried them.
     /// Whether any was shown.
+    #[cfg_attr(
+        any(target_arch = "wasm32", not(feature = "model")),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "a page, or a toolkit build, folds no inbound presence in: the borrow is unused there"
+        )
+    )]
     fn drain_line_presence(&mut self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(handed) = tilo_actions::remote::handed::connection() else {
+            let Some(handed) = tilo_action_services::handed::connection() else {
                 return false;
             };
             let mut shown = false;

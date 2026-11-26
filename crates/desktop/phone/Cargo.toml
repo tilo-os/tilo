@@ -26,6 +26,7 @@ unified-push = true
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 runtime-dylib = { path = "../../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
 # The device daemon, started on the app's own threads: Android runs no daemon process of its own.

@@ -1,5 +1,5 @@
 //! Where an offloadable invocation runs, asked of this daemon by the session's broker
-//! ([`tilo_actions::remote::offload_place`]).
+//! ([`tilo_action_services::offload_place`]).
 //!
 //! The session's broker admits an app's offloadable invocation, then asks this device's daemon to
 //! place its turn on the workspace's other devices: the daemon holds the endpoint and the link to
@@ -9,10 +9,11 @@
 
 use std::sync::Arc;
 
+use tilo_action_services::offload_place;
 use tilo_actions::offload::{ActionOffload, OffloadRequest, Offloaded};
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
-    Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, offload_place,
+    Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus,

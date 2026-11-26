@@ -730,9 +730,9 @@ impl AppBrokerState {
             // own actions there, as the person using it; never under the
             // app's own identity, which holds no reach across devices.
             RemoteActionMessage::Invoke(request)
-                if request.target.provider == tilo_actions::remote::own_device::PROVIDER =>
+                if request.target.provider == tilo_action_services::own_device::PROVIDER =>
             {
-                tilo_actions::remote::own_device::Invocation::from_argument(&request.argument)
+                tilo_action_services::own_device::Invocation::from_argument(&request.argument)
                     .is_ok_and(|invocation| invocation.app == app_id)
                     .then(|| person.clone())
             }
@@ -2049,7 +2049,7 @@ impl AppBrokerState {
         {
             return self.invoke_registered(caller, origin, serving, &registered, request);
         }
-        if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
+        if request.target.provider == tilo_action_services::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));
         }
         if let Some(origin) = origin {

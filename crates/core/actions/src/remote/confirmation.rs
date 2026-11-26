@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum Confirmation {
     /// The host that placed a browser window hands it a call of a key its person let operate
     /// web pages: their standing permission, not an answer to an ask. Only
-    /// [`super::browser::host_answered`] reads it, from that host's link alone; nothing else
+    /// `tilo_action_services::browser::host_answered` reads it, from that host's link alone; nothing else
     /// takes it as a confirmation, so a caller that writes it is asked like one that wrote none.
     Operated,
     /// The caller typed the phrase the contract asks for.

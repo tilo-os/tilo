@@ -14,11 +14,12 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
+use tilo_action_services::{Carry, CarryAnswer};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    self, ActionCallError, ActionProvider, Caller, Carry, CarryAnswer, CataloguePage,
-    CatalogueQuery, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, RemoteActionFrame, RemoteActionTarget,
+    self, ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPut,
+    ContentPutAnswer, ContentPutStep, ContentPuts, InvocationReceipt, InvocationState,
+    InvokeRequest, Pending, RemoteActionFrame, RemoteActionTarget,
 };
 use tilo_peer_state::actions::{REPLY_DEADLINE, RemoteDevice};
 use tilo_socket::Stream;
@@ -75,7 +76,13 @@ impl Carrying {
         let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(&carry.workspace);
         drop(daemon);
-        if writeln!(stream, "{}", remote::carry_answer_line(&CarryAnswer::Open)).is_err() {
+        if writeln!(
+            stream,
+            "{}",
+            tilo_action_services::carry_answer_line(&CarryAnswer::Open)
+        )
+        .is_err()
+        {
             return;
         }
         let carried = Carried(device, None);
@@ -91,7 +98,7 @@ impl Carrying {
             }
             Ok((carried.clone(), caller.clone()))
         };
-        remote::serve_lines(tree, &uploads, None, input, stream, SLACK);
+        tilo_action_services::serve_lines(tree, &uploads, None, input, stream, SLACK);
     }
 }
 
@@ -137,7 +144,11 @@ fn refuse(mut stream: Stream, why: &str) {
     let answer = CarryAnswer::Refused {
         reason: why.to_owned(),
     };
-    let _ = writeln!(stream, "{}", remote::carry_answer_line(&answer));
+    let _ = writeln!(
+        stream,
+        "{}",
+        tilo_action_services::carry_answer_line(&answer)
+    );
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 

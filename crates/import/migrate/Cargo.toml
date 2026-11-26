@@ -18,6 +18,7 @@ fixture = []
 test-support = []
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 anyhow.workspace = true
 # Cloud drives sign in, refresh and resolve their storage as Settings does.

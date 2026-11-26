@@ -236,7 +236,7 @@ pub struct CommandAnswer {
     pub exit: Option<i32>,
     /// Why the command's host refused it, with the steps that would let it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refusal: Option<ui::tilo_actions::remote::server_account::Refusal>,
+    pub refusal: Option<tilo_action_services::server_account::Refusal>,
 }
 
 /// What a finished command recorded, as the Terminal that ran it hands it in.
@@ -544,9 +544,9 @@ impl Terminal {
     }
 }
 
-#[cfg(feature = "desktop")]
 /// Keep explicit reads bounded even when retained output has very long rows; the suffix ends on a
 /// Unicode boundary and nothing is logged before the caller asks for it.
+#[cfg(feature = "desktop")]
 pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
     const LIMIT: usize = 64 * 1024;
     let mut reversed = String::new();

@@ -3285,9 +3285,10 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
 fn a_call_in_flight_as_the_persons_part_ends_is_answered_and_the_next_one_waits_for_the_new_part() {
     use io::{BufRead as _, Write as _};
     use std::sync::{Arc, Mutex, atomic::Ordering};
+    use tilo_action_services::TestProvider;
     use tilo_actions::remote::{
         Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-        RemoteActionMessage, RemoteActionTarget, TestProvider, pending,
+        RemoteActionMessage, RemoteActionTarget, pending,
     };
     use tilo_api::daemon::admission::Admission;
     // The person's own account, which their daemon runs as.
@@ -3444,7 +3445,7 @@ fn a_call_in_flight_as_the_persons_part_ends_is_answered_and_the_next_one_waits_
         let connections = Arc::clone(&first_connections);
         std::thread::spawn(move || connections.hand_over(&stop))
     };
-    while !tilo_actions::remote::Handover::handing(&*first_connections) {
+    while !tilo_action_services::Handover::handing(&*first_connections) {
         std::thread::sleep(Duration::from_millis(5));
     }
     // A call made now is not the part's that ends: it waits for the next.

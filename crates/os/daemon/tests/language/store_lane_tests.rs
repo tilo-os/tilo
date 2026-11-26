@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 
 use collab_types::store::wire::{Command, Reply};
 use collab_types::store::{Cell, Resource, Value};
-use tilo_actions::remote::{ActionCallError, LineClient};
+use tilo_action_services::LineClient;
+use tilo_actions::remote::ActionCallError;
 use tilo_resource_store::Stamp;
 
 const APP: &str = "so.tilo.tasks";

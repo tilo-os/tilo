@@ -617,33 +617,33 @@ impl passwords_engine::Device for EngineContent<'_> {
     }
 }
 
-#[cfg(feature = "app-launch")]
 /// What a stream running beside the host hands over as frames arrive: each is published where the
 /// window paints live pictures from, kept for the embedder that reads them, and the window is woken
 /// to draw it. Never polled.
+#[cfg(feature = "app-launch")]
 struct StreamFrames {
     push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
     wake: Waker,
 }
 
-#[cfg(feature = "app-launch")]
 /// The frames of `stream`, handed to a loaded engine that makes them.
+#[cfg(feature = "app-launch")]
 fn frames_of(stream: &Arc<StreamFrames>) -> tilo_engine_loader::Frames {
     let context = Arc::as_ptr(stream).cast_mut().cast::<std::ffi::c_void>();
     tilo_engine_loader::Frames::new(context, pushed, said)
 }
 
-#[cfg(feature = "app-launch")]
 /// What a stream a loaded engine runs said of itself: kept where a view reads `engine.state`
 /// and the window is woken to show it.
+#[cfg(feature = "app-launch")]
 fn said(context: *mut std::ffi::c_void, slot: &str, state: &str) {
     // SAFETY: the context is the `StreamFrames` the stream's caller kept for the process's life.
     let frames = unsafe { &*context.cast::<StreamFrames>() };
     tilolang_tilo::runtime::host_work::Push::state(frames, slot, state);
 }
 
-#[cfg(feature = "app-launch")]
 /// One frame a loaded engine made, shown by the window the stream belongs to.
+#[cfg(feature = "app-launch")]
 fn pushed(
     context: *mut std::ffi::c_void,
     slot: &str,
@@ -666,8 +666,8 @@ fn pushed(
     );
 }
 
-#[cfg(feature = "app-launch")]
 /// The streams loaded engines run, by the job's id: what their frames reach while they run.
+#[cfg(feature = "app-launch")]
 fn streams() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc<StreamFrames>>> {
     static STREAMS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::BTreeMap<String, Arc<StreamFrames>>>,
@@ -4472,7 +4472,7 @@ impl Hosted {
         // A check the project's host approved runs for an invocation the workspace holds, which
         // its invoker can follow and stop: the press goes through the dispatch, and the check
         // runs when the broker delivers it back.
-        if address.action == tilo_actions::remote::approved_checks::ACTION_ID {
+        if address.action == tilo_action_services::approved_checks::ACTION_ID {
             self.dispatch_press(&address, argument.as_deref());
             self.instance.press_ran(press);
             return true;

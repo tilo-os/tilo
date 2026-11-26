@@ -196,7 +196,7 @@ async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
     let moderator = "c3".repeat(32);
     let event = a_posted_message(&workspace, &author, "m-1");
 
-    let provider = Arc::new(tilo_actions::remote::TestProvider::new());
+    let provider = Arc::new(tilo_action_services::TestProvider::new());
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model: Model = {
         let asked = Arc::clone(&asked);

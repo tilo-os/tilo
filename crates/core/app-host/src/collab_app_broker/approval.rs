@@ -91,7 +91,7 @@ impl AppBrokerState {
     /// Whether `evidence`, which `caller` carries, is the person's own answer for the call: their
     /// approve of the asked record it was kept as, which only the dispatch sets, or the word of the
     /// host that placed this device's window, forwarded over that host's link
-    /// ([`tilo_actions::remote::browser::host_answered`]).
+    /// ([`tilo_action_services::browser::host_answered`]).
     ///
     /// # Errors
     /// A confirmation another device forwarded here, which answers for nobody.
@@ -103,7 +103,7 @@ impl AppBrokerState {
         if approved_by_person(caller, evidence) {
             return Ok(true);
         }
-        tilo_actions::remote::browser::host_answered(self.placement.get(), caller, evidence)
+        tilo_action_services::browser::host_answered(self.placement.get(), caller, evidence)
     }
 
     /// Resolve a directory's original identity and selected content revision.

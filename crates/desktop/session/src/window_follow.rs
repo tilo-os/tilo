@@ -1,12 +1,12 @@
 //! What the session tells the apps of a workspace about the person's windows: whose view the
 //! person follows, and the save one window's app is asked for before its window moves. The apps
 //! are connected to the device's daemon, so the session asks the daemon to tell them
-//! ([`tilo_actions::remote::window_follow`]), as the person, on its link.
+//! ([`tilo_action_services::window_follow`]), as the person, on its link.
 
 use std::sync::Arc;
 
 use collab_types::handoff::{HandoffReport, HandoffRequest};
-use tilo_actions::remote::window_follow as wire;
+use tilo_action_services::window_follow as wire;
 
 /// The person's window steps, told to their apps through the device's daemon. Cheap to clone.
 #[derive(Clone)]

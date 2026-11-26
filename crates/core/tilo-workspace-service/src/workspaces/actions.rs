@@ -49,18 +49,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
-    WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
-    WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, server_account,
-    workspace_app, workspace_app_named, workspace_governance_address, workspace_governance_child,
-    workspace_governance_operation, workspace_governance_resource, workspace_member,
-    workspace_person,
-};
+use tilo_actions::remote::{ ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS, WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app, workspace_app_named, workspace_governance_address, workspace_governance_child, workspace_governance_operation, workspace_governance_resource, workspace_member, workspace_person };
+use tilo_action_services::{ formats, mcp_server, server_account };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
     InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
@@ -4476,7 +4466,7 @@ impl HostActionServer {
                     // The calls that wait for a person's yes: read in the workspace's invocations,
                     // and answered as `<record>#resolve` on that provider.
                     || request.target.provider
-                        == tilo_actions::remote::workspace_invocations::PROVIDER
+                        == tilo_action_services::workspace_invocations::PROVIDER
                     || tilo_actions::remote::asked::is_resolve(&request.target)
                     || self.governance.answers_own_account(&request.target)
             }
@@ -4561,7 +4551,7 @@ impl HostActionServer {
         // apps place elsewhere (a Browser window on a VM host) is theirs.
         if let RemoteActionMessage::Invoke(request) = message
             && (PROVIDERS.contains(&request.target.provider.as_str())
-                || request.target.provider == tilo_actions::remote::workspace_invocations::PROVIDER
+                || request.target.provider == tilo_action_services::workspace_invocations::PROVIDER
                 || tilo_actions::remote::asked::is_resolve(&request.target)
                 || self.governance.answers_own_account(&request.target))
         {

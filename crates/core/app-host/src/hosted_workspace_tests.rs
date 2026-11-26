@@ -429,8 +429,8 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
     // What a workspace's VM device holds no keys for (its media keys, a window's share) is asked
     // of the host that placed it, through the same forwarding.
     let mut media_keys = request();
-    media_keys.target = tilo_actions::remote::environment_device::target(
-        tilo_actions::remote::environment_device::MEDIA_KEYS,
+    media_keys.target = tilo_action_services::environment_device::target(
+        tilo_action_services::environment_device::MEDIA_KEYS,
     );
     assert!(providers.invoke(&person, media_keys.clone()).is_some());
     let asked = provider.asked.lock().unwrap();

@@ -129,6 +129,7 @@ portal = ["native", "tilo-process-services/portal", "tilo-ui-base/portal"]
 host-portals = ["tilo-process-services/host-portals", "tilo-ui-base/host-portals"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web

@@ -43,8 +43,8 @@ pub(super) fn reference_request(request: &tilo_actions::remote::InvokeRequest) -
 /// calls are decided as their own. The app gains nothing by it — the line is the person's own
 /// words — and what it asks for beyond that is decided for the app as any other call is.
 pub(super) fn programs_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
-    use tilo_actions::remote::session_actions;
-    request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+    use tilo_action_services::session_actions;
+    request.target.provider == tilo_action_services::SESSION_ACTIONS_PROVIDER
         && request.target.address.resource == session_actions::PROGRAMS_RESOURCE
         && request.target.address.action == session_actions::RUN_LINE
 }
@@ -56,9 +56,9 @@ pub(super) fn programs_request(request: &tilo_actions::remote::InvokeRequest) ->
 /// agents — and grants nothing: the invitation admits whoever redeems it, as the person's own
 /// would.
 pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
-    use tilo_actions::remote::session_actions;
+    use tilo_action_services::session_actions;
     let action = request.target.address.action.as_str();
-    request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+    request.target.provider == tilo_action_services::SESSION_ACTIONS_PROVIDER
         && request.target.address.resource == session_actions::INVITE_RESOURCE
         && (action == session_actions::ISSUE_INVITATION || action == session_actions::SHOW_INVITE)
 }
@@ -69,9 +69,9 @@ pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) 
 /// listing what acts as the person offers adding to it this way; it grants nothing, and the person
 /// still signs anything in themselves.
 pub(super) fn connect_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
-    use tilo_actions::remote::session_actions;
+    use tilo_action_services::session_actions;
     let action = request.target.address.action.as_str();
-    request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+    request.target.provider == tilo_action_services::SESSION_ACTIONS_PROVIDER
         && request.target.address.resource == session_actions::INVITE_RESOURCE
         && (action == session_actions::SHOW_CONNECT || action == session_actions::SHOW_PAIR_DEVICE)
 }
@@ -172,8 +172,8 @@ mod invitation_request_tests {
     use crate::collab_app_broker::AppBrokerState;
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
+    use tilo_action_services::session_actions;
     use tilo_actions::remote::admitted::top_level;
-    use tilo_actions::remote::session_actions;
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending,
         RemoteActionMessage, pending,
@@ -291,7 +291,7 @@ mod invitation_request_tests {
         {
             let shell = |action: &str| {
                 request(
-                    tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                    tilo_action_services::SESSION_ACTIONS_PROVIDER,
                     session_actions::INVITE_RESOURCE,
                     action,
                 )
@@ -332,7 +332,7 @@ mod invitation_request_tests {
             );
             assert!(
                 !super::invitation_request(&request(
-                    tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                    tilo_action_services::SESSION_ACTIONS_PROVIDER,
                     "session:chrome",
                     session_actions::ISSUE_INVITATION,
                 )),

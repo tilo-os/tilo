@@ -1,26 +1,26 @@
 //! A member device that takes its workspaces' work: their shell commands
-//! ([`tilo_actions::remote::environment_commands`]) and their Browser
-//! ([`tilo_actions::remote::browser`]), in their VMs on the hosted-VM service.
+//! ([`tilo_action_services::environment_commands`]) and their Browser
+//! ([`tilo_action_services::browser`]), in their VMs on the hosted-VM service.
 //!
 //! [`EnvironmentCommands`] admits a [`RUN`](environment_commands::RUN) from the workspace's
 //! host, runs the command line in the session's shell over the member's own copy of the
 //! workspace's files ([`WorkspaceShells`]), streams what it prints, and answers how it
 //! went. The host can stop a run it started, which ends the command as Ctrl+C does
 //! ([`CommandRan::cancelled`]). It also branches a workspace's machine from another's and
-//! deletes one ([`tilo_actions::remote::environment_machines`]), on the hosted-VM service's own
+//! deletes one ([`tilo_action_services::environment_machines`]), on the hosted-VM service's own
 //! socket. And it opens a Terminal session's shell on a terminal
-//! ([`tilo_actions::remote::environment_terminals`]), whose stream it hands the server that
+//! ([`tilo_action_services::environment_terminals`]), whose stream it hands the server that
 //! asked, to take on [`crate::environment_terminals::ALPN`] ([`EnvironmentCommands::serve_terminal`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
-use tilo_actions::remote::browser::{self, OpenBrowser};
-use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
-use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
-use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
-use tilo_actions::remote::linux_apps::{self, OpenApp};
+use tilo_action_services::browser::{self, OpenBrowser};
+use tilo_action_services::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
+use tilo_action_services::environment_machines::{self, BranchMachine, MachineBranched};
+use tilo_action_services::environment_terminals::{self, OpenTerminal, TerminalOpened};
+use tilo_action_services::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,

@@ -3,10 +3,11 @@
 //! the person's answer to that record through `tilo.invocations#resolve` ends it once.
 
 use serde_json::Value;
+use tilo_action_services::workspace_invocations;
 use tilo_actions::remote::asked::{self, Offer, Resolve};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionTarget, workspace_invocations,
+    ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 

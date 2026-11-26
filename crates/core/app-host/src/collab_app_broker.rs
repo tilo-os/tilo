@@ -498,7 +498,7 @@ pub struct AppBrokerState {
     asked_reads: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedReads>>,
     /// The host that placed this device's window, where a host placed it: the only device whose
     /// word answers for the person at it ([`Self::placed_by`]).
-    placement: std::sync::OnceLock<tilo_actions::remote::browser::Placement>,
+    placement: std::sync::OnceLock<tilo_action_services::browser::Placement>,
     /// The apps' own calls that wait for their person's yes in an asked record
     /// ([`app_asks`]), once one was kept.
     app_asks: std::sync::OnceLock<Arc<app_asks::AppAsks>>,

@@ -13,8 +13,8 @@ use std::sync::{Arc, Weak};
 
 use iroh::EndpointAddr;
 use serde_json::Value;
+use tilo_action_services::environment_window::{self as wire, Renewal};
 use tilo_actions::contract::ActionKind;
-use tilo_actions::remote::environment_window::{self as wire, Renewal};
 use tilo_actions::remote::{
     ActionProvider, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
 };

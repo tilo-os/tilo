@@ -54,11 +54,11 @@ use tilo_workspace_service::workspaces::workspace_stores::Store;
 /// The most arguments a question shows whole, as JSON: a call with more is
 /// refused before anybody is asked.
 const MAX_ASKED_BYTES: usize = 2 * 1024;
-#[cfg(feature = "agents")]
 /// The most of a service's own words about a command a listing repeats.
-const MAX_SAID_CHARS: usize = 240;
 #[cfg(feature = "agents")]
+const MAX_SAID_CHARS: usize = 240;
 /// The longest name of an argument a listing spells out.
+#[cfg(feature = "agents")]
 const MAX_ARGUMENT_NAME_BYTES: usize = 64;
 
 /// Why a command a grant of the workspace's denies the agent is not called, nor put to its
@@ -126,8 +126,8 @@ fn names(turn: &HostedTurn<'_>, workspace: &str, id: &str) -> bool {
     named && decision.answer == Answer::Allow
 }
 
-#[cfg(feature = "agents")]
 /// `said` on one line, as far as a listing repeats a service's own words.
+#[cfg(feature = "agents")]
 fn one_line(said: &str) -> String {
     let mut line = String::new();
     for word in said.split_whitespace() {
@@ -143,11 +143,11 @@ fn one_line(said: &str) -> String {
     line
 }
 
-#[cfg(feature = "agents")]
 /// The arguments `schema` describes, as a listing spells them out: each by
 /// its name, its kind and whether a call must give it. A description this
 /// listing cannot spell out whole names none: the command's own schema is
 /// in its connection's list.
+#[cfg(feature = "agents")]
 fn params_of(schema: &Value) -> Vec<ActionParam> {
     let Some(described) = schema.get("properties").and_then(Value::as_object) else {
         return Vec::new();
@@ -192,18 +192,18 @@ fn params_of(schema: &Value) -> Vec<ActionParam> {
     params
 }
 
-#[cfg(feature = "agents")]
 /// A connection's commands, published as the connection they belong to.
+#[cfg(feature = "agents")]
 const COMMANDS: Publisher = Publisher {
     provider: person_connections::PROVIDER,
     kind: person_connections::CONNECTION_KIND,
 };
 
-#[cfg(feature = "agents")]
 /// The row of one command of `connection`, whose service is at `site`: what
 /// an agent's listing shows of it, with whether it asks first. What the
 /// service says of the command follows the system's own words, marked as
 /// the service's.
+#[cfg(feature = "agents")]
 fn command_row(connection: &Connection, site: &str, command: &Command) -> CatalogueRow {
     let label = if connection.name.is_empty() {
         site.to_owned()
@@ -490,11 +490,11 @@ impl crate::PersonServices {
         )
     }
 
-    #[cfg(feature = "agents")]
     /// What `turn` finds of its person's connections in its listing: what an
     /// agent does with them, and each command of each connection it
     /// reaches, with whether it asks first. Read anew at every listing.
     /// Nothing for a turn this server does not carry out.
+    #[cfg(feature = "agents")]
     pub(crate) async fn connection_rows_for_turn(
         &self,
         turn: &HostedTurn<'_>,

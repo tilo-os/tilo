@@ -3,7 +3,7 @@
 //!
 //! A hosted workspace's VM runs one device daemon, logged in as a device of the workspace, and the
 //! daemon starts the VM's sessions as its clients the first time the machine that runs the VM
-//! launches something in one ([`tilo_actions::remote::environment_window`]). The session is told
+//! launches something in one ([`tilo_action_services::environment_window`]). The session is told
 //! what it holds by its environment ([`Holds::marked`], and the workspace it serves), and holds
 //! nothing of its own: no identity, no join and no material. Everything it asks goes to its daemon
 //! through the device's dispatch, as anything a person's session asks does:
@@ -21,13 +21,14 @@
 
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::environment_window::{
+use tilo_action_services::environment_device::ItemUse;
+use tilo_action_services::environment_window::{
     self as wire, Holds, ItemLent, Launch, Report, Session, Share,
 };
-use tilo_actions::remote::linux_apps::{self, AppLaunch};
+use tilo_action_services::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::{
     ActionProvider, Caller, CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionTarget, environment_device::ItemUse,
+    ReceiptStatus, RemoteActionTarget,
 };
 
 use tilo_actions::InvocationUpdate;
@@ -681,7 +682,8 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use tilo_actions::remote::{CatalogueProvider, TestProvider};
+    use tilo_action_services::TestProvider;
+    use tilo_actions::remote::CatalogueProvider;
 
     const WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
     const SHOWN: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";

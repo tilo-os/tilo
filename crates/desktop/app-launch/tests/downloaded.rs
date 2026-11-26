@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use desktop_entry::downloaded::ProcessFacts;
 use serde_json::{Map, Value};
-use tilo_actions::remote::downloaded_apps as wire;
+use tilo_action_services::downloaded_apps as wire;
 use tilo_app_launch::downloaded::{Downloaded, ObservedWindow, RESOURCE, WindowArtwork};
 use tilo_service::Service;
 use tilo_test_env::{TestEnv, wait_for, wait_until};

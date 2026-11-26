@@ -7,7 +7,7 @@
 use super::{ActionProvider, Failure, McpServer, Reply, answer_of, invocation_id, link, outcome};
 use serde::Deserialize;
 use std::fmt::Write as _;
-use tilo_actions::remote::workspace_invocations::Invocation;
+use tilo_action_services::workspace_invocations::Invocation;
 
 /// What `tilo_status` takes.
 #[derive(Deserialize)]

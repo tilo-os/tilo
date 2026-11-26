@@ -73,6 +73,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-th
 tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 # The display the apps a language test's daemon starts draw on: a headless compositor, as a
 # nested session's own, publishing its name where the daemon reads it.
 tilo-compositor = { path = "../../desktop/compositor" }

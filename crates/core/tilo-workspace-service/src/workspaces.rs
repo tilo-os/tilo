@@ -1373,7 +1373,7 @@ impl Workspaces {
 
     /// The MCP server as the person reads it: every agent it let in, the reach each was let in
     /// for, and the sessions open now. A device's daemon publishes it to the apps attached to
-    /// it as `mcp.server` ([`tilo_actions::remote::mcp_server`]).
+    /// it as `mcp.server` ([`tilo_action_services::mcp_server`]).
     #[must_use]
     pub fn mcp_reading(&self) -> serde_json::Value {
         match serde_json::to_value(self.inner.mcp_server.server()) {

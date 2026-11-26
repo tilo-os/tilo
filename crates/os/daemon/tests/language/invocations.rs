@@ -3,8 +3,8 @@
 //! stop it and to run it again.
 
 use serde_json::{Value, json};
+use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvokeRequest,
     ReceiptStatus, ResourceAddress, ResourceCopy,

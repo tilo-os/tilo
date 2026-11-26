@@ -1,6 +1,6 @@
 //! The MCP tools as a turn works through them ([`tilo_agent_turn::Tools`]), and the agent tools a
 //! device's session answers for an agent whose turn is worked in a process of its own
-//! ([`tilo_actions::remote::agent_tools`]).
+//! ([`tilo_action_services::agent_tools`]).
 //!
 //! An agent a server keeps in its own process holds an [`McpServer`] and asks it directly. An agent
 //! in a process of its own (the Agent app) holds none: it asks the device's session, which answers
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use agent_provider_config::protocol::ToolDefinition;
 use serde_json::{Value, json};
-use tilo_actions::remote::agent_tools as wire;
+use tilo_action_services::agent_tools as wire;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, WatchScope,

@@ -303,9 +303,9 @@ pub(super) const ADMIT_MACHINE: &str = "machine.admit";
 /// with and where its endpoint is dialled.
 pub(super) const ADMIT_SERVER: &str = "server.admit";
 /// Keep the disk recovery key of the machine that asks.
-pub(super) const KEEP_RECOVERY_KEY: &str = tilo_actions::remote::machines::KEEP_RECOVERY_KEY;
+pub(super) const KEEP_RECOVERY_KEY: &str = tilo_action_services::machines::KEEP_RECOVERY_KEY;
 /// The disk recovery keys of the person's machines.
-pub(super) const RECOVERY_KEYS: &str = tilo_actions::remote::machines::RECOVERY_KEYS;
+pub(super) const RECOVERY_KEYS: &str = tilo_action_services::machines::RECOVERY_KEYS;
 /// Block a device, or every device of a person, on this host.
 pub(super) const BLOCK: &str = "host.block";
 /// Lift a block the operator set.

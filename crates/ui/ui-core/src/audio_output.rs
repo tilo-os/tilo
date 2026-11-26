@@ -2,7 +2,7 @@
 //!
 //! A sandboxed app receives neither an audio socket nor the device's mixer: its media stack
 //! decodes its own sound and hands it over 20 ms at a time ([`media::audio_output`]). This
-//! process's one connection to the daemon ([`tilo_actions::remote::handed`]) carries those
+//! process's one connection to the daemon ([`tilo_action_services::handed`]) carries those
 //! commands to the device's output, which plays them on the person's speakers, one stream per
 //! open output, named after the app. A write's PCM travels as the frame's binary body, never as
 //! JSON; a full device queue answers with the sequence it last accepted, which the decoder
@@ -15,7 +15,7 @@
 use std::sync::{Arc, Mutex};
 
 use media::audio_output::{Factory, Observation, Output};
-use tilo_actions::remote::LineClient;
+use tilo_action_services::LineClient;
 use tilo_actions::remote::audio_output::{self, Request, Snapshot};
 
 use crate::time::Duration;
@@ -26,7 +26,7 @@ const RETRY: Duration = Duration::from_millis(5);
 /// Install the device's output as this process's governed sound, when its launcher handed it a
 /// connection. A host process has none and keeps its own output.
 pub(crate) fn install_from_launcher() {
-    let Some(handed) = tilo_actions::remote::handed::connection() else {
+    let Some(handed) = tilo_action_services::handed::connection() else {
         return;
     };
     media::audio_output::install(Arc::new(LineFactory {

@@ -40,21 +40,13 @@ pub use window_actions::{
 
 pub mod admitted;
 pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome, ReportsProgress, Serving};
-pub mod agent_tools;
 mod application;
-/// The device's project checks an app runs by id, and the receipt each run leaves.
-pub mod approved_checks;
 pub mod asked;
 /// An app's sound output on the device, on the connection its launcher handed it.
 pub mod audio_output;
-pub mod browser;
 /// An outside service's call carried into a workspace's call, on an app's connection.
 pub mod call;
 mod caller;
-pub mod environment_device;
-pub mod environment_window;
-pub mod linux_apps;
-pub mod mcp_server;
 /// An app's own place in a workspace's call, on the connection its launcher handed it.
 pub mod native_media;
 pub use caller::{Caller, Invited, KeptCaller, KeyCall, PlacedCaller, device_agent_id};
@@ -66,15 +58,6 @@ mod confirmation;
 mod content_get;
 mod content_link;
 mod content_put;
-/// The workspace's own folder as the device serves it: a file put into it, and Files' verbs on it.
-pub mod device_files;
-pub mod downloaded_apps;
-pub mod environment_commands;
-pub mod environment_machines;
-pub mod environment_terminals;
-pub mod formats;
-mod nodes;
-pub mod own_device;
 mod pending;
 pub mod person_telling;
 mod vault;
@@ -90,27 +73,17 @@ mod providers;
 mod resource_read;
 pub mod search;
 pub mod secret_arguments;
-pub mod server_account;
-pub mod session_actions;
 mod session_state;
+mod shared_provider;
 mod store_commands;
 mod surfaces;
 pub use session_state::{SessionState, SyncState, WorkspaceState};
-mod shared_provider;
-pub mod task_programs;
-#[cfg(any(test, feature = "test-support"))]
-mod test_provider;
 mod wait;
 mod watch;
 pub use watch::{CHANGED_UNAVAILABLE, Here, HereWindow, KEY_GRANTS, PRESENCE, WatchScope};
 mod window_actions;
-pub mod window_follow;
 mod within;
 pub mod workspace_activity;
-pub mod workspace_events;
-pub mod workspace_invocations;
-
-pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 
 pub use application::{
     APPLICATION_PROVIDER, ApplicationLaunch, CONTENT_HASH_ARGUMENT, NAME_ARGUMENT,
@@ -148,23 +121,9 @@ pub use content_put::{
     MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
     content_hash,
 };
-pub use nodes::{
-    NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
-};
 pub use store_commands::{STORE_COMMANDS_UNAVAILABLE, StoreCommands};
 mod execution_lease;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod handed;
-mod line;
 pub use execution_lease::ExecutionLease;
-#[cfg(not(target_arch = "wasm32"))]
-pub use line::{
-    CallLanes, Handover, LineClient, LinePut, Served, Take, serve_lines, serve_lines_handing,
-    serve_lines_with,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use line::{Carry, CarryAnswer, carry_answer_line, carry_line, carry_request};
-pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use resource_read::{
     DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, ListedResource,
@@ -175,8 +134,6 @@ pub use resource_read::{
     parse_job_path, read_resources, readings_from, readings_of, reads_answer,
 };
 pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
-#[cfg(any(test, feature = "test-support"))]
-pub use test_provider::TestProvider;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::api::ActionAddress;
@@ -444,6 +401,10 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),
 ];
 
+/// The provider a workspace's invocations answer under: the record of what was invoked
+/// there, and the asked records a call waits in.
+pub const WORKSPACE_INVOCATIONS_PROVIDER: &str = "tilo.invocations";
+
 /// The provider a moderation turn reaches a person's recorded changes under.
 pub const MODERATION_PROVIDER: &str = "tilo.moderation";
 /// The resource its read and its undo are actions of.
@@ -455,7 +416,7 @@ pub const MODERATED_APP: &str = "so.tilo.chat";
 
 /// The provider a workspace's model providers answer under. Their provider declares their
 /// actions (`tilo_workspace_service::models`); what this crate knows of them is that a
-/// workspace's host keeps them ([`WORKSPACE_KEPT_PROVIDERS`]) and what each writes in the
+/// workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`) and what each writes in the
 /// workspace's vault ([`MODEL_VAULT_STEPS`]).
 pub const MODELS_PROVIDER: &str = "tilo.models";
 
@@ -483,7 +444,7 @@ pub const MODEL_VAULT_STEPS: [(&str, &[&str]); 11] = {
 
 /// The provider a workspace's connected accounts answer under. Their provider declares their
 /// actions (`tilo_workspace_service::workspace_accounts`); what this crate knows of them is that
-/// a workspace's host keeps them ([`WORKSPACE_KEPT_PROVIDERS`]), what each writes
+/// a workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`), what each writes
 /// ([`ACCOUNT_STEPS`]) and which answer a secret ([`ACCOUNT_SECRET_ANSWERS`]).
 pub const ACCOUNTS_PROVIDER: &str = "tilo.accounts";
 
@@ -568,7 +529,7 @@ fn vault_steps(table: &[(&str, &[&str])], action: &str) -> Vec<crate::ActionEffe
 
 /// The provider a person's connected services answer under. Their provider declares their
 /// actions (`tilo_workspace_service::person_connections`); what this crate knows of them is
-/// that a workspace's host keeps them ([`WORKSPACE_KEPT_PROVIDERS`]), what each writes in the
+/// that a workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`), what each writes in the
 /// workspace's vault ([`CONNECTION_VAULT_STEPS`]) and whose answers carry the service's own
 /// words ([`CONNECTION_SAID_ACTIONS`]).
 pub const CONNECTIONS_PROVIDER: &str = "tilo.connections";
@@ -822,399 +783,6 @@ pub fn workspace_grant(address: &ActionAddress) -> Option<&str> {
     (permissions == WORKSPACE_PERMISSIONS && !grant.is_empty()).then_some(grant)
 }
 
-/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
-/// issues it, prints the one string, and the new computer logs in with it.
-pub mod device_tickets {
-    use serde::{Deserialize, Serialize};
-
-    use super::{ActionAddress, RemoteActionTarget};
-    use crate::{
-        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-        ResultSpec, RiskLevel,
-    };
-
-    /// The provider the device's daemon answers tickets under.
-    pub const PROVIDER: &str = "tilo.device";
-    /// The resource the actions act on: the person's devices.
-    pub const RESOURCE: &str = "devices";
-    /// Serve a ticket for a new computer.
-    pub const ISSUE: &str = "issue";
-    /// Name one of the person's devices (`device`, `name`) in every list.
-    pub const RENAME: &str = "rename";
-    /// End one of the person's devices' logins (`device`, `reason`), signed by their root on the
-    /// device that holds it.
-    pub const REVOKE: &str = "revoke";
-    /// The person's identities this device keeps, without secrets.
-    pub const IDENTITIES: &str = "identities";
-    /// Sign new apps in as identity `id` (`confirm`).
-    pub const USE_IDENTITY: &str = "useIdentity";
-    /// Remove identity `id` from this device (`confirm`).
-    pub const REMOVE_IDENTITY: &str = "removeIdentity";
-    /// Move identity `id`'s key from a plain file into protected storage (`confirm`).
-    pub const PROTECT_IDENTITY: &str = "protectIdentity";
-    /// The identity steps, in the order a catalogue lists them. The daemon keeps the identity
-    /// store and takes every step, so no application reads a secret or signs with the root.
-    pub const IDENTITY_STEPS: [&str; 4] =
-        [IDENTITIES, USE_IDENTITY, REMOVE_IDENTITY, PROTECT_IDENTITY];
-
-    #[must_use]
-    pub fn target(action: &str) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: ActionAddress::new(RESOURCE, action),
-        }
-    }
-
-    /// The device actions a desktop hands on to its daemon.
-    pub const HANDED_ON: [&str; 7] = [
-        ISSUE,
-        RENAME,
-        REVOKE,
-        IDENTITIES,
-        USE_IDENTITY,
-        REMOVE_IDENTITY,
-        PROTECT_IDENTITY,
-    ];
-
-    /// How each of [`HANDED_ON`] is listed, wherever it is: the one description of each.
-    #[must_use]
-    pub fn descriptor(action: &str) -> Option<crate::ActionDescriptor> {
-        let (label, description, kind, mut contract, params) = listed(action)?;
-        // Only the person's root signs a revocation, and issues the ticket that lets a computer
-        // in: a device that keeps none hands it on, and an agent that asks for one waits for
-        // their yes.
-        if matches!(action, ISSUE | REVOKE) {
-            contract.tags.push(crate::ROOT_ONLY_TAG.to_owned());
-        }
-        Some(crate::ActionDescriptor {
-            did: None,
-            semantic_identity: None,
-            address: ActionAddress::new(RESOURCE, action),
-            resource_kind: "device".to_owned(),
-            resource_label: "Devices".to_owned(),
-            action_label: label.to_owned(),
-            keywords: Vec::new(),
-            state: crate::ActionState::default(),
-            icon: None,
-            description: Some(description.to_owned()),
-            locus: crate::ExecutionLocus::ClientLocal,
-            kind,
-            contract,
-            input: crate::InputSpec::None,
-            params,
-            view: None,
-        })
-    }
-
-    /// What one of [`HANDED_ON`] says of itself: its label, its description, its kind, its
-    /// contract and its parameters.
-    type Listed = (
-        &'static str,
-        &'static str,
-        OperationKind,
-        ActionContract,
-        Vec<ActionParam>,
-    );
-
-    const DEVICE: ActionParam =
-        ActionParam::required("device", ParamType::Text, "The device's key, in hex.");
-
-    fn object(required: &[&str]) -> ResultSpec {
-        ResultSpec::Json {
-            schema: serde_json::json!({ "type": "object", "required": required }),
-        }
-    }
-
-    fn effect(result: ResultSpec) -> ActionContract {
-        ActionContract {
-            kind: ActionKind::Outside,
-            result,
-            ..ActionContract::default()
-        }
-    }
-
-    /// What changes an identity, or takes a key back for good, the person confirms.
-    fn confirmed(result: ResultSpec) -> ActionContract {
-        ActionContract {
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            ..effect(result)
-        }
-    }
-
-    fn identity(label: &'static str, description: &'static str) -> Listed {
-        (
-            label,
-            description,
-            OperationKind::Effect,
-            confirmed(object(&["id"])),
-            vec![
-                ActionParam::required("id", ParamType::Text, "The identity's id, as listed."),
-                ActionParam::required("confirm", ParamType::Boolean, "You confirm the change."),
-            ],
-        )
-    }
-
-    fn listed(action: &str) -> Option<Listed> {
-        Some(match action {
-            ISSUE => (
-                "Add a device",
-                "Print a one-use ticket another computer logs in with as one of the person's \
-                 devices.",
-                OperationKind::Effect,
-                effect(object(&["ticket"])),
-                vec![
-                    ActionParam::optional(
-                        "wait",
-                        ParamType::Boolean,
-                        "Wait for the computer to log in with the ticket.",
-                    ),
-                    ActionParam::optional(
-                        "plan",
-                        ParamType::Text,
-                        "The planned machine's entry in your Servers workspace, which the \
-                         computer's certification takes into its own.",
-                    ),
-                    ActionParam::optional(
-                        "server",
-                        ParamType::Boolean,
-                        "The computer is a server, which keeps your workspaces: it gets an entry \
-                         in your Servers workspace.",
-                    ),
-                ],
-            ),
-            RENAME => (
-                "Rename a device",
-                "Name one of the person's devices in every list of them.",
-                OperationKind::Effect,
-                effect(object(&["device", "name"])),
-                vec![
-                    DEVICE,
-                    ActionParam::required("name", ParamType::Text, "What the device is called."),
-                ],
-            ),
-            REVOKE => (
-                "Revoke a device",
-                "Take one of the person's devices back for good: every device of theirs refuses \
-                 it from now on.",
-                OperationKind::Effect,
-                confirmed(object(&["device", "revoked"])),
-                vec![
-                    DEVICE,
-                    ActionParam::optional(
-                        "reason",
-                        ParamType::Text,
-                        "lost, stolen, retired or compromised (retired when none is given).",
-                    ),
-                ],
-            ),
-            IDENTITIES => (
-                "List the identities",
-                "The person's identities this device keeps, without secrets, and which one new \
-                 apps sign in as.",
-                OperationKind::View,
-                ActionContract {
-                    result: ResultSpec::Json {
-                        schema: serde_json::json!({ "type": "array", "items": { "type": "object" } }),
-                    },
-                    ..ActionContract::view()
-                },
-                Vec::new(),
-            ),
-            USE_IDENTITY => identity(
-                "Use an identity for new apps",
-                "Sign apps opened from now on in as this identity.",
-            ),
-            REMOVE_IDENTITY => identity(
-                "Remove an identity",
-                "Delete an identity, with its key, from this device.",
-            ),
-            PROTECT_IDENTITY => identity(
-                "Protect an identity's key",
-                "Move an identity's key from a plain file into protected storage.",
-            ),
-            _ => return None,
-        })
-    }
-
-    /// What [`REVOKE`] takes back: any key of the person's (a device, an agent's grant, a
-    /// script's key) by its key in hex, and why (`retired`, `lost`, `stolen` or `compromised`).
-    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Revoke {
-        pub device: String,
-        pub reason: String,
-    }
-
-    impl Revoke {
-        /// Taking `device` back as retired: what a list's remove asks.
-        #[must_use]
-        pub fn retired(device: &str) -> Self {
-            Self {
-                device: device.to_owned(),
-                reason: "retired".to_owned(),
-            }
-        }
-
-        /// The argument [`REVOKE`] is asked with.
-        #[must_use]
-        pub fn argument(&self) -> super::InvokeArgument {
-            super::workspace_activity::argument(self)
-        }
-    }
-
-    /// One of the person's devices, as every list of them shows it: joined from the record of
-    /// their own workspace and who is here.
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct FleetDevice {
-        /// The name the device was enrolled with.
-        pub label: String,
-        /// The device's public key, 64 lowercase hex characters.
-        pub key_hex: String,
-        /// The key's short form people compare between screens.
-        pub fingerprint: String,
-        pub current: bool,
-        /// Whether its trust was revoked.
-        pub revoked: bool,
-        /// What the key is: a device of the person's, an agent's grant or a
-        /// script's key.
-        #[serde(default)]
-        pub kind: KeyKind,
-        /// The browser profile it is a tab of, by the profile's id: a
-        /// browser keeps one key per open tab, and the person sees and takes
-        /// back all of one browser's keys as one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub browser: Option<String>,
-        /// The agent this key runs, as the sessions it opened on a host named
-        /// it ("Claude Code"): a computer set up with `tilo login` is a
-        /// device of the person's that an agent works on.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub agent: Option<String>,
-        /// When its certificate was issued, ms since the epoch.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub issued_ms: Option<i64>,
-        /// When it expires, ms since the epoch; `None` for one that does not.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub expires_ms: Option<i64>,
-        /// When a session of this key with one of the person's hosts last
-        /// opened or ended, ms since the epoch.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub last_active_ms: Option<i64>,
-        /// A session of this key is open with one of their hosts now.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        pub online: bool,
-        /// The one workspace an agent's grant reaches, by its name where the
-        /// person's record names it, else its id. `None` every workspace of
-        /// theirs: a device of theirs, and an agent with the whole account.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub workspace: Option<String>,
-    }
-    /// What a key the person's root certified is.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum KeyKind {
-        /// One of their devices.
-        #[default]
-        Device,
-        /// An agent's grant: a key an agent signs with for them.
-        Agent,
-        /// A key they made for their own script or backend.
-        Script,
-    }
-
-    impl KeyKind {
-        /// What the key `capabilities` certify is.
-        #[must_use]
-        pub fn of(agent: bool, server_key: bool) -> Self {
-            if server_key {
-                Self::Script
-            } else if agent {
-                Self::Agent
-            } else {
-                Self::Device
-            }
-        }
-
-        /// The word a list shows it by, as it is serialized: `device`, `agent` or `script`.
-        #[must_use]
-        pub const fn as_str(self) -> &'static str {
-            match self {
-                Self::Device => "device",
-                Self::Agent => "agent",
-                Self::Script => "script",
-            }
-        }
-    }
-}
-
-/// Where an offloadable invocation runs, asked of the device's daemon: a
-/// session's broker places each offloadable invocation through the daemon,
-/// which holds the link to the workspace's other devices.
-pub mod offload_place {
-    use serde::{Deserialize, Serialize};
-
-    use super::{ActionAddress, RemoteActionTarget};
-    use crate::{ActionOutput, InvocationId, Offload};
-
-    /// The provider that places offloadable invocations.
-    pub const PROVIDER: &str = "tilo.offload";
-    /// The resource the action acts on.
-    pub const RESOURCE: &str = "offload";
-    /// Place an admitted offloadable invocation on the workspace's devices.
-    pub const PLACE: &str = "place";
-
-    /// The action a session invokes on its device's daemon to place one.
-    #[must_use]
-    pub fn target() -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: ActionAddress::new(RESOURCE, PLACE),
-        }
-    }
-
-    /// What the session asks the daemon to place: the admitted offloadable
-    /// invocation, under the id the app invoked it with, so a retry at the
-    /// device that takes it is not a second run.
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Ask {
-        /// The workspace it was invoked in.
-        pub workspace: String,
-        /// The app whose action it is, whose content the inputs and outputs are.
-        pub app_id: String,
-        /// The resource the action is invoked on.
-        pub resource: String,
-        /// The action.
-        pub action: String,
-        /// The transform the action declares.
-        pub offload: Offload,
-        /// The content it reads, by digest.
-        pub inputs: Vec<String>,
-        /// The invocation the app made.
-        pub invocation: InvocationId,
-    }
-
-    /// What became of the placement: another device ran it, or it should run
-    /// here, and why.
-    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum Placed {
-        /// Another device ran it: its output, the device that ran it, and how
-        /// long it took there.
-        Ran {
-            output: ActionOutput,
-            device: String,
-            elapsed_ms: u64,
-        },
-        /// Run it here, through the app's handler, and why it was not placed.
-        Here { reason: String },
-    }
-}
-
-/// Machines a person prepared to install: the plan and its waiting entry in
-/// their Servers workspace, read and written through the session that holds
-/// it. The command and the installer's window name one set of steps.
-pub mod machines;
-
 /// The person's settings, kept by the provider whether or not the app that shows
 /// them is open: each section a record published with its field edits and
 /// verbs (`settings:<kind>`), changed through them as that app's window
@@ -1234,55 +802,6 @@ pub mod settings_resources {
         matches!(parts.as_slice(), ["settings", section] if !section.is_empty())
             || matches!(parts.as_slice(), ["devices", device, "settings", section]
                 if !device.is_empty() && !section.is_empty())
-    }
-}
-
-/// A device's migrations: another product's data brought into the workspace by
-/// `review`, `choose` and `start`, followed by `status`, on the resource of the
-/// device that holds the data (`devices/<key>/migrate`). An app finds this
-/// device's resource in its catalogue by its kind, and calls its steps as any
-/// caller does; a run is one invocation of `start`, stopped by cancelling it.
-pub mod migrations {
-    use super::{ActionAddress, CatalogueQuery, CatalogueRow, RemoteActionTarget};
-
-    /// The provider that answers a device's migrations.
-    pub const PROVIDER: &str = "so.tilo.migrate";
-    /// The kind of a device's migrations resource.
-    pub const RESOURCE_KIND: &str = "devices.migrate";
-    /// What a source holds; a cloud drive a folder and a page at a time.
-    pub const REVIEW: &str = "review";
-    /// What of a source comes over.
-    pub const CHOOSE: &str = "choose";
-    /// Bring the chosen things over, as one run.
-    pub const START: &str = "start";
-    /// How a source's migration stands: what failed, what was left out, where it went.
-    pub const STATUS: &str = "status";
-
-    /// The catalogue query that finds this device's migrations.
-    #[must_use]
-    pub fn query() -> CatalogueQuery {
-        CatalogueQuery {
-            resource_name: Some(RESOURCE_KIND.to_owned()),
-            ..CatalogueQuery::default()
-        }
-    }
-
-    /// The migrations resource among `rows`, as the provider token and the resource id the
-    /// steps are actions of.
-    #[must_use]
-    pub fn found(rows: &[CatalogueRow]) -> Option<(String, String)> {
-        rows.iter()
-            .find(|row| row.resource.kind == RESOURCE_KIND)
-            .map(|row| (row.provider.clone(), row.resource.id.clone()))
-    }
-
-    /// The step `step` of the migrations `found` names.
-    #[must_use]
-    pub fn target((provider, resource): &(String, String), step: &str) -> RemoteActionTarget {
-        RemoteActionTarget {
-            provider: provider.clone(),
-            address: ActionAddress::new(resource.as_str(), step),
-        }
     }
 }
 
@@ -1467,6 +986,31 @@ impl InvokeRequest {
             && *on_behalf_of == other.on_behalf_of
             && *appearance == other.appearance
     }
+
+    /// An invocation of `target` with `arguments` and nothing else: no context, revision or
+    /// signature, answered once it is admitted.
+    #[must_use]
+    pub fn plain(
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            invocation: InvocationId::new(),
+            target,
+            argument: if arguments.is_empty() {
+                InvokeArgument::None
+            } else {
+                InvokeArgument::Json(arguments)
+            },
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
 }
 
 /// Action id that closes a running application's windows in a workspace.
@@ -1481,27 +1025,6 @@ pub fn workspace_provider(workspace: &str) -> String {
 /// The provider that answers the language's own view of the registry (`tilo.actions`): the
 /// catalogue read and an action called by its address.
 pub const ACTIONS_PROVIDER: &str = "tilo.actions";
-
-/// The providers whose actions a workspace's host answers for a person in it: what the host
-/// keeps for them rather than for the workspace ([`person_telling`], the vault, their accounts
-/// and models, the connections made in their name, and the formats they read). A device of
-/// theirs reaches them over the device action service, as the person the transport certified,
-/// and its own dispatch answers nothing of them locally.
-pub const WORKSPACE_KEPT_PROVIDERS: [&str; 6] = [
-    ACCOUNTS_PROVIDER,
-    MODELS_PROVIDER,
-    VAULT_PROVIDER,
-    person_telling::PROVIDER,
-    CONNECTIONS_PROVIDER,
-    formats::PROVIDER,
-];
-
-/// Whether `provider` is one a workspace's host answers for the person
-/// ([`WORKSPACE_KEPT_PROVIDERS`]).
-#[must_use]
-pub fn kept_by_workspace_host(provider: &str) -> bool {
-    WORKSPACE_KEPT_PROVIDERS.contains(&provider)
-}
 
 /// The workspace a workspace provider token names, or `None` for an application
 /// provider.

@@ -100,7 +100,7 @@ impl DesktopHandle {
 
     /// Choose the host action `id` for the person, as their pick in search or a banner does: the
     /// host carries it out on its next pass ([`Self::take_host_choices`]). An app asks for one
-    /// through the shell ([`tilo_actions::remote::session_actions::SHOW_CONNECT`]).
+    /// through the shell ([`tilo_action_services::session_actions::SHOW_CONNECT`]).
     pub fn choose_host_action(&self, id: &str) {
         self.shared.borrow_mut().host_choices.push(id.to_owned());
         self.wake();

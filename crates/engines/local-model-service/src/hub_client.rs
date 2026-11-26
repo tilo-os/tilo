@@ -16,9 +16,9 @@ use account_credentials::hugging_face;
 use agent_provider_config::local::hub::HUB_ORIGIN;
 use local_model_service::hub::HubApi;
 use local_model_service::{HttpsTransport, ServiceError};
+use tilo_action_services::LineClient;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, InvokeRequest, LineClient, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use zeroize::Zeroizing;
 
@@ -385,8 +385,8 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+    use tilo_action_services::TestProvider;
     use tilo_actions::ActionOutput;
-    use tilo_actions::remote::TestProvider;
 
     /// The provider the terminal sign-in sets a key on: the one this computer runs, or the one
     /// a person names; several local providers are refused asking for one.

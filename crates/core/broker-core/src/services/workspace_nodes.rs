@@ -22,7 +22,7 @@ pub enum WorkspaceNodeAsk {
 /// not this device, decides each ask, as it decides every read and write
 /// a share's grant then covers: a host governing it answers through its
 /// member actions. The broker answers it under the workspace's provider,
-/// `node:<node>` resources ([`tilo_actions::remote::node_target`]), only to
+/// `node:<node>` resources ([`tilo_action_services::node_target`]), only to
 /// the person at this device in that workspace.
 pub trait WorkspaceNodeActions: collab_types::signer::MaybeSendSync {
     /// Ask workspace `workspace` `ask` of `node` (its text form), for the person at

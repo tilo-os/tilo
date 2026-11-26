@@ -11,17 +11,18 @@ use std::sync::Arc;
 
 use super::AppBrokerState;
 use super::invocations::by;
-use tilo_actions::remote::workspace_invocations::InvocationBy;
+use tilo_action_services::workspace_invocations::InvocationBy;
 
+use tilo_action_services::{
+    workspace_invocations::Invocation as InvocationRecord, workspace_invocations::InvocationStatus,
+};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
     Pending, ReceiptStatus, RemoteActionTarget, pending,
 };
 use tilo_actions::tree::{Address, app_of};
 use tilo_actions::{
-    ActionKind, ActionOutput, ConfirmationPolicy, InvocationId, ParamType,
-    remote::ACTIONS_PROVIDER, remote::workspace_invocations::Invocation as InvocationRecord,
-    remote::workspace_invocations::InvocationStatus,
+    ActionKind, ActionOutput, ConfirmationPolicy, InvocationId, ParamType, remote::ACTIONS_PROVIDER,
 };
 
 /// The provider a call of `tilo.actions`'s verbs names.
@@ -340,7 +341,7 @@ fn app_label(app: &str) -> String {
 )]
 mod tests {
     use super::*;
-    use tilo_actions::remote::workspace_invocations::InvocationBy;
+    use tilo_action_services::workspace_invocations::InvocationBy;
 
     /// An address names the app, the resource and the verb, and nothing names no resource.
     #[test]

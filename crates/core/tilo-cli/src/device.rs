@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
-use tilo_actions::remote::device_tickets::FleetDevice;
+use tilo_action_services::device_tickets::FleetDevice;
 use tilo_device_identity::login::Ticket;
 use tilo_user_identity::DeviceCert;
 

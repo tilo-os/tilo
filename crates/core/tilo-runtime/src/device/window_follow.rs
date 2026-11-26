@@ -1,5 +1,5 @@
 //! What the person's shell tells this device's apps about their windows
-//! ([`window_follow`](tilo_actions::remote::window_follow)): whose view the person follows, and the
+//! ([`window_follow`](tilo_action_services::window_follow)): whose view the person follows, and the
 //! save of everything one app's window shows before the window moves. The apps' connections are
 //! this daemon's, so the daemon carries both out on its fan-out, to the apps' own routes; a save
 //! ends with the app's answer, or with none when its connection closes first.
@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use collab_types::handoff::HandoffRequest;
+use tilo_action_services::window_follow as wire;
 use tilo_actions::ActionFailure;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::window_follow as wire;
 use tilo_actions::remote::{
     Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
 };
@@ -166,7 +166,7 @@ mod tests {
 
     use collab_types::handoff::HandoffRequest;
     use runtime_collab::event::CollabEvent;
-    use tilo_actions::remote::window_follow as wire;
+    use tilo_action_services::window_follow as wire;
     use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, ReceiptStatus};
     use tilo_app_host::collab_broker::FanoutState;
 

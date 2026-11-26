@@ -11,6 +11,7 @@ description = "The calendar origin of tilolang packages: the iCalendar format a 
 ignored = ["calendar-test-support"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 # The one dispatch the connector reaches: the vault's logins and an item's release.
 tilo-actions = { path = "../../core/actions", optional = true }
 tilo-remote-actions = { version = "0.1.0", path = "../../core/remote-actions" }

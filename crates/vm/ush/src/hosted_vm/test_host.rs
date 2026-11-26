@@ -24,7 +24,7 @@ use linux_vm_protocol::link::AgentLink;
 use linux_vm_protocol::{
     AgentHello, ExitStatus, GuestMessage, GuestOs, HostMessage, PROTOCOL_MAJOR, recv, send,
 };
-use tilo_actions::remote::server_account::{Limits, PlanOffer};
+use tilo_action_services::server_account::{Limits, PlanOffer};
 use tilo_server_protocol::hosted_vm::VmSize;
 
 use super::HostedTarget;

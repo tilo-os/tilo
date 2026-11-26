@@ -8,13 +8,13 @@
 //! sessions end through the access audit that refuses it everywhere.
 //!
 //! The server is served as a live read
-//! ([`tilo_actions::remote::mcp_server::SERVER`]): [`McpServer::changes`]
+//! ([`tilo_action_services::mcp_server::SERVER`]): [`McpServer::changes`]
 //! moves whenever what it reads would read differently.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
+use tilo_action_services::mcp_server::{AgentSession, Grant, Reach, Server};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::{Notify, watch};

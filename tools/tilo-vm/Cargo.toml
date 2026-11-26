@@ -14,6 +14,7 @@ name = "tilo-vm"
 path = "src/main.rs"
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../crates/core/action-services" }
 anyhow.workspace = true
 blake3.workspace = true
 ed25519-dalek.workspace = true

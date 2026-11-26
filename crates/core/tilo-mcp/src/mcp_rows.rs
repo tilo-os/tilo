@@ -26,4 +26,3 @@ pub(super) fn resource_list(rows: &[CatalogueRow]) -> String {
         listed.join(", ")
     }
 }
-

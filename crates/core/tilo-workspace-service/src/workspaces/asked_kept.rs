@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ROOT, ReadDoc as _, Value};
+use tilo_action_services::workspace_invocations::PROVIDER;
 use tilo_actions::remote::asked::{AT_ROOT, AskedKeeping, KeptAsk, RecordRef};
-use tilo_actions::remote::workspace_invocations::PROVIDER;
 
 use super::{WeakWorkspaces, Workspaces};
 

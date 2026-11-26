@@ -1066,9 +1066,8 @@ async fn a_granted_setting_reads_alone_until_it_is_taken_back(
 /// the person's own calls alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_persons_shell_lists_their_invocations_without_a_refusal() {
-    use tilo_actions::remote::{
-        ReadAnswer, RemoteActionMessage, ResourceReadRequest, workspace_invocations,
-    };
+    use tilo_action_services::workspace_invocations;
+    use tilo_actions::remote::{ReadAnswer, RemoteActionMessage, ResourceReadRequest};
     let h = host().await;
     let reads = h.workspaces().resource_reads();
     let person = Caller::authenticated(h.cert.user_public_key, h.cert.device_public_key)

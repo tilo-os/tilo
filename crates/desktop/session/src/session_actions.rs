@@ -29,7 +29,7 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::session_actions as wire;
+use tilo_action_services::session_actions as wire;
 use tilo_actions::remote::{
     ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,
 };
@@ -344,7 +344,7 @@ impl SessionActions {
                 }),
             program,
             // The person's own line has its go-ahead: it is theirs.
-            go: tilo_actions::remote::task_programs::Go::Run,
+            go: tilo_action_services::task_programs::Go::Run,
             this: None,
             stop: Some(Arc::clone(&admitted.stop)),
             asked_in: None,
@@ -451,7 +451,7 @@ mod tests {
         tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             on_behalf_of: None,
-            target: tilo_actions::remote::session_actions::run_line_target(),
+            target: tilo_action_services::session_actions::run_line_target(),
             argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
                 "line".to_owned(),
                 serde_json::json!(line),
@@ -858,7 +858,7 @@ mod tests {
             invocation: tilo_actions::InvocationId::new(),
             on_behalf_of: None,
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
+                provider: tilo_action_services::SESSION_ACTIONS_PROVIDER.to_owned(),
                 address: tilo_actions::ActionAddress::new(resource, action),
             },
             argument: tilo_actions::remote::InvokeArgument::Json(arguments),

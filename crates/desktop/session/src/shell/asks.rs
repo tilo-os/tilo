@@ -450,7 +450,7 @@ impl Shared {
     /// It goes through the one dispatch as the person, to the provider of their keys, the way
     /// `tilo device revoke` does: the action asks them once before it runs.
     fn revoke_agent_grant(&self, grant: &str) {
-        use tilo_actions::remote::device_tickets;
+        use tilo_action_services::device_tickets;
         let tilo_actions::remote::InvokeArgument::Json(arguments) =
             device_tickets::Revoke::retired(grant).argument()
         else {
@@ -622,7 +622,7 @@ impl Shared {
             SESSION_SHUT_DOWN => self.power_effect(Effect::ShutDown),
             REPORT_PROBLEM => self.report_problem(),
             // Settings' Devices and access opens Console's Connect page.
-            tilo_actions::remote::session_actions::CONNECT_AGENT => {
+            tilo_action_services::session_actions::CONNECT_AGENT => {
                 self.invoke_app_action(LaunchpadAppAction::connect_agent());
             }
             choice => identity::answered(choice),

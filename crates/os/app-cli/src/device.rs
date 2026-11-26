@@ -187,16 +187,16 @@ fn stream_at(socket: &Path) -> Result<tilo_files::native::socket::Stream, String
 ///
 /// # Errors
 /// No daemon answers on `socket`.
-pub fn line_at(socket: &Path) -> Result<tilo_actions::remote::LineClient, String> {
+pub fn line_at(socket: &Path) -> Result<tilo_action_services::LineClient, String> {
     let stream = stream_at(socket)?;
-    tilo_actions::remote::LineClient::of_stream(stream).map_err(|error| error.to_string())
+    tilo_action_services::LineClient::of_stream(stream).map_err(|error| error.to_string())
 }
 
 /// The action wire to this computer's daemon ([`line_at`] at its socket).
 ///
 /// # Errors
 /// No daemon answers on this computer.
-pub fn line() -> Result<tilo_actions::remote::LineClient, String> {
+pub fn line() -> Result<tilo_action_services::LineClient, String> {
     line_at(&tilo_machine::daemon_native()?)
 }
 

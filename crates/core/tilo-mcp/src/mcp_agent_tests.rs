@@ -3,11 +3,11 @@
 //! bound id that only the app's own key reads (`notes.notebook/page/<id>/body`).
 use super::*;
 use std::sync::{Arc, Mutex};
+use tilo_action_services::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
-use tilo_actions::remote::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
 use tilo_actions::{
     ActionParam, Availability, InvocationUpdate, ParamType, ResourceSemanticIdentity,
 };
@@ -65,7 +65,6 @@ pub(super) struct Notes {
 
 /// The asked record the test app says a call waits in, as a workspace's dispatch names it.
 pub(super) const ASKED_RECORD: &str = "workspace/invocations/7";
-
 
 impl Notes {
     pub(super) fn new(running: bool) -> Self {
@@ -532,7 +531,7 @@ impl ActionProvider for Notes {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
         // The invocations record takes back what one of them changed.
-        if request.target.provider == tilo_actions::remote::workspace_invocations::PROVIDER {
+        if request.target.provider == tilo_action_services::workspace_invocations::PROVIDER {
             self.invoked.lock().unwrap().push(request);
             return Pending::ready(Ok(InvocationReceipt {
                 invocation,
@@ -690,7 +689,9 @@ impl Notes {
     /// The next moment of the record's clock: one a call, so each is told apart.
     fn moment(&self) -> i64 {
         let runs = self.runs.lock().unwrap();
-        i64::try_from(runs.len()).unwrap_or(i64::MAX).saturating_add(1)
+        i64::try_from(runs.len())
+            .unwrap_or(i64::MAX)
+            .saturating_add(1)
     }
 
     /// Keep the call `request` of `caller` in the invocations record, as the host that admits
@@ -714,7 +715,10 @@ impl Notes {
                     .or_else(|| acting.member_id().map(collab_types::MemberId::id))
                     .map(str::to_owned),
             },
-            group: request.context.as_ref().and_then(|context| context.group.clone()),
+            group: request
+                .context
+                .as_ref()
+                .and_then(|context| context.group.clone()),
             status: if running {
                 InvocationStatus::Running
             } else {
@@ -825,7 +829,6 @@ where
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
         .with_agent_session("mcp:test")
 }
-
 
 impl tilo_actions::remote::ResourceSearch for Notes {
     /// A stand-in for the desktop's one search: the rows the app publishes
@@ -1419,12 +1422,12 @@ tilo_test_env::scenario! {
             let undone = host.invoked.lock().unwrap().last().cloned().unwrap();
             assert_eq!(
                 undone.target.provider,
-                tilo_actions::remote::workspace_invocations::PROVIDER
+                tilo_action_services::workspace_invocations::PROVIDER
             );
             assert_eq!(undone.target.address.resource, id);
             assert_eq!(
                 undone.target.address.action,
-                tilo_actions::remote::workspace_invocations::UNDO
+                tilo_action_services::workspace_invocations::UNDO
             );
 
             let (text, failed) = tool(

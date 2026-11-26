@@ -14,6 +14,7 @@ name = "tilo_invocations"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

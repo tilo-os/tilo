@@ -26,8 +26,8 @@ use std::time::Duration;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
+use tilo_action_services::environment_device::ItemUse;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::environment_device::ItemUse;
 use tilo_app_host::services::ItemAnswering;
 use ui::apps::BROWSER;
 

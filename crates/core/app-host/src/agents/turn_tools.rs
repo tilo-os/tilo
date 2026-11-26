@@ -11,8 +11,8 @@
 //!   ([`tilo_person_services::person_learned`]), carried out for the person who asked it.
 
 use serde_json::Value;
+use tilo_action_services::workspace_invocations::{INVOCATION_TYPE, PROVIDER as INVOCATIONS};
 use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::workspace_invocations::{INVOCATION_TYPE, PROVIDER as INVOCATIONS};
 use tilo_actions::{ActionArgs, ActionDescriptor, ActionKind, ActionParam, ParamType};
 
 use tilo_model_gateway::host_backend::protocol::ToolDefinition;

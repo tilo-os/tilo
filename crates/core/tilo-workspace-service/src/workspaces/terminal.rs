@@ -23,11 +23,12 @@ use std::sync::{Arc, Mutex};
 
 use automerge::ReadDoc as _;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::environment_commands::CommandOutput;
+use tilo_action_services::environment_commands::CommandOutput;
+use tilo_action_services::environment_commands::Person;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
     InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    Reservation, environment_commands::Person, pending, resource_parts,
+    Reservation, pending, resource_parts,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ActionParam, ExecutionLocus,
@@ -393,7 +394,7 @@ impl TerminalService {
         let stopping = Arc::clone(stop);
         let stop_requested = move || stopping.load(Ordering::SeqCst);
         // What the command printed so far, as it grows: whoever follows the invocation reads
-        // it ([`tilo_actions::remote::environment_commands::CommandOutput`]), so a build that
+        // it ([`tilo_action_services::environment_commands::CommandOutput`]), so a build that
         // takes minutes is never silent.
         let log = Arc::clone(&self.log);
         let moved = self.moved.clone();

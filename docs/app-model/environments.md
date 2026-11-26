@@ -442,7 +442,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
 - **Plans:** an account's plan bounds its running VMs, its VMs kept and the
   sizes it may use. A refused program says why in plain words, and what to
   do, and the refusal is typed
-  (`tilo_actions::remote::server_account::Refusal`: a reason and the next
+  (`tilo_action_services::server_account::Refusal`: a reason and the next
   steps, each with the provider's page).
 - **Selling VMs:** a host that sells them says so in its plans file
   (`sells`: its name, the plans it offers, the pages where a card is added,
@@ -551,7 +551,7 @@ way a device serves its own:
 
 A member holds a workspace as any device does, so its action service admits the
 server's runs. A member that runs the workspace's VMs also answers its browser
-environments' opens there (`tilo_actions::remote::browser`), which the host's
+environments' opens there (`tilo_action_services::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the server asks for them the way
 it asks for a shell command, as a Linux turn the member takes
 (`crates/core/tilo-runtime/src/device/environments.rs`). The first time the server

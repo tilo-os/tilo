@@ -15,9 +15,10 @@ use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{ActionServiceFrame, DeviceAction, SignedDeviceAction};
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_action_services::TestProvider;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, ResourceReads, TestProvider,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, ResourceReads,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, Bounds, RemoteDevice};

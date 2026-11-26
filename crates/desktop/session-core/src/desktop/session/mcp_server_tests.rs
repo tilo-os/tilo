@@ -4,9 +4,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_action_services::mcp_server;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, mcp_server,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -233,7 +234,7 @@ pub fn what_a_person_was_told_is_asked_by_the_person_alone() {
 /// for the person can't ask for either.
 #[test]
 pub fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
-    use tilo_actions::remote::session_actions;
+    use tilo_action_services::session_actions;
     for (shown, chosen) in [
         (
             session_actions::SHOW_CONNECT,
@@ -280,7 +281,7 @@ pub fn a_window_asks_the_shell_for_the_persons_connect_setup_or_pairing_link() {
 /// devices serving nothing changes nothing.
 #[test]
 pub fn workspace_accounts_and_models_reach_the_workspace_host_with_no_device() {
-    use tilo_actions::remote::server_account;
+    use tilo_action_services::server_account;
 
     let (session, _openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");

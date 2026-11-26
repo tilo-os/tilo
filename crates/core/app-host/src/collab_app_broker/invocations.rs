@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use tilo_action_policy::{ActionKind, TreePath};
-use tilo_actions::remote::workspace_invocations::{
+use tilo_action_services::workspace_invocations::{
     Invocation, InvocationBy, InvocationStatus, Invocations as Listed, InvocationsQuery, MOST,
     Origin,
 };
@@ -52,9 +52,9 @@ impl AppBrokerState {
 
     /// Take `placement` as the host that placed this device's window: the device whose link
     /// alone carries the person's word for the page actions it hands the window
-    /// ([`tilo_actions::remote::browser::host_answered`]). Set once, by the session the host
+    /// ([`tilo_action_services::browser::host_answered`]). Set once, by the session the host
     /// started for that window.
-    pub fn placed_by(&self, placement: tilo_actions::remote::browser::Placement) {
+    pub fn placed_by(&self, placement: tilo_action_services::browser::Placement) {
         let _ = self.placement.set(placement);
     }
 
@@ -192,7 +192,7 @@ impl AppBrokerState {
     }
 
     /// A page of `workspace`'s invocations as a published tree
-    /// (`tilo_actions::remote::workspace_invocations::tree_rows`): the invocations newest first,
+    /// (`tilo_action_services::workspace_invocations::tree_rows`): the invocations newest first,
     /// read as far as the page reaches, with `waiting`, the calls that wait for their person,
     /// beside them. Its revision is how many there are, so a page read on from a cursor reads
     /// the listing it was cut from.
@@ -235,7 +235,7 @@ impl AppBrokerState {
         let kept = listed.len();
         with_questions(&mut listed, waiting.to_vec(), None);
         let total = total.saturating_add(listed.len().saturating_sub(kept));
-        let rows = tilo_actions::remote::workspace_invocations::tree_rows(&listed);
+        let rows = tilo_action_services::workspace_invocations::tree_rows(&listed);
         Ok(CataloguePage::from_rows(total.to_string(), rows, query))
     }
 }

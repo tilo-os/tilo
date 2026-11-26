@@ -79,7 +79,7 @@ pub const VISION_APP: &str = "so.tilo.vision";
 /// The app a workspace's invocations are read from: `use tilo.invocations`. A view lists them
 /// with a query (`query(invocations.Invocation, status: .waiting, person: me)`), which the host
 /// follows from the workspace ([`platform_listings`]).
-pub const INVOCATIONS_APP: &str = tilo_actions::remote::workspace_invocations::PROVIDER;
+pub const INVOCATIONS_APP: &str = tilo_action_services::workspace_invocations::PROVIDER;
 
 /// The app the styles the device's installed packages offer are read from: `use tilo.styles as
 /// styles`, then `styles.installed.offered`. The device publishes them in its person's own
@@ -92,9 +92,9 @@ pub const SESSION_APP: &str = "so.tilo.session";
 /// The app a workspace's environments are published as: `use tilo.environment`. The workspace's
 /// machine — the environments a shell, a Browser or a Linux app runs in — is the system's, not
 /// an app's: the device that keeps their records answers `create`, `list` and the record's
-/// verbs (`tilo_actions::remote::environment_commands::APP_ACTIONS`) at `environment#...`, and a
+/// verbs (`tilo_action_services::environment_commands::APP_ACTIONS`) at `environment#...`, and a
 /// device that takes the workspace's Linux work answers `run` on the same resource.
-pub const ENVIRONMENT_APP: &str = tilo_actions::remote::environment_commands::PROVIDER;
+pub const ENVIRONMENT_APP: &str = tilo_action_services::environment_commands::PROVIDER;
 /// The app a part of the shell is drawn as: `use desktop as desktop` reads the window menu's
 /// reading (`desktop:window-menu`) and invokes its verbs.
 pub const DESKTOP_APP: &str = "desktop";
@@ -517,7 +517,7 @@ const PUBLISHED: &[Published] = &[
         roots: &[(
             "environments",
             "Environments",
-            tilo_actions::remote::environment_commands::ENVIRONMENTS,
+            tilo_action_services::environment_commands::ENVIRONMENTS,
         )],
         files: &[include_str!("../../../vm/environment/surface.json")],
         described: true,
@@ -1327,7 +1327,7 @@ mod tests {
             .map(|verb| verb.id.as_str())
             .collect();
         published.sort_unstable();
-        let mut asked: Vec<&str> = tilo_actions::remote::environment_commands::APP_ACTIONS.to_vec();
+        let mut asked: Vec<&str> = tilo_action_services::environment_commands::APP_ACTIONS.to_vec();
         asked.extend(["create", "list"]);
         asked.sort_unstable();
         assert_eq!(published, asked);

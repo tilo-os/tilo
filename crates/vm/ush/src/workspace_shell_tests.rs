@@ -1,6 +1,6 @@
 use super::*;
 use linux_vm::hosted::control::{self, Reply, Request};
-use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason};
+use tilo_action_services::server_account::{NextStep, NextStepKind, Reason};
 use tilo_server_protocol::hosted_vm::VmSize;
 
 fn text(run: &ShellRun) -> String {

@@ -111,7 +111,7 @@ async fn answered(
 ) -> Result<InvocationReceipt, ActionCallError> {
     let request = calling(
         RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: ActionAddress::new(&record.record, asked::RESOLVE),
         },
         serde_json::to_value(resolving).unwrap(),

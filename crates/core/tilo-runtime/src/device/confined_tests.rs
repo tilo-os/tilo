@@ -143,7 +143,7 @@ fn set_setting(name: &str, value: &Value) -> InvokeRequest {
 
 /// The host's renewal of the VM's certificate, handing it `cert`.
 fn renewal(cert: &DeviceCert) -> InvokeRequest {
-    use tilo_actions::remote::environment_window as wire;
+    use tilo_action_services::environment_window as wire;
     let mut request = InvokeRequest::plain(wire::target(wire::RENEW), serde_json::Map::new());
     request.argument = wire::argument(&wire::Renewal {
         certificate: serde_json::to_string(cert).unwrap(),
@@ -308,7 +308,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
 
     // The host decides a call as the placed device: its key, its person named for history, the
     // records its certificate names, and never the person.
-    let probe = Arc::new(tilo_actions::remote::TestProvider::new());
+    let probe = Arc::new(tilo_action_services::TestProvider::new());
     hosted
         .providers()
         .serve_placed(

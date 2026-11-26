@@ -1033,8 +1033,8 @@ impl App {
     }
 }
 
-#[cfg(feature = "model")]
 /// [`App::directory_name`], for a walk that holds no `App`.
+#[cfg(feature = "model")]
 fn directory_name<'r>(
     publication: &crate::bound_dispatch::BoundPublication,
     resource: &'r tilo_actions::ResourceSpec,

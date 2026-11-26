@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use crate::desktop::state::DesktopHandle;
-use tilo_actions::remote::session_actions;
+use tilo_action_services::session_actions;
 use tilo_actions::{Actor, MemberId, ResourceSpec};
 use tilo_desktop_model::{
     FloatPlace, GroupId, Layout as Tree, LayoutKind, Strip, StripId, Tab, TabId, TileContent,

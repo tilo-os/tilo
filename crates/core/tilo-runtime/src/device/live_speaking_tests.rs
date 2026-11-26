@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
 
+use tilo_action_services::{CallLanes as _, Take};
+use tilo_actions::remote::RemoteActionMessage;
 use tilo_actions::remote::call::{
     BridgedCall, CallAudio, CallLink, CallReport, OutsideCall, OutsidePerson,
 };
-use tilo_actions::remote::{CallLanes as _, RemoteActionMessage, Take};
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::live::Track;
 use tilo_live::live_session::LiveError;
@@ -305,7 +306,7 @@ fn answer(
         serde_json::to_value(resolving).unwrap(),
     );
     request.target = tilo_actions::remote::RemoteActionTarget {
-        provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+        provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
         address: tilo_actions::ActionAddress::new(
             &record.record,
             tilo_actions::remote::asked::RESOLVE,
@@ -722,7 +723,7 @@ fn dana_is_carried_into_the_call(
 fn app_connection(
     daemon: &Arc<Daemon>,
     at: &crate::seats::AppAt,
-) -> tilo_actions::remote::LineClient {
+) -> tilo_action_services::LineClient {
     use std::io::{BufRead as _, Read as _};
     let (served, held) = std::os::unix::net::UnixStream::pair().unwrap();
     let frames = crate::device::local::Frames::of_an_app(daemon, at);
@@ -736,7 +737,7 @@ fn app_connection(
         let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
         frames.serve(served, &line, reader, None);
     });
-    tilo_actions::remote::LineClient::of_stream(held).unwrap()
+    tilo_action_services::LineClient::of_stream(held).unwrap()
 }
 
 /// The person's shell ends the way a desktop quits: the word it said and the call it was in

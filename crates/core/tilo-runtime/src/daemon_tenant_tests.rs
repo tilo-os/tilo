@@ -14,9 +14,8 @@ use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
 use std::io::{BufRead as _, BufReader};
 use std::sync::Arc;
-use tilo_actions::remote::{
-    ActionProvider as _, Caller, CatalogueQuery, LineClient, device_agent_id,
-};
+use tilo_action_services::LineClient;
+use tilo_actions::remote::{ActionProvider as _, Caller, CatalogueQuery, device_agent_id};
 
 /// The tenant a test serves, in a directory of its own under `root`.
 fn tenant(root: &std::path::Path, uid: u32) -> Tenant {
@@ -75,7 +74,7 @@ fn the_tenants_connection_is_the_persons_unnamed_agent() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    let probe = Arc::new(tilo_actions::remote::TestProvider::new());
+    let probe = Arc::new(tilo_action_services::TestProvider::new());
     daemon.provide("so.tilo.probe", Arc::clone(&probe) as _);
     let tenant = tenant(&root, crate::seats::own_account());
     std::fs::create_dir_all(&tenant.sockets).unwrap();
@@ -168,7 +167,7 @@ fn a_confined_daemons_tenant_socket_serves_its_account_alone() {
     };
     confined(tilo_desktop_model::WorkspaceId::new());
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    let probe = Arc::new(tilo_actions::remote::TestProvider::new());
+    let probe = Arc::new(tilo_action_services::TestProvider::new());
     daemon.provide("so.tilo.probe", Arc::clone(&probe) as _);
     // No connection of a confined device's is the person's, its own account's included: the
     // workspace it names is its host's, which it does not hold.
@@ -216,10 +215,10 @@ fn a_confined_daemons_tenant_socket_serves_its_account_alone() {
             tilo_actions::remote::InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {
-                    provider: tilo_actions::remote::device_tickets::PROVIDER.to_owned(),
+                    provider: tilo_action_services::device_tickets::PROVIDER.to_owned(),
                     address: tilo_actions::ActionAddress::new(
-                        tilo_actions::remote::device_tickets::RESOURCE,
-                        tilo_actions::remote::device_tickets::ISSUE,
+                        tilo_action_services::device_tickets::RESOURCE,
+                        tilo_action_services::device_tickets::ISSUE,
                     ),
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),

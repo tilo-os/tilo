@@ -1583,7 +1583,7 @@ fn frame_answer(line: &str, actions: &Actions, ctx: &Context) -> String {
         };
         return remote::refuse(&message, error).map_or_else(
             || refusal("parse_error", "a frame sent here asks something").to_string(),
-            remote::frame_line,
+            tilo_action_services::frame_line,
         );
     }
     let caller = actions.caller(ctx);
@@ -1592,7 +1592,7 @@ fn frame_answer(line: &str, actions: &Actions, ctx: &Context) -> String {
     } else {
         &actions.person
     };
-    remote::answer_message(provider, &caller, message, HOST_WAIT)
+    tilo_action_services::answer_message(provider, &caller, message, HOST_WAIT)
 }
 
 /// The controls the session shows now, as the tools read them: each one's name, what it does where it

@@ -254,7 +254,7 @@ impl Device {
                         };
                         Ok::<_, ActionCallError>((provider.clone(), caller))
                     };
-                    tilo_actions::remote::serve_lines(
+                    tilo_action_services::serve_lines(
                         tree,
                         &uploads,
                         None,

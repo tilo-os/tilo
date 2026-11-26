@@ -252,7 +252,7 @@ impl RecordReads {
         if [
             PRESENCE,
             KEY_GRANTS,
-            tilo_actions::remote::workspace_invocations::PROVIDER,
+            tilo_action_services::workspace_invocations::PROVIDER,
         ]
         .contains(&address.app.as_str())
         {
@@ -365,7 +365,7 @@ impl RecordReads {
             .map_or(Ok(()), |admitted| admitted(caller, workspace))
     }
 
-    /// The workspace's invocations ([`tilo_actions::remote::workspace_invocations::PROVIDER`]),
+    /// The workspace's invocations ([`tilo_action_services::workspace_invocations::PROVIDER`]),
     /// whole or one by its id: the calls the dispatch here keeps a record of, each as the
     /// caller's grants let it read the call, with the calls that wait for a person's answer.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
@@ -753,7 +753,7 @@ impl RecordReads {
         // A workspace's invocations are the calls this dispatch here kept, not a document of the
         // workspace it may hold: read here, without asking that workspace's state where it goes.
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
+        if address.app == tilo_action_services::workspace_invocations::PROVIDER
             && self.broker().is_some()
         {
             return tilo_actions::remote::answer_read(self, caller, correlation, read).await;
@@ -936,7 +936,7 @@ impl RecordReads {
             return own?.read(caller, address).await;
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
+        if address.app == tilo_action_services::workspace_invocations::PROVIDER {
             return self.invocations(caller, address);
         }
         let route = self.route(caller, address).await?;
@@ -1033,7 +1033,7 @@ impl RecordReads {
             return own?.watch(caller, address, wake).await;
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        if address.app == tilo_actions::remote::workspace_invocations::PROVIDER {
+        if address.app == tilo_action_services::workspace_invocations::PROVIDER {
             self.may_read_invocations(caller, &address.workspace)?;
             if let Some(broker) = self.broker() {
                 return broker.watch_invocations(caller, &address.workspace, wake);
@@ -1057,7 +1057,7 @@ impl RecordReads {
                 workspaces.document_writes(),
                 move |write| {
                     write.workspace == workspace
-                        && write.app == tilo_actions::remote::workspace_invocations::PROVIDER
+                        && write.app == tilo_action_services::workspace_invocations::PROVIDER
                 },
                 wake,
             );

@@ -18,9 +18,10 @@ use collab_types::store::{Cell, Query, Resource, Value};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value as Json, json};
 use tilo_action_policy::Actor as Who;
+use tilo_action_services::TestProvider;
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionTarget, TestProvider, WORKSPACE_AGENT_CREATE,
+    RemoteActionTarget, WORKSPACE_AGENT_CREATE,
 };
 use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{

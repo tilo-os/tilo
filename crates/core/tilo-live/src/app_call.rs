@@ -32,11 +32,12 @@ use crate::presence::{BridgedMember, Call, LiveCall};
 use crate::speaker::Speaker;
 use crate::voice::{FRAME_SAMPLES, SAMPLE_RATE, VoiceObject};
 use collab_types::presence::{Bridged, CallPresence};
+use tilo_action_services::{CallLanes, Take, frame_line};
 use tilo_actions::remote::call::{
     BridgedCall as WireBridgedCall, CallReport as SaidReport, CallStatus, MAX_CALL_AUDIO_BYTES,
 };
 pub use tilo_actions::remote::call::{CallLink, OutsideCall, OutsidePerson};
-use tilo_actions::remote::{ActionCallError, CallLanes, RemoteActionMessage, Take, frame_line};
+use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
 use tokio::sync::{broadcast, mpsc, watch};
 
 /// The service's calls and the worker's place in them, as it last said.

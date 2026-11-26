@@ -397,7 +397,7 @@ impl Fixture {
     /// # Panics
     /// The daemon did not answer its record of invocations.
     #[track_caller]
-    pub fn invocations(&mut self) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
+    pub fn invocations(&mut self) -> Vec<tilo_action_services::workspace_invocations::Invocation> {
         let (shell, workspace) = (self.shell.clone(), self.workspace.clone());
         let reading = self
             .answered(async move { shell.read(whole(&workspace, "tilo.invocations", "")).await })
@@ -474,14 +474,14 @@ impl Fixture {
     pub fn runs(
         &mut self,
         id: &str,
-    ) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
+    ) -> Vec<tilo_action_services::workspace_invocations::Invocation> {
         let wanted = format!("shortcuts.shortcut:{id}#run");
         self.invocations()
             .into_iter()
             .filter(|invocation| {
                 invocation.action.as_deref() == Some(wanted.as_str())
                     && invocation.status
-                        == tilo_actions::remote::workspace_invocations::InvocationStatus::Ended
+                        == tilo_action_services::workspace_invocations::InvocationStatus::Ended
             })
             .collect()
     }
@@ -493,7 +493,7 @@ impl Fixture {
         &mut self,
         id: &str,
         wanted: usize,
-    ) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
+    ) -> Vec<tilo_action_services::workspace_invocations::Invocation> {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             self.session.step(Duration::from_millis(2)).expect("step");

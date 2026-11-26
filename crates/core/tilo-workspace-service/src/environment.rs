@@ -109,7 +109,7 @@ pub const SETTINGS: &str = tilo_actions::remote::DEVICE_SETTINGS;
 /// to keep: its host keeps them in the environment record for it ([`keep_setting`]).
 #[must_use]
 pub fn is_setting(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
-    target.provider == tilo_actions::remote::device_tickets::PROVIDER
+    target.provider == tilo_action_services::device_tickets::PROVIDER
         && target.address.resource == tilo_actions::remote::DEVICE_SETTINGS
         && target.address.action == "set"
 }

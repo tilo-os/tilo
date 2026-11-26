@@ -1200,7 +1200,7 @@ fn directory(
             // Only the record's own verbs an app may ask are applied here, read by the record's
             // model itself: what a verb takes, what it refuses and what it writes are the
             // record's declarations, never a second reading of the same verb here.
-            if !tilo_actions::remote::environment_commands::APP_ACTIONS.contains(&action.as_str()) {
+            if !tilo_action_services::environment_commands::APP_ACTIONS.contains(&action.as_str()) {
                 return Err(format!(
                     "`{action}` is not an environment action an app may ask for here"
                 ));

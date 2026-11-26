@@ -6,7 +6,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_actions::remote::server_account::{self, Reason, ServerAccount};
+use tilo_action_services::server_account::{self, Reason, ServerAccount};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
 };
@@ -443,13 +443,13 @@ async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
     let home = open(&workspaces).await;
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
-    let plan = tilo_actions::remote::server_account::PlanOffer {
+    let plan = tilo_action_services::server_account::PlanOffer {
         id: "pro".into(),
         name: "Pro".into(),
         price: None,
-        limits: tilo_actions::remote::server_account::Limits {
+        limits: tilo_action_services::server_account::Limits {
             storage_bytes: Some(2_000_000_000),
-            ..tilo_actions::remote::server_account::Limits::default()
+            ..tilo_action_services::server_account::Limits::default()
         },
     };
     assert!(workspaces.set_own_plan(&guest.user_public_key, plan));
@@ -536,12 +536,12 @@ async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them()
         let person = guest.user_public_key;
         let workspace = first.workspace.workspace.clone();
         async move {
-            let plan = tilo_actions::remote::server_account::PlanOffer {
-                limits: tilo_actions::remote::server_account::Limits {
+            let plan = tilo_action_services::server_account::PlanOffer {
+                limits: tilo_action_services::server_account::Limits {
                     storage_bytes: limit,
-                    ..tilo_actions::remote::server_account::Limits::default()
+                    ..tilo_action_services::server_account::Limits::default()
                 },
-                ..tilo_actions::remote::server_account::PlanOffer::default()
+                ..tilo_action_services::server_account::PlanOffer::default()
             };
             assert!(workspaces.set_own_plan(&person, plan));
             // Measured afresh while they are over what the plan allows: the
@@ -576,12 +576,12 @@ async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them()
     assert!(one < total && two < total, "{one} {two} {total}");
     // Room for all but the last byte of what the two take between them: what
     // they share is full while neither alone would be.
-    let plan = tilo_actions::remote::server_account::PlanOffer {
-        limits: tilo_actions::remote::server_account::Limits {
+    let plan = tilo_action_services::server_account::PlanOffer {
+        limits: tilo_action_services::server_account::Limits {
             storage_bytes: Some(total - 1),
-            ..tilo_actions::remote::server_account::Limits::default()
+            ..tilo_action_services::server_account::Limits::default()
         },
-        ..tilo_actions::remote::server_account::PlanOffer::default()
+        ..tilo_action_services::server_account::PlanOffer::default()
     };
     assert!(workspaces.set_own_plan(&guest.user_public_key, plan));
     let full = workspaces

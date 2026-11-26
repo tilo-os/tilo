@@ -87,7 +87,7 @@ fn published(session: &Session, desktop_id: &str) -> bool {
     }
     find(
         &session.resources(),
-        &tilo_actions::remote::downloaded_apps::app(desktop_id),
+        &tilo_action_services::downloaded_apps::app(desktop_id),
     )
 }
 

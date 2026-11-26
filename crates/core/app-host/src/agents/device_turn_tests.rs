@@ -74,9 +74,9 @@ async fn scout_on_a_device(scratch: &std::path::Path) -> (TestHost, String, Stri
 
 /// A provider answering Chat's calls: a `send` makes the reply, and every call after it changes
 /// the reply it names.
-fn chat_provider() -> Arc<tilo_actions::remote::TestProvider> {
+fn chat_provider() -> Arc<tilo_action_services::TestProvider> {
     Arc::new(
-        tilo_actions::remote::TestProvider::new().completing(|request| {
+        tilo_action_services::TestProvider::new().completing(|request| {
             tilo_actions::ActionOutput {
                 value: None,
                 resources: if request.target.address.action == "send" {

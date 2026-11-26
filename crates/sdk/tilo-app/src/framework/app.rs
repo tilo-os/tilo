@@ -1740,11 +1740,11 @@ fn merge_peer(
 #[cfg(not(target_arch = "wasm32"))]
 const CAPTURE_INSTANCE: u64 = 1;
 
-#[cfg(not(target_arch = "wasm32"))]
 /// The permissions of `author` holding `role` in `workspace`, shared with the
 /// host so a later role change reaches the running app. They name the
 /// workspace the app keeps its records in, so what the host decides about
 /// those records is what the app is granted there.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn role_permissions(
     workspace: &str,
     author: &str,
@@ -2270,8 +2270,8 @@ fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
 #[cfg(tilo_native_runner)]
 const PRIVATE_FLAG: &str = "--private";
 
-#[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
+#[cfg(tilo_native_runner)]
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     let spec = LaunchSpec::from_definition(definition::<A>())
         .component_host(prepare_app::<A>)
@@ -2307,17 +2307,17 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     }
 }
 
-#[cfg(not(tilo_native_runner))]
 /// Named for the same apps that build a native [`LaunchSpec`]; the browser
 /// host mounts [`definition`] itself and never runs this path.
+#[cfg(not(tilo_native_runner))]
 pub fn launch_spec<A: ResourceApp>() -> crate::launch::LaunchSpec {
     crate::launch::LaunchSpec::from_definition(definition::<A>())
 }
 
-#[cfg(feature = "native")]
 /// The launch specification of any application definition: the standard
 /// component host, record and launch modes, without a resource type's
 /// capture scenarios.
+#[cfg(feature = "native")]
 #[cfg(not(target_arch = "wasm32"))]
 pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> LaunchSpec {
     LaunchSpec::from_definition(definition)

@@ -2960,8 +2960,8 @@ fn document_publication_superseded_receipt_does_not_stop_worker() {
     assert!(manager.is_connected());
 }
 
-#[cfg(test)]
 /// A captured local edit reported as `invocation`.
+#[cfg(test)]
 fn report_capture(invocation: u128) -> crate::local_document_action::CapturedAction {
     crate::local_document_action::CapturedAction {
         ownership: None,

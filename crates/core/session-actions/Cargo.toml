@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services", features = ["test-support"] }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-actions = { path = "../actions", features = ["answer-reads"] }
 tilo-clock = { path = "../../platform/tilo-clock" }

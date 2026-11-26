@@ -354,11 +354,11 @@ impl crate::PersonServices {
         })
     }
 
-    #[cfg(feature = "agents")]
     /// The actions of `provider` that `caller`'s turn is offered of what its workspace keeps
     /// for the person who asked it: each one it would not be refused before anything is opened,
     /// read anew at every listing, so a connection its person added a moment ago is in it. A
     /// caller that is no agent in its workspace's list is offered nothing.
+    #[cfg(feature = "agents")]
     pub async fn turn_rows(&self, caller: &Caller, provider: &str) -> Vec<CatalogueRow> {
         let Some(kept) = self.kept_turn(caller).await else {
             return Vec::new();
@@ -375,7 +375,6 @@ impl crate::PersonServices {
         rows
     }
 
-    #[cfg(feature = "agents")]
     /// Whether `caller`'s turn may ask for a page's field to be filled from its workspace's
     /// vault at all: what [`Self::release_for`] refuses before the vault is opened, asked before
     /// any window is.
@@ -383,12 +382,12 @@ impl crate::PersonServices {
     /// # Errors
     /// As [`Self::may_fill_pages`], and [`UnknownAction`] for a caller that is no agent in its
     /// workspace's list.
+    #[cfg(feature = "agents")]
     pub async fn may_fill_pages_for(&self, caller: &Caller) -> Result<(), ActionCallError> {
         let kept = self.kept_turn(caller).await.ok_or(UnknownAction)?;
         self.may_fill_pages(&kept.of(caller)).await
     }
 
-    #[cfg(feature = "agents")]
     /// Release what the item `fill` names keeps for the page at its site, for `caller`'s turn,
     /// which `request` asked, as [`Self::release_for_turn`] decides it for the turn the
     /// workspace's list of its agents keeps.
@@ -396,6 +395,7 @@ impl crate::PersonServices {
     /// # Errors
     /// As [`Self::release_for_turn`], and [`UnknownAction`] for a caller that is no agent in
     /// its workspace's list.
+    #[cfg(feature = "agents")]
     pub async fn release_for(
         &self,
         caller: &Caller,
@@ -774,9 +774,9 @@ impl Use {
     }
 }
 
-#[cfg(feature = "agents")]
 /// The item and the site a page fill names. A text is written only into a
 /// page that arrived over https.
+#[cfg(feature = "agents")]
 fn page_wanted(fill: PageFill<'_>) -> Result<(ItemId, Place), String> {
     let item = ItemId::parse(fill.item.id())
         .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
@@ -787,8 +787,8 @@ fn page_wanted(fill: PageFill<'_>) -> Result<(ItemId, Place), String> {
     Ok((item, site))
 }
 
-#[cfg(feature = "agents")]
 /// The kind of field an item of `kind` fills, when it fills one.
+#[cfg(feature = "agents")]
 fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
     match kind {
         vault_items::ItemKind::Login => Ok(PageField::Password),
@@ -803,10 +803,10 @@ fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
     }
 }
 
-#[cfg(feature = "agents")]
 /// Hand out what the item `item` of `workspace`'s vault fills a page's field at `site` with, for
 /// `by`: a code generator's code of this moment, else what the item keeps. The use is written
 /// down first, as every use is.
+#[cfg(feature = "agents")]
 async fn page_text(
     workspaces: &Workspaces,
     workspace: &str,
@@ -985,12 +985,12 @@ fn use_asked(
 }
 
 impl crate::PersonServices {
-    #[cfg(feature = "agents")]
     /// Who asked the turn `caller` works in `workspace`, where it is one this server carries
     /// out ([`Self::asked_turn`]): what a provider of the turn's own checks first.
     ///
     /// # Errors
     /// [`UnknownAction`] for every other caller.
+    #[cfg(feature = "agents")]
     pub async fn asked_turn_of(
         &self,
         workspace: WorkspaceId,
@@ -1139,9 +1139,9 @@ impl crate::PersonServices {
         Ok(using)
     }
 
-    #[cfg(feature = "agents")]
     /// The uses by reference `turn` is offered, as a catalogue lists them:
     /// each one it would not be refused before the vault is opened.
+    #[cfg(feature = "agents")]
     pub(crate) async fn uses_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let mut offered = Vec::new();
         for row in workspace_vault::use_rows() {
@@ -1159,12 +1159,12 @@ impl crate::PersonServices {
         offered
     }
 
-    #[cfg(feature = "agents")]
     /// The calls that send what a vault item keeps out with a request of
     /// the agent's own making, which `turn` is offered as a catalogue lists
     /// them: each one it would not be refused before the vault is opened.
     /// They are listed apart from [`Self::uses_offered`]: no "Always"
     /// stands for one.
+    #[cfg(feature = "agents")]
     pub(crate) async fn calls_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let mut offered = Vec::new();
         for row in workspace_vault::call_rows() {
@@ -1510,7 +1510,6 @@ impl crate::PersonServices {
 }
 
 impl crate::PersonServices {
-    #[cfg(feature = "agents")]
     /// Whether `turn` may ask for a page's field to be filled from its workspace's vault at
     /// all: what [`Self::release_for_turn`] refuses before the vault is opened, asked before
     /// any window is.
@@ -1518,6 +1517,7 @@ impl crate::PersonServices {
     /// # Errors
     /// As [`Self::asked_turn`], and [`NotPermitted`] for a narrowed agent that holds no
     /// rule for this use.
+    #[cfg(feature = "agents")]
     pub(crate) async fn may_fill_pages(
         &self,
         turn: &HostedTurn<'_>,
@@ -1527,7 +1527,6 @@ impl crate::PersonServices {
             .map(drop)
     }
 
-    #[cfg(feature = "agents")]
     /// Release what the item `fill` names keeps, for the page at the site `fill` names, to
     /// whoever sends it on to that page's window, for `turn`, which `request` asked: at once
     /// where a grant of the workspace's lets this agent fill it there, or where its person
@@ -1538,6 +1537,7 @@ impl crate::PersonServices {
     /// As [`Self::use_for_turn`], and the vault's own refusals: no such item in the
     /// workspace's vault, a site it does not belong to or that did not arrive over https, an
     /// item that is no login, code generator or value.
+    #[cfg(feature = "agents")]
     pub(crate) async fn release_for_turn(
         &self,
         turn: &HostedTurn<'_>,

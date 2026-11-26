@@ -39,10 +39,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-use tilo_actions::ActionDescriptor;
-use tilo_actions::remote::workspace_invocations::{
+use tilo_action_services::workspace_invocations::{
     self, Invocation, InvocationStatus, Invocations, InvocationsQuery,
 };
+use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_lock::MutexRecover as _;
 
@@ -113,7 +113,7 @@ pub(super) struct TiloArgs {
     program: String,
 }
 
-pub use tilo_actions::remote::task_programs::Go;
+pub use tilo_action_services::task_programs::Go;
 
 /// What the `tilo` tool answers for a program that waits for its person's yes: nothing of it ran,
 /// and the asked record it waits in (`<workspace>/<record>`) once the device kept one.
@@ -1022,8 +1022,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// program as one step of this session there ([`task_programs::RUN`]), which that device runs
     /// in a task host of its own, as this session's caller.
     async fn tilo_on_device(&self, args: TiloArgs, structured: bool) -> Result<Reply, Failure> {
+        use tilo_action_services::task_programs;
         use tilo_actions::InvocationUpdate;
-        use tilo_actions::remote::task_programs;
         let mut fields = Map::new();
         fields.insert("program".into(), args.program.into());
         // A person's programs go on in this server's own program session there, so its `let`s
@@ -1164,7 +1164,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `program` as this connection's caller sends it, through the `tilo` tool: a person's own
     /// runs at once, and an agent's is previewed first, running when its person need not be asked.
     /// An agent's program that needs their yes waits for it as a step of its session on the
-    /// device ([`tilo_actions::remote::task_programs`]), which this connection, running programs
+    /// device ([`tilo_action_services::task_programs`]), which this connection, running programs
     /// itself, cannot ask: it is refused, saying so.
     async fn own_program(
         &self,
@@ -2821,7 +2821,7 @@ mod tests {
     /// how it stands, never the values it carried (the host's words do not).
     #[test]
     fn history_lists_a_runs_changes_and_how_it_stands() {
-        use tilo_actions::remote::workspace_invocations::{
+        use tilo_action_services::workspace_invocations::{
             Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations,
         };
         let noted = |status: InvocationStatus, undone: usize| Invocation {

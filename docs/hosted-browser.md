@@ -91,7 +91,7 @@ open before anything is installed.
   (`linux#open app=org.gnome.TextEditor`), from a window or an agent's key.
   The server places it as it places Browser: the open makes the workspace's
   `so.tilo.linux` record, and the device that takes the workspace's Linux turn
-  starts the app (`tilo_actions::remote::linux_apps`), asking its hosted-VM
+  starts the app (`tilo_action_services::linux_apps`), asking its hosted-VM
   service (`Request::OpenApp`).
 - **The apps session.** The first app starts a second headless Tilo session
   in the VM, `/usr/libexec/tilo/apps-session`, beside Browser's and never the
@@ -107,7 +107,7 @@ open before anything is installed.
   opens: members see it in their windows, in the desktop app and on the web
   page, and those the workspace lets edit drive it with their
   keyboard and pointer. The session does not write the share itself: it asks
-  the server (`tilo_actions::remote::environment_device`), which writes the
+  the server (`tilo_action_services::environment_device`), which writes the
   share's grants as the workspace's host, as it writes a web page's share,
   once it has checked the window's id was minted under that device's own
   salt — a confined device shares its own windows and nobody else's. Its frames travel the
@@ -177,7 +177,7 @@ command.
   server carries out for a person's own agent may have a field of the page filled from an item
   of that person's vault, by reference. The server hands the window Browser's own
   `fill-page-item`; the window says which site its engine committed and asks the server for
-  the item's text (`tilo_actions::remote::environment_device`, `use-item`); and the server
+  the item's text (`tilo_action_services::environment_device`, `use-item`); and the server
   answers only the Browser's own device, only for a fill it handed that device, naming that
   item, and once, after the vault's own rule (the item belongs to exactly that origin) and the
   person's leave, which the first fill at a site asks for in the conversation. The text is

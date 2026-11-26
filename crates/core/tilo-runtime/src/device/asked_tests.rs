@@ -462,7 +462,7 @@ fn a_waiting_call_survives_the_devices_restart() {
 /// it (it waited across a restart). It names her as the one asked and carries what she reads.
 #[test]
 fn a_waiting_question_reads_in_the_workspaces_invocations() {
-    use tilo_actions::remote::workspace_invocations::{Invocation, InvocationStatus};
+    use tilo_action_services::workspace_invocations::{Invocation, InvocationStatus};
 
     let device = Device::start(&Arc::default(), &Arc::default());
     let call = send_mail();

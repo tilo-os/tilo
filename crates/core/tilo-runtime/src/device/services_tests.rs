@@ -2663,7 +2663,7 @@ fn certified_device(
 )]
 fn a_hosting_daemon_answers_its_environments_media_key_ask() {
     use std::os::unix::fs::PermissionsExt as _;
-    use tilo_actions::remote::environment_device;
+    use tilo_action_services::environment_device;
     use tilo_actions::remote::{Caller, InvokeRequest, ReceiptStatus, RemoteActionMessage};
     use tilo_user_identity::DeviceCapabilities;
 
@@ -2970,8 +2970,9 @@ const OWN_DEVICE_PROBE: &str = "so.tilo.probe.device";
 
 /// A provider offering `probe-device#publish`, an action of the invoker's own device whose
 /// contract asks its person every time: it records what it was asked, and nothing else.
-fn own_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
-    use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow, TestProvider};
+fn own_device_probe() -> Arc<tilo_action_services::TestProvider> {
+    use tilo_action_services::TestProvider;
+    use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow};
     Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(
             OWN_DEVICE_PROBE,
@@ -3045,10 +3046,9 @@ const OWN_ASK_TEST: &str =
 /// no answer to it.
 #[test]
 fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
+    use tilo_action_services::workspace_invocations;
     use tilo_actions::remote::asked::{AskedRecords as _, RESOLVE};
-    use tilo_actions::remote::{
-        ActionProvider as _, Confirmation, ReceiptStatus, workspace_invocations,
-    };
+    use tilo_actions::remote::{ActionProvider as _, Confirmation, ReceiptStatus};
 
     let Some(root) = isolated_root(OWN_ASK_TEST) else {
         return;
@@ -3237,7 +3237,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
         .invocation_listing(
             &workspace,
             &member,
-            &tilo_actions::remote::workspace_invocations::InvocationsQuery {
+            &tilo_action_services::workspace_invocations::InvocationsQuery {
                 invocation: Some(id.to_string()),
                 ..Default::default()
             },
@@ -3428,7 +3428,7 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
             .invocation_listing(
                 &workspace,
                 &member,
-                &tilo_actions::remote::workspace_invocations::InvocationsQuery {
+                &tilo_action_services::workspace_invocations::InvocationsQuery {
                     invocation: Some(invocation.to_string()),
                     ..Default::default()
                 },

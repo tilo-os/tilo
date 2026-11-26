@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use linux_vm::hosted::control::{self, Reply, Request};
-use tilo_actions::remote::browser::{OpenBrowser, OpenedBrowser};
-use tilo_actions::remote::linux_apps::OpenApp;
-use tilo_actions::remote::server_account::Refusal;
+use tilo_action_services::browser::{OpenBrowser, OpenedBrowser};
+use tilo_action_services::linux_apps::OpenApp;
+use tilo_action_services::server_account::Refusal;
 use tilo_server_protocol::hosted_vm::VmSize;
 
 /// Why a workspace's Linux app did not open.

@@ -2308,7 +2308,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
         // A first line that names another of the person's devices asks for the connection to be
         // carried there: its action frames go to that device from this daemon's one endpoint.
-        if let Some(carry) = tilo_actions::remote::carry_request(line) {
+        if let Some(carry) = tilo_action_services::carry_request(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             self.frames.carry(stream, &carry, input);
             return None;
@@ -2471,7 +2471,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             stream: follow,
             connections: Arc::clone(connections),
         }));
-        let tilo_actions::remote::Served::Handed { held, input, .. } =
+        let tilo_action_services::Served::Handed { held, input, .. } =
             self.frames
                 .serve_handing(stream, first, input, answering, Some(&**connections))
         else {
@@ -2696,7 +2696,7 @@ impl Connections {
     }
 }
 
-impl tilo_actions::remote::Handover for Connections {
+impl tilo_action_services::Handover for Connections {
     fn handing(&self) -> bool {
         self.handing.load(Ordering::Acquire)
     }

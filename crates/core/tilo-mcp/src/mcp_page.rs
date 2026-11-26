@@ -1,7 +1,7 @@
 //! The session's short names for long resource ids (handles), and the
 //! readings of values and arguments an agent's calls are answered with.
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionParam, Availability, ParamType, RiskLevel};
 
@@ -10,11 +10,6 @@ use tilo_actions::{ActionParam, Availability, ParamType, RiskLevel};
 const SHORT_ID_BYTES: usize = 24;
 /// Handles one session keeps; later ids are shown in full.
 const MAX_HANDLES: usize = 4096;
-
-
-
-
-
 
 /// Short names for one session's long resource ids. A bound UI resource's
 /// id is about 130 characters, and an agent repeats it in every call it
@@ -58,10 +53,6 @@ impl Handles {
         self.by_handle.get(handle).map(String::as_str)
     }
 }
-
-
-
-
 
 pub fn param(param: &ActionParam) -> String {
     let mut text = param.name.to_string();
@@ -135,7 +126,6 @@ const fn risk_label(risk: RiskLevel) -> &'static str {
         RiskLevel::Sensitive => "sensitive",
     }
 }
-
 
 /// The resource `name` means among `rows` (a provider's resources): one
 /// whose kind or label is `name`, when exactly one is. `None` when `name`

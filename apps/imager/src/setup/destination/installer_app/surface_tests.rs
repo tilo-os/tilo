@@ -10,10 +10,11 @@ use super::*;
 use crate::setup::destination::effects::{DestinationEffect, STORAGE, reviewed_digest};
 use automerge::AutoCommit;
 use imager_backend::destination::disks::LINUX_FILESYSTEM_GUID;
+use tilo_action_services::frame_line;
 use tilo_resource::Effect as _;
 use ui::tilo_actions::remote::{
     CatalogueQuery, CatalogueRow, Confirmation, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget, frame_line,
+    RemoteActionMessage, RemoteActionTarget,
 };
 
 mod capacity_tests;

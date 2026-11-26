@@ -1,5 +1,5 @@
 //! The action wire on the daemon's native endpoint ([`crate::daemon`]): a connection whose first
-//! line is a [`RemoteActionFrame`] has each line answered by [`tilo_actions::remote::line`], over
+//! line is a [`RemoteActionFrame`] has each line answered by [`tilo_action_services::line`], over
 //! the tree its account is admitted to ([`crate::seats`]). It is what `tilo`'s workspace commands,
 //! `tilolang repl` and `tilo-app` call actions over, as the MCP projection beside it is what
 //! agents call them over.
@@ -189,14 +189,14 @@ impl Frames {
     pub(crate) fn carry(
         &self,
         stream: Stream,
-        carry: &tilo_actions::remote::Carry,
+        carry: &tilo_action_services::Carry,
         input: impl BufRead,
     ) {
         self.carrying.serve(stream, carry, input);
     }
 
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends
-    /// ([`remote::serve_lines`]), each in the workspace it names: admitted there once, on its
+    /// ([`tilo_action_services::serve_lines`]), each in the workspace it names: admitted there once, on its
     /// first frame. `answering`, when the part counts it, is the call the connection's first
     /// answer is: a part that ends waits for that answer, never for the connection a shell
     /// keeps open after it.
@@ -211,7 +211,7 @@ impl Frames {
     }
 
     /// [`Self::serve`], handing the connection on once `handover` says the part that serves it
-    /// ends ([`remote::serve_lines_handing`]).
+    /// ends ([`tilo_action_services::serve_lines_handing`]).
     #[allow(
         clippy::too_many_lines,
         reason = "one connection's lanes and its serving are read in one place"
@@ -222,8 +222,8 @@ impl Frames {
         first: &[u8],
         input: R,
         answering: Option<crate::daemon::AnsweringCall>,
-        handover: Option<&dyn remote::Handover>,
-    ) -> remote::Served<R> {
+        handover: Option<&dyn tilo_action_services::Handover>,
+    ) -> tilo_action_services::Served<R> {
         // The tree's actions run their steps on the process's runtime, as they do for MCP.
         let _runtime = tilo_rt::app().handle().enter();
         let own = match (self.tree)(None) {
@@ -233,9 +233,9 @@ impl Frames {
                 let _ = writeln!(
                     stream,
                     "{}",
-                    remote::line_refusal("unavailable", &why.to_string())
+                    tilo_action_services::line_refusal("unavailable", &why.to_string())
                 );
-                return remote::Served::Ended;
+                return tilo_action_services::Served::Ended;
             }
         };
         let trees = Arc::clone(&self.tree);
@@ -316,7 +316,7 @@ impl Frames {
                     media: call_media.as_ref(),
                     presence: presence.as_ref(),
                 });
-        remote::serve_lines_handing(
+        tilo_action_services::serve_lines_handing(
             in_workspace,
             &self.uploads,
             Some(first.to_vec()),
@@ -326,7 +326,7 @@ impl Frames {
                 answering,
             },
             SLACK,
-            lanes.as_ref().map(|lanes| lanes as &dyn remote::CallLanes),
+            lanes.as_ref().map(|lanes| lanes as &dyn tilo_action_services::CallLanes),
             handover,
         )
     }
@@ -341,39 +341,39 @@ struct Lanes<'a> {
     presence: Option<&'a super::app_presence::PresenceLane>,
 }
 
-impl remote::CallLanes for Lanes<'_> {
-    fn take(&self, message: &RemoteActionMessage) -> remote::Take {
+impl tilo_action_services::CallLanes for Lanes<'_> {
+    fn take(&self, message: &RemoteActionMessage) -> tilo_action_services::Take {
         if let Some(presence) = self.presence {
-            match remote::CallLanes::take(presence, message) {
-                remote::Take::NotCall => {}
+            match tilo_action_services::CallLanes::take(presence, message) {
+                tilo_action_services::Take::NotCall => {}
                 taken => return taken,
             }
         }
         if let Some(media) = self.media {
-            match remote::CallLanes::take(media, message) {
-                remote::Take::NotCall => {}
+            match tilo_action_services::CallLanes::take(media, message) {
+                tilo_action_services::Take::NotCall => {}
                 taken => return taken,
             }
         }
         if let Some(audio) = self.audio {
-            match remote::CallLanes::take(audio, message) {
-                remote::Take::NotCall => {}
+            match tilo_action_services::CallLanes::take(audio, message) {
+                tilo_action_services::Take::NotCall => {}
                 taken => return taken,
             }
         }
-        self.call.as_ref().map_or(remote::Take::NotCall, |call| {
-            remote::CallLanes::take(call.as_ref(), message)
+        self.call.as_ref().map_or(tilo_action_services::Take::NotCall, |call| {
+            tilo_action_services::CallLanes::take(call.as_ref(), message)
         })
     }
 
     fn body_len(&self, message: &RemoteActionMessage) -> Option<usize> {
         self.audio
-            .and_then(|audio| remote::CallLanes::body_len(audio, message))
+            .and_then(|audio| tilo_action_services::CallLanes::body_len(audio, message))
     }
 
-    fn take_body(&self, message: &RemoteActionMessage, body: &[u8]) -> remote::Take {
-        self.audio.map_or(remote::Take::NotCall, |audio| {
-            remote::CallLanes::take_body(audio, message, body)
+    fn take_body(&self, message: &RemoteActionMessage, body: &[u8]) -> tilo_action_services::Take {
+        self.audio.map_or(tilo_action_services::Take::NotCall, |audio| {
+            tilo_action_services::CallLanes::take_body(audio, message, body)
         })
     }
 }
@@ -503,7 +503,7 @@ pub(crate) fn is_frame(line: &[u8]) -> bool {
 /// Tell `stream`'s peer why it is not served, and close.
 pub(crate) fn refuse(mut stream: Stream, why: &str) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = writeln!(stream, "{}", remote::line_refusal("not_permitted", why));
+    let _ = writeln!(stream, "{}", tilo_action_services::line_refusal("not_permitted", why));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 

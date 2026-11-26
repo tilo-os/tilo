@@ -10,9 +10,9 @@ use super::Driver;
 use tilo_ui_base::widget::ResourceOperationStart;
 
 impl Driver {
-    #[cfg(feature = "model")]
     /// The record the hosted component shows now: the one it was launched on, or one it opened in
     /// that one's place.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn component_checkout(&self) -> Option<&crate::resource::DocumentCheckout> {
         self.app
@@ -22,13 +22,13 @@ impl Driver {
             .map(|bound| bound.component.record())
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::invoke_action`] as the person at the surface within `ambient`, the context a
     /// caller's connection gives every invocation it makes (an agent's run, its purpose): what
     /// the action changes is recorded with it.
     ///
     /// # Errors
     /// As [`Self::invoke_action`].
+    #[cfg(feature = "model")]
     pub fn invoke_action_within(
         &mut self,
         address: &ActionAddress,
@@ -52,7 +52,6 @@ impl Driver {
         started
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::start_bound_job_for`] within `ambient` for the action the hosted component
     /// `address.instance_id` publishes: the task the invoker carries out (an agent's run, its
     /// purpose), recorded with every edit the job makes. The job runs under the invocation
@@ -63,6 +62,7 @@ impl Driver {
     ///
     /// # Panics
     /// When the driver's peer is not connected ([`Self::connect_peer`]).
+    #[cfg(feature = "model")]
     pub fn start_bound_job_within(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,
@@ -81,9 +81,9 @@ impl Driver {
         )
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::start_bound_job_within`] or [`Self::start_bound_job_for`]: `instance` scopes the
     /// resources the call is admitted against to the component that publishes them, when one does.
+    #[cfg(feature = "model")]
     #[allow(
         clippy::too_many_lines,
         reason = "the admission, the delivered call and its answer are one host call"
@@ -267,10 +267,10 @@ impl Driver {
         Ok((invocation, started))
     }
 
-    #[cfg(feature = "model")]
     /// Run `address`, an immediate document action the app's own person makes, where the app
     /// resolves and judges it, as its own press runs there: then the frame that shows what it
     /// changed is the one whoever reads the app runs.
+    #[cfg(feature = "model")]
     fn start_own_call(
         &mut self,
         address: &ActionAddress,
@@ -304,9 +304,9 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "model")]
     /// What a call of `address` at `instance` is told when the app could not resolve it: the
     /// permission its publication keeps it from the caller, or that nothing publishes it.
+    #[cfg(feature = "model")]
     fn unoffered(
         &self,
         address: &ActionAddress,
@@ -320,10 +320,10 @@ impl Driver {
         )
     }
 
-    #[cfg(feature = "model")]
     /// Run frames as an idle window does until the job `invocation` ended or `timeout` passed on
     /// the current [`crate::background::Background`]'s clock: what it ended as, `None` while it
     /// still runs.
+    #[cfg(feature = "model")]
     pub fn await_job(
         &mut self,
         invocation: InvocationId,
@@ -333,8 +333,8 @@ impl Driver {
         self.job_end(invocation)
     }
 
-    #[cfg(feature = "model")]
     /// What the job `invocation` ended as, if it has.
+    #[cfg(feature = "model")]
     fn job_end(&self, invocation: InvocationId) -> Option<InvocationUpdate> {
         self.call_updates(invocation)
             .into_iter()
@@ -369,9 +369,9 @@ impl Driver {
         )
     }
 
-    #[cfg(feature = "model")]
     /// The hosted component instance that owns the widget named `name`: whose bound actions a
     /// press on it invokes.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn semantic_owner_instance(&self, name: &str) -> Option<crate::application::InstanceId> {
         let node = *self.named_target_nodes().get(name)?;

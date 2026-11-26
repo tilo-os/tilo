@@ -6,8 +6,8 @@
 //! that holds it and kept in the record's entry of the device it names, root-signed, and every
 //! host verifies it there and refuses the device by it.
 //!
-//! [`RENAME`]: tilo_actions::remote::device_tickets::RENAME
-//! [`REVOKE`]: tilo_actions::remote::device_tickets::REVOKE
+//! [`RENAME`]: tilo_action_services::device_tickets::RENAME
+//! [`REVOKE`]: tilo_action_services::device_tickets::REVOKE
 
 use serde_json::{Value, json};
 use tilo_user_identity::{RevocationEntry, RevocationReason};

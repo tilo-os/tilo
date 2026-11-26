@@ -14,6 +14,7 @@ homepage.workspace = true
 # transport, storage and sandbox dependencies: the frame codec belongs in
 # `tilo-server-client`, the iroh endpoint, runtime and storage in `tilo-server`.
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 # Crash-safe replacement of the metrics snapshot.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # One rule for which language a locale names, shared with the packs.

@@ -330,7 +330,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .filter(|item| going(item))
             .filter_map(|item| item.id.clone())
             .collect();
-        let mut news: Vec<&tilo_actions::remote::workspace_invocations::Invocation> = own
+        let mut news: Vec<&tilo_action_services::workspace_invocations::Invocation> = own
             .iter()
             .filter(|item| told.is_none_or(|told| moment(item) > told))
             .collect();
@@ -362,8 +362,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// caller's where it names none.
     pub(super) async fn own_invocations(
         &self,
-    ) -> Result<Vec<tilo_actions::remote::workspace_invocations::Invocation>, String> {
-        use tilo_actions::remote::workspace_invocations::{InvocationsQuery, PAGE};
+    ) -> Result<Vec<tilo_action_services::workspace_invocations::Invocation>, String> {
+        use tilo_action_services::workspace_invocations::{InvocationsQuery, PAGE};
         // A session's calls are the ones its group names; with none, the caller's are the ones
         // the record names by the member it gives the caller (a key's call is the key's).
         let session = self.session_id();
@@ -733,15 +733,15 @@ fn last_change(page: Option<&[Value]>) -> Option<String> {
 }
 
 /// The latest moment `item` started or ended at, in ms since the epoch.
-fn moment(item: &tilo_actions::remote::workspace_invocations::Invocation) -> i64 {
+fn moment(item: &tilo_action_services::workspace_invocations::Invocation) -> i64 {
     item.ended_ms
         .unwrap_or(item.started_ms)
         .max(item.started_ms)
 }
 
 /// Whether `item` has not ended yet: it runs, or waits for its person.
-const fn going(item: &tilo_actions::remote::workspace_invocations::Invocation) -> bool {
-    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+const fn going(item: &tilo_action_services::workspace_invocations::Invocation) -> bool {
+    use tilo_action_services::workspace_invocations::InvocationStatus;
     matches!(
         item.status,
         InvocationStatus::Running | InvocationStatus::Waiting
@@ -750,9 +750,9 @@ const fn going(item: &tilo_actions::remote::workspace_invocations::Invocation) -
 
 /// The phase a watch names `status` by.
 pub(super) const fn phase(
-    status: tilo_actions::remote::workspace_invocations::InvocationStatus,
+    status: tilo_action_services::workspace_invocations::InvocationStatus,
 ) -> &'static str {
-    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    use tilo_action_services::workspace_invocations::InvocationStatus;
     match status {
         InvocationStatus::Waiting => "held_for_person",
         InvocationStatus::Running => "started",

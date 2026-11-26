@@ -31,6 +31,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 blake3.workspace = true
 key-group = { package = "tilo-key-group", path = "../../core/key-group" }

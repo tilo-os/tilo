@@ -1,5 +1,5 @@
 //! The person's account with the server this session runs on, as a live read
-//! ([`tilo_actions::remote::server_account::ACCOUNT`]).
+//! ([`tilo_action_services::server_account::ACCOUNT`]).
 //!
 //! On a server that serves workspaces ([`tilo_server_account::ServerAccountSource`]),
 //! the answer is what the server offers the session's account: its plans, the
@@ -13,9 +13,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use tilo_action_services::server_account::{self as wire, ServerAccount, ServerKind};
 use tilo_actions::remote::Pending;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::server_account::{self as wire, ServerAccount, ServerKind};
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,

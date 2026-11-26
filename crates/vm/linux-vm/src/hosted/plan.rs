@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::server_account::{
+use tilo_action_services::server_account::{
     self, Invoice, NextStep, NextStepKind, PaymentMethod, PlanOffer, Reason,
 };
 

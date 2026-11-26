@@ -11,6 +11,7 @@ description = "The MCP projection of an action host, and the APIs an MCP client 
 test-support = ["dep:tilo-test-env", "dep:tilo-resource"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 # The turn every agent works through: what a turn asks of these tools, and how the model reads
 # their answers.
 tilo-agent-turn = { path = "../../integrations/agent-turn" }

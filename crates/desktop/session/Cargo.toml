@@ -67,6 +67,7 @@ test-support = ["tilo-runtime/test-support"]
 no-workspace-copy = ["test-support"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 # The device's published resources: their readings, verbs and surfaces.
 tilo-device-surfaces = { path = "../device-surfaces" }
 anyhow.workspace = true

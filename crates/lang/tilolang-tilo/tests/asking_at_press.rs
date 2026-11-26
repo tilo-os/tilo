@@ -270,7 +270,7 @@ fn answers(called: &Called) -> Vec<String> {
                     &sent["action"]
                 ),
                 (
-                    &serde_json::json!(tilo_actions::remote::workspace_invocations::PROVIDER),
+                    &serde_json::json!(tilo_action_services::workspace_invocations::PROVIDER),
                     &serde_json::json!("studio"),
                     &serde_json::json!("share-1"),
                     &serde_json::json!("resolve"),

@@ -36,7 +36,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use linux_vm_protocol::TerminalSize;
-use tilo_actions::remote::environment_commands::{Person, VmSecret};
+use tilo_action_services::environment_commands::{Person, VmSecret};
 
 /// How long a session is kept when its stream went away and nobody took it again.
 pub const LEFT_AFTER: Duration = Duration::from_secs(90);

@@ -471,8 +471,9 @@ async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
     reason = "one grant, from the server to this device's copy to a provided call, read top to bottom"
 )]
 async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_provided_call() {
+    use tilo_action_services::TestProvider;
     use tilo_actions::remote::{
-        ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget, TestProvider,
+        ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget,
     };
     use tilo_server_protocol::workspaces::Role;
 
@@ -993,9 +994,10 @@ async fn desktop_founds_its_persons_workspace(
 #[tokio::test]
 async fn a_server_answers_an_action_through_its_devices_dispatch() {
     use std::sync::Arc;
+    use tilo_action_services::TestProvider;
     use tilo_actions::remote::{
         ActionProvider as _, CataloguePage, CatalogueRow, InvokeArgument, InvokeRequest,
-        ReceiptStatus, RemoteActionTarget, TestProvider,
+        ReceiptStatus, RemoteActionTarget,
     };
 
     const PROVIDER: &str = "so.tilo.devices";

@@ -757,11 +757,11 @@ fn certified_provider(provider: &str) -> bool {
         // The device's own answers, and the dispatch's own: the language's actions, and the
         // workspace's invocations its calls that wait for a person are answered in. Each is
         // admitted under the ownership the host retained for the call.
-        tilo_actions::remote::device_tickets::PROVIDER
-            | tilo_actions::remote::server_account::PROVIDER
-            | tilo_actions::remote::own_device::PROVIDER
+        tilo_action_services::device_tickets::PROVIDER
+            | tilo_action_services::server_account::PROVIDER
+            | tilo_action_services::own_device::PROVIDER
             | tilo_actions::remote::ACTIONS_PROVIDER
-            | tilo_actions::remote::workspace_invocations::PROVIDER
+            | tilo_action_services::workspace_invocations::PROVIDER
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)

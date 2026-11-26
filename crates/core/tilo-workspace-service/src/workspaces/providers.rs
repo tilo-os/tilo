@@ -706,7 +706,7 @@ impl Providers {
     /// The actions of the host the workspace `caller` asks in is placed on, for `request` when it
     /// names a typed action of one of that workspace's records, or asks the host for what a
     /// workspace's VM device holds no keys for itself
-    /// ([`tilo_actions::remote::environment_device`]: its media keys, a window's share, a vault
+    /// ([`tilo_action_services::environment_device`]: its media keys, a window's share, a vault
     /// item's text for a fill), which the host that placed it answers.
     fn host_of(
         &self,
@@ -714,7 +714,7 @@ impl Providers {
         request: &InvokeRequest,
     ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
         if !tilo_actions::remote::is_resource_provider(&request.target.provider)
-            && tilo_actions::remote::environment_device::action_of(&request.target).is_none()
+            && tilo_action_services::environment_device::action_of(&request.target).is_none()
         {
             return None;
         }

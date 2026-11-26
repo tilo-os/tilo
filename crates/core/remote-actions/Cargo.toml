@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-actions = { version = "0.1.0", path = "../actions" }
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

@@ -565,7 +565,7 @@ ESC ] 133 ; U ; k=<key> BEL                       the hold is over
 ```
 
 `r` is base64 of the host's typed refusal as JSON
-(`tilo_actions::remote::server_account::Refusal`: its reason, its words and
+(`tilo_action_services::server_account::Refusal`: its reason, its words and
 the steps that would let it through, with the provider's pages). Terminal
 shows the person one prompt over the run, "This needs a Linux machine. Add a
 card to continue.", whose Add a card opens the provider's page and whose

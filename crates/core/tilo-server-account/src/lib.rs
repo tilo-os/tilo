@@ -1,5 +1,5 @@
 //! A server's offers to a person's account
-//! ([`tilo_actions::remote::server_account`]), as a server that serves
+//! ([`tilo_action_services::server_account`]), as a server that serves
 //! workspaces knows them.
 //!
 //! Such a server runs a workspace's Linux programs in VMs of its own
@@ -26,7 +26,7 @@ use std::time::Duration;
 use linux_vm::hosted::control::{self, Reply, Request};
 use linux_vm::hosted::meter::{UsageEntry, UsageKind};
 use linux_vm::hosted::plan::{Plans, Sells};
-use tilo_actions::remote::server_account::{
+use tilo_action_services::server_account::{
     Entitlement, Limits, ServerAccount, ServerKind, Subscription, Usage, WorkspaceUsage,
 };
 

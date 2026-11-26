@@ -400,11 +400,11 @@ impl Driver {
         driver
     }
 
-    #[cfg(feature = "model")]
     /// Mount a prepared component without a display, GPU or service discovery.
     ///
     /// # Errors
     /// As [`App::from_component`].
+    #[cfg(feature = "model")]
     pub fn from_component(
         component: crate::application::AppComponent,
         viewport: (u32, u32),
@@ -421,12 +421,12 @@ impl Driver {
         Ok(driver)
     }
 
-    #[cfg(feature = "model")]
     /// Mount `component` in a surface of [`crate::headless::MOUNT_VIEWPORT`] with the fixture fonts
     /// and the dark theme.
     ///
     /// # Errors
     /// The setup failure a live window fails with when the component cannot be mounted.
+    #[cfg(feature = "model")]
     #[cfg(any(test, feature = "test-support"))]
     pub fn mount(
         component: crate::application::AppComponent,
@@ -444,11 +444,11 @@ impl Driver {
         Ok(driver)
     }
 
-    #[cfg(feature = "model")]
     /// Stand a managed root up and run its first frame.
     ///
     /// # Errors
     /// Refuses invalid scope metadata or unavailable mounted document ownership.
+    #[cfg(feature = "model")]
     pub fn from_managed_root(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -457,11 +457,11 @@ impl Driver {
         Self::from_managed_root_with(state, root, viewport, DriverInputs::themed(Theme::dark()))
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::from_managed_root`] with caller-owned fonts and identity.
     ///
     /// # Errors
     /// As [`Self::from_managed_root`].
+    #[cfg(feature = "model")]
     pub fn from_managed_root_with_controlled_inputs(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -1544,8 +1544,8 @@ impl Driver {
         changed
     }
 
-    #[cfg(feature = "model")]
     /// Replace the permissions the app's own document is acted on under.
+    #[cfg(feature = "model")]
     pub fn set_permission_ctx(&mut self, permissions: PermissionContext) {
         self.app.set_permission_ctx(permissions);
     }
@@ -1599,8 +1599,8 @@ impl Driver {
         pick.icon()
     }
 
-    #[cfg(feature = "model")]
     /// What the app wants its process to do (open another window, quit), once.
+    #[cfg(feature = "model")]
     pub fn take_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
         let bound = self
             .app
@@ -2572,13 +2572,13 @@ impl Driver {
         crate::bound_dispatch::find_resource(self.app.root_widget.as_ref(), &self.app.state.doc, id)
     }
 
-    #[cfg(feature = "model")]
     /// Invoke the published action at `address` as the person at the surface, as the call sent
     /// again with their approve when `approval` holds it ([`Self::approval`]), then run the frame
     /// that shows it.
     ///
     /// # Errors
     /// The app's refusals: an unknown, unavailable or denied action, or its failure.
+    #[cfg(feature = "model")]
     pub fn invoke_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -2589,13 +2589,13 @@ impl Driver {
         self.invoke_action_as(&actor, address, arguments, approval)
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::invoke_action`] for `actor`, who need not be the person at the surface: another
     /// member's or an agent's call reaches the app as the broker delivers it
     /// ([`Self::start_bound_job_within`]).
     ///
     /// # Errors
     /// As [`Self::invoke_action`].
+    #[cfg(feature = "model")]
     pub fn invoke_action_as(
         &mut self,
         actor: &tilo_actions::Actor,
@@ -2676,7 +2676,6 @@ impl Driver {
         )
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::invoke_action`], and the answer of a call the app does not run now: it hands its
     /// peer the call first (an external effect crosses the workspace before it touches anything),
     /// and answers when the peer delivers it back. The frames that take up that answer run here,
@@ -2685,6 +2684,7 @@ impl Driver {
     ///
     /// # Errors
     /// As [`Self::invoke_action`], and the refusal a call the answer ends refused or failed with.
+    #[cfg(feature = "model")]
     pub fn invoke_action_answering(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -2748,12 +2748,12 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "model")]
     /// The invocation the app handed its peer since `sent` of its requests were made
     /// ([`Self::peer_requests`]) for a call of `address`, whose answers [`Self::job_updates`]
     /// reads. The call names the action the caller gave it: what an app publishes beside its
     /// own record (a surface's rows) reaches the peer under the alias that record binds, not
     /// under the id its view knows.
+    #[cfg(feature = "model")]
     fn invocation_sent_since(
         &self,
         sent: usize,
@@ -2771,12 +2771,12 @@ impl Driver {
             })
     }
 
-    #[cfg(feature = "model")]
     /// Invoke `action` on the resource `resource` the app publishes, with JSON `arguments`, the
     /// way an agent's call reaches it, then run the frame that shows it.
     ///
     /// # Errors
     /// When `arguments` is no object, and as [`Self::invoke_action`].
+    #[cfg(feature = "model")]
     pub fn call_on(
         &mut self,
         resource: &str,
@@ -2786,12 +2786,12 @@ impl Driver {
         self.call_resource(resource, action, arguments, false)
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::call_on`] as the call sent again once the person approved the asked record it was
     /// kept as ([`Self::approval`]).
     ///
     /// # Errors
     /// As [`Self::call_on`], except that it does not wait for the person's yes.
+    #[cfg(feature = "model")]
     pub fn call_on_approved(
         &mut self,
         resource: &str,
@@ -2824,11 +2824,11 @@ impl Driver {
         started
     }
 
-    #[cfg(feature = "model")]
     /// Invoke the published action `action` of `resource`, without the person's approve.
     ///
     /// # Errors
     /// As [`Self::invoke_action`].
+    #[cfg(feature = "model")]
     pub fn invoke_published(
         &mut self,
         resource: &str,
@@ -2848,12 +2848,12 @@ impl Driver {
         self.app.control_notice()
     }
 
-    #[cfg(feature = "model")]
     /// Open the window's search as `request` asks, as the person's search key does.
     ///
     /// # Errors
     /// While a dialog the app holds open keeps the window to itself. An app that offers no search
     /// ignores the request, as a window does.
+    #[cfg(feature = "model")]
     pub fn open_search(
         &mut self,
         request: &crate::widget::search_request::SearchRequest,
@@ -2890,8 +2890,8 @@ impl Driver {
         self.app.focused_undo_status()
     }
 
-    #[cfg(feature = "model")]
     /// The pending controls History owes and what each waits on.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn pending_history_controls(
         &self,
@@ -2904,24 +2904,24 @@ impl Driver {
         self.app.close_components();
     }
 
-    #[cfg(feature = "model")]
     /// What the components closed reported, without taking it.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         self.app.component_close_reports()
     }
 
-    #[cfg(feature = "model")]
     /// The instance id of the hosted application component, the `instance_id` its bound actions
     /// are addressed by.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn component_instance_id(&self) -> Option<crate::application::InstanceId> {
         crate::bound_dispatch::callback_binding(&*self.app.root_widget)
             .map(|binding| binding.instance_id)
     }
 
-    #[cfg(feature = "model")]
     /// The record the hosted component was launched on.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn component_resource(&self) -> Option<crate::resource::DocumentCheckout> {
         crate::bound_dispatch::callback_binding(&*self.app.root_widget)
@@ -2935,12 +2935,12 @@ impl Driver {
         crate::app::driver::drive::drive(self, steps)
     }
 
-    #[cfg(feature = "model")]
     /// Have the record writer acknowledge every pending edit of the hosted component, then run
     /// the frame that shows the record saved: an explicit save boundary for a capture.
     ///
     /// # Errors
     /// When no component is hosted, or the write fails.
+    #[cfg(feature = "model")]
     pub fn flush_component_resources(&mut self) -> Result<(), String> {
         let result = crate::bound_dispatch::callback_binding(&*self.app.root_widget)
             .ok_or_else(|| "the driver hosts no component".to_owned())?
@@ -2966,8 +2966,8 @@ impl Driver {
         self.app.control_notice().map(|notice| notice.text.clone())
     }
 
-    #[cfg(feature = "model")]
     /// What the components closed reported, taken.
+    #[cfg(feature = "model")]
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
@@ -3002,11 +3002,11 @@ impl Driver {
         self.run_frame();
     }
 
-    #[cfg(feature = "model")]
     /// Show the app's History.
     ///
     /// # Errors
     /// When the app has none.
+    #[cfg(feature = "model")]
     pub fn open_history(&mut self) -> Result<(), String> {
         if self.app.history.is_none() {
             return Err("this app registered no History".into());
@@ -3107,11 +3107,11 @@ impl Driver {
 
 // A mounted component, called the way an agent calls it.
 impl Driver {
-    #[cfg(feature = "model")]
     /// Invoke `address` with `arguments` as the person at the surface.
     ///
     /// # Errors
     /// As [`Self::invoke_action`].
+    #[cfg(feature = "model")]
     pub fn call(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -3120,12 +3120,12 @@ impl Driver {
         self.invoke_action(address, &arguments, None)
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::call`] once the person allowed this exact request: it comes back with their
     /// approve, as the device sends it again.
     ///
     /// # Errors
     /// As [`Self::invoke_action`].
+    #[cfg(feature = "model")]
     pub fn call_confirmed(
         &mut self,
         address: &tilo_actions::ActionAddress,

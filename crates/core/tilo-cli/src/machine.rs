@@ -21,8 +21,8 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan};
+use tilo_action_services::{device_tickets, machines};
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::{device_tickets, machines};
 use tilo_control::front::{self, Spelling};
 
 use crate::identity;

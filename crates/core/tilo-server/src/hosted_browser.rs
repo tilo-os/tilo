@@ -37,7 +37,7 @@
 //! - **Ask**: a page action asks the person first, and nobody stands in front
 //!   of a window in a VM to ask. The window refuses such an action for want
 //!   of their answer, stating what leaves and where
-//!   ([`tilo_actions::remote::browser::departure_asked`]); that refusal
+//!   ([`tilo_action_services::browser::departure_asked`]); that refusal
 //!   travels to whoever carried the call, and the dispatch there keeps it as
 //!   the call's own asked invocation record. Their approve admits the same
 //!   invocation again, carrying their answer, and this host hands it to the
@@ -85,9 +85,9 @@ pub use turn_fills::FILL_PAGE_ITEM;
 use crate::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
+use tilo_action_services::linux_apps::{self, AppLaunch};
+use tilo_action_services::server_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::asked::{AskedDispatch, AskedRecords, RecordRef};
-use tilo_actions::remote::linux_apps::{self, AppLaunch};
-use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation, InvocationReceipt,
@@ -171,10 +171,10 @@ pub const OPERATING_ACTIONS: [&str; 9] = [
     "pointer-page",
 ];
 /// The page action that keeps the page as it is, dropping the held request.
-pub use tilo_actions::remote::browser::KEEP_HELD;
+pub use tilo_action_services::browser::KEEP_HELD;
 /// The page action that lets a held request leave, by the id the window
 /// publishes it with: what a hold nothing called for is answered with.
-pub use tilo_actions::remote::browser::SEND_HELD;
+pub use tilo_action_services::browser::SEND_HELD;
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
 pub const DEVICE_LIFETIME: Duration =
@@ -734,7 +734,7 @@ impl HostedBrowsers {
         // answering for its page would be answered as though it were the window.
         if matches!(
             request.target.address.action.as_str(),
-            tilo_actions::remote::browser::SEND_HELD | tilo_actions::remote::browser::KEEP_HELD
+            tilo_action_services::browser::SEND_HELD | tilo_action_services::browser::KEEP_HELD
         ) && device != window_device
         {
             return answered_with(message, ActionCallError::NotPermitted);
@@ -750,7 +750,7 @@ impl HostedBrowsers {
         // A key whose person let it operate web pages needs no question about
         // one: this host hands the key's own call to the window it placed
         // with their standing permission ([`Confirmation::Operated`]). The window takes that word from this host's link alone
-        // ([`tilo_actions::remote::browser::host_answered`]), so it runs the call
+        // ([`tilo_action_services::browser::host_answered`]), so it runs the call
         // once and answers the caller itself.
         let operated = (request.confirmation.is_none()
             && certificate.is_some_and(|certificate| operates(certificate, request)))
@@ -928,8 +928,8 @@ impl HostedBrowsers {
                 let ran = matches!(entry.stage, Stage::Running);
                 let counted = !matches!(
                     entry.request.target.address.action.as_str(),
-                    tilo_actions::remote::browser::SEND_HELD
-                        | tilo_actions::remote::browser::KEEP_HELD
+                    tilo_action_services::browser::SEND_HELD
+                        | tilo_action_services::browser::KEEP_HELD
                 );
                 let workspace = entry.workspace.clone();
                 answered(entry, &receipt.status);

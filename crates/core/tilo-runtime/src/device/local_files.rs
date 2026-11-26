@@ -1,5 +1,5 @@
 //! The workspace's own folder, as this device serves it: a file put into it, and Files' verbs on
-//! it by paths in it ([`device_files`](tilo_actions::remote::device_files)).
+//! it by paths in it ([`device_files`](tilo_action_services::device_files)).
 //!
 //! This device holds the tree, so it puts the file through the one writer every change of the
 //! tree goes through ([`OpenedFiles`]) and carries a verb out as the tree's own verbs it changes.
@@ -13,8 +13,8 @@ use std::sync::Arc;
 use fs_protocol::tree::{self, FILES_APP};
 use serde_json::{Map, Value};
 use tilo_action_policy::{ActionKind, Answer, TreePath};
+use tilo_action_services::device_files as wire;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::device_files as wire;
 use tilo_actions::remote::{
     Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
 };

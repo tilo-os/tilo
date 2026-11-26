@@ -13,7 +13,7 @@
 //!   waits for it.
 //! - **Release** ([`HostedBrowsers::item_asked`]): the window names the site its engine says
 //!   the page is at and asks for the item's text
-//!   ([`tilo_actions::remote::environment_device::USE_ITEM`]). Only the device this server
+//!   ([`tilo_action_services::environment_device::USE_ITEM`]). Only the device this server
 //!   placed for that workspace's Browser is answered, only for a fill this server handed it,
 //!   naming that same item, and once. What decides is whoever carries out the turn
 //!   ([`Releasing`]): the vault's own rule and the person's leave. A released text is sealed to
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, json};
-use tilo_actions::remote::environment_device::{ItemUse, ItemUsed};
+use tilo_action_services::environment_device::{ItemUse, ItemUsed};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionMessage, RemoteActionTarget, pending,
@@ -252,7 +252,7 @@ impl HostedBrowsers {
     }
 
     /// `caller` asks for the text of the item a fill names
-    /// ([`tilo_actions::remote::environment_device::USE_ITEM`]): answered for the device this
+    /// ([`tilo_action_services::environment_device::USE_ITEM`]): answered for the device this
     /// server placed for `workspace_id`'s Browser and nobody else, for a fill this server
     /// handed that device, naming that item, and once.
     pub(super) fn item_asked(

@@ -251,7 +251,7 @@ fn listed_answer(
         store.waiting_in(workspace),
         None,
     );
-    let answering = tilo_actions::remote::workspace_invocations::tree_rows(&listed)
+    let answering = tilo_action_services::workspace_invocations::tree_rows(&listed)
         .into_iter()
         .find_map(|row| row.action)
         .expect("the call that waits is listed with its answer")
@@ -326,7 +326,7 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
         approve.insert("resolution".into(), serde_json::json!("approve"));
         InvokeRequest::plain(
             RemoteActionTarget {
-                provider: tilo_actions::remote::workspace_invocations::PROVIDER.into(),
+                provider: tilo_action_services::workspace_invocations::PROVIDER.into(),
                 address: answering.clone(),
             },
             approve,

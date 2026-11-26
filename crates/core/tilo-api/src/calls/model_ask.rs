@@ -9,9 +9,9 @@
 use anyhow::{Result, anyhow};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
+use tilo_action_services::LineClient;
 use tilo_actions::remote::{
-    ActionProvider, Caller, InvokeRequest, LineClient, ReceiptStatus, RemoteActionTarget,
-    UpdateMark,
+    ActionProvider, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget, UpdateMark,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_clock::time::Duration;
@@ -227,10 +227,11 @@ mod tests {
     use std::collections::HashMap;
     use std::io::BufReader;
     use std::sync::Mutex;
+    use tilo_action_services::serve_lines;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, CataloguePage, CatalogueQuery, Completer,
-        InvocationReceipt, InvocationState, InvokeArgument, Pending, pending, serve_lines,
+        InvocationReceipt, InvocationState, InvokeArgument, Pending, pending,
     };
 
     fn heard() -> (Vec<(String, Value)>, Shown) {

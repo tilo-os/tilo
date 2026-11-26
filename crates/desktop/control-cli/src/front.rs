@@ -760,7 +760,7 @@ fn answer_asked(desktop: &mut Desktop, record: &str, yes: bool) -> Result<(), St
     let request = InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(record, tilo_actions::remote::asked::RESOLVE),
         },
         argument: InvokeArgument::Json(answer),

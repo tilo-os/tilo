@@ -151,7 +151,7 @@ impl std::fmt::Display for ServerError {
             // agent relaying it) reads what they can do about it.
             Self::Refused(reason) => {
                 tracing::info!(reason, "the server refused a call");
-                match tilo_actions::remote::server_account::Refusal::from_reason(reason) {
+                match tilo_action_services::server_account::Refusal::from_reason(reason) {
                     Some(refusal) => f.write_str(&refusal.message),
                     None => f.write_str(tilo_server_protocol::refusal::PLAIN_REFUSED),
                 }
@@ -413,7 +413,7 @@ impl Server {
     /// # Errors
     /// The server was not reached or refused.
     pub async fn account(&self, connection: &Connection) -> Result<Value, ServerError> {
-        use tilo_actions::remote::server_account;
+        use tilo_action_services::server_account;
         connection
             .device
             .ask_host(

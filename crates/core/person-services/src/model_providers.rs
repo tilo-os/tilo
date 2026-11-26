@@ -30,7 +30,7 @@ use agent_provider_config::{
     capabilities, transform,
 };
 use serde_json::Value;
-use tilo_actions::remote::workspace_invocations::Spend;
+use tilo_action_services::workspace_invocations::Spend;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_net::proxy::host::{
     Destinations, Lookup, check_destination, guarded_client, system_lookup,

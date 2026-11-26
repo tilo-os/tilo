@@ -29,6 +29,7 @@ relay = ["live_session", "dep:bytes", "dep:tokio", "dep:serde_json"]
 iroh = ["live_session", "dep:iroh", "dep:bytes", "dep:serde_json"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 # The scope of a track is a channel of an app's record.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # An app's call lane speaks the action wire its connection carries, and the call's own messages.

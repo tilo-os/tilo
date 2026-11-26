@@ -15,7 +15,8 @@ use std::time::Duration;
 use crate::daemon::Running;
 use anyhow::{Context as _, Result};
 use serde_json::Value;
-use tilo_actions::remote::{ReceiptStatus, person_telling};
+use tilo_actions::remote::ReceiptStatus;
+use tilo_actions::remote::person_telling;
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::Place;
 

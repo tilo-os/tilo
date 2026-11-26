@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::{ActionKind, Answer, Change, GrantId, Grantee};
-use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
+use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, ReceiptStatus, ResourceAddress, ResourceCopy,
 };

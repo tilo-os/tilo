@@ -15,6 +15,7 @@ path = "src/lib.rs"
 test-support = []
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Each record is a framework member of its app's resource kind; the

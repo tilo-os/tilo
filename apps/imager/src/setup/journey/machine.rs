@@ -9,9 +9,9 @@
 use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Network, Plan};
+use tilo_action_services::machines;
 use tilo_ui_base::InvocationCall;
 use ui::tilo_actions::remote::InvokeArgument;
-use ui::tilo_actions::remote::machines;
 
 /// The OS the other computer installs. Tilo Server is a destination OS like
 /// Tilo OS, not a purpose for a desktop.

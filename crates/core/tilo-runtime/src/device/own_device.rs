@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId};
-use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, Pending, own_device, pending};
+use tilo_action_services::own_device;
+use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_broker_core::services::{OwnDeviceActions, OwnDeviceOutcome};
 use tilo_lock::MutexRecover as _;

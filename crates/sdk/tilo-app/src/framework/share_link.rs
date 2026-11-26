@@ -12,8 +12,8 @@
 //! person using the app, so the link is the invitation the invite sheet makes, under
 //! the part the person asks for and the workspace's governance allows them to hand out.
 
+use tilo_action_services::session_actions;
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{CatalogueQuery, InvokeArgument, RemoteActionTarget, ViewResourceQuery};
 use tilo_reference::link::share;
 use tilo_resource::share::ShareRequest;
@@ -531,9 +531,9 @@ mod tests {
     }
 
     /// A host answering with what the shell's `issue-invitation` answers.
-    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestProvider> {
+    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_action_services::TestProvider> {
         std::sync::Arc::new(
-            tilo_actions::remote::TestProvider::new().completing(move |_| {
+            tilo_action_services::TestProvider::new().completing(move |_| {
                 tilo_actions::ActionOutput {
                     value: Some(value.clone()),
                     resources: Vec::new(),

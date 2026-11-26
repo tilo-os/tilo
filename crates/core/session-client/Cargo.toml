@@ -15,6 +15,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 # The answer to a command, which a page awaits and a program waits on.
 oneshot.workspace = true
 # The layout's model: the workspaces a member takes part in, and the windows presence places

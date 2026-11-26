@@ -7,6 +7,7 @@ license.workspace = true
 description = "A server's offers to a person's account, read from what its hosted-VM service admits by and has metered, and followed as they change."
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 jiff.workspace = true
 # The hosted-VM service's control requests and metering; the keeper that wakes
 # its windows is the VM program's, so this reads the crate without `supervisor`.

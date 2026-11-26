@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApps, DownloadedDoing};
+use tilo_action_services::downloaded_apps::{self as wire, DownloadedApps, DownloadedDoing};
 use tilo_app_launch::downloaded;
 use tilo_service::{Answer, AskSender, Asked, Question, Services};
 

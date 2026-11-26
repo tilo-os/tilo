@@ -51,7 +51,7 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             label: label.to_owned(),
             main,
             target: OfferedTarget {
-                app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+                app: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
                 record: String::new(),
                 resource: record.record.clone(),
                 action: asked::RESOLVE.to_owned(),
@@ -81,7 +81,7 @@ fn telling(record: &RecordRef, facts: &AskedFacts) -> ToTell {
             words: told_words(facts),
             about: Some(About {
                 workspace: record.workspace.clone(),
-                app: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+                app: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
                 record: String::new(),
                 resource: record.record.clone(),
             }),

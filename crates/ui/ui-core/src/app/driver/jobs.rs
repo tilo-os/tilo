@@ -29,15 +29,14 @@ pub(super) struct Jobs {
 }
 
 impl Driver {
-    #[cfg(feature = "model")]
     /// Every update the job `invocation` reported to its caller so far, oldest first: its
     /// progress, then what it ended as.
+    #[cfg(feature = "model")]
     #[must_use]
     pub fn job_updates(&self, invocation: InvocationId) -> Vec<InvocationUpdate> {
         self.call_updates(invocation)
     }
 
-    #[cfg(feature = "model")]
     /// Start `address` with `arguments` as the workspace's broker delivers an admitted call, for
     /// `invoker` (an agent, a member) or, with none, for the person at this device; sent again with
     /// the person's approve when `approval` holds it ([`Self::approval`]). The broker's admission
@@ -51,6 +50,7 @@ impl Driver {
     ///
     /// # Panics
     /// When the driver's peer is not connected ([`Self::connect_peer`]).
+    #[cfg(feature = "model")]
     pub fn start_bound_job_for(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,
@@ -61,13 +61,13 @@ impl Driver {
         self.start_job_within(invoker, None, address, arguments, approval, None)
     }
 
-    #[cfg(feature = "model")]
     /// Cancel the running job `invocation`, as its caller does through the broker: the job decides
     /// where it can stop and answers with what it ended as, which is also in
     /// [`Self::job_updates`]. `None` when it had already ended, or has not answered yet.
     ///
     /// # Panics
     /// When `invocation` was not started through the driver's peer.
+    #[cfg(feature = "model")]
     pub fn cancel_job(&mut self, invocation: InvocationId) -> Option<InvocationUpdate> {
         if self
             .call_updates(invocation)
@@ -82,7 +82,6 @@ impl Driver {
             .find(InvocationUpdate::is_terminal)
     }
 
-    #[cfg(feature = "model")]
     /// The resources the app's hosted components publish, as their permissions let their bound
     /// actions be invoked. With `id`, only that resource: an app may resolve it lazily (a search
     /// hit, an open document), so it can be absent from the root listing and still be
@@ -90,6 +89,7 @@ impl Driver {
     ///
     /// # Errors
     /// Refuses a closed or unavailable component.
+    #[cfg(feature = "model")]
     pub fn bound_resources(
         &self,
         id: Option<&str>,
@@ -97,12 +97,12 @@ impl Driver {
         self.bound_resources_of(None, id)
     }
 
-    #[cfg(feature = "model")]
     /// [`Self::bound_resources`] of one hosted component instance, such as one window of a shell;
     /// `None` for every hosted component.
     ///
     /// # Errors
     /// Refuses a closed or unavailable component.
+    #[cfg(feature = "model")]
     pub fn bound_resources_of(
         &self,
         instance: Option<crate::application::InstanceId>,
@@ -261,10 +261,10 @@ impl Driver {
         arriving
     }
 
-    #[cfg(feature = "model")]
     /// Every action contract violation for which the app would withdraw a hosted component's
     /// published surface: it withdraws a whole component when one of its actions breaks its
     /// contract, so a test asserts this is empty rather than finding the surface gone at runtime.
+    #[cfg(feature = "model")]
     pub fn component_contract_violations(&mut self) -> Vec<tilo_actions::ContractViolation> {
         let _wakes = self.app.enter_wake_scope();
         let components = match crate::bound_dispatch::discover_cached_bound_resources(
@@ -353,12 +353,12 @@ impl Driver {
         }
     }
 
-    #[cfg(feature = "model")]
     /// What the app asked of its peer since this was last asked, oldest first: the transport
     /// requests a live window's host takes from it.
     ///
     /// # Panics
     /// When the driver's peer is not connected ([`Self::connect_peer`]).
+    #[cfg(feature = "model")]
     pub fn take_collaboration_requests(&mut self) -> Vec<CollabRequest> {
         assert!(
             self.peer.is_some(),
@@ -377,8 +377,8 @@ impl Driver {
     }
 }
 
-#[cfg(feature = "model")]
 /// What an `update` that ended failed or cancelled says of why.
+#[cfg(feature = "model")]
 fn ended_badly(update: &InvocationUpdate) -> Option<String> {
     match update {
         InvocationUpdate::Failed { error, .. } => {

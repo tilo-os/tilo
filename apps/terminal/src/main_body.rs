@@ -424,7 +424,7 @@ struct CommandState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Held {
-    pub(crate) refusal: ui::tilo_actions::remote::server_account::Refusal,
+    pub(crate) refusal: tilo_action_services::server_account::Refusal,
     /// An agent asked for the run: the shell does not wait, the agent has
     /// the refusal, and the prompt is the person's to act on or dismiss.
     pub(crate) agent: bool,
@@ -2079,7 +2079,7 @@ impl TerminalWidget {
             }
             Piece::Mark(Mark::Held { agent, refusal }) => {
                 if let Ok(refusal) = serde_json::from_value::<
-                    ui::tilo_actions::remote::server_account::Refusal,
+                    tilo_action_services::server_account::Refusal,
                 >((**refusal).clone())
                 {
                     commands.held = Some(Held {
@@ -2335,7 +2335,7 @@ impl TerminalWidget {
                     id: recorded.is_ok().then_some(asked.request.clone()),
                     exit: Some(run.exit),
                     refusal: run.refusal.as_deref().and_then(|refusal| {
-                        serde_json::from_value::<ui::tilo_actions::remote::server_account::Refusal>(
+                        serde_json::from_value::<tilo_action_services::server_account::Refusal>(
                             refusal.clone(),
                         )
                         .ok()
@@ -5101,7 +5101,7 @@ impl TopBanner {
 
     /// The prompt of a run its host holds.
     fn held(held: &Held) -> Self {
-        use ui::tilo_actions::remote::server_account::Reason;
+        use tilo_action_services::server_account::Reason;
         let (title, message) = match held.refusal.reason {
             Reason::NoPaymentMethod => (
                 t("terminal-held-title"),
@@ -5131,7 +5131,7 @@ impl TopBanner {
 impl Held {
     /// The provider's page to add a card on: only a secure web page.
     pub(crate) fn add_card_url(&self) -> Option<&str> {
-        use ui::tilo_actions::remote::server_account::NextStepKind;
+        use tilo_action_services::server_account::NextStepKind;
         self.refusal
             .step(NextStepKind::AddPaymentMethod)
             .and_then(|step| step.url.as_deref())

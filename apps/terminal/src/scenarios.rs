@@ -30,7 +30,7 @@ pub(crate) fn target(name: &str) -> Option<(SessionTarget, Vec<EnvironmentSummar
 
 pub(crate) fn held(key: &str) -> Vec<u8> {
     use base64::Engine as _;
-    use ui::tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
+    use tilo_action_services::server_account::{NextStep, NextStepKind, Reason, Refusal};
     let b64 = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
     let message = "This needs a Linux machine. Tilo Cloud runs Linux machines for accounts with a \
                    card on file, and this account has none yet. Add a card to continue.";

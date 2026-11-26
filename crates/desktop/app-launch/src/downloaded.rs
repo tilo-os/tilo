@@ -40,7 +40,7 @@ use desktop_entry::downloaded::{
     self, DownloadedProgram, Identity, ProcessFacts, Program, ProgramKind, Store, WindowFacts,
 };
 use serde_json::{Map, Value};
-use tilo_actions::remote::downloaded_apps as wire;
+use tilo_action_services::downloaded_apps as wire;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect as _;

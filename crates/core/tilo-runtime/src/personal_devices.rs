@@ -134,7 +134,7 @@ impl PersonalDevices {
 pub fn own_devices_only(message: &RemoteActionMessage) -> bool {
     let own_provider = |provider: &str| {
         provider == tilo_device_identity::login::PROVIDER
-            || provider == tilo_actions::remote::mcp_server::PROVIDER
+            || provider == tilo_action_services::mcp_server::PROVIDER
     };
     match message {
         RemoteActionMessage::Invoke(request) => own_provider(&request.target.provider),

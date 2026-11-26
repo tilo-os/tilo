@@ -299,8 +299,8 @@ pub(super) struct AvailabilityWalk {
     pub(super) changes_at: Option<crate::time::Instant>,
 }
 
-#[cfg(feature = "model")]
 /// Every input of reconciling the document routes with the tree.
+#[cfg(feature = "model")]
 #[derive(PartialEq)]
 pub(super) struct RouteInputs {
     pub(super) tree: TreeGeneration,
@@ -309,8 +309,8 @@ pub(super) struct RouteInputs {
     pub(super) document: (Vec<automerge::ChangeHash>, usize),
 }
 
-#[cfg(feature = "model")]
 /// What the last walk for History surfaces read and found.
+#[cfg(feature = "model")]
 pub(super) struct HistoryWalk {
     pub(super) tree: TreeGeneration,
     pub(super) status: Option<crate::widget::WindowStatus>,
@@ -327,8 +327,8 @@ pub(super) struct HistoryWalk {
     pub(super) needed: bool,
 }
 
-#[cfg(feature = "model")]
 /// What History surfaces read besides the tree and the window's status.
+#[cfg(feature = "model")]
 #[derive(PartialEq)]
 pub(super) struct HistorySurfaceInputs {
     pub(super) news: u64,
@@ -420,9 +420,9 @@ impl InputRuntime {
 pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
-    #[cfg(feature = "model")]
     /// The window the palette was opened from, when the app hosts several
     /// (the shell's tiles): the palette centres on it, not on the screen.
+    #[cfg(feature = "model")]
     pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Why invocations the person made this pass did not run, and the
     /// control each came from when one is on screen: said at that control,
@@ -469,16 +469,16 @@ pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     pub(super) action_directory_snapshot:
         Option<std::rc::Rc<super::action_directory_snapshot::ActionDirectorySnapshot>>,
-    #[cfg(feature = "model")]
     /// The directory the last revision named, set aside when a pass made it
     /// stale: re-derived to the same snapshot, it keeps that revision and
     /// its cursors.
+    #[cfg(feature = "model")]
     pub(super) action_directory_retired:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
-    #[cfg(feature = "model")]
     /// The snapshot a reader pages at a revision the app has moved past: held
     /// beside what it publishes now, so the read keeps the directory it
     /// started on whatever the app publishes meanwhile.
+    #[cfg(feature = "model")]
     pub(super) action_directory_borrowed:
         Option<super::action_directory_snapshot::ModelDirectoryCandidate>,
     #[cfg(feature = "model")]
@@ -496,40 +496,40 @@ pub(super) struct ActionRuntime {
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
-    #[cfg(feature = "model")]
     /// What the broker holds of the surface `last_published_actions` names,
     /// the base of the next delta.
+    #[cfg(feature = "model")]
     pub(super) published_surface: Option<tilo_ui_base::collaboration::SurfacePublication>,
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
-    #[cfg(feature = "model")]
     /// What the last publication was derived from
     /// ([`super::model_lifecycle::PublicationStamp`]); `None` when it cannot
     /// be shown current.
+    #[cfg(feature = "model")]
     pub(super) published_stamp: Option<super::model_lifecycle::PublicationStamp>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
-    #[cfg(feature = "model")]
     /// Opaque, revision-bound continuation state for the broker directory.
+    #[cfg(feature = "model")]
     pub(super) action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
     /// Background operations admitted by the retained widget tree.
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
-    #[cfg(feature = "model")]
     /// The invoker of each delivered invocation still running, for the
     /// edits its effect submits.
+    #[cfg(feature = "model")]
     pub(super) acting_for: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::invocation_scope::Continuation,
     >,
-    #[cfg(feature = "model")]
     /// The person's presses waiting for what they change to arrive from the workspace.
-    pub(super) waiting_controls: Vec<crate::app_core::WaitingControl>,
     #[cfg(feature = "model")]
+    pub(super) waiting_controls: Vec<crate::app_core::WaitingControl>,
     /// Each edit an effect submitted for its invoker that the host is still
     /// admitting, by broker request, to the effect invocation it continues and the control it
     /// came from.
+    #[cfg(feature = "model")]
     pub(super) follow_ups: std::collections::HashMap<
         u64,
         (tilo_actions::InvocationId, crate::app_core::FollowUpControl),
@@ -537,9 +537,9 @@ pub(super) struct ActionRuntime {
     /// Each invocation of another provider's action a control here is bound
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
-    #[cfg(feature = "model")]
     /// Resolutions asked for a resource still being read, answered once its
     /// read lands ([`tilo_ui_base::widget::resources::PublishesResources::resource_pending`]).
+    #[cfg(feature = "model")]
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Answers to broker invocations held, by wire id, until what they
     /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
@@ -779,8 +779,8 @@ impl AccessibilityRuntime {
     }
 }
 
-#[cfg(feature = "model")]
 /// Continuation publication and deferred restore state.
+#[cfg(feature = "model")]
 pub(super) struct ContinuationRuntime {
     pub(super) last_published: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
     /// Distinguish a queued clear from an unknown prior projection.
@@ -817,8 +817,8 @@ impl ContinuationRuntime {
     }
 }
 
-#[cfg(feature = "model")]
 /// Collaboration transports and local authorship identity.
+#[cfg(feature = "model")]
 pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
     /// What the primary route's end-to-end encrypted channel lets this
@@ -867,8 +867,8 @@ impl CollaborationRuntime {
     }
 }
 
-#[cfg(feature = "model")]
 /// Presence publication, follow, and frame-pump state.
+#[cfg(feature = "model")]
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<tilo_ui_base::presence::PointerSpace>,
@@ -899,8 +899,8 @@ impl PresenceRuntime {
     }
 }
 
-#[cfg(feature = "model")]
 /// Stable focus projection used to delimit undo/redo history entries.
+#[cfg(feature = "model")]
 pub(super) struct HistoryRuntime {
     pub(super) stable_focus_idx: Option<usize>,
     pub(super) stable_metadata: Option<String>,

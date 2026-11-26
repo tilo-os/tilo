@@ -1,4 +1,4 @@
-//! The sessions a workspace VM's daemon runs ([`tilo_actions::remote::environment_window`]).
+//! The sessions a workspace VM's daemon runs ([`tilo_action_services::environment_window`]).
 //!
 //! A hosted workspace's VM runs one daemon, a device of the person that reaches that one
 //! workspace. It runs the VM's two sessions as its shells, each handed its link as any shell the
@@ -19,13 +19,13 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use serde_json::Value;
-use tilo_actions::api::PlacedAction;
-use tilo_actions::contract::ActionKind;
-use tilo_actions::remote::environment_device::{self, ItemUse, ItemUsed, WindowShare};
-use tilo_actions::remote::environment_window::{
+use tilo_action_services::environment_device::{self, ItemUse, ItemUsed, WindowShare};
+use tilo_action_services::environment_window::{
     self as wire, Holds, ItemLent, Launch, Report, Session, Share, Shown, Window,
 };
-use tilo_actions::remote::linux_apps::{AppLaunch, UP_PROVIDER};
+use tilo_action_services::linux_apps::{AppLaunch, UP_PROVIDER};
+use tilo_actions::api::PlacedAction;
+use tilo_actions::contract::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
     ReceiptStatus,

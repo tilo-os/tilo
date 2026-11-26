@@ -11,15 +11,14 @@
 //!
 //! The window's controls reach these steps as the app, and the command as the
 //! person at this device: both are the same address
-//! ([`tilo_actions::remote::machines`]).
+//! ([`tilo_action_services::machines`]).
 
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use tilo_action_services::machines;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::{
-    Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending, machines,
-};
+use tilo_actions::remote::{Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionOutput, ActionState,
     ExecutionLocus, InputSpec, OperationKind,

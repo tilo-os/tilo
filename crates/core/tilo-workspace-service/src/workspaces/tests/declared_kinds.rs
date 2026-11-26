@@ -89,7 +89,7 @@ fn system_records() -> Vec<Record> {
         record(tilo_workspace_agent::OWNER, tilo_workspace_agent::KIND),
         // The calls that wait for their person's yes (`asked_kept`).
         record(
-            tilo_actions::remote::workspace_invocations::PROVIDER,
+            tilo_action_services::workspace_invocations::PROVIDER,
             collab_types::surface::SurfaceFile::compiled(
                 crate::workspaces::asked_kept::surface().as_bytes(),
             )

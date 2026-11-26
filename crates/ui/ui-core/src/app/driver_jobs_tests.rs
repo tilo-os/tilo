@@ -843,7 +843,7 @@ fn the_window_s_session_opens_another_app_and_its_receipt_comes_back() {
         ..Worker::default()
     });
     let workspace = uuid::Uuid::new_v4();
-    let session = std::sync::Arc::new(tilo_actions::remote::TestProvider::new());
+    let session = std::sync::Arc::new(tilo_action_services::TestProvider::new());
     driver.set_session_api(
         tilo_ui_base::RemoteActions::with_provider(
             session.clone(),

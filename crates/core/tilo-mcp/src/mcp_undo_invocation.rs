@@ -6,9 +6,8 @@
 //! `undoInvocation` and an agent's `tilo_status {undo: true}` reach the record's action here,
 //! and a decline takes a waiting run back through the same take-back.
 
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, workspace_invocations,
-};
+use tilo_action_services::workspace_invocations;
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_lock::MutexRecover as _;
 

@@ -20,10 +20,10 @@ use std::sync::Arc;
 
 use accounts::vault_items;
 use serde_json::{Value, json};
+use tilo_action_services::workspace_invocations;
 use tilo_actions::remote::asked::{Offer, RecordRef, Resolve};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
-    workspace_invocations,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_workspace_service::workspace_vault::{self, ItemRef, Released};

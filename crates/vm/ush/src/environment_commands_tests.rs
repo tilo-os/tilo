@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
+use tilo_action_services::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvokeArgument, InvokeRequest,
 };
@@ -259,7 +259,7 @@ fn fake_hosted(
 }
 
 fn opening(material: &str) -> InvokeRequest {
-    use tilo_actions::remote::browser;
+    use tilo_action_services::browser;
     let asked = browser::OpenBrowser {
         workspace: "ws-1".into(),
         account: "acct-1".into(),
@@ -288,7 +288,7 @@ fn opened(
     runs: &EnvironmentCommands,
     caller: &Caller,
     id: InvocationId,
-) -> Option<tilo_actions::remote::browser::OpenedBrowser> {
+) -> Option<tilo_action_services::browser::OpenedBrowser> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         assert!(Instant::now() < deadline, "it never ended");
@@ -386,7 +386,7 @@ fn machine_request(
 }
 
 fn branching(from: &str) -> InvokeRequest {
-    use tilo_actions::remote::environment_machines::{self, BranchMachine};
+    use tilo_action_services::environment_machines::{self, BranchMachine};
     machine_request(
         environment_machines::branch_target(),
         &BranchMachine {
@@ -398,7 +398,7 @@ fn branching(from: &str) -> InvokeRequest {
 }
 
 fn deleting() -> InvokeRequest {
-    use tilo_actions::remote::environment_machines::{self, DeleteMachine};
+    use tilo_action_services::environment_machines::{self, DeleteMachine};
     machine_request(environment_machines::delete_target(), &DeleteMachine {})
 }
 
@@ -430,7 +430,7 @@ fn ended(
 #[test]
 fn only_the_hosts_own_devices_branch_and_delete_a_workspaces_machine() {
     use linux_vm::hosted::control::{Reply, Request, VmRequest};
-    use tilo_actions::remote::environment_machines::MachineBranched;
+    use tilo_action_services::environment_machines::MachineBranched;
     let dir = tempfile::tempdir().unwrap();
     let (socket, asked) = fake_hosted(
         dir.path(),
@@ -560,7 +560,7 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
 #[test]
 fn an_account_without_a_card_is_refused_before_anything_runs_in_its_vm() {
     use linux_vm::hosted::control::{Reply, Request};
-    use tilo_actions::remote::server_account::{Reason, Refusal};
+    use tilo_action_services::server_account::{Reason, Refusal};
     let dir = tempfile::tempdir().unwrap();
     // The hosted-VM service reads its plans file for the account the request
     // names, and finds no card for it.

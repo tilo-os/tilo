@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
+use tilo_action_services::workspace_invocations;
 use tilo_actions::remote::asked::{
     self, AskedDispatch, AskedFacts, AskedRecords, Offer, RecordRef, Resolve,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionTarget, workspace_invocations,
+    RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
 use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell};
@@ -40,7 +41,7 @@ impl WorkspaceShell for NoShell {
         _: &str,
         _: &Caller,
         _: bool,
-        _: Option<&tilo_actions::remote::environment_commands::Person>,
+        _: Option<&tilo_action_services::environment_commands::Person>,
         _: Watching<'_>,
     ) -> Result<ShellRan, String> {
         Err("this host runs no programs in a test".into())
@@ -425,7 +426,7 @@ impl WorkspaceShell for ReadingShell {
         _: &str,
         _: &Caller,
         _: bool,
-        _: Option<&tilo_actions::remote::environment_commands::Person>,
+        _: Option<&tilo_action_services::environment_commands::Person>,
         _: Watching<'_>,
     ) -> Result<ShellRan, String> {
         Err("this host runs no programs in a test".into())

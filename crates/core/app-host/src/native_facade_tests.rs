@@ -101,7 +101,7 @@ impl NativeFacadeHostSteps {
 async fn signed_native_facade_runs_host_steps_with_original_certified_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use tilo_actions::remote::device_tickets;
+            use tilo_action_services::device_tickets;
             let env = Environment::new(true);
             let started = Arc::new(Mutex::new(Vec::new()));
             let providers = tilo_workspace_service::workspaces::providers::Providers::default();

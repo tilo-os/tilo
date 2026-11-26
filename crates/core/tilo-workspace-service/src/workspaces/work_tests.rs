@@ -360,7 +360,7 @@ impl HostLinux for Linux {
     }
 
     fn runs(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
-        Arc::new(tilo_actions::remote::TestProvider::new())
+        Arc::new(tilo_action_services::TestProvider::new())
     }
 }
 
@@ -378,7 +378,7 @@ async fn a_device_takes_a_linux_run_when_it_runs_linux_and_has_room() {
         requester: cert.device_public_key,
         run: Box::new(tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::environment_commands::target(),
+            target: tilo_action_services::environment_commands::target(),
             argument: tilo_actions::remote::InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -467,7 +467,7 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
             .unwrap();
         let actions = tilo_peer_state::actions::ActionService::new(
             device_key.clone(),
-            Arc::new(tilo_actions::remote::TestProvider::new()),
+            Arc::new(tilo_action_services::TestProvider::new()),
         );
         let remote = Arc::new(actions.remote(&endpoint, &address, &workspace));
         let id = tilo_actions::InvocationId::new();
@@ -543,7 +543,7 @@ async fn ask_turn(
 ) -> Result<InvocationUpdate, ActionCallError> {
     let actions = tilo_peer_state::actions::ActionService::new(
         device_key.clone(),
-        Arc::new(tilo_actions::remote::TestProvider::new()),
+        Arc::new(tilo_action_services::TestProvider::new()),
     );
     let remote = Arc::new(actions.remote(endpoint, &host.node_addr(), workspace));
     tokio::time::timeout(

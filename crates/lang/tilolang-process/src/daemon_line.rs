@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use runtime_portal::process_link::Descriptor;
 use serde_json::{Map, Value};
+use tilo_action_services::LineClient;
 use tilo_actions::remote::native_media::{Request as CallMediaRequest, Snapshot as CallSnapshot};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 
 /// How long a call on the line is waited for before it is given up on.

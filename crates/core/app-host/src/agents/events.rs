@@ -1,5 +1,5 @@
 //! A workspace's events: shortcuts its members' assistants are handed instructions by
-//! ([`tilo_actions::remote::workspace_events`]).
+//! ([`tilo_action_services::workspace_events`]).
 //!
 //! An event says what starts it, optionally a question its person's model answers about what
 //! happened and a count, and what its person's assistant is then told ([`Definition`]). It is
@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use tilo_action_services::workspace_events::{self, Change, EventView, Events, Named, SetUp, Sort};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{
     ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec, RetryPolicy,
@@ -35,7 +36,6 @@ use tilo_actions::contract::{
 };
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::person_telling::Kind;
-use tilo_actions::remote::workspace_events::{self, Change, EventView, Events, Named, SetUp, Sort};
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome, Pending, pending};
 use tilo_actions::{
     ActionFailure, ActionKey, ActionOutput, ExecutionLocus, MemberId, OperationKind,

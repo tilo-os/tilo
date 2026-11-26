@@ -21,6 +21,7 @@ name = "tilo-control"
 path = "src/main.rs"
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 libc.workspace = true
 # An answer reads in the order the action gave its fields.
 serde_json = { workspace = true, features = ["preserve_order"] }

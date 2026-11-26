@@ -33,6 +33,7 @@ path = "src/jail_main.rs"
 ignored = ["serde_bytes"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-action-policy = { path = "../../core/action-policy" }
 blake3.workspace = true

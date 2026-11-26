@@ -1864,10 +1864,10 @@ pub fn result(
 impl HistoryEdit {
     /// Apply the edit, decoding recorded actions with the registry
     /// `register` fills: one compiled copy for every resource.
-    #[inline(never)]
     ///
     /// # Errors
     /// Why nothing was done, in `words`, as [`steps`] says it.
+    #[inline(never)]
     pub fn apply_registered(
         &self,
         doc: &mut tilo_actions::Doc,
@@ -2301,7 +2301,7 @@ mod tests {
     fn holding_back(doc: &AutoCommit, step: &str) -> Option<Value> {
         let listed = history(doc, 50, &TestWords);
         let entries = listed["versions"].as_array().unwrap();
-        tilo_actions::remote::workspace_invocations::edited_after(entries, |entry| {
+        tilo_action_services::workspace_invocations::edited_after(entries, |entry| {
             entry["step"] == step
         })
         .cloned()

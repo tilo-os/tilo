@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use linux_vm::hosted::control::{self, OpenBrowser, Reply, Request};
+use tilo_action_services::browser::{self, OpenedBrowser};
+use tilo_action_services::environment_window::{self as vm, Holds, Launch, Session, Shown, Window};
 use tilo_actions::api::PlacedAction;
-use tilo_actions::remote::browser::{self, OpenedBrowser};
-use tilo_actions::remote::environment_window::{self as vm, Holds, Launch, Session, Shown, Window};
 use tilo_actions::remote::{
     ActionProvider as _, Admits, Admitted, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
     Outcome, Pending,
@@ -213,7 +213,7 @@ async fn a_workspace_opens_browser_on_the_device_running_its_machine() {
     *asked.device.lock().unwrap() = device;
     let placed = placed_with(1, Some(socket)).await;
     let open = |material: &str| {
-        let asked = tilo_actions::remote::browser::OpenBrowser {
+        let asked = tilo_action_services::browser::OpenBrowser {
             workspace: placed.workspace.clone(),
             account: "acct-1".into(),
             material: material.to_owned(),

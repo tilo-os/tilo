@@ -1,5 +1,5 @@
 //! What a session's device in a workspace's VM asks of this host
-//! ([`tilo_actions::remote::environment_device`]): the media keys of its own
+//! ([`tilo_action_services::environment_device`]): the media keys of its own
 //! streams, and its own windows shared with the workspace.
 //!
 //! The device holds none of the workspace's keys and writes nothing of the
@@ -19,10 +19,10 @@
 //! where the fill was handed to it ([`super::turn_fills`]).
 
 use tilo_action_policy::share::ShareAccess;
-use tilo_actions::ActionOutput;
-use tilo_actions::remote::environment_device::{
+use tilo_action_services::environment_device::{
     self, END_WINDOW_SHARE, MEDIA_KEYS, MediaKeys, SHARE_WINDOW, WindowShare,
 };
+use tilo_actions::ActionOutput;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionMessage,
     pending,

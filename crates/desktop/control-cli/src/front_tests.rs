@@ -3,7 +3,8 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tilo_actions::remote::{self, CataloguePage, CatalogueResource, InvokeRequest, TestProvider};
+use tilo_action_services::TestProvider;
+use tilo_actions::remote::{self, CataloguePage, CatalogueResource, InvokeRequest};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionOutput, ActionParam, ActionState, ExecutionLocus,
     InputSpec, OperationKind, ParamType,
@@ -571,7 +572,7 @@ fn a_call_that_asks_first_is_confirmed_at_tilos_own_prompt() {
     assert_eq!(resolved.len(), 1, "{resolved:?}");
     assert_eq!(
         resolved[0].target.provider,
-        tilo_actions::remote::workspace_invocations::PROVIDER
+        tilo_action_services::workspace_invocations::PROVIDER
     );
     assert_eq!(
         resolved[0].target.address,

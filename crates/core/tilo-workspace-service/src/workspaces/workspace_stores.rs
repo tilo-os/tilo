@@ -72,7 +72,7 @@ impl Store {
     /// The workspace's scheduled work and events, in Shortcuts.
     pub const EVENTS: Self = Self {
         app: tilo_app_id::apps::SHORTCUTS,
-        kind: tilo_actions::remote::workspace_events::KIND,
+        kind: tilo_action_services::workspace_events::KIND,
     };
 
     /// The node `action` of this store stands at in `workspace`.

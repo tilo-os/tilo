@@ -37,6 +37,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:rustix", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../action-services", features = ["test-support"] }
 # The surface fixtures a test builds declare (test support): what the service stores is the compiled form.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile", optional = true }
 # What a Bluetooth address is, for the record of the person's accessories.

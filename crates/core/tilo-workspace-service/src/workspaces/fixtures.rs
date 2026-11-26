@@ -2360,7 +2360,7 @@ async fn answered_as_its_person(
     let resolve = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
                 &waiting.asked.record.record,
                 tilo_actions::remote::asked::RESOLVE,

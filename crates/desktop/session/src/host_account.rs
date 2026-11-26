@@ -4,7 +4,7 @@
 //! the person manages all of it.
 //!
 //! Billing is the provider's, never a form Tilo draws: this reading says what the host
-//! answered ([`tilo_actions::remote::server_account`]) and the pane opens the
+//! answered ([`tilo_action_services::server_account`]) and the pane opens the
 //! provider's own page for a card, a plan or an invoice. The reading is the person's,
 //! so only Settings reads it.
 //!
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::server_account::{InvoiceStatus, ServerAccount};
+use tilo_action_services::server_account::{InvoiceStatus, ServerAccount};
 use tilo_actions::{ActionAddress, ApiError};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Service, Started};

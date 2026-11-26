@@ -62,6 +62,7 @@ presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
 dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 jiff.workspace = true
 registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../../core/registry-types" }

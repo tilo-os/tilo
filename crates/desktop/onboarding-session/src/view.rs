@@ -748,9 +748,9 @@ impl OnboardingView {
     }
 
     /// The names the setup app gives what it shows, in tree order.
-    #[cfg(test)]
     /// From the page's title on: each control's name, then what it adds
     /// (a banner's message, a progress bar's percentage).
+    #[cfg(test)]
     pub fn codec_page_lines(&mut self) -> Vec<String> {
         fn names(widget: &dyn Widget, out: &mut Vec<String>) {
             if let Some(node) = widget.accessibility() {

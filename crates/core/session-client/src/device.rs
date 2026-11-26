@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
+use tilo_action_services::server_account::Refusal;
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
@@ -1467,7 +1467,7 @@ pub async fn session_as_agent(peer: &Link, label: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::remote::server_account::{Reason, Refusal};
+    use tilo_action_services::server_account::{Reason, Refusal};
 
     use super::*;
 
@@ -1513,7 +1513,7 @@ mod tests {
             // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
             // type): what the CLI, the API server and the page read off it.
             let file: Vec<Value> = serde_json::from_str(include_str!(
-                "../../actions/tests/provider_refusals.json"
+                "../../action-services/tests/provider_refusals.json"
             ))
             .unwrap();
             for entry in file {

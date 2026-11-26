@@ -261,7 +261,7 @@ impl ServiceWorkspaces {
                 .answer_only(device, workspace.to_string());
             copies.providers().answer_placing_host(device);
             copies.provide(
-                tilo_actions::remote::environment_window::PLACEMENT,
+                tilo_action_services::environment_window::PLACEMENT,
                 Arc::new(super::confined::Renewals(Arc::downgrade(self))),
             );
         }

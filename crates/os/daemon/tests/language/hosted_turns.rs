@@ -504,8 +504,8 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
 }
 
 /// The events the workspace's host keeps, as its person's own call lists them.
-async fn events_of(host: &Host) -> Vec<tilo_actions::remote::workspace_events::EventView> {
-    use tilo_actions::remote::workspace_events;
+async fn events_of(host: &Host) -> Vec<tilo_action_services::workspace_events::EventView> {
+    use tilo_action_services::workspace_events;
     let address = ActionAddress::new(workspace_events::RESOURCE, workspace_events::LIST);
     let receipt = host
         .dispatch()
@@ -535,7 +535,7 @@ async fn events_of(host: &Host) -> Vec<tilo_actions::remote::workspace_events::E
 /// keeps the reminder as invoked once, asking nothing twice.
 #[test]
 fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed() {
-    use tilo_actions::remote::workspace_events::{Ended, Sort};
+    use tilo_action_services::workspace_events::{Ended, Sort};
     host::run_with(&[CHAT_PACKAGE], |host| async move {
         let host = host.as_ref();
         start_chat(host, host.workspace()).await;

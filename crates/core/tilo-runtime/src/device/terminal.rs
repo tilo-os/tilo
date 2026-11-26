@@ -10,8 +10,8 @@
 use std::sync::Arc;
 use tilo_person_services::PersonServices;
 
+use tilo_action_services::environment_commands::{Person, VmSecret};
 use tilo_actions::remote::Caller;
-use tilo_actions::remote::environment_commands::{Person, VmSecret};
 use tilo_agent_session::shell::{Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell};
 use tilo_workspace_service::workspaces::Workspaces;
 use ush::environment_terminals::{EnvironmentTerminals, Ran, TerminalAsk};

@@ -9,8 +9,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use tilo_action_services::own_device;
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Reservation, own_device,
+    ActionCallError, Caller, InvocationReceipt, InvokeRequest, Reservation,
 };
 
 use super::super::AppBrokerState;
@@ -162,9 +163,10 @@ mod tests {
     use crate::services::{OwnDeviceActions, OwnDeviceOutcome};
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
+    use tilo_action_services::own_device;
     use tilo_actions::remote::{
         ActionCallError, Caller, Completer, InvokeArgument, InvokeRequest, Pending,
-        RemoteActionMessage, own_device, pending,
+        RemoteActionMessage, pending,
     };
 
     const SETTINGS: &str = tilo_app_id::apps::SETTINGS;

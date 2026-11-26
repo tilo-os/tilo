@@ -396,7 +396,7 @@ mod tests {
         let branch = |source: Option<&str>| tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned(),
+                provider: tilo_action_services::SESSION_ACTIONS_PROVIDER.to_owned(),
                 address: tilo_actions::ActionAddress::new(
                     tilo_session_core::desktop::verbs::CHROME_RESOURCE,
                     tilo_session_core::desktop::host::contract::BRANCH_WORKSPACE,

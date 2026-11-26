@@ -10,10 +10,12 @@
 
 use std::sync::Arc;
 
+use tilo_action_services::{
+    NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION,
+};
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, NODE_PERMITS_ACTION,
-    NODE_RESOURCE_PREFIX, Pending, ReceiptStatus, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, pending,
-    provider_workspace,
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, pending, provider_workspace,
 };
 
 use super::super::AppBrokerState;
@@ -118,7 +120,7 @@ impl AppBrokerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::remote::node_target;
+    use tilo_action_services::node_target;
 
     const NODE: &str = "workspace:r1/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1";
 

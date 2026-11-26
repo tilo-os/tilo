@@ -119,7 +119,7 @@ fn an_agent_whose_session_closes_leaves_who_is_here() {
 #[test]
 fn a_stopped_agent_leaves_who_is_here() {
     host::run(|host| async move {
-        use tilo_actions::remote::mcp_server;
+        use tilo_action_services::mcp_server;
         let watcher = host.page_key("A page");
         let agent = host.agent();
         let (_, failed) = ls(&agent, None).await;
@@ -300,7 +300,7 @@ fn a_quiet_agent_stays_while_its_session_lasts() {
 /// The request that stops the agent this device serves, or lets it go on, as the person asks of
 /// the MCP server from their card.
 fn stop(action: &str) -> tilo_actions::remote::InvokeRequest {
-    use tilo_actions::remote::mcp_server;
+    use tilo_action_services::mcp_server;
     tilo_actions::remote::InvokeRequest {
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
@@ -322,10 +322,10 @@ fn stop(action: &str) -> tilo_actions::remote::InvokeRequest {
 /// reaches, holding its page of them.
 async fn invocation_page(
     host: &host::Host,
-) -> tilo_actions::remote::workspace_invocations::Invocations {
+) -> tilo_action_services::workspace_invocations::Invocations {
     let entry = host::record(
         host,
-        tilo_actions::remote::workspace_invocations::PROVIDER,
+        tilo_action_services::workspace_invocations::PROVIDER,
         "",
     )
     .await
@@ -338,8 +338,8 @@ async fn invocation_page(
 /// the person's own ask of the MCP server, as their Settings page and their console make it.
 #[test]
 fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
-    use tilo_actions::remote::mcp_server;
-    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    use tilo_action_services::mcp_server;
+    use tilo_action_services::workspace_invocations::InvocationStatus;
 
     host::run(|host| async move {
         let agent = std::sync::Arc::new(host.agent());
@@ -445,8 +445,8 @@ fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
 async fn mcp_server(
     host: &host::Host,
     workspace: &str,
-) -> tilo_actions::remote::mcp_server::Server {
-    use tilo_actions::remote::mcp_server;
+) -> tilo_action_services::mcp_server::Server {
+    use tilo_action_services::mcp_server;
     use tilo_session_client::daemon_documents::{DaemonShell, whole};
     let link = host
         .daemon()
@@ -474,7 +474,7 @@ async fn mcp_server(
 /// stops it.
 #[test]
 fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs() {
-    use tilo_actions::remote::mcp_server;
+    use tilo_action_services::mcp_server;
 
     host::run(|host| async move {
         let agent = host.agent();
@@ -545,10 +545,10 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::device_tickets::target(
-                tilo_actions::remote::device_tickets::REVOKE,
+            target: tilo_action_services::device_tickets::target(
+                tilo_action_services::device_tickets::REVOKE,
             ),
-            argument: tilo_actions::remote::device_tickets::Revoke::retired(&grant).argument(),
+            argument: tilo_action_services::device_tickets::Revoke::retired(&grant).argument(),
             context: None,
             confirmation: None,
             revision: None,

@@ -18,10 +18,9 @@
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::remote::environment_window::{self as wire, Holds, Launch, Report};
-use tilo_actions::remote::{
-    CataloguePage, CatalogueProvider, InvokeArgument, InvokeRequest, TestProvider,
-};
+use tilo_action_services::TestProvider;
+use tilo_action_services::environment_window::{self as wire, Holds, Launch, Report};
+use tilo_actions::remote::{CataloguePage, CatalogueProvider, InvokeArgument, InvokeRequest};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_session::apps::Apps;
 use tilo_session::hosted_browser::HostedBrowser;

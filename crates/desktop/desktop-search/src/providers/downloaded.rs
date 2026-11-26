@@ -18,8 +18,8 @@
 
 use std::collections::BTreeMap;
 
+use tilo_action_services::downloaded_apps::{self as wire, DownloadedApp, DownloadedKind};
 use tilo_actions::ActionDescriptor;
-use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApp, DownloadedKind};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_match::FieldWeight;
 use ui::search::system::ResourceKind;

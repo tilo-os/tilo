@@ -360,7 +360,7 @@ pub(crate) fn declare_kinds(surfaces: &collab_types::app_surface::Surfaces) -> R
         // The calls that wait for their person's yes, kept in each workspace's store.
         super::keep_surface(
             surfaces,
-            tilo_actions::remote::workspace_invocations::PROVIDER,
+            tilo_action_services::workspace_invocations::PROVIDER,
             super::asked_kept::surface().as_bytes(),
         )?;
         // A workspace's shared desktop, each person's view of it, and each window's view.

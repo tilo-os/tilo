@@ -18,8 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use tilo_action_services::{CallLanes, Take, frame_line};
 use tilo_actions::remote::native_media::{self, Request, Snapshot, WATCH_DEADLINE};
-use tilo_actions::remote::{ActionCallError, CallLanes, RemoteActionMessage, Take, frame_line};
+use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
 use tilo_app_host::collab_app_broker::CallMediaConnection;
 
 use super::services::Daemon;
@@ -183,7 +184,8 @@ mod tests {
     use std::io::Write as _;
     use tilo_actions::remote::native_media::{Command, Input, Roster, Shown};
 
-    use tilo_actions::remote::{Caller, HostedContentPuts, LineClient, serve_lines_with};
+    use tilo_action_services::{LineClient, serve_lines_with};
+    use tilo_actions::remote::{Caller, HostedContentPuts};
     use tilo_app_host::collab_app_broker::{
         CallMediaFuture, CallMediaServices, MediaRequestContext,
     };

@@ -2,7 +2,7 @@
 //! ([`tilo_page_engine::LoginVault`]).
 //!
 //! The launcher connected this process to the device's daemon before its sandbox started
-//! (`tilo_actions::remote::handed`), so the daemon knows the connection as the process it launched
+//! (`tilo_action_services::handed`), so the daemon knows the connection as the process it launched
 //! for the app, and answers the vault's page login actions for that process alone
 //! (`tilo_actions::remote::VAULT_PAGE_LOGINS`). A password goes between this window's
 //! engine and the vault over that connection, and nowhere else.
@@ -10,10 +10,11 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use tilo_action_services::LineClient;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, LineClient,
-    ReceiptStatus, RemoteActionTarget, VAULT_FORGET_PAGE_LOGIN, VAULT_KEEP_PAGE_LOGIN,
-    VAULT_PAGE_FILL, VAULT_PAGE_LOGINS, vault_target,
+    ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, ReceiptStatus,
+    RemoteActionTarget, VAULT_FORGET_PAGE_LOGIN, VAULT_KEEP_PAGE_LOGIN, VAULT_PAGE_FILL,
+    VAULT_PAGE_LOGINS, vault_target,
 };
 use tilo_page_engine::{Answered, LoginVault, VaultLogin};
 use tilo_webview::ReleasedText;
@@ -27,7 +28,7 @@ const UNANSWERED: &str = "Your computer's daemon did not answer";
 /// This process's connection to the daemon, the one the launcher handed it: `None` where it
 /// handed none.
 fn line() -> Option<(Arc<LineClient>, String)> {
-    tilo_actions::remote::handed::connection().map(|handed| (handed.line, handed.workspace))
+    tilo_action_services::handed::connection().map(|handed| (handed.line, handed.workspace))
 }
 
 /// The vault this window asks on its own connection, waking the window with `wake` as each call

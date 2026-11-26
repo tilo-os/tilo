@@ -34,7 +34,7 @@ pub const CONFIRMED_BY_THE_SYSTEM: &str =
     "Only you answer this, where Tilo asks you: on your screen, or at tilo's own prompt";
 
 /// Answer an asked record: `<record>#resolve` with a [`Resolve`], on the
-/// [`super::workspace_invocations::PROVIDER`] provider.
+/// [`super::WORKSPACE_INVOCATIONS_PROVIDER`] provider.
 pub const RESOLVE: &str = "resolve";
 /// What an asked invocation the person declined ends with: cancelled, its message this.
 pub const DECLINED: &str = "declined";
@@ -619,7 +619,7 @@ pub fn approved_or_asks(
 /// Whether `target` answers an asked record ([`RESOLVE`]).
 #[must_use]
 pub fn is_resolve(target: &RemoteActionTarget) -> bool {
-    target.provider == super::workspace_invocations::PROVIDER && target.address.action == RESOLVE
+    target.provider == super::WORKSPACE_INVOCATIONS_PROVIDER && target.address.action == RESOLVE
 }
 
 /// The person a call by `caller` asks when it waits for a yes: the person it acts for, else

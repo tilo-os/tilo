@@ -1,7 +1,7 @@
 //! Endpoints, and the queue between them and the app.
 //!
 //! Each endpoint reads one line at a time: a frame of the action wire
-//! ([`remote::RemoteActionFrame`]), answered through [`remote::answer_line`] with this
+//! ([`remote::RemoteActionFrame`]), answered through [`tilo_action_services::answer_line`] with this
 //! server as the [`ActionProvider`], or `{"op":"state_dump"}`, answered `{"state": ..}`: the
 //! framing a session's control socket uses. Listener threads never touch app state. What a
 //! line asks is queued as one [`Asked`], the app is woken (on the live medium: a winit
@@ -23,7 +23,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use tilo_actions::api::{self, ActionAddress};
 use tilo_actions::remote::{
-    self, ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
     MAX_REMOTE_ACTION_FRAME_BYTES, MAX_REMOTE_WAIT, Pending, ReceiptStatus, pending,
 };
@@ -232,10 +232,12 @@ impl ConsoleServer {
     pub fn answer(&self, line: &str) -> String {
         let request: Value = match serde_json::from_str(line) {
             Ok(request) => request,
-            Err(error) => return remote::line_refusal("parse_error", &error.to_string()),
+            Err(error) => {
+                return tilo_action_services::line_refusal("parse_error", &error.to_string());
+            }
         };
         match request.get("op").and_then(Value::as_str) {
-            None if request.get("version").is_some() => remote::answer_line(
+            None if request.get("version").is_some() => tilo_action_services::answer_line(
                 self,
                 &Caller::local_app(self.app),
                 line.as_bytes(),
@@ -245,7 +247,7 @@ impl ConsoleServer {
                 let (answer, state) = pending();
                 self.ask(Asked::State { answer });
                 let Ok(Some(state)) = state.wait_timeout(REPLY_TIMEOUT) else {
-                    return remote::line_refusal(
+                    return tilo_action_services::line_refusal(
                         "timeout",
                         "the application did not answer; it may be busy or shutting down",
                     );
@@ -262,7 +264,7 @@ impl ConsoleServer {
                 }
                 Value::Object(reply).to_string()
             }
-            _ => remote::line_refusal(
+            _ => tilo_action_services::line_refusal(
                 "not_implemented",
                 "a console app answers action frames and state_dump only: no synthetic input, \
                  no snapshots",
@@ -285,9 +287,9 @@ impl ConsoleServer {
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
-            asking
-                .join()
-                .unwrap_or_else(|_| remote::line_refusal("unavailable", "the console stopped"))
+            asking.join().unwrap_or_else(|_| {
+                tilo_action_services::line_refusal("unavailable", "the console stopped")
+            })
         })
     }
 
@@ -342,7 +344,7 @@ impl ConsoleServer {
                         let _ = writeln!(
                             stream,
                             "{}",
-                            remote::line_refusal(
+                            tilo_action_services::line_refusal(
                                 "busy",
                                 "too many console connections; retry shortly"
                             )
@@ -413,7 +415,7 @@ impl ConsoleServer {
                     writeln!(
                         writer,
                         "{}",
-                        remote::line_refusal("parse_error", "request line too long")
+                        tilo_action_services::line_refusal("parse_error", "request line too long")
                     )?;
                     writer.flush()?;
                     if !persistent {
@@ -586,7 +588,7 @@ mod tests {
     }
 
     fn next_frame() -> String {
-        remote::frame_line(RemoteActionMessage::Invoke(InvokeRequest::plain(
+        tilo_action_services::frame_line(RemoteActionMessage::Invoke(InvokeRequest::plain(
             RemoteActionTarget {
                 provider: "counter".into(),
                 address: ActionAddress::new("counter", "next"),
@@ -634,13 +636,15 @@ mod tests {
                 serde_json::from_str(&server.exchange(&mut app, r#"{"op":"type","text":"x"}"#))
                     .unwrap();
             assert_eq!(refused["err"]["code"], "not_implemented");
-            let other = remote::frame_line(RemoteActionMessage::Invoke(InvokeRequest::plain(
-                RemoteActionTarget {
-                    provider: "installer".into(),
-                    address: ActionAddress::new("counter", "next"),
-                },
-                Map::new(),
-            )));
+            let other = tilo_action_services::frame_line(RemoteActionMessage::Invoke(
+                InvokeRequest::plain(
+                    RemoteActionTarget {
+                        provider: "installer".into(),
+                        address: ActionAddress::new("counter", "next"),
+                    },
+                    Map::new(),
+                ),
+            ));
             assert!(matches!(
                 receipt(&server.exchange(&mut app, &other)),
                 ReceiptStatus::Rejected {

@@ -4,8 +4,8 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, Mutex};
 
+use tilo_action_services::approved_checks::ReportObservation;
 use tilo_actions::ResourceSemanticIdentity;
-use tilo_actions::remote::approved_checks::ReportObservation;
 use ush::approved_checks::{CheckLimits, CheckOutcome, CheckReceipt, ProjectBinding};
 
 use super::*;
@@ -209,7 +209,7 @@ fn an_approved_check_is_placed_kept_and_answered() {
     assert_eq!(receipt.binding.record, RECORD);
     assert_eq!(
         receipt.outcome,
-        tilo_actions::remote::approved_checks::Outcome::Exited
+        tilo_action_services::approved_checks::Outcome::Exited
     );
     assert_eq!(
         heard.lock().unwrap().len(),
@@ -523,9 +523,9 @@ fn delivered_kind(workspace: &str, action: &str, asked: &str, kind: OperationKin
             kind: ActionKind::Undoable,
             execution: ExecutionMode::Background { cancellable: true },
             effects: vec![ActionEffect::new(
-                tilo_actions::remote::approved_checks::PROVIDER,
-                tilo_actions::remote::approved_checks::RESOURCE,
-                tilo_actions::remote::approved_checks::RUN,
+                tilo_action_services::approved_checks::PROVIDER,
+                tilo_action_services::approved_checks::RESOURCE,
+                tilo_action_services::approved_checks::RUN,
             )],
             ..ActionContract::default()
         },
@@ -551,10 +551,10 @@ fn run_call(check_id: &str) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::approved_checks::PROVIDER.to_owned(),
+            provider: tilo_action_services::approved_checks::PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
-                tilo_actions::remote::approved_checks::RESOURCE,
-                tilo_actions::remote::approved_checks::RUN,
+                tilo_action_services::approved_checks::RESOURCE,
+                tilo_action_services::approved_checks::RUN,
             ),
         },
         argument: InvokeArgument::Json(
@@ -600,7 +600,7 @@ fn the_devices_check_runs_as_the_delivered_invocations_work_and_answers_its_rece
         jobs(),
     );
     let heard = Arc::new(Mutex::new(Vec::new()));
-    let action = tilo_actions::remote::approved_checks::ACTION_ID;
+    let action = tilo_action_services::approved_checks::ACTION_ID;
     let ran = Admits::start(
         &checks,
         &Caller::local_system(),
@@ -661,7 +661,7 @@ fn an_action_runs_a_check_only_when_it_declares_the_hosts_effect() {
     assert_eq!(receipt.check_id, "unit");
 
     // The same kind without the declaration runs nothing, and the refusal names the action.
-    let named = tilo_actions::remote::approved_checks::ACTION_ID;
+    let named = tilo_action_services::approved_checks::ACTION_ID;
     let Err(refused) = Admits::start(
         &checks,
         &Caller::local_system(),
@@ -698,7 +698,7 @@ fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
         jobs(),
     );
     let heard = Arc::new(Mutex::new(Vec::new()));
-    let action = tilo_actions::remote::approved_checks::ACTION_ID;
+    let action = tilo_action_services::approved_checks::ACTION_ID;
     for (why, call, serving) in [
         ("no invocation it is the work of", run_call("unit"), None),
         (

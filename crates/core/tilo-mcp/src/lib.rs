@@ -158,7 +158,7 @@ pub struct McpServer<H> {
     /// runs the API starts it; `None` for a server that runs no programs.
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// Whether the `tilo` tool's programs run on the device this server's calls go to, as its
-    /// session's step there ([`tilo_actions::remote::task_programs::RUN`]), where this server
+    /// session's step there ([`tilo_action_services::task_programs::RUN`]), where this server
     /// starts no task host itself: a session Tilo's API forwards to a person's device, and the
     /// person's command line, whose programs run in the daemon.
     programs_on_device: bool,

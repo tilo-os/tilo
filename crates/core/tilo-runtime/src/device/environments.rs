@@ -32,17 +32,17 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_actions::remote::browser::{self, OpenBrowser, OpenedBrowser};
-use tilo_actions::remote::environment_commands::{
+use tilo_action_services::browser::{self, OpenBrowser, OpenedBrowser};
+use tilo_action_services::environment_commands::{
     self, CommandOutput, CommandRan, CommandRequest, VmSecret,
 };
-use tilo_actions::remote::environment_machines::{
+use tilo_action_services::environment_machines::{
     self, BranchMachine, DeleteMachine, MachineBranched,
 };
-use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
-use tilo_actions::remote::environment_window::{self as vm, Holds, Launch};
-use tilo_actions::remote::linux_apps::{self, AppLaunch, OpenApp};
-use tilo_actions::remote::server_account::Refusal;
+use tilo_action_services::environment_terminals::{self, OpenTerminal, TerminalOpened};
+use tilo_action_services::environment_window::{self as vm, Holds, Launch};
+use tilo_action_services::linux_apps::{self, AppLaunch, OpenApp};
+use tilo_action_services::server_account::Refusal;
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };

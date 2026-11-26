@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
+use tilo_action_services::TestProvider;
 use tilo_app_test_host::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_actions::remote::{
     Caller, InvocationReceipt, InvokeArgument, Pending, RESOURCE_PROVIDER, ReceiptStatus,
-    TestProvider,
 };
 use ui::tilo_resource::{Bytes, Id};
 use ui::widget::Element;

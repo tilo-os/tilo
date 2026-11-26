@@ -88,10 +88,10 @@ impl ContentPuts for SessionPuts {
     }
 
     fn begin(&self, _caller: &Caller, size: u64) -> Result<Box<dyn ContentPut>, ActionCallError> {
-        match self.0.put_step_waited(ContentPutStep::Begin {
-            size,
-            target: None,
-        })? {
+        match self
+            .0
+            .put_step_waited(ContentPutStep::Begin { size, target: None })?
+        {
             ContentPutAnswer::Begun { upload } => Ok(Box::new(SessionPut {
                 actions: self.0.clone(),
                 upload,
@@ -113,9 +113,9 @@ fn send_group(
 ) -> Result<(), ActionCallError> {
     let files = std::mem::take(group);
     match puts.0.put_step_waited(ContentPutStep::Many {
-            files,
-            target: None,
-        }) {
+        files,
+        target: None,
+    }) {
         Ok(ContentPutAnswer::Many { contents: answered }) => {
             contents.extend(answered);
             Ok(())

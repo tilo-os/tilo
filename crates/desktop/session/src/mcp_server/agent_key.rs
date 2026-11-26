@@ -293,7 +293,7 @@ impl AgentKey {
 
     /// Take the grant back: what the agent's card's Revoke does. No client of the key is admitted
     /// here again, and the grant's key, in hex, is answered where it was certified: the person's
-    /// keys revoke it ([`tilo_actions::remote::device_tickets::REVOKE`]), as they revoke any.
+    /// keys revoke it ([`tilo_action_services::device_tickets::REVOKE`]), as they revoke any.
     pub(crate) fn revoke(&mut self) -> Option<String> {
         let certified = matches!(self.state, GrantState::Certified { .. });
         self.state = GrantState::Revoked;

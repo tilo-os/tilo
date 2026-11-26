@@ -897,7 +897,7 @@ fn resolving(
     tilo_actions::remote::InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(
                 at.record.clone(),
                 tilo_actions::remote::asked::RESOLVE,

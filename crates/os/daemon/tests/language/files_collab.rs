@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
+use tilo_action_services::TestProvider;
 use tilo_actions::remote::{
     ActionProvider as _, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
-    TestProvider, ViewResourceQuery,
+    ViewResourceQuery,
 };
 use tilo_actions::{ActionAddress, ActionOutput};
 
@@ -278,7 +279,9 @@ fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
             .expect("the record reads")
             .expect("the restarted host holds it");
         assert!(
-            document.windows(b"Shared".len()).any(|window| window == b"Shared"),
+            document
+                .windows(b"Shared".len())
+                .any(|window| window == b"Shared"),
             "the member's write is in the record the host reads cold after its restart"
         );
     });

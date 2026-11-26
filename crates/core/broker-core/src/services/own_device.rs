@@ -6,7 +6,7 @@ pub type OwnDeviceOutcome = Result<tilo_actions::ActionOutput, Box<tilo_actions:
 
 /// Carrying an application's action to another of the person's own
 /// devices and bringing its outcome back, run by the host's network. The
-/// broker answers it under [`tilo_actions::remote::own_device::PROVIDER`]
+/// broker answers it under [`tilo_action_services::own_device::PROVIDER`]
 /// only to the person at this device, for an application's own actions;
 /// the host decides whether the device is one of theirs.
 pub trait OwnDeviceActions: Send + Sync {
@@ -15,11 +15,11 @@ pub trait OwnDeviceActions: Send + Sync {
     /// host picks. The other device's outcome arrives on the returned
     /// answer; nothing waits for it here.
     ///
-    /// [`Checked::forwarded`]: tilo_actions::remote::own_device::Checked::forwarded
+    /// [`Checked::forwarded`]: tilo_action_services::own_device::Checked::forwarded
     fn invoke(
         &self,
         caller: &tilo_actions::remote::Caller,
-        checked: &tilo_actions::remote::own_device::Checked,
+        checked: &tilo_action_services::own_device::Checked,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<
         tilo_actions::remote::Pending<OwnDeviceOutcome>,

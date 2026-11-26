@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tilo_actions::remote::server_account::Entitlement;
+use tilo_action_services::server_account::Entitlement;
 
 use super::*;
 

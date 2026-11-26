@@ -1,6 +1,6 @@
 //! The tools an agent whose turn is worked in a process of its own (the Agent app) works through,
 //! taken by this device's daemon for it: two steps of its agent session under
-//! [`agent_tools::PROVIDER`](tilo_actions::remote::agent_tools::PROVIDER), listing the workspace's
+//! [`agent_tools::PROVIDER`](tilo_action_services::agent_tools::PROVIDER), listing the workspace's
 //! MCP tools and taking one call of them.
 //!
 //! The dispatch admits each step as one of the agent's session and hands it the session's own API;
@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 
+use tilo_action_services::agent_tools as wire;
 use tilo_actions::remote::Admits;
 use tilo_actions::remote::Pending;
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::agent_tools as wire;
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 

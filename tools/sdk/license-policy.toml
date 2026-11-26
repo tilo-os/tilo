@@ -144,6 +144,7 @@ client_side = [
 toolkit_reaches = [
     "tilo-accesskit-winit",             # vendor/accesskit_winit
     "tilo-action-policy",               # crates/core/action-policy
+    "tilo-action-services",             # crates/core/action-services
     "tilo-actions",                     # crates/core/actions
     "tilo-advisory-lock",               # crates/platform/advisory-lock
     "tilo-agent-provider-config",       # crates/integrations/provider-config
@@ -211,6 +212,7 @@ toolkit_reaches = [
     "tilo-projector",                   # crates/services/projector
     "tilo-reference",                   # crates/core/reference
     "tilo-registry-types",              # crates/core/registry-types
+    "tilo-remote-actions",              # crates/core/remote-actions
     "tilo-render-protocol",             # crates/ui/tilo-render-protocol
     "tilo-resource",                    # crates/core/tilo-resource
     "tilo-resource-macros",             # crates/core/tilo-resource-macros

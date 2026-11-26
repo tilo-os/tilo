@@ -1,6 +1,6 @@
 use linux_vm::hosted::meter::VmIdentity;
 use linux_vm::hosted::plan::Plan;
-use tilo_actions::remote::server_account::{InvoiceStatus, PlanOffer};
+use tilo_action_services::server_account::{InvoiceStatus, PlanOffer};
 use tilo_server_protocol::hosted_vm::VmSize;
 
 use super::*;
@@ -85,7 +85,7 @@ fn an_account_with_a_card_has_its_plan_limits_credit_and_invoices() {
             sizes: vec![VmSize::Small],
             plan: Some("pro".into()),
             credit: Some("$12.40".into()),
-            invoices: vec![tilo_actions::remote::server_account::Invoice {
+            invoices: vec![tilo_action_services::server_account::Invoice {
                 id: "in_1".into(),
                 issued_ms: 1,
                 amount: "$20.00".into(),

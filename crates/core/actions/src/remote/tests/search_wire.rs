@@ -47,8 +47,42 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
             }))
         }
     }
+    /// A provider answering the four calls, and nothing else of its own.
     #[derive(Clone)]
-    struct Holding(std::sync::Arc<TestProvider>);
+    struct Bare;
+    impl ActionProvider for Bare {
+        fn query(
+            &self,
+            _caller: &Caller,
+            _query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Ok(CataloguePage::default()))
+        }
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput::default(),
+                },
+            }))
+        }
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+    #[derive(Clone)]
+    struct Holding(Bare);
     impl ActionProvider for Holding {
         fn query(
             &self,
@@ -81,7 +115,7 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
             Some(std::sync::Arc::new(Held))
         }
     }
-    let holding = Holding(std::sync::Arc::new(TestProvider::new()));
+    let holding = Holding(Bare);
     let invocation = InvocationId::new();
     let search = RemoteActionMessage::Invoke(search::Query::request(
         invocation,
@@ -140,7 +174,7 @@ fn search_and_changes_cross_the_api_as_the_host_answers_them() {
 
     // A provider keeping neither refuses each, the feed in the words a
     // watch tells from a failure.
-    let bare = std::sync::Arc::new(TestProvider::new());
+    let bare = Bare;
     let Some(RemoteActionMessage::Receipt(receipt)) = serve(&bare, &alice(), search).map(now)
     else {
         panic!("a search is answered with a receipt");

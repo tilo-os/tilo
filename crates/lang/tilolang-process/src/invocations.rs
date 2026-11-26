@@ -24,8 +24,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use collaboration::{CollabEvent, CollabRequest};
 use serde_json::{Value, json};
+use tilo_action_services::workspace_invocations::{self, Invocation};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::workspace_invocations::{self, Invocation};
 use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
     ResourceReadRequest,
@@ -281,7 +281,7 @@ impl Invocations {
         });
         self.lines_moved.insert(place.clone());
         let request = request(
-            tilo_actions::remote::session_actions::run_line_target(),
+            tilo_action_services::session_actions::run_line_target(),
             &json!({ "line": line }),
         );
         self.asked

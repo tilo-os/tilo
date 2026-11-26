@@ -2,7 +2,7 @@
 //! from their command line, run on the device the call reached, in the same API an MCP client
 //! reaches for its `tilo` tool (`docs/designs/app-language/agents.md`). A caller reaches it through
 //! the device's dispatch under
-//! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER) and gets back what
+//! [`task_programs::PROVIDER`](tilo_action_services::task_programs::PROVIDER) and gets back what
 //! the program answered: an agent here, one whose session Tilo's API forwards to this device, the
 //! person's own command line, and a desktop session's agents alike.
 //!
@@ -27,11 +27,11 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
+use tilo_action_services::task_programs::{self as task_wire, Go};
 use tilo_actions::WorkGroup;
 use tilo_actions::remote::Admits;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::asked::{self, AskedBy, AskedFacts, Fact, Named};
-use tilo_actions::remote::task_programs::{self as task_wire, Go};
 use tilo_actions::remote::{ActionCallError, Admitted, Caller, InvokeRequest, Outcome, Pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 
@@ -423,7 +423,7 @@ fn default_group(caller: ProgramCaller<'_>) -> WorkGroup {
             (session, tilo_actions::context::AGENT_SESSION_GROUP)
         }
         ProgramCaller::Person { session, .. } => (
-            session.unwrap_or(tilo_actions::remote::session_actions::PROGRAMS_RESOURCE),
+            session.unwrap_or(tilo_action_services::session_actions::PROGRAMS_RESOURCE),
             "api",
         ),
     };
