@@ -152,12 +152,9 @@ async fn a_server_signs_an_apps_change_only_for_a_caller_who_may_make_it() {
     )
     .1;
 
-    // The server's own device, kept where its identity is.
-    let paths = tilo_device_identity::persist::IdentityPaths::under(dir.path().join("identity"));
-    std::fs::create_dir_all(paths.device_privkey.parent().unwrap()).unwrap();
-    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &key).unwrap();
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &owner).unwrap();
-
+    // The server's own device: its key and certificate as its server loaded them. No device key
+    // file is written: a server keeps its key beside its workspaces, and the signer never looks
+    // for one at signing time.
     let running = Arc::new(Running::default());
     let runtime = tokio::runtime::Handle::current();
     let socket = dir.path().join("identity.sock");
@@ -169,8 +166,8 @@ async fn a_server_signs_an_apps_change_only_for_a_caller_who_may_make_it() {
         Arc::new(CallerSigner::new(
             workspaces.clone(),
             runtime,
-            paths,
-            owner.user_public_key,
+            key.clone(),
+            owner.clone(),
             Arc::clone(&running) as Arc<dyn Callers>,
         )),
     )

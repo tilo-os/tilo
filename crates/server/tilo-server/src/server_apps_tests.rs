@@ -508,10 +508,6 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
         user_public_key: cert.user_public_key,
     };
 
-    let paths = tilo_device_identity::persist::IdentityPaths::under(dir.path().join("identity"));
-    std::fs::create_dir_all(paths.device_privkey.parent().unwrap()).unwrap();
-    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &key).unwrap();
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &owner).unwrap();
     let readers = std::sync::Arc::new(Readers::default());
     let runtime = tokio::runtime::Handle::current();
     let socket = dir.path().join("identity.sock");
@@ -528,8 +524,8 @@ async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
         std::sync::Arc::new(CallerSigner::new(
             workspaces.clone(),
             runtime,
-            paths,
-            owner.user_public_key,
+            key.clone(),
+            owner.clone(),
             std::sync::Arc::clone(&readers) as std::sync::Arc<dyn Callers>,
         )),
     )
@@ -763,13 +759,17 @@ async fn a_carry_that_failed_at_its_install_runs_at_the_next_start() {
     // workspaces.
     let again_root = scratch.path().join("again".repeat(32));
     let start = |root: PathBuf, starts: Box<tilo_app_launch::tilolang_processes::Starts>| {
-        let (workspaces, cert, shipped) = (workspaces.clone(), cert.clone(), shipped.clone());
-        let identity_root = scratch.path().join("identity");
+        let (workspaces, key, cert, shipped) = (
+            workspaces.clone(),
+            key.clone(),
+            cert.clone(),
+            shipped.clone(),
+        );
         async move {
             start_through(
                 workspaces,
                 Device {
-                    identity_root,
+                    key,
                     cert,
                     keys: None,
                 },

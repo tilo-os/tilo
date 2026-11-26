@@ -741,7 +741,7 @@ impl Server {
             match crate::server_apps::start(
                 governed.clone(),
                 crate::server_apps::Device {
-                    identity_root: cfg.identity_root.clone(),
+                    key: identity.device_signing_key.clone(),
                     cert: identity.device_cert.clone(),
                     keys: workspace_keys.as_ref().map(|keys| keys.keys()),
                 },

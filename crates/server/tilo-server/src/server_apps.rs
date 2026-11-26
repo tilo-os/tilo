@@ -317,8 +317,8 @@ pub fn app_sockets(state_root: &Path) -> Result<PathBuf, String> {
 /// This server's device, as its apps' requests are signed by it.
 #[cfg(feature = "agents")]
 pub struct Device {
-    /// Where its key and certificate are kept.
-    pub identity_root: PathBuf,
+    /// Its own key: the one it loaded to run as itself.
+    pub key: ed25519_dalek::SigningKey,
     /// Its certificate.
     pub cert: tilo_user_identity::DeviceCert,
     /// Its key service's keys, when it takes part in its workspaces' key groups: what it hands a
@@ -435,8 +435,8 @@ async fn start_through(
     let signer = tilo_workspace_service::apps::caller_signer::CallerSigner::new(
         workspaces,
         runtime,
-        tilo_device_identity::persist::IdentityPaths::under(&device.identity_root),
-        device.cert.user_public_key,
+        device.key,
+        device.cert.clone(),
         std::sync::Arc::clone(&readers)
             as std::sync::Arc<dyn tilo_workspace_service::apps::caller_signer::Callers>,
     );

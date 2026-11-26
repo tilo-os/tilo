@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
+use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
-use tilo_device_identity::persist::{self, IdentityPaths};
 use tilo_history::FluentArgs;
 use tilo_identity::broker::{Presented, SignerSource, Undecided, WorkspaceMembership};
 use tilo_user_identity::DeviceCert;
@@ -41,29 +41,30 @@ pub trait Callers: Send + Sync {
 pub struct CallerSigner {
     workspaces: Workspaces,
     runtime: tokio::runtime::Handle,
-    /// Where this device's own key and certificate are kept.
-    paths: IdentityPaths,
-    /// Whose device this is: the person its certificate names.
-    person: [u8; 32],
+    /// This device's own key and certificate: the ones its server loaded to run as itself. A
+    /// server keeps that key beside its workspaces, not as a login's device key, so it is held
+    /// here rather than read from a device key file at signing time.
+    key: SigningKey,
+    cert: DeviceCert,
     callers: Arc<dyn Callers>,
 }
 
 impl CallerSigner {
-    /// The signer of the device whose key and certificate `paths` keeps, certified by `person`,
-    /// deciding each request in the workspaces `workspaces` keeps as the caller `callers` names.
+    /// The signer of the device whose key and certificate are `key` and `cert`, deciding each
+    /// request in the workspaces `workspaces` keeps as the caller `callers` names.
     #[must_use]
     pub fn new(
         workspaces: Workspaces,
         runtime: tokio::runtime::Handle,
-        paths: IdentityPaths,
-        person: [u8; 32],
+        key: SigningKey,
+        cert: DeviceCert,
         callers: Arc<dyn Callers>,
     ) -> Self {
         Self {
             workspaces,
             runtime,
-            paths,
-            person,
+            key,
+            cert,
             callers,
         }
     }
@@ -106,7 +107,7 @@ impl SignerSource for CallerSigner {
     /// no person of its own.
     fn presented(&self, _: &dyn WorkspaceMembership, _: &WorkspaceId) -> Result<Presented, String> {
         Ok(Presented {
-            person: self.person,
+            person: self.cert.user_public_key,
             // Only a join is presented so, and decides nothing: every decision is a caller's
             // ([`Self::decided_as`]).
             access: None,
@@ -135,22 +136,17 @@ impl SignerSource for CallerSigner {
         })
     }
 
-    fn device(&self, _: &Presented) -> std::io::Result<(ed25519_dalek::SigningKey, DeviceCert)> {
-        let key = persist::load_device_key(&self.paths)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let cert = persist::read_device_cert(&self.paths.device_cert)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+    fn device(&self, _: &Presented) -> std::io::Result<(SigningKey, DeviceCert)> {
+        let cert = self.cert.clone();
         tilo_user_identity::verify_device_cert(&cert)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        if cert.device_public_key != key.verifying_key().to_bytes()
-            || cert.user_public_key != self.person
-        {
+        if cert.device_public_key != self.key.verifying_key().to_bytes() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "this device's certificate is not its key's",
             ));
         }
-        Ok((key, cert))
+        Ok((self.key.clone(), cert))
     }
 
     /// The keys reach as far as the caller's reach: the workspace's policy decides the read as
