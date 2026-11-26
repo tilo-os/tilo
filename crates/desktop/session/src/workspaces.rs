@@ -1285,9 +1285,6 @@ impl crate::Shared {
         reason = "one pass over every enrollment that settled since the last"
     )]
     pub(crate) fn follow_enrollments(&self) {
-        let Some(sync) = &self.sync else {
-            return;
-        };
         let mut settled = false;
         let settling = std::mem::take(&mut *self.joins.borrow_mut());
         for enrolled in settling {
@@ -1332,8 +1329,10 @@ impl crate::Shared {
                         personal.borrow_mut().joined(enrolled.workspace_id);
                     }
                     // The workspace's live session opens now, not when a key of some workspace
-                    // next moves here.
-                    sync.workspace_arrived();
+                    // next moves here: where this session takes part in the peer network.
+                    if let Some(sync) = self.sync.as_deref() {
+                        sync.workspace_arrived();
+                    }
                     // The workspace is put on the shell now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the session a refused join left is the session it found.

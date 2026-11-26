@@ -13,6 +13,10 @@ impl Session {
     /// Keep the workspaces this session takes part in current with the desktop's, and hand the
     /// desktop who is here.
     pub(crate) fn follow_collaboration(&self) {
+        // What became of the invitations redeemed is the directory's to say, and the shell's to
+        // show: a workspace this device joined arrives on the shell whether or not this session
+        // takes part in the peer network.
+        self.shared.follow_enrollments();
         let Some(sync) = &self.shared.sync else {
             return;
         };
@@ -128,9 +132,6 @@ impl Session {
         self.say_where_i_am(sync);
         // The agents the person admitted at this device are here with them.
         self.say_agents_here(sync);
-        // What became of the invitations redeemed is the directory's to say, and the shell's to
-        // show.
-        self.shared.follow_enrollments();
     }
 
     /// Say where this person is on this session, in the workspace in front: the pointer over the tile
