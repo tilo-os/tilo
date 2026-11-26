@@ -2144,7 +2144,8 @@ impl App {
         // widget queued, here or in the model pass: the entry it asks for seals what was queued
         // before it instead, and the frame after it finds the queue empty. Neither does a window
         // still opening, whose queue waits for that entry.
-        let controls = if self.input.opening || self.input.passive_input {
+        let passive = self.input.opening || self.input.passive_input;
+        let controls = if passive {
             0
         } else {
             self.dispatch_control_invocations()
@@ -2153,7 +2154,10 @@ impl App {
         drop(probe);
         #[cfg(test)]
         let probe = crate::frame_probe::span("idle.history");
-        let history = self.service_history();
+        // The sweep also closes the open transaction an undo status reads, so what a person is
+        // still typing becomes a change. History's own input is a view over that typing: neither
+        // what widgets queued before it nor the edits it passes over are sealed by it.
+        let history = !passive && self.service_history();
         #[cfg(test)]
         drop(probe);
         let refused = !self.actions.refusals.is_empty();
