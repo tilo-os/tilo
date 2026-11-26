@@ -323,6 +323,10 @@ impl Fixture {
             std::time::SystemTime::now(),
         ))
         .unwrap();
+        // The host serves this workspace's calls: its device signs its receipts there, as a
+        // host that settled the workspace it holds does.
+        tilo_invocation_journal::serve_as(native.certificate.clone(), Arc::new(native.key.clone()));
+        tilo_invocation_journal::opened(&workspace_id().to_string());
         let fanout = Arc::new(FanoutState::new());
         let config = crate::NativePeerBrokerConfig {
             journal_root: home.root().join("journal"),
