@@ -94,6 +94,9 @@ fn buttons_in(shell: &UiNode, name: &str) -> Vec<String> {
     }
     buttons
         .into_iter()
+        // A command the bar keeps behind its "…" is a row of that menu, not a button of the
+        // bar: the system's Export… and Copy link stand there on every resource.
+        .filter(|button| !button.props.contains_key("in_menu"))
         .filter_map(|button| button.props.get("label").map(display))
         .collect()
 }
