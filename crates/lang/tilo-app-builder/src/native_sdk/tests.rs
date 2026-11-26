@@ -31,12 +31,6 @@ fn sdk_graph_reuses_the_full_cohort_and_selective_production_wrapper() {
         .join("../../..")
         .canonicalize()
         .unwrap();
-    let mut command = Command::new("cargo");
-    let features = configure_graph(&mut command, &root, "thin-app", "poker", &[]).unwrap();
-    let args = command
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
     // Every native app in the checkout is in the graph, whichever one was selected.
     let mut cohort = std::fs::read_dir(root.join("apps"))
         .unwrap()
@@ -50,6 +44,13 @@ fn sdk_graph_reuses_the_full_cohort_and_selective_production_wrapper() {
         .collect::<Vec<_>>();
     cohort.sort();
     assert!(!cohort.is_empty(), "the checkout ships native apps");
+    let mut command = Command::new("cargo");
+    let selected = cohort.last().unwrap();
+    let features = configure_graph(&mut command, &root, "thin-app", selected, &[]).unwrap();
+    let args = command
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     for name in &cohort {
         assert!(
             features.contains(&format!("{name}/thin")),

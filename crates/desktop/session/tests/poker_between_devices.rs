@@ -2,8 +2,8 @@
 //! their laptop is taken or freed in the window open on the other member's, while it stays open.
 //!
 //! Both devices are real sessions, joined to one workspace a site serves, each running the
-//! installed Poker, a default app written in Rust: the table is the workspace's record, which
-//! each app process reads and writes through its device's store and keeps no copy of.
+//! installed Poker, a default app written in tilolang: the table is the workspace's record,
+//! which each app process reads and writes through its device's store and keeps no copy of.
 
 #![cfg(target_os = "linux")]
 #![allow(

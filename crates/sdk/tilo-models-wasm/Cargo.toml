@@ -17,7 +17,6 @@ path = "src/lib.rs"
 # Every app that keeps a model, one guest crate each (`apps/<app>-model-wasm`).
 # tools/ci/app-models.sh fails when an app's guest crate is missing here.
 [dependencies]
-poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
 
 # The workspace-hack's native feature set does not build for wasm32 (it turns
 # on getrandom's browser backend, mio, ...), and a model module is only ever

@@ -27,15 +27,15 @@ with tempfile.TemporaryDirectory(prefix='tilo dmg fixture ') as temporary:
     env.pop('CLOUD_RUSTC_LOCK_DIR', None)
     # A single small compiler invocation takes the existing shared budget slot.
     n.run([args.compiler_guard, '/usr/bin/clang', '-arch', 'arm64', '-mmacosx-version-min=13.0', source, '-o', root / 'fixture'], env=env, timeout=60)
-    plan = c.make_plan(c.ROOT, 'poker', 'arm64', 'development')
+    plan = c.make_plan(c.ROOT, 'terminal', 'arm64', 'development')
     entry = plan['apps'][0]
     app = root / entry['bundle']
     (app / 'Contents/MacOS').mkdir(parents=True)
     (app / 'Contents/Resources').mkdir()
-    for name in ['poker', 'tilo-runtime']:
+    for name in ['terminal', 'tilo-runtime']:
         shutil.copy2(root / 'fixture', app / 'Contents/MacOS' / name)
     shutil.copy2(c.ROOT / entry['manifest'], app / 'Contents/Resources/tilo-app.toml')
-    info = {'CFBundleExecutable': 'poker', 'CFBundleIdentifier': entry['id'],
+    info = {'CFBundleExecutable': 'terminal', 'CFBundleIdentifier': entry['id'],
             'CFBundleVersion': entry['version'], 'CFBundleShortVersionString': entry['version'],
             'CFBundlePackageType': 'APPL', 'LSMinimumSystemVersion': '13.0'}
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix='tilo dmg fixture ') as temporary:
         shutil.copytree(app, work / 'apps' / entry['bundle'])
         shutil.copy2(policy, work / 'entitlements' / policy.name)
         c.write_receipt(work, plan, 'built', {'origin': 'inert C fixture'})
-    options = c.parser().parse_args(['sign', '--identity', 'ad-hoc', '--apps', 'poker', '--arch', 'arm64', '--offline', '--per-app', '--out', str(out)])
+    options = c.parser().parse_args(['sign', '--identity', 'ad-hoc', '--apps', 'terminal', '--arch', 'arm64', '--offline', '--per-app', '--out', str(out)])
     s.execute(options, plan)
     options.stage = 'package'
     s.execute(options, plan)

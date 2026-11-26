@@ -66,9 +66,9 @@ class LanguagePackTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
                              ["tray.ftl"])
 
-    def test_the_repository_packs_the_poker_models_german(self) -> None:
+    def test_the_repository_packs_the_moderation_models_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "poker-model"), found)
+        self.assertIn(("de-DE", "moderation-model"), found)
 
     def test_one_pack_per_language_whatever_region_a_crate_names(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:

@@ -99,6 +99,9 @@ pub struct Button {
     permission_scope: Option<PermissionScope>,
     enabled: bool,
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    /// While it waits to open ([`Self::opening_at`]): the moment it opens, in seconds since 1970,
+    /// and whether it is enabled then. Its face counts the time left as its detail.
+    opening: Option<(i64, bool)>,
     /// The page's encouraged action: a focus reset lands here, so Enter
     /// activates it.
     default_focus: bool,
@@ -211,6 +214,7 @@ impl Button {
             permission_scope: None,
             enabled: true,
             enabled_binding: None,
+            opening: None,
             face: crate::widget::CachedPaint::default(),
             dirty: true,
             layout_dirty: false,
@@ -738,6 +742,36 @@ impl Button {
         self.enabled = enabled;
         self.enabled_binding = Some(binding);
         self
+    }
+
+    /// It cannot be pressed before `at` (seconds since 1970): until then it stands dimmed and
+    /// counts the time left at its trailing edge, and at `at` it opens by itself. A view has no
+    /// clock, so a press a rule opens after a wait (a turn's time running out) says when, and the
+    /// button keeps the time.
+    #[must_use]
+    pub fn opening_at(mut self, at: i64) -> Self {
+        self.opening = Some((at, self.enabled));
+        self.follow_opening(crate::time::unix_now_i64());
+        self
+    }
+
+    /// Read the clock against the moment it opens: the seconds left on its face, or, once the
+    /// moment has come, the press it was waiting for. Whether its face changed.
+    fn follow_opening(&mut self, now: i64) -> bool {
+        let Some((at, enabled)) = self.opening else {
+            return false;
+        };
+        let before = (self.enabled, self.detail.clone());
+        if now >= at {
+            self.opening = None;
+            self.set_detail(None);
+            self.set_enabled(enabled);
+        } else {
+            let left = u64::try_from(at.saturating_sub(now)).unwrap_or(u64::MAX);
+            self.set_detail(Some(crate::format::timecode(left)));
+            self.set_enabled(false);
+        }
+        before != (self.enabled, self.detail.clone())
     }
 
     /// Mark this button as its page's encouraged action: when the page is
@@ -2200,8 +2234,28 @@ impl Widget for Button {
         if let Some(binding) = &mut self.enabled_binding
             && let crate::widget::binding::Pulled::Value(enabled) = binding.pull(state, path)
         {
-            self.set_enabled(enabled);
+            match &mut self.opening {
+                Some((_, when_open)) => *when_open = enabled,
+                None => self.set_enabled(enabled),
+            }
         }
+        self.follow_opening(crate::time::unix_now_i64());
+    }
+
+    fn serve_deadline(&mut self, _now: crate::time::Instant) -> bool {
+        self.follow_opening(crate::time::unix_now_i64())
+    }
+
+    /// While it waits to open, the next whole second, when the time left on its face changes.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let (at, _) = self.opening?;
+        let now_ms = crate::time::unix_now_ms_i64();
+        let next = (now_ms / 1000)
+            .saturating_add(1)
+            .min(at)
+            .saturating_mul(1000);
+        let wait = u64::try_from(next.saturating_sub(now_ms).max(0)).ok()?;
+        crate::time::now().checked_add(crate::time::Duration::from_millis(wait))
     }
 
     fn build_layout(

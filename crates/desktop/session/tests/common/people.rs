@@ -2358,10 +2358,10 @@ impl Device {
         self.install(SHARED_CHECKLIST, shared_checklist_install());
     }
 
-    /// Install Poker in this device's store: the Rust app whose one table is the workspace's
-    /// record, so a seat taken on either device is taken in the other's window.
+    /// Install Poker in this device's store: the tilolang app whose one table is the
+    /// workspace's record, so a seat taken on either device is taken in the other's window.
     pub fn install_poker(&self) {
-        self.install(POKER, poker_install());
+        super::dev_apps::install_named(&self.store(), &[POKER]);
     }
 
     /// What this device publishes now, every page of it: its resources and their actions.
@@ -2817,18 +2817,6 @@ fn shared_checklist_install() -> &'static (PathBuf, String) {
                 ),
                 "example-shared-checklist",
             )],
-        )
-    })
-}
-
-fn poker_install() -> &'static (PathBuf, String) {
-    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
-    INSTALL.get_or_init(|| {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/poker");
-        stage_app(
-            "poker",
-            &directory,
-            &[(tilo_test_env::sibling_binary("poker", "poker"), "poker")],
         )
     })
 }

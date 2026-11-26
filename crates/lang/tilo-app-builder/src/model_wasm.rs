@@ -3,7 +3,7 @@
 //! Every device that holds a workspace's keys applies an installed app's
 //! actions from these bytes, with no build of its own (`tilo-model-engine`,
 //! `crates/sdk/tilo-model-guest`). The app keeps its model as a guest crate
-//! beside it, `apps/poker` → `apps/poker-model-wasm`, which declares its entry
+//! beside it, `apps/remote` → `apps/remote-model-wasm`, which declares its entry
 //! with `tilo_model_guest::model!`, and [`build`] builds that crate alone for
 //! `wasm32-unknown-unknown` in the release profile the guest crate sizes for
 //! the wire, then optimizes the module with `wasm-opt`: a whole module, which
@@ -138,8 +138,8 @@ pub fn build(app_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(output))
 }
 
-/// The guest crate beside an app directory: `apps/poker` →
-/// `apps/poker-model-wasm`, when it is there.
+/// The guest crate beside an app directory: `apps/remote` →
+/// `apps/remote-model-wasm`, when it is there.
 #[must_use]
 pub fn guest_crate(app_dir: &Path) -> Option<PathBuf> {
     let name = app_dir.file_name()?.to_str()?;

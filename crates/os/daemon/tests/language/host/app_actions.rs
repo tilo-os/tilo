@@ -47,12 +47,6 @@ const APPS: &[App] = &[
         kind: "tilo.messages",
     },
     App {
-        package: "poker",
-        bin: "poker",
-        id: "so.tilo.poker",
-        kind: "so.tilo.poker.table",
-    },
-    App {
         package: "terminal",
         bin: "terminal",
         id: "so.tilo.terminal",

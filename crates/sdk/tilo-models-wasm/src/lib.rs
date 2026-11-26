@@ -12,4 +12,3 @@
 //! Each guest is named below so that it is linked: a dependency nothing
 //! names is not.
 
-extern crate poker_model_wasm;

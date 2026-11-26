@@ -1209,3 +1209,49 @@ fn an_icon_only_button_without_words_is_named_by_its_accessible_name() {
         Some("Sync calendars")
     );
 }
+
+/// A press a rule opens after a wait (a slow player's turn running out) stands dimmed with the
+/// time left on its face, counts down each second, and opens by itself when the moment comes,
+/// enabled as the view asked; a button the view disabled stays disabled once it opens.
+#[test]
+fn a_button_that_opens_later_counts_down_and_opens_by_itself() {
+    let now = crate::time::unix_now_i64();
+    let mut button = Button::new("skip", "Fold for the slow player").opening_at(now + 75);
+    assert!(
+        !button.enabled,
+        "a button whose moment has not come cannot be pressed"
+    );
+    assert_eq!(button.detail(), Some("1:15"));
+    assert!(
+        button.next_wake_deadline().is_some(),
+        "it wakes to count the next second"
+    );
+
+    assert!(button.follow_opening(now + 74));
+    assert_eq!(button.detail(), Some("0:01"));
+    assert!(!button.enabled);
+
+    assert!(button.follow_opening(now + 75));
+    assert!(button.enabled, "at its moment it opens");
+    assert_eq!(button.detail(), None, "and the countdown leaves its face");
+    assert!(
+        button.next_wake_deadline().is_none(),
+        "an open button wakes nothing"
+    );
+    assert!(
+        !button.follow_opening(now + 80),
+        "nothing changes after it opened"
+    );
+
+    let mut held = Button::new("deal", "Deal")
+        .with_enabled(false)
+        .opening_at(now + 5);
+    held.follow_opening(now + 5);
+    assert!(!held.enabled, "the view's own disabling outlasts the wait");
+
+    let gone = Button::new("deal", "Deal").opening_at(now - 1);
+    assert!(
+        gone.enabled && gone.detail().is_none(),
+        "a moment already past is an open button"
+    );
+}

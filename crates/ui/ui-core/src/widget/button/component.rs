@@ -41,6 +41,10 @@ pub struct ButtonProps {
     pub size: ControlSize,
     /// Whether it can be pressed now.
     pub enabled: bool,
+    /// The moment it can first be pressed, where a rule opens it after a wait: until then it
+    /// stands dimmed with the time left on its face, and it opens by itself then. A view has no
+    /// clock, so the button keeps it.
+    pub opens: Option<crate::component::Moment>,
     /// Whether it is the answer the surface it stands in starts on: an ask that opens puts the
     /// keyboard here, so Enter gives this answer. A view marks the answer its surface opens on,
     /// and leaves it off for every other control beside it.
@@ -90,6 +94,7 @@ impl Default for ButtonProps {
             toggled: None,
             size: ControlSize::default(),
             enabled: true,
+            opens: None,
             default_focus: false,
             description: None,
             live: None,
@@ -119,6 +124,7 @@ impl Described for Button {
             toggled,
             size,
             enabled,
+            opens,
             default_focus,
             description,
             live,
@@ -179,6 +185,9 @@ impl Described for Button {
             button
         };
         let mut button = button.with_enabled(enabled);
+        if let Some(at) = opens {
+            button = button.opening_at(at.0);
+        }
         if let Some(why) = description.filter(|why| !why.trim().is_empty()) {
             button = button.with_description(&why).tooltip(why);
         }
@@ -244,7 +253,13 @@ impl Described for Button {
             && props.group == self.menu_group
             && props.description == self.description
             && props.live == self.live
-            && props.press.is_none() == (self.action.is_none() && self.on_click.is_none());
+            && props.press.is_none() == (self.action.is_none() && self.on_click.is_none())
+            && match (props.opens, self.opening) {
+                (Some(at), Some((waiting, _))) => at.0 == waiting,
+                // A moment that has come is a button that has opened.
+                (Some(at), None) => at.0 <= crate::time::unix_now_i64(),
+                (None, opening) => opening.is_none(),
+            };
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;
         }
@@ -252,7 +267,11 @@ impl Described for Button {
             self.set_toggled(on);
         }
         self.default_focus = props.default_focus;
-        self.set_enabled(props.enabled && !props.press.is_none());
+        let enabled = props.enabled && !props.press.is_none();
+        match &mut self.opening {
+            Some((_, when_open)) => *when_open = enabled,
+            None => self.set_enabled(enabled),
+        }
         self.live = props.live;
         true
     }

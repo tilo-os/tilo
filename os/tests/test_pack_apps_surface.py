@@ -21,8 +21,8 @@ class SurfaceTests(unittest.TestCase):
             root = Path(directory)
             app = root / 'repo/apps/poker'
             app.mkdir(parents=True)
-            shutil.copy(REPO / 'apps/poker/tilo-app.toml', app / 'tilo-app.toml')
-            shutil.copy(REPO / 'apps/poker/surface.toml', app / 'surface.toml')
+            shutil.copy(REPO / 'os/tests/fixtures/poker/tilo-app.toml', app / 'tilo-app.toml')
+            shutil.copy(REPO / 'os/tests/fixtures/poker/surface.toml', app / 'surface.toml')
             (root / 'repo/os/scripts').mkdir(parents=True)
             (root / 'repo/tools').symlink_to(REPO / 'tools')
             bins = root / 'bin'
@@ -71,7 +71,7 @@ printf '[[entry]]\\nid="so.tilo.poker"\\n' >> '{store}/registry.toml'
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((packed / 'surface.toml').read_bytes(),
-                             (REPO / 'apps/poker/surface.toml').read_bytes(),
+                             (REPO / 'os/tests/fixtures/poker/surface.toml').read_bytes(),
                              'the payload carries the committed surface')
             self.assertTrue((packed / 'bin/poker').is_file())
 

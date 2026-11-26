@@ -671,6 +671,13 @@
           "type": "bool"
         },
         {
+          "name": "opens",
+          "doc": "The moment it can first be pressed, where a rule opens it after a wait: until then it stands dimmed with the time left on its face, and it opens by itself then. A view has no clock, so the button keeps it.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
           "name": "default_focus",
           "doc": "Whether it is the answer the surface it stands in starts on: an ask that opens puts the keyboard here, so Enter gives this answer. A view marks the answer its surface opens on, and leaves it off for every other control beside it.",
           "type": "bool"

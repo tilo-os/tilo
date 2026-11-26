@@ -96,6 +96,8 @@ mod e2e_notes;
 mod e2e_pdf;
 #[path = "e2e_photos.rs"]
 mod e2e_photos;
+#[path = "e2e_poker.rs"]
+mod e2e_poker;
 #[path = "e2e_publisher.rs"]
 mod e2e_publisher;
 #[path = "e2e_record_at.rs"]

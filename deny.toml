@@ -26,7 +26,6 @@ exclude = [
     "monitor",
     "notes",
     "photos",
-    "poker",
     "remote",
     "shortcuts",
     "terminal",

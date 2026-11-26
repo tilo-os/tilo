@@ -1,0 +1,82 @@
+{
+  "app": "poker",
+  "said": "Poker",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.poker",
+    "package": "poker"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Poker: the table is there with nobody seated",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "must": [
+            "Poker",
+            "Take a seat"
+          ]
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "seat",
+      "said": "Take a seat at the table",
+      "ops": [
+        {
+          "press": {
+            "prefix": "Take a seat"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "You",
+              "Leave the table",
+              "Waiting for a second player to sit down"
+            ],
+            "within": 10
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "leave",
+      "said": "Leave the table and see it empty again",
+      "ops": [
+        {
+          "press": "Leave the table"
+        },
+        {
+          "must": {
+            "see": [
+              "Take a seat"
+            ],
+            "within": 10
+          }
+        }
+      ],
+      "budget_ms": 15000
+    }
+  ],
+  "notes": "A hand needs a second person at the table; the e2e test drives dealing, the streets, the showdown, side pots and both graces through the same actions."
+}

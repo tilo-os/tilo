@@ -10859,36 +10859,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "poker"
-version = "0.1.0"
-dependencies = [
- "poker",
- "poker-model",
- "runtime-dylib",
- "tilo-app",
- "tilo-app-test-host",
- "workspace-hack",
-]
-
-[[package]]
-name = "poker-model"
-version = "0.1.0"
-dependencies = [
- "tilo-actions",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "poker-model-wasm"
-version = "0.1.0"
-dependencies = [
- "poker-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18453,7 +18423,6 @@ dependencies = [
 name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
- "poker-model-wasm",
  "workspace-hack",
 ]
 
@@ -27211,9 +27180,6 @@ dependencies = [
  "pkg-config",
  "plist",
  "png",
- "poker",
- "poker-model",
- "poker-model-wasm",
  "polling",
  "pollster",
  "poly1305 0.8.0",
