@@ -41,7 +41,7 @@ use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{
-    CALENDAR_CONNECT, CALENDARS, ConnectAsk, Connected, HostedTurn, TurnConnect,
+    AskedSigner, CALENDAR_CONNECT, CALENDARS, ConnectAsk, Connected, HostedTurn, TurnConnect,
 };
 use tilo_actions::remote::person_vault::AskForItem;
 
@@ -86,6 +86,8 @@ pub(super) type Carrier = super::ServerAgents;
 /// What this server keeps of an ask for a person's password: enough to ask it, and to tell the
 /// agent that asked what came of it.
 pub(super) trait PutAsk: Sync {
+    /// The signing session and app whose access made this question possible.
+    fn grant(&self) -> (Option<&AskedSigner>, &'static str);
     /// The ask's own id.
     fn id(&self) -> &str;
     /// The agent that asked, by its id.
@@ -105,6 +107,10 @@ pub(super) trait PutAsk: Sync {
 }
 
 impl PutAsk for ConnectAsk {
+    fn grant(&self) -> (Option<&AskedSigner>, &'static str) {
+        (self.signer.as_ref(), tilo_app_id::apps::CALENDAR)
+    }
+
     fn id(&self) -> &str {
         &self.ask
     }
@@ -191,13 +197,31 @@ pub(super) enum Typed {
     Unanswered(String),
 }
 
+/// The person to ask or answer while the original signing session still has access.
+async fn permitted_person(workspaces: &Workspaces, open: &dyn PutAsk) -> Option<[u8; 32]> {
+    let mut person = [0; 32];
+    hex::decode_to_slice(open.of_person(), &mut person).ok()?;
+    let (signer, app) = open.grant();
+    AskedSigner::permits(
+        signer,
+        workspaces,
+        open.in_workspace(),
+        open.by_agent(),
+        &person,
+        app,
+    )
+    .await
+    .then_some(person)
+}
+
 /// Ask the person `open` names for its password on their own devices, in this server's words,
 /// and keep what they type in the workspace's vault. Waits for their answer.
 pub(super) async fn ask_for_password(workspaces: &Workspaces, open: &dyn PutAsk) -> Typed {
-    let mut person = [0; 32];
-    if hex::decode_to_slice(open.of_person(), &mut person).is_err() {
-        return Typed::Unanswered("the ask names no person".to_owned());
-    }
+    let Some(person) = permitted_person(workspaces, open).await else {
+        return Typed::Unanswered(
+            "This assistant no longer has access for this request.".to_owned(),
+        );
+    };
     let workspace = match workspaces.summary(open.in_workspace()).await {
         Ok(summary) => summary.name,
         Err(_) => open.in_workspace().to_owned(),
@@ -440,6 +464,9 @@ impl Carrier {
         asked: &str,
         (answered, came): (&str, &str),
     ) {
+        if permitted_person(&self.workspaces, open).await.is_none() {
+            return;
+        }
         let told = Told::of(open);
         let news = super::answers::carried_out(
             (&told.key, &told.conversation_id),

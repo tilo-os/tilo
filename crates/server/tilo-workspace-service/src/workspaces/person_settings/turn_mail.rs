@@ -43,7 +43,7 @@ use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteA
 
 use super::kept_sign_ins::Signing;
 use super::{Staged, argument, begun_for, send_staged, sends_root};
-use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
+use crate::workspaces::hosted_use::{AskedSigner, AskedTurn, HostedTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::{WorkspaceId, Workspaces};
@@ -96,6 +96,8 @@ pub struct AskedSend {
     /// What the person is shown, row by row: each by its label and what it
     /// says.
     pub rows: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signer: Option<AskedSigner>,
 }
 
 impl AskedSend {
@@ -294,6 +296,7 @@ impl Workspaces {
             person: hex::encode(using.person),
             workspace,
             rows,
+            signer: Some(using.signer),
         };
         self.forget_unasked_sends(&root, &using.workspace, &asked.workspace);
         set_apart(&root, &dir, &asked).map_err(refused)?;
@@ -351,11 +354,9 @@ impl Workspaces {
         // Taken from where it waited before anything is done with it.
         let waits = asked_dir(&root, &asked.workspace, &asked.send)?;
         let taken = waits.with_extension("leaving");
-        std::fs::rename(&waits, &taken)
-            .and_then(|()| std::fs::remove_file(taken.join(ASKED_FILE)))
-            .map_err(|_| gone())?;
+        std::fs::rename(&waits, &taken).map_err(|_| gone())?;
         let left = if allowed {
-            self.leave_as_shown(&root, &taken, &asked, (workspace, &person))
+            self.leave_as_shown(&root, &taken, &asked, (workspace, &person), &ask.agent)
                 .await
                 .map(Some)
         } else {
@@ -381,8 +382,17 @@ impl Workspaces {
         taken: &Path,
         asked: &AskedSend,
         (workspace, person): (WorkspaceId, &[u8; 32]),
+        actor: &str,
     ) -> Result<SentMail, String> {
         let gone = |_| NO_LONGER_WAITS.to_owned();
+        let original = std::fs::read(taken.join(ASKED_FILE)).map_err(gone)?;
+        let original: AskedSend = serde_json::from_slice(&original).map_err(|_| {
+            "The saved mail request could not be read, so nothing was sent.".to_owned()
+        })?;
+        if &original != asked {
+            return Err("What waited is not what you were shown, so nothing was sent.".into());
+        }
+        std::fs::remove_file(taken.join(ASKED_FILE)).map_err(gone)?;
         let meta = std::fs::read(taken.join("meta.json")).map_err(gone)?;
         let beginning: BeginSend =
             serde_json::from_slice(&meta).map_err(|_| NO_LONGER_WAITS.to_owned())?;
@@ -403,6 +413,20 @@ impl Workspaces {
         let staged = Staged::read(taken.to_path_buf(), beginning)?;
         if staged.shown()?.rows() != asked.rows.as_slice() {
             return Err("What waited is not what you were shown, so nothing was sent.".into());
+        }
+        if !AskedSigner::permits(
+            asked.signer.as_ref(),
+            self,
+            &asked.workspace,
+            actor,
+            person,
+            Store::MAIL.app,
+        )
+        .await
+        {
+            return Err(
+                "The agent that asked no longer has this mail grant, so nothing was sent.".into(),
+            );
         }
         // Their allowing it is their sending it.
         let signing = Signing {

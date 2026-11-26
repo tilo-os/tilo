@@ -219,7 +219,8 @@ fn answering(text: &str) -> test_http::Reply {
 async fn asked(
     client: &reqwest::Client,
     profile: &ProviderProfile,
-) -> Result<neutral::ModelResponse, String> {
+    permission: Option<&provider_call::ModelPermission>,
+) -> Result<neutral::ModelResponse, neutral::ModelError> {
     let request = step(INSTRUCTION, "Hello");
     let call = PlanCall {
         profile_id: "theirs",
@@ -239,11 +240,24 @@ async fn asked(
             provider_call::Carry {
                 resend: true,
                 callers_deadline: true,
+                permission,
             },
         ),
     )
     .await
-    .map_err(|error| error.message)
+}
+
+/// The stand-in answers under the provider's name, using the normal transport on loopback.
+fn provider_at(stand_in: &test_http::Responder) -> (reqwest::Client, ProviderProfile) {
+    let client = provider_builder()
+        .resolve(
+            "openrouter.ai",
+            std::net::SocketAddr::from(([127, 0, 0, 1], stand_in.port())),
+        )
+        .build()
+        .unwrap();
+    let profile = at(&format!("http://openrouter.ai:{}/api/v1", stand_in.port()));
+    (client, profile)
 }
 
 /// A provider that refuses what the gateway added is asked once more without
@@ -258,16 +272,7 @@ async fn a_field_the_provider_refuses_is_dropped_and_the_call_asked_again_once()
         answering("done"),
         answering("done again"),
     ]);
-    // The stand-in answers under the provider's own name, so it is asked
-    // what that provider is asked.
-    let client = provider_builder()
-        .resolve(
-            "openrouter.ai",
-            std::net::SocketAddr::from(([127, 0, 0, 1], stand_in.port())),
-        )
-        .build()
-        .unwrap();
-    let profile = at(&format!("http://openrouter.ai:{}/api/v1", stand_in.port()));
+    let (client, profile) = provider_at(&stand_in);
     let sent = |stand_in: &test_http::Responder| -> Vec<Value> {
         stand_in
             .drain_requests()
@@ -276,7 +281,7 @@ async fn a_field_the_provider_refuses_is_dropped_and_the_call_asked_again_once()
             .collect()
     };
 
-    let answer = asked(&client, &profile).await.unwrap();
+    let answer = asked(&client, &profile, None).await.unwrap();
     assert_eq!(answer.usage.input_tokens, 10);
     let seen = sent(&stand_in);
     assert_eq!(seen.len(), 2, "asked again once: {seen:?}");
@@ -312,7 +317,7 @@ async fn a_field_the_provider_refuses_is_dropped_and_the_call_asked_again_once()
     assert_eq!(seen[1], without);
 
     // The next call is not sent what was refused.
-    asked(&client, &profile).await.unwrap();
+    asked(&client, &profile, None).await.unwrap();
     let seen = sent(&stand_in);
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert!(
@@ -332,20 +337,42 @@ async fn a_provider_that_takes_what_is_added_is_asked_once() {
             .header("Content-Type", "application/json")
             .body(r#"{"error":{"message":"no such key"}}"#),
     ]);
-    let client = provider_builder()
-        .resolve(
-            "openrouter.ai",
-            std::net::SocketAddr::from(([127, 0, 0, 1], stand_in.port())),
-        )
-        .build()
-        .unwrap();
-    let profile = at(&format!("http://openrouter.ai:{}/api/v1", stand_in.port()));
-    asked(&client, &profile).await.unwrap();
-    assert!(asked(&client, &profile).await.is_err());
+    let (client, profile) = provider_at(&stand_in);
+    asked(&client, &profile, None).await.unwrap();
+    assert!(asked(&client, &profile, None).await.is_err());
     let seen = stand_in.drain_requests();
     assert_eq!(seen.len(), 2, "each asked once");
     for request in &seen {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(body["provider"], json!({"sort": "latency"}), "{body}");
     }
+}
+
+/// A turn revoked after its first POST cannot send its contents again with the
+/// refused fields removed, or remember that an untried request succeeded.
+#[tokio::test]
+async fn a_revoked_turn_cannot_repeat_the_request_without_the_refused_field() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let allowed = std::sync::Arc::new(AtomicBool::new(true));
+    let revoke = allowed.clone();
+    let stand_in = test_http::Responder::handle(move |_| {
+        revoke.store(false, Ordering::Release);
+        Some(test_http::Reply::status(400).body("unsupported provider field"))
+    });
+    let (client, profile) = provider_at(&stand_in);
+    let permitted = move || {
+        let allowed = allowed.load(Ordering::Acquire);
+        Box::pin(std::future::ready(allowed)) as _
+    };
+
+    let error = asked(&client, &profile, Some(&permitted))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, neutral::ErrorKind::Cancelled);
+    let requests = stand_in.drain_requests();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["provider"], json!({"sort": "latency"}));
+    assert!(!road::refused(&profile, "vendor/frontier"));
 }

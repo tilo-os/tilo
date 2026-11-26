@@ -130,7 +130,7 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
     let login = kept(&service, workspace_id, hers, ("login", SITE, PASSWORD)).await;
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let asker = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
@@ -192,7 +192,7 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
         json!({"uses": []})
     );
     // Another agent of hers is still asked: the allow names one agent.
-    let other = on_turn(&ada, &workspace, "other");
+    let other = on_turn(workspaces, &ada, &workspace, "other");
     let others = HostedTurn {
         caller: &other,
         ..turn
@@ -236,7 +236,7 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
     let as_ada = caller(&ada);
     let hers = (&ada, &as_ada);
     let login = kept(&service, workspace_id, hers, ("login", SITE, PASSWORD)).await;
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -337,7 +337,7 @@ async fn a_code_and_a_value_are_released_and_what_the_vault_refuses_asks_nobody(
         ("key", SITE, "sk-not-for-a-page"),
     )
     .await;
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -412,7 +412,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     )
     .await;
     let wanted = fill(SITE, &login);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
 
     // Herself, asking as herself, is no turn this server carries out.
     let herself = as_ada.clone().in_workspace(workspace.as_str());
@@ -467,7 +467,7 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     asked(release(workspaces, &turn, &wanted).await);
 
     // Bob's ask of the same agent fills from the same workspace item, and is put to him.
-    let bobs = on_turn(&bob, &workspace, "scout");
+    let bobs = on_turn(workspaces, &bob, &workspace, "scout");
     let his = HostedTurn {
         workspace: workspace_id,
         caller: &bobs,

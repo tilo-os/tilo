@@ -593,6 +593,24 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     assert_eq!(answers[0].author, MemberId::bot(GREETER));
 }
 
+/// A fresh agent list with the same record id, kind and workspace as its native route.
+fn workspace_agents_document(
+    workspace: &str,
+) -> tilo_resource::Replica<tilo_workspace_agent::WorkspaceAgents> {
+    use tilo_resource::Resource;
+    use tilo_workspace_agent::{KIND, WorkspaceAgents};
+    use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+    let record = collab_types::workspace_document_id(KIND);
+    let checkout =
+        DocumentCheckout::new(DocumentId::parse(&record).unwrap(), ResourceType::new(KIND));
+    let mut doc = tilo_resource::Doc::new();
+    ui::resource::genesis(&mut doc, &checkout, workspace, |doc| {
+        WorkspaceAgents::initialize(doc).map_err(|error| error.to_string())
+    })
+    .unwrap();
+    tilo_resource::Replica::from_doc(doc)
+}
+
 /// A workspace with the chat, Ada introduced, and `#general`'s id.
 async fn chat_workspace(workspaces: &Workspaces, cert: &DeviceCert) -> (String, String) {
     let catalogue = AppCatalogue::native();

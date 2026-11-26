@@ -90,7 +90,15 @@ pub(super) async fn of(
         caller: &reply.caller,
         bound: narrowed.as_deref(),
     };
-    let theirs = asker.workspaces.asked_turn(&hosted).await.is_ok();
+    let theirs = asker.workspaces.asked_turn(&hosted).await.is_ok()
+        && asker
+            .workspaces
+            .agent_may_act(
+                &reply.workspace,
+                &reply.caller,
+                person_connections::PROVIDER,
+            )
+            .await;
     Arc::new(TurnConnections {
         asker,
         workspace: reply.workspace.clone(),
@@ -346,12 +354,13 @@ impl Carries for Answers {
             }
             // The agent working for its person now, on a turn of its own: what the entry
             // decides the answer by.
-            let caller = super::agent_caller(&self.roster, workspace, &agent, person)
-                .await?
-                .on_roster_turn(tilo_action_policy::turn::Turn::new(
-                    String::new(),
-                    ask.ask.clone(),
-                ));
+            let caller =
+                super::agent_caller(&self.workspaces, &self.roster, workspace, &agent, person)
+                    .await?
+                    .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                        String::new(),
+                        ask.ask.clone(),
+                    ));
             let narrowed = agent.bound_rules();
             let hosted = HostedTurn {
                 workspace,

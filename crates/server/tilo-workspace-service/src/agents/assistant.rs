@@ -135,13 +135,15 @@ struct Hosted {
 impl Steps for Hosted {
     fn instruct(&self, instruction: Instruction) -> Result<String, StepError> {
         // An automation a task waits for tells that task to go on: nothing else is started.
-        if super::task_waits::told(
-            &self.workspaces,
-            &instruction.workspace,
-            &instruction.person,
-            &instruction.cause.installation,
-            &instruction.instruction,
-        ) {
+        if instruction.look_grant.is_none()
+            && super::task_waits::told(
+                &self.workspaces,
+                &instruction.workspace,
+                &instruction.person,
+                &instruction.cause.installation,
+                &instruction.instruction,
+            )
+        {
             return Ok(String::new());
         }
         let Some((actions, starter)) = &self.turns else {
@@ -220,7 +222,7 @@ impl Asking {
             MemberId::agent(assistant),
         ]);
         let label = within(starter.name.trim(), MAX_LABEL_BYTES);
-        let arguments = json!({
+        let mut arguments = json!({
             (IN): conversation.as_str(),
             "text": told(instruction, starter),
             "cause": {
@@ -229,6 +231,9 @@ impl Asking {
                 "key": instruction.cause.invocation.0.to_string(),
             },
         });
+        if let Some(grant) = &instruction.look_grant {
+            arguments["cause"]["lookGrant"] = Value::String(grant.clone());
+        }
         Self {
             asked_as: instruction.cause.installation.clone(),
             arguments: arguments.as_object().cloned().unwrap_or_default(),
@@ -330,6 +335,19 @@ impl Hosted {
             cluster_id: instruction.workspace.clone(),
             document: String::new(),
         };
+        if let Some(grant) = &instruction.look_grant
+            && !runtime.block_on(super::initiative::look_is_current(
+                &self.workspaces,
+                &instruction.workspace,
+                &person,
+                &assistant.id.0,
+                grant,
+            ))
+        {
+            return Err(StepError::Refused(
+                "the assistant's look grant changed before posting to Chat".into(),
+            ));
+        }
         runtime
             .block_on(invoke_named(
                 &WorkspaceActionProvider::new(actions.clone(), workspace),
@@ -447,6 +465,7 @@ mod tests {
         use tilo_actions::policy::MemberId;
         let invocation = tilo_actions::InvocationId::new();
         let instruction = Instruction {
+            look_grant: None,
             person: "ab".repeat(32),
             workspace: "plaza".into(),
             instruction: "Say that it is time to call home.".into(),

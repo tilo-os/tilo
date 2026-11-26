@@ -45,8 +45,7 @@ use tilo_actions::contract::{
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::workspace_events::{self, EventView, Events};
 use tilo_actions::remote::workspace_initiative::{
-    self, Accept, Decline, Look, LookEnded, LookRound, Proposal, Proposals, Propose, Settings,
-    State, TurnOn,
+    self, Accept, Decline, Look, LookEnded, LookRound, Proposal, Propose, Settings, State, TurnOn,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
@@ -64,7 +63,7 @@ use tilo_lock::MutexRecover as _;
 use super::assistant::assistant_of;
 use super::events::{Asker, Authority, Runner, WorkspaceEvents};
 use crate::workspaces::person_model::{Interaction, Spender};
-use crate::workspaces::{Store, Workspaces};
+use crate::workspaces::{ReadFor, Store, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 mod look;
@@ -181,6 +180,28 @@ struct Kept {
 }
 
 impl Kept {
+    /// The budget account for a queued look, including one from before per-person storage.
+    fn account_for(
+        &self,
+        workspaces: &Workspaces,
+        owner: &Owner,
+        id: uuid::Uuid,
+        program: &str,
+    ) -> Result<Option<String>, String> {
+        let account = self.spending_event(owner);
+        if self.authored_by(&account, program) {
+            return Ok(Some(account));
+        }
+        if id.get_version_num() == 4
+            && super::events::old_look_round(&workspaces.workspace_root(&owner.workspace))?
+                .as_deref()
+                == Some(program)
+        {
+            return Err("the original look-round's personal budget could not be verified".into());
+        }
+        Ok(None)
+    }
+
     fn day_limit(&self) -> u64 {
         self.day_limit_micros
             .unwrap_or(workspace_initiative::DEFAULT_DAY_LIMIT_MICROS)
@@ -348,26 +369,9 @@ impl Initiative {
             person,
         };
         let kept = self.kept(&owner)?;
-        let account = kept.spending_event(&owner);
-        if kept.authored_by(&account, program) {
-            return Ok(Some(look_round_spender(
-                workspace,
-                &account,
-                NAME,
-                day,
-                kept.day_limit(),
-            )));
-        }
-        // Before per-person storage an installation was random. Even if someone
-        // removed that event before upgrading, its queued ask is still a look.
-        if id.get_version_num() == 4
-            && super::events::old_look_round(&self.inner.workspaces.workspace_root(workspace))?
-                .as_deref()
-                == Some(program)
-        {
-            return Err("the original look-round's personal budget could not be verified".into());
-        }
-        Ok(None)
+        Ok(kept
+            .account_for(&self.inner.workspaces, &owner, id, program)?
+            .map(|account| look_round_spender(workspace, &account, NAME, day, kept.day_limit())))
     }
 
     /// What `spender` spent on its day, as `workspace`'s store counts it.
@@ -876,12 +880,15 @@ impl Initiative {
 
     /// Watch the workspace's mail for as long as its assistant looks round,
     /// so a look can say what came in.
-    fn listen(&self, owner: &Owner) {
-        self.inner
-            .listening
-            .lock_recover()
-            .entry(owner.clone())
-            .or_insert_with(|| self.inner.workspaces.listen_for_mail(&owner.workspace));
+    fn listen(&self, owner: &Owner, allowed: bool) {
+        let mut listening = self.inner.listening.lock_recover();
+        if allowed {
+            listening
+                .entry(owner.clone())
+                .or_insert_with(|| self.inner.workspaces.listen_for_mail(&owner.workspace));
+        } else {
+            listening.remove(owner);
+        }
     }
 
     /// Gather one person's findings on a worker thread. Automatic looks start
@@ -905,20 +912,41 @@ impl Initiative {
             return Ok(String::new());
         }
         let now_ms = tilo_clock::unix_now_ms_i64();
-        self.listen(owner);
         let workspaces = &self.inner.workspaces;
-        let gathered = on_the_runtime(|runtime| {
-            runtime
-                .block_on(async {
-                    let gathered =
-                        look::gather(workspaces, owner, None, &event, &kept.seen, now_ms).await?;
-                    // What a member did with a proposed task counts before
-                    // the assistant is told what they made of each kind of
-                    // work.
-                    self.reconcile(owner).await;
-                    Ok(gathered)
-                })
-                .map_err(StepError::Unavailable)
+        let (access, gathered) = on_the_runtime(|runtime| {
+            runtime.block_on(async {
+                let access = look::Access::current(workspaces, owner)
+                    .await
+                    .and_then(|access| {
+                        if occasion == Occasion::Scheduled
+                            && !access.signing.permits_app(Store::EVENTS.app)
+                        {
+                            return Err(
+                                "the assistant needs access to Shortcuts for scheduled looks"
+                                    .into(),
+                            );
+                        }
+                        Ok(access)
+                    });
+                self.listen(
+                    owner,
+                    access
+                        .as_ref()
+                        .is_ok_and(|access| access.signing.permits_app(Store::MAIL.app)),
+                );
+                let access = access.map_err(StepError::Refused)?;
+                let gathered =
+                    look::gather(workspaces, owner, &access, None, &event, &kept.seen, now_ms)
+                        .await
+                        .map_err(StepError::Unavailable)?;
+                // What a member did with a proposed task counts before
+                // the assistant is told what they made of each kind of
+                // work.
+                if access.signing.permits_app(tilo_app_id::apps::TASKS) {
+                    self.reconcile(owner, access.reader()).await;
+                }
+                Ok((access, gathered))
+            })
         })?;
         let day = crate::agents::today();
         let limit = kept.day_limit();
@@ -926,6 +954,11 @@ impl Initiative {
             workspace,
             &look_round_spender(workspace, &kept.spending_event(owner), NAME, &day, limit),
         );
+        on_the_runtime(|runtime| {
+            runtime
+                .block_on(access.check(workspaces, owner))
+                .map_err(StepError::Refused)
+        })?;
         let found = gathered.found;
         let (ended, answer) = if occasion == Occasion::Scheduled && !found.anything_new() {
             (LookEnded::Quiet, Ok(String::new()))
@@ -940,6 +973,7 @@ impl Initiative {
             (LookEnded::OverLimit, answer)
         } else {
             let handed = Instruction {
+                look_grant: Some(access.fingerprint(owner).map_err(StepError::Unavailable)?),
                 instruction: told(&instruction.instruction, &gathered.findings),
                 ..instruction
             };
@@ -1032,20 +1066,32 @@ impl Initiative {
             }
             _ => return Err(ActionCallError::UnknownAction),
         }
-        said(&self.listed(&asked.owner).await?)
+        self.reconcile_for(&asked).await;
+        said(&self.kept(&asked.owner).map_err(unavailable)?.book.listed())
     }
 
-    /// What was proposed, as a member reads it now: what they did with a
-    /// proposed task in the tracker counted first.
-    async fn listed(&self, owner: &Owner) -> Result<Proposals, ActionCallError> {
-        self.reconcile(owner).await;
-        Ok(self.kept(owner).map_err(unavailable)?.book.listed())
+    /// Pick up decisions in Tasks only when the caller can read Tasks.
+    async fn reconcile_for(&self, asked: &Asked<'_>) {
+        if self.may_read_tasks(asked).await {
+            self.reconcile(&asked.owner, ReadFor::Caller(asked.read_as()))
+                .await;
+        }
+    }
+
+    async fn may_read_tasks(&self, asked: &Asked<'_>) -> bool {
+        let caller = asked.read_as();
+        caller.roster_created_at().is_none()
+            || self
+                .inner
+                .workspaces
+                .agent_may_act(&asked.owner.workspace, caller, tilo_app_id::apps::TASKS)
+                .await
     }
 
     /// Hold what waits against the workspace's tracker
     /// ([`proposals::Book::reconcile`]). A tracker that cannot be read says
     /// nothing: what waits goes on waiting.
-    async fn reconcile(&self, owner: &Owner) {
+    async fn reconcile(&self, owner: &Owner, reader: ReadFor<'_>) {
         let workspace = owner.workspace.as_str();
         let Ok(kept) = self.kept(owner) else { return };
         let mut book = kept.book;
@@ -1053,7 +1099,7 @@ impl Initiative {
             return;
         }
         let Ok(issues) =
-            tracker::issues(&self.inner.workspaces, workspace, (&owner.person, None)).await
+            tracker::issues(&self.inner.workspaces, workspace, (&owner.person, reader)).await
         else {
             return;
         };
@@ -1094,7 +1140,10 @@ impl Initiative {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Proposal, ActionCallError> {
         let wanted = proposals::checked(wanted).map_err(refused)?;
-        self.reconcile(&asked.owner).await;
+        if wanted.event.is_none() && !self.may_read_tasks(asked).await {
+            return Err(ActionCallError::NotPermitted);
+        }
+        self.reconcile_for(asked).await;
         let id = uuid::Uuid::new_v5(
             &invocation.0,
             format!(
@@ -1175,7 +1224,7 @@ impl Initiative {
     /// interrupted attempt resumes the same task or event with the same standing approval.
     async fn accept(&self, asked: &Asked<'_>, nod: &Accept) -> Result<Proposal, ActionCallError> {
         let _edit = self.edit(&asked.owner).await;
-        self.reconcile(&asked.owner).await;
+        self.reconcile_for(asked).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (accepted, applying, needs_task_receipt) = self
             .change(&asked.owner, |kept| {
@@ -1232,7 +1281,7 @@ impl Initiative {
     /// to retry without counting a second decline.
     async fn decline(&self, asked: &Asked<'_>, no: &Decline) -> Result<Proposal, ActionCallError> {
         let _edit = self.edit(&asked.owner).await;
-        self.reconcile(&asked.owner).await;
+        self.reconcile_for(asked).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (declined, applying) = self
             .change(&asked.owner, |kept| {
@@ -1353,6 +1402,63 @@ impl Asked<'_> {
 fn thread(person: &str, agent: &str) -> tilo_resource::Id {
     use tilo_actions::policy::MemberId;
     chat::Chat::direct_id([MemberId::person(person.to_owned()), MemberId::agent(agent)])
+}
+
+/// Revalidate the recipient and every source permission used to gather a look.
+pub(super) async fn look_is_current(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &[u8; 32],
+    agent: &str,
+    grant: &str,
+) -> bool {
+    let owner = Owner {
+        workspace: workspace.to_owned(),
+        person: *person,
+    };
+    look::Access::current(workspaces, &owner)
+        .await
+        .is_ok_and(|access| access.names(&owner, agent, grant))
+}
+
+/// An automatic look may only run under the authority that originally gathered it.
+/// Older look messages carrying no proof are still readable by their person.
+pub(super) async fn may_take_look(
+    workspaces: &Workspaces,
+    initiative: Option<&Initiative>,
+    workspace: &str,
+    person: &str,
+    agent: &str,
+    program: Option<&str>,
+    grant: Option<&str>,
+) -> bool {
+    let Some(program) = program else {
+        return grant.is_none();
+    };
+    if let Some(grant) = grant {
+        let Ok(person) = person_of(person) else {
+            return false;
+        };
+        return look_is_current(workspaces, workspace, &person, agent, grant).await;
+    }
+    let Ok(id) = uuid::Uuid::parse_str(program) else {
+        return true;
+    };
+    let Ok(person) = person_of(person) else {
+        return false;
+    };
+    let owner = Owner {
+        workspace: workspace.to_owned(),
+        person,
+    };
+    let kept = initiative.map_or_else(
+        || Initiative::read_for(workspaces, &owner),
+        |service| service.kept(&owner),
+    );
+    matches!(
+        kept.and_then(|kept| kept.account_for(workspaces, &owner, id, program)),
+        Ok(None)
+    )
 }
 
 /// What the assistant is told at a look: what its person's event says,

@@ -47,7 +47,7 @@ use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
 pub(super) use tilo_actions::remote::person_vault::WebCall;
 
-use super::{AskedTurn, Workspaces};
+use super::{AskedSigner, AskedTurn, Workspaces};
 // The guard's own names, from the one place this crate takes them.
 use crate::connections::wire::{
     Destinations, Lookup, check_destination, guarded_client, is_public, refused_address,
@@ -625,18 +625,14 @@ impl Struck {
 /// One call its person allowed once.
 struct Allowed {
     person: [u8; 32],
-    workspace: String,
-    agent: String,
+    signer: AskedSigner,
     arguments: Map<String, Value>,
     until_ns: u64,
 }
 
 impl Allowed {
     fn is(&self, using: &AskedTurn, arguments: &Map<String, Value>) -> bool {
-        self.person == using.person
-            && self.workspace == using.workspace
-            && self.agent == using.agent
-            && self.arguments == *arguments
+        self.person == using.person && self.signer == using.signer && self.arguments == *arguments
     }
 }
 
@@ -659,8 +655,7 @@ impl AllowedOnce {
         }
         allowed.push(Allowed {
             person: using.person,
-            workspace: using.workspace.clone(),
-            agent: using.agent.clone(),
+            signer: using.signer.clone(),
             arguments: arguments.clone(),
             until_ns: now.saturating_add(ALLOWED_NS),
         });

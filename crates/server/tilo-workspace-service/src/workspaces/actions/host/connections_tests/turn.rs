@@ -203,7 +203,7 @@ impl<'a> Team<'a> {
         Self {
             as_ada: caller(&ada),
             ada_id: hex::encode(ada.user_public_key),
-            scout: on_turn(&ada, &workspace, SCOUT),
+            scout: on_turn(workspaces, &ada, &workspace, SCOUT),
             workspaces,
             workspace,
             workspace_id,
@@ -233,7 +233,7 @@ impl<'a> Team<'a> {
         Self {
             as_ada: caller(&members.ada),
             ada_id: hex::encode(members.ada.user_public_key),
-            scout: on_turn(&members.ada, &members.workspace, SCOUT),
+            scout: on_turn(workspaces, &members.ada, &members.workspace, SCOUT),
             workspaces,
             workspace: members.workspace,
             workspace_id: members.workspace_id,
@@ -452,7 +452,7 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
 ) {
     let its = person_connections::connection_resource(id);
     let finding = calling(id, "find_trees", json!({"orchard": "north"}));
-    let bos_agent = on_turn(&team.bo, &team.workspace, "bos-agent");
+    let bos_agent = on_turn(team.workspaces, &team.bo, &team.workspace, "bos-agent");
     let for_bo = team.turn_of(&bos_agent);
     let theirs = done(team.takes(&for_bo, &of(LIST, json!({}))).await);
     assert_eq!(theirs["connections"][0]["id"], id, "{theirs}");
@@ -464,7 +464,7 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
         "{theirs:?}"
     );
 
-    let bo_asks_scout = on_turn(&team.bo, &team.workspace, SCOUT);
+    let bo_asks_scout = on_turn(team.workspaces, &team.bo, &team.workspace, SCOUT);
     let for_bo = team.turn_of(&bo_asks_scout);
     let theirs = done(team.takes(&for_bo, &of(LIST, json!({}))).await);
     assert_eq!(theirs["connections"][0]["id"], id, "{theirs}");
@@ -559,8 +559,8 @@ async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str)
 /// agent, or another agent of the person's; and
 /// what was kept for another carrier is no connection's to carry out.
 async fn an_answer_for_anybody_else_does_nothing(team: &Team<'_>, waits: &KeptAsk) {
-    let bos_ask = on_turn(&team.bo, &team.workspace, SCOUT);
-    let another = on_turn(&team.ada, &team.workspace, "another-agent");
+    let bos_ask = on_turn(team.workspaces, &team.bo, &team.workspace, SCOUT);
+    let another = on_turn(team.workspaces, &team.ada, &team.workspace, "another-agent");
     for (who, stranger) in [
         ("another member's ask of the same agent", &bos_ask),
         ("another agent of the person's", &another),
@@ -600,6 +600,21 @@ async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls
         .await
         .expect("a no is carried out by doing nothing");
     assert!(calls(&service.seen()).is_empty(), "nothing was called");
+
+    let _chat_only = super::super::turn_use_tests::on_turn_for_apps(
+        team.workspaces,
+        &team.ada,
+        &team.workspace,
+        SCOUT,
+        &["so.tilo.chat"],
+    );
+    let denied = team.answered(&turn, &waits, Some(Leave::Always)).await;
+    assert!(
+        denied.is_err(),
+        "the pending call lost its Connections grant"
+    );
+    assert!(calls(&service.seen()).is_empty());
+    let _restored = on_turn(team.workspaces, &team.ada, &team.workspace, SCOUT);
 
     // Their yes calls it with what they were shown, by the leave they gave.
     team.answered(&turn, &waits, Some(Leave::Once))
@@ -777,7 +792,7 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
     // another agent of the same person, ask.
     let elsewhere = calling(&other, "plant_tree", json!({"kind": "plum"}));
     asked(team.takes(&turn, &elsewhere).await);
-    let second = on_turn(&team.ada, &team.workspace, "another-agent");
+    let second = on_turn(team.workspaces, &team.ada, &team.workspace, "another-agent");
     let for_second = team.turn_of(&second);
     let planting = calling(&id, "plant_tree", json!({"kind": "plum"}));
     asked(team.takes(&for_second, &planting).await);
@@ -950,7 +965,7 @@ async fn a_narrowed_agent_reaches_only_a_connection_a_rule_of_its_own_names() {
     let (service, another) = (StandIn::start("plain"), StandIn::start("plain"));
     let id = team.connects(&service).await;
     let other = team.connects(&another).await;
-    let sub = on_turn(&team.ada, &team.workspace, "sub-agent");
+    let sub = on_turn(team.workspaces, &team.ada, &team.workspace, "sub-agent");
     let its = person_connections::connection_resource(&id);
     let finding = calling(&id, "find_trees", json!({"orchard": "north"}));
 
@@ -1078,7 +1093,7 @@ async fn an_agent_proposes_a_connection_and_only_its_persons_yes_adds_it() {
     team.answered(&turn, &waits, None)
         .await
         .expect("a no is carried out by doing nothing");
-    let bos_agent = on_turn(&team.bo, &team.workspace, SCOUT);
+    let bos_agent = on_turn(team.workspaces, &team.bo, &team.workspace, SCOUT);
     let strange = team.turn_of(&bos_agent);
     let carried = team.answered(&strange, &waits, Some(Leave::Once)).await;
     assert!(carried.is_err(), "{carried:?}");

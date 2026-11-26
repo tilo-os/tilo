@@ -15,6 +15,7 @@
 //! time or a summary Chat did not take all leave the summary as it stood, and the next turn that
 //! still sees the messages outside it asks again.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use runtime_collab::recall::Fold;
@@ -27,7 +28,7 @@ use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::{CHAT, Reply, ServerAgents, Turn, invoke_named, later};
-use crate::workspaces::person_model::{Interaction, ModelRefusal};
+use crate::workspaces::person_model::{Interaction, ModelPermission, ModelRefusal};
 
 /// The chat action that keeps a conversation's summary.
 const KEEP_SUMMARY: &str = "keep-summary";
@@ -86,17 +87,26 @@ impl ServerAgents {
         let Some(_written) = self.going.summarise(workspace, &fold.conversation) else {
             return;
         };
-        if !self.still_asked(workspace, turn, fold).await {
+        if !(reply.permission)().await || !self.still_asked(workspace, turn, fold).await {
             return;
         }
         let Some((said, cost)) = self
-            .ask_once((workspace, workspace_id), turn, fold, day)
+            .ask_once(
+                (workspace, workspace_id),
+                turn,
+                fold,
+                day,
+                &reply.permission,
+            )
             .await
         else {
             return;
         };
         if cost > 0 {
             self.charge(workspace, &turn.agent, day, cost).await;
+        }
+        if !(reply.permission)().await {
+            return;
         }
         let mut arguments = Map::new();
         arguments.insert("conversation".into(), json!(fold.conversation));
@@ -168,6 +178,7 @@ impl ServerAgents {
         turn: &Turn,
         fold: &Fold,
         day: &str,
+        permission: &ModelPermission,
     ) -> Option<(String, u64)> {
         let (instructions, input) = fold.asks();
         let tokens = fold.output_tokens();
@@ -182,6 +193,7 @@ impl ServerAgents {
                 turn,
                 day,
                 Interaction::OneShot,
+                permission.clone(),
             ) {
                 Ok(theirs) => theirs,
                 Err(error) => {
@@ -231,7 +243,13 @@ impl ServerAgents {
             return None;
         }
         let model = self
-            .model_for((workspace, workspace_id), turn, day)
+            .model_for_turn(
+                (workspace, workspace_id),
+                turn,
+                day,
+                Arc::default(),
+                permission.clone(),
+            )
             .await
             .ok()?;
         let key = format!("{}:{}:summary", turn.agent.id.0, turn.cause);
@@ -244,8 +262,13 @@ impl ServerAgents {
             tool_choice: ToolChoice::None,
             max_output_tokens: tokens,
         };
+        let runtime = tokio::runtime::Handle::current();
+        let permission = permission.clone();
         let response = tokio::task::spawn_blocking(move || {
             let mut turns = model()?;
+            if !runtime.block_on(permission()) {
+                return None;
+            }
             turns.turn(&request, &key, later(ASK_TIME), false).ok()
         })
         .await

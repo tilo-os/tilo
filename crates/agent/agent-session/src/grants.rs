@@ -156,6 +156,14 @@ impl AgentSessions {
             .is_some_and(|session| session.roster.is_some())
     }
 
+    /// The signed app scope and roster incarnation of a verified live signing device.
+    #[must_use]
+    pub fn signing_scope(&self, device: &[u8; 32]) -> Option<(RosterCreatedAt, DelegateScope)> {
+        let sessions = self.links.lock_recover();
+        let (created, grant) = sessions.get(device)?.roster.as_ref()?;
+        Some((*created, grant.scope.clone()))
+    }
+
     /// Whether this signing peer was opened for the exact roster assignment.
     #[must_use]
     pub fn matches_roster(

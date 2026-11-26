@@ -65,7 +65,9 @@ use super::windows::{Release, Releasing, TurnFill};
 use super::{
     Ask, CHAT, Reply, ServerAgents, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
 };
-use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
+use crate::workspaces::hosted_use::{
+    AskedSigner, HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer,
+};
 
 /// What an agent is told when its person is asked first: nothing ran, and
 /// it neither waits nor asks again.
@@ -426,6 +428,7 @@ const SECRET_UNANSWERED: &str = "they were not asked, or did not answer in time"
 /// An ask for a secret, held while its person is asked. Nothing in it is a secret.
 struct SecretAsk {
     id: String,
+    signer: AskedSigner,
     agent: String,
     name: String,
     person: String,
@@ -435,6 +438,10 @@ struct SecretAsk {
 }
 
 impl PutAsk for SecretAsk {
+    fn grant(&self) -> (Option<&AskedSigner>, &'static str) {
+        (Some(&self.signer), tilo_app_id::apps::PASSWORDS)
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -501,6 +508,7 @@ impl TurnUses {
             .checked()
             .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
         let open = SecretAsk {
+            signer: using.signer,
             id: uuid::Uuid::new_v4().simple().to_string(),
             agent: using.agent,
             name: using.name,

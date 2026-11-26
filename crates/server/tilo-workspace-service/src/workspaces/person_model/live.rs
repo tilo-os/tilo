@@ -46,7 +46,7 @@ impl ModelProvider for GatewayProvider {
                 return Err(ModelError::new(ErrorKind::TimedOut));
             }
             providers
-                .complete(
+                .complete_while_permitted(
                     PersonTurn {
                         profile: call.profile,
                         model: &call.model.id,
@@ -57,6 +57,7 @@ impl ModelProvider for GatewayProvider {
                         quiet: call.quiet,
                     },
                     events,
+                    call.permission.map(std::sync::Arc::as_ref),
                 )
                 .await
         })

@@ -66,6 +66,21 @@ pub type Events<'a> = &'a mut (dyn FnMut(StreamEvent) + Send);
 pub type ProviderFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ModelResponse, ModelError>> + Send + 'a>>;
 
+/// Whether the originating turn still has authority to send its request.
+pub(crate) type ModelPermission =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+
+pub(super) async fn require_permission(
+    permission: Option<&ModelPermission>,
+) -> Result<(), ModelError> {
+    if let Some(permitted) = permission
+        && !permitted().await
+    {
+        return Err(ModelError::new(ErrorKind::Cancelled));
+    }
+    Ok(())
+}
+
 /// Why a person's model did not answer.
 ///
 /// Each reason is typed, so whoever asked can show it where the person will
@@ -378,6 +393,8 @@ pub struct ProviderCall<'a> {
     /// ends as timed out ([`Quiet`]); none where the deadline alone bounds
     /// it.
     pub quiet: Option<Duration>,
+    #[cfg(feature = "agents")]
+    permission: Option<&'a ModelPermission>,
     key: Option<&'a str>,
 }
 
@@ -509,6 +526,7 @@ impl Workspaces {
             workspace: Some(workspace),
             spenders: Vec::new(),
             quiet: None,
+            permission: None,
         }
     }
 
@@ -599,6 +617,8 @@ pub struct PersonModel {
     /// How long a provider may show nothing on this model's calls, and
     /// whether one of them timed out already ([`Self::letting_go`]).
     quiet: Option<(Quiet, Arc<AtomicBool>)>,
+    /// The original signed turn, rechecked before each provider request.
+    permission: Option<ModelPermission>,
 }
 
 impl std::fmt::Debug for PersonModel {
@@ -610,6 +630,12 @@ impl std::fmt::Debug for PersonModel {
 }
 
 impl PersonModel {
+    #[cfg(any(feature = "agents", test))]
+    pub(crate) fn while_permitted(mut self, permission: ModelPermission) -> Self {
+        self.permission = Some(permission);
+        self
+    }
+
     /// The kind of work this answers.
     #[must_use]
     pub const fn kind(&self) -> Interaction {
@@ -723,7 +749,12 @@ impl PersonModel {
         if signed_in {
             resolved.key = Some(
                 self.models
-                    .fresh_access((keys, &self.root), &resolved.profile, false)
+                    .fresh_access(
+                        (keys, &self.root),
+                        &resolved.profile,
+                        false,
+                        self.permission.as_ref(),
+                    )
                     .await?,
             );
         } else {
@@ -747,7 +778,12 @@ impl PersonModel {
         {
             resolved.key = Some(
                 self.models
-                    .fresh_access((keys, &self.root), &resolved.profile, true)
+                    .fresh_access(
+                        (keys, &self.root),
+                        &resolved.profile,
+                        true,
+                        self.permission.as_ref(),
+                    )
                     .await?,
             );
             answered = self
@@ -781,6 +817,7 @@ impl PersonModel {
         deadline: Instant,
         events: Events<'_>,
     ) -> Result<ModelResponse, ModelError> {
+        require_permission(self.permission.as_ref()).await?;
         let call = ProviderCall {
             profile: &resolved.profile,
             model: &resolved.model,
@@ -788,6 +825,8 @@ impl PersonModel {
             deadline,
             private_addresses: self.models.private_addresses.load(Ordering::Acquire),
             quiet: self.quiet_now(),
+            #[cfg(feature = "agents")]
+            permission: self.permission.as_ref(),
             key: resolved.key.as_deref().map(String::as_str),
         };
         tokio::time::timeout_at(

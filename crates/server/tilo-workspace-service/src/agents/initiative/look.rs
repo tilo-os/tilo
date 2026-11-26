@@ -19,7 +19,87 @@ use serde_json::{Value, json};
 use tilo_actions::remote::workspace_initiative::Found;
 use tilo_automation::dispatch::DocumentEvent;
 
-use crate::workspaces::{ReadFor, Workspaces};
+use crate::work::AgentAccess;
+use crate::workspaces::{ReadFor, Store, Workspaces};
+
+/// The assistant, current signing grant and roster rules under which a look reads and reports.
+#[derive(PartialEq, Eq)]
+pub(super) struct Access {
+    agent: String,
+    created_at: i64,
+    rules: Vec<tilo_action_policy::Rule>,
+    pub(super) signing: AgentAccess,
+}
+
+impl Access {
+    pub(super) async fn current(
+        workspaces: &Workspaces,
+        owner: &super::Owner,
+    ) -> Result<Self, String> {
+        let agent = super::assistant_of(workspaces, &owner.workspace, &owner.person)
+            .await?
+            .ok_or("this person keeps no active assistant in the workspace")?;
+        let signing = workspaces
+            .agent_access(&owner.workspace, &agent.id.0, &owner.person)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !signing.permits_app(Store::INITIATIVE.app) || !signing.permits_app(crate::agents::CHAT)
+        {
+            return Err("the assistant needs access to Assistant and Chat for a look-round".into());
+        }
+        let rules = agent.bound_rules().unwrap_or_default();
+        Ok(Self {
+            agent: agent.id.0,
+            created_at: agent.created_at,
+            rules,
+            signing,
+        })
+    }
+
+    pub(super) async fn check(
+        &self,
+        workspaces: &Workspaces,
+        owner: &super::Owner,
+    ) -> Result<(), String> {
+        if Self::current(workspaces, owner).await? != *self {
+            return Err("the assistant's access changed during the look".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn reader(&self) -> ReadFor<'_> {
+        ReadFor::Assistant(&self.agent, &self.rules)
+    }
+
+    /// A queued look belongs to exactly the assistant and signing grant that read its sources.
+    pub(super) fn fingerprint(&self, owner: &super::Owner) -> Result<String, String> {
+        let hosted = match &self.signing {
+            AgentAccess::Device => None,
+            AgentAccess::Hosted {
+                device,
+                created_at,
+                scope,
+            } => Some((device, created_at, scope)),
+        };
+        let identity = (
+            &owner.workspace,
+            &owner.person,
+            &self.agent,
+            self.created_at,
+            &self.rules,
+            hosted,
+        );
+        let bytes = postcard::to_allocvec(&identity).map_err(|error| error.to_string())?;
+        Ok(blake3::hash(&bytes).to_hex().to_string())
+    }
+
+    pub(super) fn names(&self, owner: &super::Owner, agent: &str, fingerprint: &str) -> bool {
+        self.agent == agent
+            && self
+                .fingerprint(owner)
+                .is_ok_and(|grant| grant == fingerprint)
+    }
+}
 
 /// The app that keeps the workspace's tasks.
 const TASKS: &str = "so.tilo.tasks";
@@ -52,13 +132,12 @@ pub(super) struct Seen {
 pub(super) struct Own {
     /// The person the look is for, as a task's assignee names them.
     pub person: String,
-    /// The assistant's id among the workspace's agents, where the person
-    /// keeps one.
-    pub assistant: Option<String>,
+    /// The active assistant's id among the workspace's agents.
+    pub assistant: String,
     /// The look-round's own event, which asks as itself.
     pub event: String,
     /// The conversation of the person and their assistant.
-    pub thread: Option<String>,
+    pub thread: String,
 }
 
 impl Own {
@@ -68,7 +147,7 @@ impl Own {
         let by_own = event
             .actor
             .agent_id()
-            .is_some_and(|agent| self.assistant.as_deref() == Some(agent) || agent == self.event);
+            .is_some_and(|agent| self.assistant == agent || agent == self.event);
         by_own || self.in_thread(event)
     }
 
@@ -76,10 +155,8 @@ impl Own {
     /// conversation its verb names (what a post or an ask carries), or the
     /// one the message it changed is in.
     fn in_thread(&self, event: &DocumentEvent) -> bool {
-        let Some(thread) = &self.thread else {
-            return false;
-        };
-        let names = |value: Option<&Value>| value.and_then(Value::as_str) == Some(thread.as_str());
+        let names =
+            |value: Option<&Value>| value.and_then(Value::as_str) == Some(self.thread.as_str());
         names(event.arguments.get(CONVERSATION))
             || [&event.before, &event.after]
                 .into_iter()
@@ -125,6 +202,7 @@ fn who(event: &DocumentEvent) -> &'static str {
 pub(super) async fn gather(
     workspaces: &Workspaces,
     owner: &super::Owner,
+    access: &Access,
     caller: Option<&tilo_actions::remote::Caller>,
     event: &str,
     seen: &Seen,
@@ -132,27 +210,18 @@ pub(super) async fn gather(
 ) -> Result<Gathered, String> {
     let workspace = owner.workspace.as_str();
     let person = hex::encode(owner.person);
-    let assistant = super::assistant_of(workspaces, workspace, &owner.person).await?;
-    let bound = assistant.as_ref().and_then(|agent| agent.bound_rules());
-    let reader = match (caller, assistant.as_ref()) {
-        (Some(caller), _) => ReadFor::Caller(caller),
-        (None, Some(agent)) => {
-            ReadFor::Assistant(&agent.id.0, bound.as_deref().unwrap_or_default())
-        }
-        (None, None) => ReadFor::Person,
-    };
+    let reader = caller.map_or_else(|| access.reader(), ReadFor::Caller);
     let reader = (&owner.person, reader);
     let own = Own {
-        thread: assistant
-            .as_ref()
-            .map(|agent| super::thread(&person, &agent.id.0).to_string()),
+        thread: super::thread(&person, &access.agent).to_string(),
         person,
-        assistant: assistant.as_ref().map(|agent| agent.id.0.clone()),
+        assistant: access.agent.clone(),
         event: event.to_owned(),
     };
-    let routes = workspaces
+    let mut routes = workspaces
         .workspace_document_reads(workspace, reader)
         .await?;
+    routes.retain(|(app, _), allowed| *allowed && access.signing.permits_app(app));
     let mut next = Seen {
         looked: true,
         documents: BTreeMap::new(),
@@ -163,10 +232,7 @@ pub(super) async fn gather(
     let (mut changed, mut due) = (Vec::new(), Vec::new());
     let against = Against {
         own: &own,
-        assistant: own
-            .assistant
-            .as_deref()
-            .map(|agent| tasks_model::agent_assignee(agent).0),
+        assistant: tasks_model::agent_assignee(&own.assistant).0,
         seen,
         now_ms,
     };
@@ -174,10 +240,7 @@ pub(super) async fn gather(
     // turn cost and where agents say how they stand: bookkeeping about the
     // assistant and its helpers, written after every turn, and never news.
     let roster = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    for ((app, document), allowed) in &routes {
-        if !allowed {
-            continue;
-        }
+    for (app, document) in routes.keys() {
         if app == tilo_workspace_agent::OWNER && document == &roster {
             continue;
         }
@@ -225,28 +288,19 @@ pub(super) async fn gather(
     // where the inbox stands.
     let id =
         collab_types::WorkspaceId::parse(workspace).ok_or("the workspace has no valid identity")?;
-    let arrived = workspaces.mail_arrivals_as(id, reader, seen.mail_seq).await;
-    next.mail_seq = arrived.newest;
-    if seen.looked {
-        found.came_in = u64::try_from(arrived.arrivals.len()).unwrap_or(u64::MAX);
-    }
-    let current_assistant = super::assistant_of(workspaces, workspace, &owner.person).await?;
-    if current_assistant
-        .as_ref()
-        .map(|agent| (&agent.id, &agent.bound))
-        != assistant.as_ref().map(|agent| (&agent.id, &agent.bound))
-    {
-        return Err("the assistant's access changed during the look".into());
+    if access.signing.permits_app(Store::MAIL.app) {
+        let arrived = workspaces.mail_arrivals_as(id, reader, seen.mail_seq).await;
+        next.mail_seq = arrived.newest;
+        if seen.looked {
+            found.came_in = u64::try_from(arrived.arrivals.len()).unwrap_or(u64::MAX);
+        }
     }
     // Reads and decoding ran outside governance's lock. Discard this look if a
     // previously readable route was withdrawn before handing over its metadata.
     let current = workspaces
         .workspace_document_reads(workspace, reader)
         .await?;
-    if routes
-        .iter()
-        .any(|(route, allowed)| *allowed && current.get(route) != Some(&true))
-    {
+    if routes.keys().any(|route| current.get(route) != Some(&true)) {
         return Err("record access changed during the look; take a new look".into());
     }
     let findings = json!({
@@ -299,7 +353,7 @@ fn changes_in(
 struct Against<'a> {
     own: &'a Own,
     /// The assistant, as a task's assignee names it.
-    assistant: Option<String>,
+    assistant: String,
     seen: &'a Seen,
     now_ms: i64,
 }
@@ -319,8 +373,7 @@ fn tasks_in<'a>(
             continue;
         }
         let theirs = issue.assignee.as_ref().is_some_and(|assignee| {
-            assignee.0 == against.own.person
-                || against.assistant.as_deref() == Some(assignee.0.as_str())
+            assignee.0 == against.own.person || assignee.0 == against.assistant
         });
         if theirs {
             found.open = found.open.saturating_add(1);

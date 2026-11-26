@@ -99,6 +99,8 @@ pub struct Instruction {
     /// what its last run left. Null for a program that keeps none.
     pub note: Value,
     pub cause: StepCause,
+    /// The native look's original assistant grant; programs cannot set it.
+    pub look_grant: Option<String>,
 }
 
 impl Instruction {
@@ -353,6 +355,7 @@ fn instruction(
             .map_err(|error| format!("the actions the instruction allows do not read: {error}"))?,
     };
     Ok(Some(Instruction {
+        look_grant: None,
         person: person.to_owned(),
         workspace: asked_for.workspace.to_owned(),
         instruction: instruction.to_owned(),

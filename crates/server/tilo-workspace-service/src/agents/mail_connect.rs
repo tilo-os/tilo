@@ -33,7 +33,7 @@ use super::calendar_connect::{
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::hosted_use::{
-    HostedTurn, MAIL_CONNECT, MailAsk, MailCarried, TurnMailConnect,
+    AskedSigner, HostedTurn, MAIL_CONNECT, MailAsk, MailCarried, TurnMailConnect,
 };
 use tilo_actions::remote::person_vault::AskForItem;
 
@@ -56,6 +56,10 @@ const INTERRUPTED: &str = "This server restarted while the account was being sig
      may not be. Tell them so; they tell you again if it is still wanted.";
 
 impl PutAsk for MailAsk {
+    fn grant(&self) -> (Option<&AskedSigner>, &'static str) {
+        (self.signer.as_ref(), tilo_app_id::apps::MAIL)
+    }
+
     fn id(&self) -> &str {
         &self.ask
     }

@@ -26,6 +26,7 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 use super::turn_provider::{Ending, Rows};
 use super::windows::{Windows, opened_resource, opens_browser_at};
 use super::{Reply, TurnProvider, WorkspaceActionProvider, WorkspaceId, later, unavailable};
+use crate::workspaces::Workspaces;
 
 /// What a turn is told where this server has no machine to open a Browser window in.
 const NO_MACHINE: &str = "This server has no machine to open a Browser window in, so no web \
@@ -43,7 +44,7 @@ const LOOK_AGAIN: Duration = Duration::from_millis(50);
 /// One turn's open of Browser: what has the window placed once the open made its resource.
 pub(super) struct TurnBrowser {
     /// The windows this server places for its workspaces, where it places any.
-    browsers: Option<Arc<dyn Windows>>,
+    browsers: Option<(Arc<dyn Windows>, Workspaces)>,
     /// The workspace's own actions, as the turn's tools reach them.
     service: WorkspaceActionProvider,
     /// The workspace the turn works in: a window is placed there and nowhere else.
@@ -54,9 +55,13 @@ pub(super) struct TurnBrowser {
 impl TurnBrowser {
     /// The open of Browser for the turn `reply` answers, placed through `browsers` where this
     /// server places windows.
-    pub(super) fn for_turn(browsers: Option<Arc<dyn Windows>>, reply: &Reply) -> Arc<Self> {
+    pub(super) fn for_turn(
+        browsers: Option<Arc<dyn Windows>>,
+        workspaces: &Workspaces,
+        reply: &Reply,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            browsers,
+            browsers: browsers.map(|windows| (windows, workspaces.clone())),
             service: reply.provider.clone(),
             workspace: reply.workspace.clone(),
             workspace_id: reply.provider.workspace,
@@ -76,11 +81,17 @@ impl TurnBrowser {
         if provider_workspace(&request.target.provider) != Some(self.workspace.as_str()) {
             return Err(ActionCallError::UnknownAction);
         }
-        let Some(browsers) = &self.browsers else {
+        let Some((browsers, workspaces)) = &self.browsers else {
             return Err(ActionCallError::Refused {
                 reason: NO_MACHINE.to_owned(),
             });
         };
+        if !workspaces
+            .agent_may_act(&self.workspace, caller, tilo_app_id::apps::BROWSER)
+            .await
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
         // The workspace's actions decide the open, as the turn's caller and under the rules the
         // turn carries, and make the Browser resource.
         let answer = self
@@ -118,6 +129,12 @@ impl TurnBrowser {
             });
         }
         // The open made its resource: the window is placed on it, in this turn's workspace.
+        if !workspaces
+            .agent_may_act(&self.workspace, caller, tilo_app_id::apps::BROWSER)
+            .await
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
         match Arc::clone(browsers)
             .placed(self.workspace_id, invocation, made, caller)
             .await

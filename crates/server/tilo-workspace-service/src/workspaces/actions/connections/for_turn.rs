@@ -50,7 +50,7 @@ use super::super::Verb;
 use super::{AGENT_VERBS, CONNECTIONS, Refused, address_params, argument};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
+use crate::workspaces::hosted_use::{AskedSigner, AskedTurn, HostedTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::workspace_stores::Store;
 
@@ -99,6 +99,8 @@ enum Shown {
 #[serde(rename_all = "camelCase")]
 struct Waits {
     shown: Shown,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signer: Option<AskedSigner>,
     /// The words the question was put with.
     words: String,
     /// What named the command's definition when its person was asked; empty
@@ -502,6 +504,7 @@ impl Workspaces {
         });
         let waits = Waits {
             shown,
+            signer: Some(using.signer.clone()),
             words,
             digest: found.digest,
         };
@@ -564,6 +567,7 @@ impl Workspaces {
         .map_err(|error| refused(error.to_string()))?;
         let waits = Waits {
             shown: Shown::Connection(card),
+            signer: Some(using.signer.clone()),
             words,
             digest: String::new(),
         };
@@ -659,6 +663,12 @@ impl Workspaces {
         let Some(leave) = leave.filter(|leave| matches!(leave, Leave::Once | Leave::Always)) else {
             return Ok(None);
         };
+        if !AskedSigner::permits_turn(waits.signer.as_ref(), self, turn, Store::CONNECTIONS.app)
+            .await
+            || !self.reaches_connections(turn).await
+        {
+            return Err(NOT_THEIRS.to_owned());
+        }
         let root = self.workspace_root(&using.workspace);
         let reach = self.connections_reach();
         match waits.shown {

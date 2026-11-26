@@ -30,6 +30,9 @@ use tilo_workspace_service::agents::{
 #[path = "hosted_initiative_page.rs"]
 mod page;
 
+#[path = "hosted_initiative_scope.rs"]
+mod scope;
+
 /// One `action` of `resource` as `caller` takes it, through what the app action server and an
 /// agent's turn both answer with.
 async fn take_of(
@@ -1049,6 +1052,7 @@ impl Steps for HandsOver {
                 "kind": "event",
                 "label": "Look-round",
                 "key": instruction.cause.invocation.0.to_string(),
+                "lookGrant": instruction.look_grant,
             },
         });
         tokio::runtime::Handle::current()
@@ -1079,6 +1083,7 @@ async fn fires(
     event: &str,
 ) -> Result<String, StepError> {
     let instruction = Instruction {
+        look_grant: None,
         person: person.to_owned(),
         workspace: WorkspaceId::parse(workspace).unwrap().to_string(),
         instruction: "Look round.".into(),
@@ -1119,6 +1124,40 @@ async fn files(actions: &WorkspaceActions, workspace: &str, person: &Caller, tit
     .expect("the person files a task");
 }
 
+/// Previous completed assistant updates give a private conversation enough history to summarise.
+async fn previous_updates(hands: &HandsOver, workspace: &str) {
+    let route = DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.to_owned(),
+        document: String::new(),
+    };
+    let provider = WorkspaceActionProvider::new(
+        hands.actions.clone(),
+        WorkspaceId::parse(workspace).unwrap(),
+    );
+    let scout = hands.person.clone().delegated_to(SCOUT);
+    let channel = Id::from_raw(&hands.conversation);
+    let record = ui::resource::chain_resource_id(&chat::parts::chain());
+    for index in 0..9 {
+        let note = format!(
+            "Update {index}: {}",
+            "The crossing went as planned and nothing needs doing. ".repeat(22)
+        );
+        invoke_named(
+            &provider,
+            &scout,
+            &route,
+            &record,
+            "post",
+            saying(&channel, &note).as_object().unwrap().clone(),
+        )
+        .await
+        .unwrap();
+    }
+    // The caused ask follows the earlier updates on Chat's own message clock.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+}
+
 /// The look-round's own day in a turn the server really carries out. A look hands over what it
 /// found; the turn that starts is answered by the workspace's own model, and every call of it counts
 /// on the look-round's day beside the assistant's. At the limit the turn is asked nothing more,
@@ -1135,15 +1174,15 @@ async fn a_queued_look_still_spends_its_own_day_after_history_rolls_over_and_the
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_completed_look_cannot_summarise_a_long_chat_past_its_daily_limit() {
-    spends_the_look_rounds_day(LookTurn::WithSummary).await;
+async fn a_look_never_recalls_or_summarises_a_long_private_chat() {
+    spends_the_look_rounds_day(LookTurn::LongChat).await;
 }
 
 #[derive(Eq, PartialEq)]
 enum LookTurn {
     Immediate,
     Restarted,
-    WithSummary,
+    LongChat,
 }
 
 async fn spends_the_look_rounds_day(turn: LookTurn) {
@@ -1166,13 +1205,15 @@ async fn spends_the_look_rounds_day(turn: LookTurn) {
     let person = hex::encode(keeper);
     furnished(&page, &workspaces, &workspace, &person).await;
 
-    // A completed turn in a long Chat also owes a separate one-shot model call.
-    // Other turns try a second call through the same model they started with.
-    let first = if turn == LookTurn::WithSummary {
+    // One look answers directly. The others try a second call on the same budget.
+    let first = if turn == LookTurn::LongChat {
         Reply::text("One task is new: call the bank.")
     } else {
         Reply::tool_call("call-1", "tilo_ls", serde_json::json!({}))
     };
+    let agents = server
+        .approving_for(&workspace, &[SCOUT], &scope::WORK_APPS)
+        .await;
     let theirs = ScriptedProvider::answering([
         first.costing(2_000),
         Reply::text("One task is new: call the bank.").costing(300),
@@ -1207,37 +1248,8 @@ async fn spends_the_look_rounds_day(turn: LookTurn) {
         .to_owned(),
         handed: Mutex::default(),
     });
-    if turn == LookTurn::WithSummary {
-        // The assistant's previous updates give this Chat enough history to summarise.
-        // An unanswered human request would correctly take priority over the look.
-        let route = DocumentRoute {
-            app_id: CHAT.into(),
-            cluster_id: workspace.clone(),
-            document: String::new(),
-        };
-        let provider =
-            WorkspaceActionProvider::new(actions.clone(), WorkspaceId::parse(&workspace).unwrap());
-        let scout = me.clone().delegated_to(SCOUT);
-        let channel = Id::from_raw(&hands.conversation);
-        let record = ui::resource::chain_resource_id(&chat::parts::chain());
-        for index in 0..9 {
-            let note = format!(
-                "Update {index}: {}",
-                "The crossing went as planned and nothing needs doing. ".repeat(22)
-            );
-            invoke_named(
-                &provider,
-                &scout,
-                &route,
-                &record,
-                "post",
-                saying(&channel, &note).as_object().unwrap().clone(),
-            )
-            .await
-            .unwrap();
-        }
-        // The caused ask follows the earlier updates on Chat's own message clock.
-        tokio::time::sleep(Duration::from_millis(1100)).await;
+    if turn == LookTurn::LongChat {
+        previous_updates(&hands, &workspace).await;
     }
     let (initiative, events) = Initiative::start_with(
         workspaces.clone(),
@@ -1318,9 +1330,7 @@ async fn spends_the_look_rounds_day(turn: LookTurn) {
     // The server owes the assistant the turn the look started and carries it out with the
     // workspace's own model, whose first call spends the look-round's day: it is asked nothing more.
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = server
-        .approving(&workspace, &[SCOUT])
-        .await
+    let agents = agents
         .scripted(never_asked(Arc::clone(&unasked)))
         .with_events(Some(events))
         .with_initiative(Some(initiative.clone()));
@@ -1328,11 +1338,10 @@ async fn spends_the_look_rounds_day(turn: LookTurn) {
     assert_eq!(turns.len(), 1, "{turns:?}");
     assert_eq!(turns[0].person, person, "it works for the look's person");
     assert_eq!(turns[0].program.as_deref(), Some(event.as_str()));
-    if turn == LookTurn::WithSummary {
-        assert!(
-            turns[0].fold.is_some(),
-            "this turn owes a conversation summary"
-        );
+    if turn == LookTurn::LongChat {
+        assert!(turns[0].history.is_empty());
+        assert!(turns[0].fold.is_none());
+        assert!(!turns[0].request.contains("The crossing went as planned"));
     }
     tokio::time::timeout(
         Duration::from_secs(60),

@@ -28,7 +28,7 @@ pub(super) async fn keeps_an_assistant(
     // The record as their device writes it, made before anything is waited
     // for.
     let bytes = {
-        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(keeper);
+        let mut made = super::workspace_agents_document(workspace).as_author(keeper);
         made.apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: tilo_resource::NonBlank::parse("Assistant").unwrap(),

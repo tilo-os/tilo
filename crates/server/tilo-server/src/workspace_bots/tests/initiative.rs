@@ -22,6 +22,9 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError as StepError, HostSteps as Steps, StepCause,
 };
 
+use crate::workspaces::fixtures::TestHost;
+use tilo_workspace_service::work::{AgentAccess, AgentEngine, Ineligible};
+
 use super::bot_server;
 use super::*;
 use crate::WorkspaceId;
@@ -176,6 +179,7 @@ async fn fires(
     event: &str,
 ) -> Result<String, StepError> {
     let instruction = Instruction {
+        look_grant: None,
         person: hex::encode(cert.user_public_key),
         workspace: WorkspaceId::parse(workspace).unwrap().to_string(),
         instruction: "Look round.".into(),
@@ -216,6 +220,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     // Whatever asks a model on this server is seen here.
     let models = ScriptedProvider::answering(Vec::<Reply>::new());
     workspaces.answer_models_with(models.clone());
@@ -355,6 +360,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
     let server = super::bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let models = ScriptedProvider::answering([Reply::text("Looked.").costing(600_000)]);
     workspaces.answer_models_with(models.clone());
     workspaces
@@ -502,6 +508,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let assistant = Assistant::answering(vec![]);
     let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
@@ -701,6 +708,7 @@ async fn the_server_looks_when_the_look_round_fires_and_hands_other_events_on_as
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let assistant = Assistant::answering(vec![]);
     let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
@@ -757,35 +765,77 @@ async fn the_server_looks_when_the_look_round_fires_and_hands_other_events_on_as
     assert_ne!(taken[0].cause.installation, event);
 }
 
-/// `keeper` keeps an assistant in `workspace`, as their own device makes
-/// one: an agent in the workspace's list of its agents.
-async fn keeps_an_assistant(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &DeviceCert,
-    keeper: &str,
-) {
+/// The test host runs only the signing sessions its keepers have granted here.
+struct HeldAgents {
+    workspace: String,
+    agents: std::collections::BTreeMap<([u8; 32], String), AgentAccess>,
+}
+
+impl AgentEngine for HeldAgents {
+    fn access<'a>(
+        &'a self,
+        workspace: &'a str,
+        signer: &'a str,
+        keeper: &'a [u8; 32],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<AgentAccess, Ineligible>> + Send + 'a>,
+    > {
+        let access = if workspace == self.workspace {
+            self.agents.get(&(*keeper, signer.to_owned())).cloned()
+        } else {
+            None
+        };
+        Box::pin(std::future::ready(access.ok_or(Ineligible::CannotRunAgent)))
+    }
+}
+
+/// Each keeper creates their own roster entry. The stand-in for the hosted signer
+/// reports only these exact workspace, agent and keeper combinations to the scheduler.
+async fn holds_assistants(host: &TestHost, workspace: &str, keepers: &[(&DeviceCert, &str)]) {
+    use tilo_app_id::apps::{ASSISTANT, CHAT, SHORTCUTS, TASKS};
+    use tilo_server_protocol::delegation::DelegateScope;
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
+    let mut roster = workspace_agents_document(workspace);
+    let mut agents = std::collections::BTreeMap::new();
+    for &(cert, id) in keepers {
+        roster = roster.as_author(&hex::encode(cert.user_public_key));
+        roster
+            .apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
+                    id: Some(id.to_owned()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .unwrap();
+        let created_at = roster
+            .state()
+            .unwrap()
+            .personal_assistant(&hex::encode(cert.user_public_key))
+            .unwrap()
+            .created_at;
+        let key = ed25519_dalek::SigningKey::from_bytes(&rand::random());
+        agents.insert(
+            (cert.user_public_key, id.to_owned()),
+            AgentAccess::Hosted {
+                device: key.verifying_key().to_bytes(),
+                created_at,
+                scope: DelegateScope {
+                    workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
+                    apps: [CHAT, TASKS, ASSISTANT, SHORTCUTS]
+                        .map(str::to_owned)
+                        .into(),
+                },
+            },
+        );
+    }
+    let bytes = roster.doc_mut().save();
     let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    // The document as their device writes it, made before anything is waited
-    // for.
-    let bytes = {
-        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(keeper);
-        made.apply(
-            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
-                id: Some("assistant".into()),
-                model: None,
-                mcp_client: None,
-            }),
-        )
-        .unwrap();
-        std::mem::take(made.doc_mut()).save()
-    };
-    workspaces
+    host.workspaces()
         .author_workspace_document(
             workspace,
-            cert,
+            host.workspaces().serving_certificate(),
             (tilo_workspace_agent::OWNER, document.as_str()),
             |doc| {
                 tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
@@ -795,6 +845,10 @@ async fn keeps_an_assistant(
         )
         .await
         .unwrap();
+    host.run_agents(Arc::new(HeldAgents {
+        workspace: workspace.to_owned(),
+        agents,
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -805,8 +859,8 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let person = hex::encode(cert.user_public_key);
-    keeps_an_assistant(&workspaces, &workspace, &cert, &person).await;
     let assistant = Assistant::answering(vec![]);
     let (initiative, _events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
@@ -893,6 +947,7 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     // Nothing takes the first instruction handed over, as on a server that
     // starts no turn of anyone's assistant.
     let assistant = Assistant::answering(vec![Err(StepError::Unavailable(
@@ -1658,8 +1713,8 @@ async fn a_person_and_their_private_chat_can_look_now_without_enabling_a_schedul
     let (key, cert) = governor();
     let server = test_host(scratch.path(), &key, &cert).await;
     let (workspace, _) = chat_workspace(server.workspaces(), &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let person = hex::encode(cert.user_public_key);
-    keeps_an_assistant(server.workspaces(), &workspace, &cert, &person).await;
     let assistant = Assistant::answering(vec![]);
     let (initiative, events) = started(server.workspaces(), &assistant);
     let me = as_person(&cert, &workspace);
@@ -1818,6 +1873,7 @@ async fn an_immediate_and_a_scheduled_look_cannot_advance_the_same_cursor_togeth
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let (workspace, _) = chat_workspace(server.workspaces(), &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let (entered, entering) = sync_channel(1);
     let (release, releasing) = sync_channel(1);
     let holds: Arc<dyn Steps> = Arc::new(Held {
@@ -1879,6 +1935,7 @@ async fn a_partly_saved_look_round_waits_for_its_owners_limit() {
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let assistant = Assistant::answering(vec![]);
     let (initiative, events) = started(&workspaces, &assistant);
     let me = as_person(&cert, &workspace);
@@ -1972,6 +2029,12 @@ async fn a_persons_next_look_honours_the_revoked_read_of_a_tasks_record() {
         &workspace,
         74,
         tilo_server_protocol::workspaces::Role::Editor,
+    )
+    .await;
+    holds_assistants(
+        &server,
+        &workspace,
+        &[(&owner, "assistant"), (&editor, "editor-assistant")],
     )
     .await;
     let editor_as_person = as_person(&editor, &workspace);
@@ -2118,8 +2181,8 @@ async fn a_private_chat_turn_sees_only_its_granted_records_without_advancing_the
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let (workspace, _) = chat_workspace(workspaces, &cert).await;
+    holds_assistants(&server, &workspace, &[(&cert, "assistant")]).await;
     let person = hex::encode(cert.user_public_key);
-    keeps_an_assistant(workspaces, &workspace, &cert, &person).await;
     let assistant = Assistant::answering(vec![]);
     let (initiative, _events) = started(workspaces, &assistant);
     let me = as_person(&cert, &workspace);

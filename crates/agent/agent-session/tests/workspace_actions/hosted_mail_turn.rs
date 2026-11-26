@@ -46,7 +46,7 @@ const MAY_IT_LEAVE: &str = "May I send this message";
 /// The mail servers' stand-in: it answers with the one message that arrived, keeps what it was
 /// asked and what each request signed in with, and tells the server's watch what arrives.
 #[derive(Default)]
-struct Servers {
+pub(super) struct Servers {
     asked: Mutex<Vec<String>>,
     signed_in: Mutex<Vec<String>>,
     heard: Mutex<Option<Arc<dyn InboxHeard>>>,
@@ -244,7 +244,7 @@ fn every_device_of_hers_goes_off(hosted: &Hosted) {
 
 /// The watch the server keeps of the workspace's inbox with no window open hears a message
 /// arrive.
-fn a_message_arrives(hosted: &Hosted, servers: &Servers) {
+pub(super) fn a_message_arrives(hosted: &Hosted, servers: &Servers) {
     let heard = servers.heard.lock().unwrap().clone();
     let heard = heard.expect("the workspace's inbox is watched");
     // A watch's first look says where it starts: what was there before is no arrival.
@@ -674,15 +674,20 @@ async fn the_password_reached_the_servers_and_nothing_else(
     );
 }
 
+/// Link a mailbox through the person's normal sign-in and credential confirmation.
+pub(super) async fn linked_inbox(hosted: &Hosted) -> Arc<Servers> {
+    let servers = Arc::new(Servers::default());
+    hosted.workspaces.carry_mail_through(servers.clone());
+    let reference = the_password_goes_from_the_persons_device_to_their_vault(hosted).await;
+    the_first_use_asks_and_always_signs_in(hosted, &reference).await;
+    servers
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_before_it_sends() {
     let lines = logged();
     let mut hosted = Hosted::start().await;
-    let servers = Arc::new(Servers::default());
-    hosted.workspaces.carry_mail_through(servers.clone());
-    // The account: signed in to with a password the assistant never saw.
-    let reference = the_password_goes_from_the_persons_device_to_their_vault(&hosted).await;
-    the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
+    let servers = linked_inbox(&hosted).await;
     every_device_of_hers_goes_off(&hosted);
 
     // Something on the server listens for the workspace's mail, as an event with a mail trigger

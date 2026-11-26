@@ -226,6 +226,12 @@ impl TestHost {
         self.host.workspaces()
     }
 
+    /// Install the stand-in for the agents' keys that this fixture holds.
+    #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+    pub fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {
+        self.workspaces().run_agents(engine);
+    }
+
     /// The host itself.
     #[must_use]
     pub const fn host(&self) -> &WorkspaceService {

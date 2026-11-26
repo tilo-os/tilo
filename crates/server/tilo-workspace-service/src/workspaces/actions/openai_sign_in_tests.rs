@@ -314,6 +314,68 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
     server.shutdown().await;
 }
 
+/// A signed-in provider rejecting its access token can trigger another model
+/// call. The original turn's permission must still hold for that retry.
+#[tokio::test]
+async fn a_signed_in_model_rechecks_the_turns_permission_after_authentication_fails() {
+    use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
+    use crate::workspaces::person_model::{Interaction, protocol::ErrorKind};
+
+    let fake = FakeProviders::start().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces.call_private_model_addresses(true);
+    workspaces.sign_in_to_openai_at(at_fake(&fake));
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let signed_in = signs_in(&actions, workspace_id, &ada, &fake, json!({})).await;
+    assert!(
+        matches!(signed_in, SignInState::Done { .. }),
+        "{signed_in:?}"
+    );
+    let refreshes = fake.refresh_count();
+
+    let provider = ScriptedProvider::answering([
+        Reply::failing(ModelError::new(ErrorKind::Authentication)),
+        Reply::text("The person asked directly."),
+    ]);
+    workspaces.answer_models_with(provider.clone());
+    let receipt = Arc::clone(&provider);
+    let turn = workspaces
+        .workspace_model(workspace_id, Interaction::Request)
+        .while_permitted(Arc::new(move || {
+            Box::pin(std::future::ready(receipt.asked().is_empty()))
+        }));
+    let request = serde_json::from_value(asking("Private turn")).unwrap();
+    let deadline = tilo_clock::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .unwrap();
+    let refused = turn
+        .answer(&request, deadline, &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(refused.model_error().kind, ErrorKind::Cancelled);
+    assert_eq!(
+        provider.asked().len(),
+        1,
+        "no retry sent the private prompt"
+    );
+    assert_eq!(
+        fake.refresh_count(),
+        refreshes,
+        "the withdrawn turn did not refresh the token"
+    );
+    assert_eq!(
+        answer(&actions, workspace_id, &ada, "My own question")
+            .await
+            .unwrap(),
+        "The person asked directly."
+    );
+    server.shutdown().await;
+}
+
 /// Signing in for API usage has `OpenAI` issue an API key for the account,
 /// kept as the `OpenAI` provider's key; an account with no API organisation
 /// is told what to do instead.

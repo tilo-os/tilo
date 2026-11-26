@@ -65,7 +65,9 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
+use crate::workspaces::person_model::{
+    Interaction, ModelPermission, ModelRefusal, PersonModel, Spender,
+};
 use events::{Authority, WorkspaceEvents};
 use initiative::Initiative;
 use tilo_actions::remote::workspace_events;
@@ -247,12 +249,6 @@ impl WorkspaceActionProvider {
         self.actions.landed(self.workspace, route);
     }
 
-    fn turn_authority(&self, caller: &Caller) -> Authority {
-        self.actions
-            .host()
-            .map_or(Authority::Turn, |host| Authority::hosted(caller, host))
-    }
-
     /// What `caller` is offered of the workspace's records, its events and
     /// its assistant's initiative, as the workspace's policy decides it for a
     /// turn this server carries out for them.
@@ -265,20 +261,20 @@ impl WorkspaceActionProvider {
             && query.provider.as_deref() == Some(workspace_events::PROVIDER)
         {
             return Ok(events
-                .catalogue(self.workspace, caller, &self.turn_authority(caller), &query)
+                .catalogue(self.workspace, caller, &Authority::Turn, &query)
                 .await);
         }
         if let Some(initiative) = &self.initiative
             && query.provider.as_deref() == Some(workspace_initiative::PROVIDER)
         {
             return Ok(initiative
-                .catalogue(self.workspace, caller, &self.turn_authority(caller), &query)
+                .catalogue(self.workspace, caller, &Authority::Turn, &query)
                 .await);
         }
         let initiative = match &self.initiative {
             Some(initiative) if query.provider.is_none() => {
                 initiative
-                    .provider(self.workspace, caller, &self.turn_authority(caller))
+                    .provider(self.workspace, caller, &Authority::Turn)
                     .await
             }
             _ => None,
@@ -287,7 +283,7 @@ impl WorkspaceActionProvider {
         let events = match &self.events {
             Some(events) if query.provider.is_none() => {
                 events
-                    .provider(self.workspace, caller, &self.turn_authority(caller))
+                    .provider(self.workspace, caller, &Authority::Turn)
                     .await
             }
             _ => None,
@@ -454,7 +450,7 @@ impl ActionProvider for WorkspaceActionProvider {
             let (answered, by) = (self.answered.clone(), caller.clone());
             let (completer, answer) = pending();
             events
-                .invoking(self.workspace, caller, self.turn_authority(caller), request)
+                .invoking(self.workspace, caller, Authority::Turn, request)
                 .then(move |receipt| {
                     if let Some(receipt) = receipt {
                         answered.keep(&by, &receipt);
@@ -470,7 +466,7 @@ impl ActionProvider for WorkspaceActionProvider {
             let (answered, by) = (self.answered.clone(), caller.clone());
             let (completer, answer) = pending();
             initiative
-                .invoking(self.workspace, caller, self.turn_authority(caller), request)
+                .invoking(self.workspace, caller, Authority::Turn, request)
                 .then(move |receipt| {
                     if let Some(receipt) = receipt {
                         answered.keep(&by, &receipt);
@@ -686,6 +682,15 @@ pub enum Ask {
     },
 }
 
+impl Ask {
+    fn record(&self) -> (&'static str, &str) {
+        match self {
+            Self::Message { part, .. } => (CHAT, part),
+            Self::Issue { record, .. } => (TASKS, record),
+        }
+    }
+}
+
 /// One turn the server owes an agent: who asks what, of whom.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Turn {
@@ -699,6 +704,8 @@ pub struct Turn {
     pub cause: String,
     /// The software that authored a caused Chat message, as the resource recorded it.
     pub program: Option<String>,
+    /// The assistant's authority when the event gathered this look.
+    pub look_grant: Option<String>,
     /// What the person asked, in words.
     pub request: String,
     /// Earlier messages kept in the conversation, before this request.
@@ -790,42 +797,66 @@ enum Roster {
     Device(Arc<dyn agent_keys::AgentKeys>),
 }
 
-/// `agent` of `workspace` as its own key, working for `person`: what everything it does there
-/// goes as, each invocation signed by that key.
+/// The current roster authority both the turn's lease and its signed actions require.
+/// A child uses its own keeper's active lead, never a separate signing grant.
+async fn signing_agent<'a>(
+    workspaces: &Workspaces,
+    workspace: &str,
+    agent: &'a Agent,
+) -> Result<std::borrow::Cow<'a, Agent>, String> {
+    if agent.sub.is_none() {
+        return Ok(std::borrow::Cow::Borrowed(agent));
+    }
+    let (_, lead) = workspaces
+        .child_lead(workspace, &agent.id.0, &agent.keeper)
+        .await
+        .filter(|(created_at, _)| *created_at == agent.created_at)
+        .ok_or("the sub-agent has no active lead belonging to its keeper")?;
+    Ok(std::borrow::Cow::Owned(lead))
+}
+
+/// The caller for this agent's turn. A child acts under its current lead's signing session.
 ///
 /// # Errors
 /// The agent belongs to no person; on a host, no approved signing session for the workspace; on a
 /// device, no key of its own there.
 async fn agent_caller(
+    workspaces: &Workspaces,
     roster: &Roster,
     workspace: WorkspaceId,
     agent: &Agent,
     person: [u8; 32],
 ) -> Result<Caller, String> {
-    let root = tilo_action_policy::PersonId::parse(&agent.keeper)
+    let signer = signing_agent(workspaces, &workspace.to_string(), agent).await?;
+    let root = tilo_action_policy::PersonId::parse(&signer.keeper)
         .ok()
         .and_then(|its| its.root())
         .ok_or("the agent belongs to no person")?;
     let key = match roster {
         Roster::Hosted(server, sessions) => server
-            .session_device(sessions, workspace, &agent.id.0, &root)
+            .session_device(sessions, workspace, &signer.id.0, &root)
             .await
             .filter(|device| {
-                sessions.matches_roster(device, workspace, &agent.id.0, &root, agent.created_at)
+                sessions.matches_roster(device, workspace, &signer.id.0, &root, signer.created_at)
             })
             .ok_or("the hosted agent has no approved signing session for this workspace")?,
-        Roster::Device(keys) => keys.grant(workspace, &agent.id.0, &agent.name, root)?,
+        Roster::Device(keys) => keys.grant(workspace, &signer.id.0, &signer.name, root)?,
     };
-    let caller = Caller::delegated_agent(agent.id.0.clone(), root, key)
+    let caller = Caller::delegated_agent(signer.id.0.clone(), root, key)
         .in_workspace(workspace.to_string())
-        .named(&agent.name)
-        .on_roster(agent.created_at, person);
-    Ok(match roster {
+        .named(&signer.name)
+        .on_roster(signer.created_at, person);
+    let caller = match roster {
         // A host reads the agent's bound where it decides its approved key; on the person's
         // device the agent carries the one its record keeps, which the device's broker holds
         // it to.
         Roster::Hosted(..) => caller,
-        Roster::Device(_) => caller.held_to(agent.turn_rules(&workspace.to_string())),
+        Roster::Device(_) => caller.held_to(signer.turn_rules(&workspace.to_string())),
+    };
+    Ok(if agent.is_sub() {
+        caller.working_under(agent.id.0.clone(), &agent.name)
+    } else {
+        caller
     })
 }
 
@@ -835,22 +866,37 @@ async fn agent_caller(
 struct EngineKeys(Roster);
 
 impl crate::work::AgentEngine for EngineKeys {
-    fn holds<'a>(
+    fn access<'a>(
         &'a self,
         workspace: &'a str,
         agent: &'a str,
         keeper: &'a [u8; 32],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<crate::work::AgentAccess, crate::work::Ineligible>,
+                > + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
-            let (Roster::Hosted(server, sessions), Some(workspace)) =
-                (&self.0, WorkspaceId::parse(workspace))
-            else {
-                return false;
+            use crate::work::{AgentAccess, Ineligible};
+            let Roster::Hosted(server, sessions) = &self.0 else {
+                return Ok(AgentAccess::Device);
             };
-            server
+            let workspace = WorkspaceId::parse(workspace).ok_or(Ineligible::CannotRunAgent)?;
+            let device = server
                 .session_device(sessions, workspace, agent, keeper)
                 .await
-                .is_some()
+                .ok_or(Ineligible::CannotRunAgent)?;
+            let (created_at, scope) = sessions
+                .signing_scope(&device)
+                .ok_or(Ineligible::CannotRunAgent)?;
+            Ok(AgentAccess::Hosted {
+                device,
+                created_at,
+                scope,
+            })
         })
     }
 }
@@ -969,42 +1015,7 @@ impl ServerAgents {
         agent: &Agent,
         person: [u8; 32],
     ) -> Result<Caller, String> {
-        let signer = self.signing_agent(&workspace.to_string(), agent).await?;
-        let caller = agent_caller(&self.roster, workspace, &signer, person).await?;
-        Ok(if agent.sub.is_some() {
-            caller.working_under(agent.id.0.clone(), &agent.name)
-        } else {
-            caller
-        })
-    }
-
-    /// The current roster authority both the turn's lease and its signed actions require.
-    /// A child uses its own keeper's active lead, never a separate signing grant.
-    async fn signing_agent<'a>(
-        &self,
-        workspace: &str,
-        agent: &'a Agent,
-    ) -> Result<std::borrow::Cow<'a, Agent>, String> {
-        if agent.sub.is_none() {
-            return Ok(std::borrow::Cow::Borrowed(agent));
-        }
-        let roster = roster(&self.workspaces, workspace)
-            .await?
-            .ok_or("the workspace keeps no list of its agents")?;
-        let child = roster
-            .get(&tilo_resource::Id::from_raw(agent.id.0.clone()))
-            .filter(|entry| {
-                entry.is_active()
-                    && entry.is_sub()
-                    && entry.created_at == agent.created_at
-                    && entry.keeper.eq_ignore_ascii_case(&agent.keeper)
-            })
-            .ok_or("the sub-agent is no longer active for its keeper")?;
-        let lead = roster.root_of(child);
-        if lead.is_sub() || !lead.is_active() || !lead.keeper.eq_ignore_ascii_case(&child.keeper) {
-            return Err("the sub-agent has no active lead belonging to its keeper".into());
-        }
-        Ok(std::borrow::Cow::Owned(lead.clone()))
+        agent_caller(&self.workspaces, &self.roster, workspace, agent, person).await
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1266,6 +1277,19 @@ impl ServerAgents {
     /// the device that has it, and a claim stays until it goes unwritten for a minute, so the
     /// device that answered in a conversation answers what is written there next.
     async fn claim(&self, workspace: &str, turn: &Turn) -> Option<Arc<crate::work::Claim>> {
+        if !initiative::may_take_look(
+            &self.workspaces,
+            self.initiative.as_ref(),
+            workspace,
+            &turn.person,
+            &turn.agent.id.0,
+            turn.program.as_deref(),
+            turn.look_grant.as_deref(),
+        )
+        .await
+        {
+            return None;
+        }
         let keeper = match tilo_action_policy::PersonId::parse(&turn.agent.keeper) {
             Ok(keeper) => keeper.root(),
             Err(error) => {
@@ -1277,12 +1301,9 @@ impl ServerAgents {
             tracing::warn!(%workspace, agent = %turn.agent.id.0, "an agent names no keeper by their root, and nobody answers for it");
             return None;
         };
-        let (app, record) = match &turn.ask {
-            Ask::Message { part, .. } => (CHAT, part),
-            Ask::Issue { record, .. } => (TASKS, record),
-        };
+        let (app, record) = turn.ask.record();
         let (_, agent, place) = going::place(workspace, turn);
-        let signer = match self.signing_agent(workspace, &turn.agent).await {
+        let signer = match signing_agent(&self.workspaces, workspace, &turn.agent).await {
             Ok(signer) => signer,
             Err(error) => {
                 tracing::debug!(%workspace, %agent, %error, "no signing agent can claim this turn");
@@ -1295,7 +1316,7 @@ impl ServerAgents {
             place,
             acts_for: keeper,
             app: app.to_owned(),
-            record: record.clone(),
+            record: record.to_owned(),
         };
         match crate::work::takes_turn(&self.workspaces, workspace, &ask).await {
             Ok(claim) => Some(Arc::new(claim)),
@@ -1345,8 +1366,20 @@ impl ServerAgents {
 
     /// [`Self::asks`] at `now_ms`.
     async fn asks_at(&self, workspace: &str, now_ms: i64) -> Result<Asks, String> {
-        let agents = self.agents(workspace).await?;
-        if agents.is_empty() {
+        let mut chat_agents = BTreeMap::new();
+        let mut task_agents = BTreeMap::new();
+        for (id, agent) in self.agents(workspace).await? {
+            let Ok(access) = self.access(workspace, &agent).await else {
+                continue;
+            };
+            if access.permits_app(CHAT) {
+                chat_agents.insert(id.clone(), agent.clone());
+            }
+            if access.permits_app(TASKS) {
+                task_agents.insert(id, agent);
+            }
+        }
+        if chat_agents.is_empty() && task_agents.is_empty() {
             self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
@@ -1356,7 +1389,8 @@ impl ServerAgents {
             .await
             .map_err(|error| error.to_string())?;
         // The device that founded the workspace founds its tracker; the others wait for it.
-        if !routes.iter().any(|(app, _)| app == TASKS)
+        if !task_agents.is_empty()
+            && !routes.iter().any(|(app, _)| app == TASKS)
             && !self.workspaces.is_member(workspace).await?
             && self.found_tracker(workspace).await
         {
@@ -1366,12 +1400,42 @@ impl ServerAgents {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
-        asks.turns.extend(
-            self.issue_turns(workspace, &agents, &routes, now_ms)
-                .await?,
-        );
+        let mut asks = if chat_agents.is_empty() {
+            self.workspaces.note_waiting(workspace, Vec::new());
+            Asks::default()
+        } else {
+            self.chat_asks(workspace, &chat_agents, &routes).await?
+        };
+        if !task_agents.is_empty() {
+            asks.turns.extend(
+                self.issue_turns(workspace, &task_agents, &routes, now_ms)
+                    .await?,
+            );
+        }
         Ok(asks)
+    }
+
+    /// Resolve a child through its current lead before reading work for either of them.
+    async fn access(
+        &self,
+        workspace: &str,
+        agent: &Agent,
+    ) -> Result<crate::work::AgentAccess, String> {
+        let signer = signing_agent(&self.workspaces, workspace, agent).await?;
+        let keeper = tilo_action_policy::PersonId::parse(&signer.keeper)
+            .ok()
+            .and_then(|person| person.root())
+            .ok_or("the agent belongs to no person")?;
+        let access = self
+            .workspaces
+            .agent_access(workspace, &signer.id.0, &keeper)
+            .await
+            .map_err(|error| error.to_string())?;
+        if matches!(&access, crate::work::AgentAccess::Hosted { created_at, .. } if *created_at != signer.created_at)
+        {
+            return Err("the agent's signing session changed".into());
+        }
+        Ok(access)
     }
 
     /// Found the tracker of `workspace`, which keeps none: nobody opened Tasks in it yet. This
@@ -1442,39 +1506,61 @@ impl ServerAgents {
                 let Some(message) = part.messages.get(&summons.message) else {
                     continue;
                 };
+                let program = message
+                    .cause
+                    .as_ref()
+                    .filter(|cause| {
+                        !cause.by_person()
+                            && cause.person.person_id() == Some(summons.person.as_str())
+                    })
+                    .and_then(|_| message.author.agent_id());
+                let look_grant = message
+                    .cause
+                    .as_ref()
+                    .and_then(|cause| cause.look_grant.as_ref())
+                    .map(|grant| grant.0.as_str());
+                if !initiative::may_take_look(
+                    &self.workspaces,
+                    self.initiative.as_ref(),
+                    workspace,
+                    &summons.person,
+                    &agent.id.0,
+                    program,
+                    look_grant,
+                )
+                .await
+                {
+                    continue;
+                }
                 let request = carried::request(message);
-                // What came before it in the conversation, as every turn is told it: the
-                // same on a host as on the device that would answer it.
-                // What was learned about the person on their devices is their own record,
-                // which nothing here reads. What this server keeps of what its own agents
-                // learned is told to a turn of the person it is about, in their own
-                // conversation with the agent ([`learned`]), and to no other.
-                let asked_by = (summons.person.as_str(), &summons.conversation);
-                let known =
-                    learned::learned_for(&self.workspaces, workspace, agent, asked_by).await;
-                let told = chat::recall::told(
-                    &chat,
-                    &part,
-                    known.as_ref(),
-                    &summons.conversation,
-                    &summons.message,
-                    &collaboration::permissions::MemberId::agent(&summons.agent),
-                    request,
-                );
+                let told = if look_grant.is_some() {
+                    // A look reports only what its current grant allowed it to gather.
+                    chat::recall::Told {
+                        request,
+                        history: Vec::new(),
+                        fold: None,
+                    }
+                } else {
+                    let asked_by = (summons.person.as_str(), &summons.conversation);
+                    let known =
+                        learned::learned_for(&self.workspaces, workspace, agent, asked_by).await;
+                    chat::recall::told(
+                        &chat,
+                        &part,
+                        known.as_ref(),
+                        &summons.conversation,
+                        &summons.message,
+                        &collaboration::permissions::MemberId::agent(&summons.agent),
+                        request,
+                    )
+                };
                 asks.turns.push(Turn {
                     agent: agent.clone(),
                     person: summons.person.clone(),
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
-                    program: message
-                        .cause
-                        .as_ref()
-                        .filter(|cause| {
-                            !cause.by_person()
-                                && cause.person.person_id() == Some(summons.person.as_str())
-                        })
-                        .and_then(|_| message.author.agent_id())
-                        .map(str::to_owned),
+                    program: program.map(str::to_owned),
+                    look_grant: look_grant.map(str::to_owned),
                     request: told.request,
                     history: told.history,
                     asked: chat::summons::asked_words(message),
@@ -1498,6 +1584,7 @@ impl ServerAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     program: None,
+                    look_grant: None,
                     request: String::new(),
                     history: Vec::new(),
                     asked: String::new(),
@@ -1578,6 +1665,7 @@ impl ServerAgents {
                 conversation: tasks_model::issue_resource(&ask.issue),
                 cause: ask.cause.clone(),
                 program: None,
+                look_grant: None,
                 request,
                 history: Vec::new(),
                 asked: issue.title.clone(),
@@ -1670,7 +1758,26 @@ impl ServerAgents {
             return Err("the person who asked is admitted here on no device".to_owned());
         }
         let agent = self.agent_caller(workspace_id, &turn.agent, person).await?;
+        let authority = Arc::new(TurnAuthority {
+            workspaces: self.workspaces.clone(),
+            initiative: self.initiative.clone(),
+            workspace: workspace.to_owned(),
+            caller: agent.clone(),
+            app: turn.ask.record().0,
+            person: turn.person.clone(),
+            agent: turn.agent.id.0.clone(),
+            program: turn.program.clone(),
+            look_grant: turn.look_grant.clone(),
+        });
+        if !authority.permits().await {
+            return Err("the agent has no current grant for this request".into());
+        }
+        let permission: ModelPermission = Arc::new(move || {
+            let authority = Arc::clone(&authority);
+            Box::pin(async move { authority.permits().await })
+        });
         let mut scope = TurnScope {
+            permission,
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
@@ -1707,8 +1814,11 @@ impl ServerAgents {
             mail_connect::TurnMailConnects::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
-        let browser =
-            turn_browser::TurnBrowser::for_turn(self.browsers.clone(), &scope.reply(turn));
+        let browser = turn_browser::TurnBrowser::for_turn(
+            self.browsers.clone(),
+            &self.workspaces,
+            &scope.reply(turn),
+        );
         scope.provider = scope.provider.answering(browser);
         // What it does at that window's page: where it has the window sent.
         let pages = turn_pages::TurnPages::for_turn(
@@ -1871,6 +1981,7 @@ impl ServerAgents {
                 &turn,
                 &day,
                 going.stop_flag(),
+                Arc::clone(&scope.permission),
             )
             .await;
         let keeping = learned::Keeping::of(&self.workspaces, workspace, &turn);
@@ -2006,23 +2117,13 @@ impl ServerAgents {
     /// Once it linked a provider its settings decide alone, and a choice that cannot be used is
     /// said, never replaced by a model somebody else pays for. A workspace that linked nothing is
     /// told what to link.
-    async fn model_for(
-        &self,
-        place: (&str, WorkspaceId),
-        turn: &Turn,
-        day: &str,
-    ) -> Result<Model, String> {
-        self.model_for_turn(place, turn, day, Arc::default()).await
-    }
-
-    /// [`Self::model_for`], for a turn its person may stop: a call of the workspace's model that
-    /// is under way ends once `stop` is set.
     async fn model_for_turn(
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
         turn: &Turn,
         day: &str,
         stop: Arc<AtomicBool>,
+        permission: ModelPermission,
     ) -> Result<Model, String> {
         let named_model = turn.agent.model.as_deref().or_else(|| {
             turn.agent.sub.as_ref().and_then(|sub| {
@@ -2037,6 +2138,7 @@ impl ServerAgents {
                 turn,
                 day,
                 sub_agents::kind_of(&turn.agent),
+                permission,
             )?
             .naming(named_model);
         let asked = theirs.clone();
@@ -2068,11 +2170,13 @@ impl ServerAgents {
         turn: &Turn,
         day: &str,
         kind: Interaction,
+        permission: ModelPermission,
     ) -> Result<PersonModel, String> {
         let payer = sub_agents::payer(turn);
         let model = self
             .workspaces
             .workspace_model(workspace_id, kind)
+            .while_permitted(permission)
             .spending_as(Spender {
                 workspace: workspace.to_owned(),
                 agent: payer.id.0.clone(),
@@ -2213,9 +2317,41 @@ struct TurnUsage {
 /// How a turn ended.
 pub use tilo_agent_turn::Outcome;
 
+/// The original signer and source of a turn, rechecked before each use of its model.
+struct TurnAuthority {
+    workspaces: Workspaces,
+    initiative: Option<Initiative>,
+    workspace: String,
+    caller: Caller,
+    app: &'static str,
+    person: String,
+    agent: String,
+    program: Option<String>,
+    look_grant: Option<String>,
+}
+
+impl TurnAuthority {
+    async fn permits(&self) -> bool {
+        self.workspaces
+            .agent_may_act(&self.workspace, &self.caller, self.app)
+            .await
+            && initiative::may_take_look(
+                &self.workspaces,
+                self.initiative.as_ref(),
+                &self.workspace,
+                &self.person,
+                &self.agent,
+                self.program.as_deref(),
+                self.look_grant.as_deref(),
+            )
+            .await
+    }
+}
+
 /// Whom a turn's agent acts for in a workspace, and through what: the same for every ask the
 /// turn goes on with.
 struct TurnScope {
+    permission: ModelPermission,
     provider: WorkspaceActionProvider,
     /// The agent as its own approved key, working for the person who asked
     /// ([`ServerAgents::agent_caller`]).
@@ -2255,6 +2391,7 @@ impl TurnScope {
         let provider = self.provider.clone();
         Reply {
             provider,
+            permission: Arc::clone(&self.permission),
             caller,
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
@@ -2269,6 +2406,7 @@ impl TurnScope {
 /// comment on the issue.
 struct Reply {
     provider: WorkspaceActionProvider,
+    permission: ModelPermission,
     caller: Caller,
     workspace: String,
     ask: Ask,
@@ -2853,9 +2991,15 @@ async fn work(
     };
     let agent = turn.agent.id.0.clone();
     let usage = Arc::new(Mutex::new(TurnUsage::default()));
+    let permission = Arc::clone(&scope.permission);
+    let runtime = tokio::runtime::Handle::current();
     let model = Arc::new(Mutex::new(Asking {
         usage: Arc::clone(&usage),
-        turns: asking::again(turns, going.stop_flag()),
+        turns: asking::again(
+            turns,
+            going.stop_flag(),
+            Box::new(move || runtime.block_on(permission())),
+        ),
     }));
     let answering = Answering {
         scope,
@@ -3025,7 +3169,13 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
             let at = self.at.lock().await;
             Box::pin(at.1.document(self.server, &call.input)).await
         } else {
-            learned::call(self.keeping, &call.name, &call.input).await?
+            learned::call(
+                self.keeping,
+                &call.name,
+                &call.input,
+                &self.scope.permission,
+            )
+            .await?
         };
         Some(tilo_agent_turn::Answer {
             text,

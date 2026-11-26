@@ -729,6 +729,67 @@ async fn a_busy_provider_is_asked_again_and_a_refused_key_is_said() {
     assert!(!format!("{refused:?} {refused}").contains(KEY));
 }
 
+/// Losing the turn's permission after a busy response prevents the gateway from
+/// resending its prompt. The person can still ask their own model directly.
+#[tokio::test]
+async fn a_model_retry_checks_the_turns_permission_before_resending_its_prompt() {
+    let model = "gpt-4o-mini";
+    let permitted = Arc::new(AtomicBool::new(true));
+    let on_request = Arc::clone(&permitted);
+    let responder = Responder::handle(move |_| {
+        if on_request.swap(false, Ordering::SeqCst) {
+            return Some(
+                Reply::status(429)
+                    .header("Content-Type", "application/json")
+                    .header("Retry-After", "0")
+                    .body(r#"{"error":{"type":"rate_limit_error"}}"#),
+            );
+        }
+        Some(openai_stream(&[
+            chunk(
+                model,
+                &json!({"role": "assistant", "content": "Here."}),
+                &Value::Null,
+            ),
+            chunk(model, &json!({}), &json!("stop")),
+            usage(model, 10, 1),
+        ]))
+    });
+    let (_dir, server) = linked(("A provider", OPENAI), &responder.url(), model).await;
+    let person = server
+        .workspaces()
+        .workspace_model(ADA, Interaction::Request);
+    let turn = person.clone().while_permitted(Arc::new(move || {
+        Box::pin(std::future::ready(permitted.load(Ordering::SeqCst)))
+    }));
+    let refused = turn
+        .answer(&asking("Private turn", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(refused.model_error().kind, ErrorKind::Cancelled);
+    assert_eq!(
+        responder.drain_requests().len(),
+        1,
+        "only the first attempt reached the provider"
+    );
+    let refused = turn
+        .answer(
+            &asking("Another private turn", Vec::new()),
+            soon(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.model_error().kind, ErrorKind::Cancelled);
+    assert!(responder.drain_requests().is_empty());
+    let direct = person
+        .answer(&asking("The person asks", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(direct.text(), "Here.");
+    assert_eq!(responder.drain_requests().len(), 1);
+}
+
 /// A call that is let go of while its answer still streams ends the request
 /// at the provider: nothing nobody reads is paid for to its end.
 #[tokio::test]

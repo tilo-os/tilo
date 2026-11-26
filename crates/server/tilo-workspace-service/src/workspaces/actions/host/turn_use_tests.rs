@@ -24,6 +24,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::tests::{admit, caller, governed};
 use super::vault_tests::{a_provider, ask, ask_at, files_holding, kept_item};
+use crate::work::{AgentAccess, AgentEngine, Ineligible};
 use crate::workspaces::fixtures::test_host;
 use crate::workspaces::hosted_use::{
     CARRIED_OUT, HostedTurn, NOTHING_WAITS, OpenAsk, TurnUse, UseAnswer,
@@ -39,13 +40,96 @@ const MAIL_USE: &str = "tilo.accounts/add-mail-with-item";
 
 /// The caller a turn's tools act as: `agent`, certified by `person`'s device, on a turn of
 /// theirs in `workspace`.
-pub(super) fn on_turn(person: &DeviceCert, workspace: &str, agent: &str) -> Caller {
+pub(super) fn on_turn(
+    workspaces: &Workspaces,
+    person: &DeviceCert,
+    workspace: &str,
+    agent: &str,
+) -> Caller {
+    on_turn_for_apps(
+        workspaces,
+        person,
+        workspace,
+        agent,
+        &[
+            tilo_app_id::apps::BROWSER,
+            tilo_app_id::apps::MAIL,
+            tilo_app_id::apps::CALENDAR,
+            tilo_app_id::apps::PASSWORDS,
+            person_models::PROVIDER,
+            tilo_actions::remote::person_connections::PROVIDER,
+        ],
+    )
+}
+
+/// Approve this test turn's exact signing session and app scope, as a hosted engine would.
+pub(super) fn on_turn_for_apps(
+    workspaces: &Workspaces,
+    person: &DeviceCert,
+    workspace: &str,
+    agent: &str,
+    apps: &[&str],
+) -> Caller {
+    on_turn_at_for_apps(workspaces, person, workspace, agent, 0, apps)
+}
+
+/// Approve a particular incarnation, replacing any earlier one for this agent.
+pub(super) fn on_turn_at_for_apps(
+    workspaces: &Workspaces,
+    person: &DeviceCert,
+    workspace: &str,
+    agent: &str,
+    created_at: i64,
+    apps: &[&str],
+) -> Caller {
+    let workspace_id = WorkspaceId::parse(workspace).expect("a fixture workspace");
+    workspaces.run_agents(Arc::new(TurnGrant {
+        workspace: workspace.to_owned(),
+        agent: agent.to_owned(),
+        keeper: person.user_public_key,
+        access: AgentAccess::Hosted {
+            device: person.device_public_key,
+            created_at,
+            scope: tilo_server_protocol::delegation::DelegateScope {
+                workspaces: vec![workspace_id],
+                apps: apps.iter().map(|app| (*app).to_owned()).collect(),
+            },
+        },
+        earlier: workspaces.agent_keys(),
+    }));
     Caller::delegated_agent(agent, person.user_public_key, person.device_public_key)
         .in_workspace(workspace)
         .named("Scout")
         .in_agent_session("agent-session:test")
-        .on_roster(0, person.user_public_key)
+        .on_roster(created_at, person.user_public_key)
         .on_roster_turn(turn())
+}
+
+struct TurnGrant {
+    workspace: String,
+    agent: String,
+    keeper: [u8; 32],
+    access: AgentAccess,
+    earlier: Option<Arc<dyn AgentEngine>>,
+}
+
+impl AgentEngine for TurnGrant {
+    fn access<'a>(
+        &'a self,
+        workspace: &'a str,
+        agent: &'a str,
+        keeper: &'a [u8; 32],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<AgentAccess, Ineligible>> + Send + 'a>,
+    > {
+        if self.workspace == workspace && self.agent == agent && &self.keeper == keeper {
+            return Box::pin(std::future::ready(Ok(self.access.clone())));
+        }
+        match &self.earlier {
+            Some(engine) => engine.access(workspace, agent, keeper),
+            None => Box::pin(std::future::ready(Err(Ineligible::CannotRunAgent))),
+        }
+    }
 }
 
 /// The turn a test's agent works.
@@ -160,7 +244,7 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     let hers = (&ada, &as_ada);
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let asker = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
@@ -256,7 +340,7 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let hers = (&ada, &as_ada);
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -358,7 +442,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     let hers = (&ada, &as_ada);
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -416,7 +500,7 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     }
 
     // Another agent of hers is still asked: the leave names one agent.
-    let other = on_turn(&ada, &workspace, "other");
+    let other = on_turn(workspaces, &ada, &workspace, "other");
     let others = HostedTurn {
         caller: &other,
         ..turn
@@ -452,7 +536,7 @@ async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_st
     let as_ada = caller(&ada);
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
     let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -587,8 +671,8 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
     // item: each ask is put to whoever asked.
     let ada_id = hex::encode(ada.user_public_key);
     let bo_id = hex::encode(bo.user_public_key);
-    let for_ada = on_turn(&ada, &workspace, "scout");
-    let for_bo = on_turn(&bo, &workspace, "scout");
+    let for_ada = on_turn(workspaces, &ada, &workspace, "scout");
+    let for_bo = on_turn(workspaces, &bo, &workspace, "scout");
     let (hers, his) = (
         HostedTurn {
             workspace: workspace_id,
@@ -639,8 +723,8 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
     let as_ada = caller(&ada);
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
-    let scout = on_turn(&ada, &workspace, "scout");
-    let other = on_turn(&ada, &workspace, "other");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
+    let other = on_turn(workspaces, &ada, &workspace, "other");
     let turn = |caller| HostedTurn {
         workspace: workspace_id,
         caller,
@@ -721,7 +805,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     let as_ada = caller(&ada);
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
     let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "sub-agent");
+    let scout = on_turn(workspaces, &ada, &workspace, "sub-agent");
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
@@ -817,7 +901,7 @@ async fn a_use_the_vault_refuses_asks_nobody() {
     )
     .await;
     let proved = proving(workspaces);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -896,7 +980,7 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
         ("key", "https://models.example"),
     )
     .await;
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -997,7 +1081,7 @@ async fn finishing_a_hosted_key_use_requires_current_store_and_item_permissions(
     .await
     .unwrap();
     let item = kept_item(&service, id, hers, ("key", &provider.url())).await;
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: id,
         caller: &scout,

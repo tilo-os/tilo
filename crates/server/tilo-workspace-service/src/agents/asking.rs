@@ -67,21 +67,38 @@ const LOOKS: [&str; 7] = [
 /// A turn's model, asked again where a call fails for a moment.
 struct Again {
     turns: Box<dyn PlanTurns>,
+    /// Revalidate the signed turn immediately before each new provider request.
+    permitted: Box<dyn Fn() -> bool + Send + Sync>,
     /// Set when the turn's person stopped it: nothing is asked after that.
     stop: Arc<AtomicBool>,
     waits: &'static [Duration],
 }
 
 /// `turns`, each call of which is asked again as this module says while `stop` is not set.
-pub(super) fn again(turns: Box<dyn PlanTurns>, stop: Arc<AtomicBool>) -> Box<dyn PlanTurns> {
+pub(super) fn again(
+    turns: Box<dyn PlanTurns>,
+    stop: Arc<AtomicBool>,
+    permitted: Box<dyn Fn() -> bool + Send + Sync>,
+) -> Box<dyn PlanTurns> {
     Box::new(Again {
         turns,
         stop,
+        permitted,
         waits: &WAITS,
     })
 }
 
 impl Again {
+    fn check_access(&self) -> Result<(), ModelError> {
+        if (self.permitted)() {
+            Ok(())
+        } else {
+            Err(ModelError::new(
+                crate::workspaces::person_model::protocol::ErrorKind::Cancelled,
+            ))
+        }
+    }
+
     /// Wait `wait` before a further ask. False, at once, when the call's `deadline` leaves no
     /// time for an answer after it; false as soon as the turn's person stops the turn.
     fn waited(&self, wait: Duration, deadline: Instant) -> bool {
@@ -127,6 +144,7 @@ impl PlanTurns for Again {
         written: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ModelResponse, ModelError> {
         let began = tilo_clock::now();
+        self.check_access()?;
         let mut error = match self
             .turns
             .turn_streaming(request, key, deadline, retry, written)
@@ -139,6 +157,7 @@ impl PlanTurns for Again {
             if !self.waited(*wait, deadline) {
                 break;
             }
+            self.check_access()?;
             asked = asked.saturating_add(1);
             tracing::info!(kind = ?error.kind, asked, "a turn's model call failed; it is asked again");
             // What the call that broke off wrote stays where it was read: what the next
@@ -344,6 +363,15 @@ mod tests {
         stopped: bool,
         time: Duration,
     ) -> (Result<ModelResponse, ModelError>, Vec<bool>) {
+        asked_while(answers, stopped, time, Box::new(|| true))
+    }
+
+    fn asked_while(
+        answers: Vec<Result<ModelResponse, ModelError>>,
+        stopped: bool,
+        time: Duration,
+        permitted: Box<dyn Fn() -> bool + Send + Sync>,
+    ) -> (Result<ModelResponse, ModelError>, Vec<bool>) {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let mut again = Again {
             turns: Box::new(Written {
@@ -351,6 +379,7 @@ mod tests {
                 asked: Arc::clone(&asked),
             }),
             stop: Arc::new(AtomicBool::new(stopped)),
+            permitted,
             waits: &[Duration::ZERO, Duration::ZERO, Duration::ZERO],
         };
         let request = ModelRequest {
@@ -366,6 +395,22 @@ mod tests {
     }
 
     const MINUTE: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn withdrawing_access_prevents_a_model_retry() {
+        let allowed = AtomicBool::new(true);
+        let (answer, asked) = asked_while(
+            vec![
+                Err(ModelError::new(ErrorKind::Unavailable)),
+                Ok(words("extra call")),
+            ],
+            false,
+            MINUTE,
+            Box::new(move || allowed.swap(false, Ordering::SeqCst)),
+        );
+        assert_eq!(answer, Err(ModelError::new(ErrorKind::Cancelled)));
+        assert_eq!(asked, [false]); // Only the original provider request ran.
+    }
 
     #[test]
     fn a_call_that_fails_for_a_moment_is_asked_again_and_its_answer_is_the_calls() {
@@ -393,6 +438,7 @@ mod tests {
                 answers: vec![Err(ModelError::new(ErrorKind::Provider)), Ok(words("done"))].into(),
             }),
             stop: Arc::new(AtomicBool::new(false)),
+            permitted: Box::new(|| true),
             waits: &[Duration::ZERO],
         };
         let request = ModelRequest {

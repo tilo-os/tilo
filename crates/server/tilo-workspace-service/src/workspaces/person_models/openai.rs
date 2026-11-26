@@ -38,7 +38,7 @@ use tilo_user_identity::DeviceCert;
 use zeroize::Zeroizing;
 
 use super::super::Workspaces;
-use super::super::person_model::{ModelRefusal, Models};
+use super::super::person_model::{ModelPermission, ModelRefusal, Models, require_permission};
 use super::super::person_settings::{
     ProviderKeys, key_kept, provider_config, save_named_key, save_provider_config, view_of,
 };
@@ -481,6 +481,7 @@ impl Models {
         (keys, root): (ProviderKeys<'_>, &Path),
         profile: &ProviderProfile,
         force: bool,
+        permission: Option<&ModelPermission>,
     ) -> Result<Zeroizing<String>, ModelRefusal> {
         let signed_out = || ModelRefusal::SignedOut {
             provider: profile.display_label().to_owned(),
@@ -503,6 +504,9 @@ impl Models {
         }
         let openai = self.openai();
         let reach = Reach::of(self);
+        require_permission(permission)
+            .await
+            .map_err(ModelRefusal::Provider)?;
         let refreshed: Tokens = post_json(
             &reach,
             &openai.token_url(),

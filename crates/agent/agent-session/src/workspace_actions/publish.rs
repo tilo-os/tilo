@@ -436,16 +436,6 @@ impl super::WorkspaceActions {
         let _ = self.shared.agent_sessions.set(sessions);
     }
 
-    /// Whether the live signing session of this hosted roster turn permits an app's services.
-    #[must_use]
-    pub fn agent_may_use_app(&self, workspace: WorkspaceId, caller: &Caller, app: &str) -> bool {
-        self.shared
-            .agent_sessions
-            .get()
-            .and_then(|sessions| sessions.live_roster(workspace, caller))
-            .is_some_and(|(_, delegation)| delegation.permits_app(app))
-    }
-
     /// Sign `request` as the agent `caller` is, with that agent's own
     /// key, where `caller` is one of this device's agents and its session is open here:
     /// whatever the host asks in an agent's name it asks under that key alone. Anything else

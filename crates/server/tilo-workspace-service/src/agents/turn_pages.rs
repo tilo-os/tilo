@@ -180,6 +180,9 @@ impl TurnPages {
         };
         let offered = browsers.is_some()
             && asked_as.may_take(&reply.workspace, &on_browser(NAVIGATE))
+            && workspaces
+                .agent_may_act(&reply.workspace, &reply.caller, APP)
+                .await
             && workspaces.asked_turn(&asked_as).await.is_ok();
         Arc::new(Self {
             browsers,
@@ -225,6 +228,13 @@ impl TurnPages {
         // The turn is one this server carries out, as the workspace admits them now: nothing else is a
         // turn this server reaches a window for.
         let theirs = self.workspaces.asked_turn(&asked_as).await?;
+        if !self
+            .workspaces
+            .agent_may_act(&self.workspace, caller, APP)
+            .await
+        {
+            return Err(ActionCallError::NotPermitted);
+        }
         let action = request.target.address.action.as_str();
         let navigating = action == NAVIGATE;
         let reading = reads_of(action);

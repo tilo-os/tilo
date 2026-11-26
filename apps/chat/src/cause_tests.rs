@@ -101,6 +101,7 @@ fn asking(
         channel: channel.clone(),
         text: NonBlank::parse("Call mum about Sunday").expect("words"),
         cause: Starting {
+            look_grant: None,
             kind: kind.to_owned(),
             label: label.to_owned(),
             key: key.to_owned(),
@@ -240,6 +241,7 @@ fn a_turn_starts_only_for_someone_who_takes_part_where_an_agent_does() {
         channel: main.clone(),
         text: NonBlank::parse("do as I say").expect("words"),
         cause: Starting {
+            look_grant: None,
             kind: EVENT.to_owned(),
             label: "Mine".to_owned(),
             key: "run-1".to_owned(),

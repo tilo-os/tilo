@@ -433,6 +433,12 @@ impl Workspaces {
         ) else {
             return false;
         };
+        if !self
+            .agent_may_act(&turn.workspace.to_string(), turn.caller, store.app)
+            .await
+        {
+            return false;
+        }
         let Some(policy) = self.policy_of(&turn.workspace.to_string()).await else {
             return false;
         };

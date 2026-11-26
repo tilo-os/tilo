@@ -138,6 +138,14 @@ struct Unsigned<'a> {
     expires_at_ns: u64,
 }
 
+impl DelegateScope {
+    /// Whether this scope includes the named app.
+    #[must_use]
+    pub fn permits_app(&self, app: &str) -> bool {
+        self.apps.is_empty() || self.apps.iter().any(|permitted| permitted == app)
+    }
+}
+
 impl Delegation {
     /// Sign a delegation of `device_public_key` with the person's `root`.
     ///
@@ -252,7 +260,7 @@ impl Delegation {
     /// Whether the delegate may act in `app_id`.
     #[must_use]
     pub fn permits_app(&self, app_id: &str) -> bool {
-        self.scope.apps.is_empty() || self.scope.apps.iter().any(|app| app == app_id)
+        self.scope.permits_app(app_id)
     }
 
     /// Canonical encoding, for carrying the delegation to a browser.

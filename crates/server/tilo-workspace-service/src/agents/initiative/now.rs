@@ -62,9 +62,18 @@ impl Initiative {
             let kept = self.kept(&owner).map_err(unavailable)?;
             let mut result = self.look_round(asked).await?;
             let now = tilo_clock::unix_now_ms_i64();
+            let access = super::look::Access::current(&self.inner.workspaces, &owner)
+                .await
+                .map_err(refused)?;
+            if asked.caller.roster_created_at().is_some()
+                && !access.signing.matches_caller(asked.caller)
+            {
+                return Err(ActionCallError::NotPermitted);
+            }
             let gathered = super::look::gather(
                 &self.inner.workspaces,
                 &owner,
+                &access,
                 Some(asked.read_as()),
                 &kept.spending_event(&owner),
                 &kept.seen,
@@ -72,6 +81,10 @@ impl Initiative {
             )
             .await
             .map_err(unavailable)?;
+            access
+                .check(&self.inner.workspaces, &owner)
+                .await
+                .map_err(refused)?;
             // This turn advances no cursor, incurs no model cost and does not
             // add its narrower snapshot to the person's saved observations.
             result.looks = vec![Look {
@@ -85,6 +98,7 @@ impl Initiative {
             return Ok(result);
         }
         let instruction = Instruction {
+            look_grant: None,
             person,
             workspace: owner.workspace.clone(),
             instruction: "Look at the workspace now and propose concrete tasks for today.".into(),

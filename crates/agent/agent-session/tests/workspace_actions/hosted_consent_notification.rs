@@ -24,20 +24,6 @@ const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 const AGENT: &str = "scout";
 
-/// The caller a turn's tools act as: `AGENT`, certified by `person`'s `device`, on a turn of
-/// theirs in `workspace`.
-fn on_turn(person: [u8; 32], device: [u8; 32], workspace: &str) -> Caller {
-    Caller::delegated_agent(AGENT, person, device)
-        .in_workspace(workspace)
-        .named("Scout")
-        .in_agent_session("agent-session:test")
-        .on_roster(0, person)
-        .on_roster_turn(tilo_action_policy::turn::Turn::new(
-            "conversation-1",
-            "message-1",
-        ))
-}
-
 /// The use that adds the account `address` with the vault item `reference` names.
 fn add_mail(address: &str, reference: &Value) -> InvokeRequest {
     InvokeRequest {
@@ -167,11 +153,11 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let server_device = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&ada, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
+    let served = crate::harness::hosted::start(
         &ada,
         &server_device,
         state.path(),
-        crate::common::catalogue,
+        crate::harness::hosted::Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = served.workspaces().unwrap().clone();
@@ -215,11 +201,32 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let reference = kept.value.unwrap()["reference"].clone();
 
     // A turn of their agent needs the account. The server asks them first and uses nothing.
-    let device = workspaces
-        .person_device(workspace_id, person)
+    let _engine = served
+        .approving_for(
+            &workspace,
+            &[AGENT],
+            &[CHAT, "so.tilo.passwords", "so.tilo.mail"],
+        )
+        .await;
+    let device = served
+        .agent_link()
+        .roster_session_device(&served.roster.sessions, workspace_id, AGENT, &person)
         .await
-        .expect("a device of theirs the workspace admits");
-    let caller = on_turn(person, device, &workspace);
+        .expect("the agent's approved signing session");
+    let agent = workspaces
+        .hosted_roster_agent(workspace_id, AGENT, &person, None)
+        .await
+        .expect("the agent Ada created");
+    let conversation =
+        chat::Chat::direct_id([MemberId::person(keeper.clone()), MemberId::agent(AGENT)]);
+    let caller = Caller::delegated_agent(AGENT, person, device)
+        .in_workspace(&workspace)
+        .named("Scout")
+        .on_roster(agent.created_at, person)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(&conversation),
+            "message-1",
+        ));
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &caller,
@@ -242,9 +249,7 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     );
 
     // The question is put to them where the turn works, as its tools do.
-    let conversation =
-        chat::Chat::direct_id([MemberId::person(keeper.clone()), MemberId::agent(AGENT)]);
-    let service = WorkspaceActionProvider::new(actions.clone(), workspace_id);
+    let service = WorkspaceActionProvider::new(served.roster.actions.clone(), workspace_id);
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),

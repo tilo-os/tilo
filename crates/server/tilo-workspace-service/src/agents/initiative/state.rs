@@ -79,9 +79,8 @@ fn read(path: &Path) -> Result<Option<Kept>, String> {
 }
 
 impl Initiative {
-    fn file(&self, owner: &Owner) -> std::path::PathBuf {
-        self.inner
-            .workspaces
+    fn file(workspaces: &super::Workspaces, owner: &Owner) -> std::path::PathBuf {
+        workspaces
             .workspace_root(&owner.workspace)
             .join("initiative")
             .join(hex::encode(owner.person))
@@ -91,11 +90,11 @@ impl Initiative {
     /// An older build kept one file per workspace. Its recorded person could
     /// change when a second member resumed the schedule. Only the event's
     /// original author can keep it, and only matching records carry its proposals.
-    fn read(&self, owner: &Owner) -> Result<Kept, String> {
-        if let Some(kept) = read(&self.file(owner))? {
+    pub(super) fn read_for(workspaces: &super::Workspaces, owner: &Owner) -> Result<Kept, String> {
+        if let Some(kept) = read(&Self::file(workspaces, owner))? {
             return Ok(kept);
         }
-        let root = self.inner.workspaces.workspace_root(&owner.workspace);
+        let root = workspaces.workspace_root(&owner.workspace);
         let Some(mut kept) = read(&root.join(FILE))? else {
             return Ok(Kept::default());
         };
@@ -113,7 +112,7 @@ impl Initiative {
             return Ok(
                 if kept.event.is_none()
                     && recorded != Some(false)
-                    && self.inner.workspaces.owns(&owner.person, &owner.workspace)
+                    && workspaces.owns(&owner.person, &owner.workspace)
                 {
                     kept
                 } else {
@@ -143,7 +142,7 @@ impl Initiative {
     ) -> Result<&'a mut Kept, String> {
         Ok(match all.entry(owner.clone()) {
             Entry::Occupied(found) => found.into_mut(),
-            Entry::Vacant(slot) => slot.insert(self.read(owner)?),
+            Entry::Vacant(slot) => slot.insert(Self::read_for(&self.inner.workspaces, owner)?),
         })
     }
 
@@ -164,8 +163,11 @@ impl Initiative {
         let mut changed = kept.clone();
         let answer = work(&mut changed);
         let bytes = serde_json::to_vec_pretty(&changed).map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write_private(&self.file(owner), &bytes)
-            .map_err(|error| error.to_string())?;
+        tilo_files::native::atomic::write_private(
+            &Self::file(&self.inner.workspaces, owner),
+            &bytes,
+        )
+        .map_err(|error| error.to_string())?;
         *kept = changed;
         drop(all);
         Ok(answer)

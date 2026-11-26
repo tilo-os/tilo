@@ -20,7 +20,7 @@ use super::proposals::InTracker;
 use crate::agents::{
     WorkspaceActionProvider, invocation_of, invoke_named, invoke_request, target_named,
 };
-use crate::workspaces::Workspaces;
+use crate::workspaces::{ReadFor, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 /// The app that keeps the workspace's tasks.
@@ -97,10 +97,10 @@ impl Filed {
 pub(super) async fn issues(
     workspaces: &Workspaces,
     workspace: &str,
-    reader: (&[u8; 32], Option<&Caller>),
+    reader: (&[u8; 32], ReadFor<'_>),
 ) -> Result<Vec<Filed>, String> {
     let routes = workspaces
-        .workspace_document_reads(workspace, (reader.0, reader.1.into()))
+        .workspace_document_reads(workspace, reader)
         .await?;
     let mut filed = Vec::new();
     let mut read = Vec::new();
@@ -132,7 +132,7 @@ pub(super) async fn issues(
         );
     }
     let current = workspaces
-        .workspace_document_reads(workspace, (reader.0, reader.1.into()))
+        .workspace_document_reads(workspace, reader)
         .await?;
     if read.iter().any(|route| current.get(route) != Some(&true)) {
         return Err("access to the tracker changed while reading it".into());
@@ -183,7 +183,7 @@ impl Tracker {
         Ok(issues(
             &self.workspaces,
             &self.workspace,
-            (&self.person, Some(&self.caller)),
+            (&self.person, ReadFor::Caller(&self.caller)),
         )
         .await?
         .into_iter()
@@ -236,7 +236,7 @@ impl Tracker {
         let filed = issues(
             &self.workspaces,
             &self.workspace,
-            (&self.person, Some(&self.caller)),
+            (&self.person, ReadFor::Caller(&self.caller)),
         )
         .await?;
         let mut prior = filed.into_iter().filter(|issue| {

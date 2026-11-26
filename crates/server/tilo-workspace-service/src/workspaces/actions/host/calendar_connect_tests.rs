@@ -159,7 +159,7 @@ async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_on
     // this server call its own network.
     hers.workspaces.call_private_model_addresses(true);
     hers.server.add_calendar("family", "Family");
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
 
     assert_eq!(
@@ -285,7 +285,7 @@ async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_on
 async fn a_telling_takes_no_password_and_nothing_that_makes_the_account_writable() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
     for (name, value) in [
         ("readOnly", json!(false)),
@@ -328,7 +328,7 @@ async fn an_address_that_is_not_https_or_is_inside_is_refused_before_anybody_is_
     // operator lets the server call its own network. This test is of a
     // server that calls public addresses alone, as a server does by default.
     hers.workspaces.call_private_model_addresses(false);
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
     for (address, words) in [
         (hers.server.url(), "https"),
@@ -363,7 +363,7 @@ async fn an_address_that_is_not_https_or_is_inside_is_refused_before_anybody_is_
 async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_account() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
 
     // A login she kept before, which her calendar server does not take.
@@ -418,13 +418,39 @@ async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_accoun
     );
 }
 
+/// A sign-in kept before its agent was replaced cannot use the replacement's approval.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_signer_cannot_resume_a_calendars_password_request() {
+    let hers = Hers::new().await;
+    let original = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
+    let ask = hers.is_asked(&hers.turn(&original, None)).await;
+    let typed = hers.types(&ask, "original-request-password").await;
+    let replacement = super::super::super::turn_use_tests::on_turn_at_for_apps(
+        &hers.workspaces,
+        &hers.ada,
+        &hers.workspace,
+        SCOUT,
+        1,
+        &[tilo_app_id::apps::CALENDAR],
+    );
+    let turn = hers.turn(&replacement, None);
+    assert_eq!(hers.connecting_offered(&turn).await, [held::CONNECT]);
+    let fresh = hers.is_asked(&turn).await;
+    assert_ne!(ask.ask, fresh.ask);
+    assert!(hers.answered(&turn, &ask, Some(&typed)).await.is_err());
+    assert!(hers.accounts().await.is_empty());
+    assert!(hers.vault().await.is_empty());
+    assert!(hers.server.requests().is_empty());
+    assert_eq!(hers.answered(&turn, &fresh, None).await, Ok(None));
+}
+
 /// Where she declines, nothing is connected and her calendar server is asked
 /// nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn declining_connects_nothing() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
 
     let ask = hers.is_asked(&turn).await;
@@ -442,7 +468,7 @@ async fn declining_connects_nothing() {
 async fn the_same_account_told_twice_asks_once_and_adds_nothing_once_connected() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
 
     let ask = hers.is_asked(&turn).await;
@@ -475,7 +501,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     hers.workspaces.call_private_model_addresses(true);
     let bo = admit(&hers.workspaces, &hers.workspace, &hers.owner, 2).await;
     // Another member's own agent's turn connects for the workspace too.
-    let bos_caller = on_turn(&bo, &hers.workspace, SCOUT);
+    let bos_caller = on_turn(&hers.workspaces, &bo, &hers.workspace, SCOUT);
     let bos_turn = hers.turn(&bos_caller, None);
     assert_eq!(
         hers.connecting_offered(&bos_turn).await,
@@ -492,7 +518,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
         assert!(hers.connecting_offered(&turn).await.is_empty(), "{who}");
     }
 
-    let sub = on_turn(&hers.ada, &hers.workspace, "sub-agent");
+    let sub = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, "sub-agent");
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
         tilo_automation::action_rule(

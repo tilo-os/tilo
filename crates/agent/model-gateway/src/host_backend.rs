@@ -12,6 +12,7 @@
 use super::*;
 pub use agent_provider_config::protocol;
 use protocol as neutral;
+pub use provider_call::ModelPermission;
 
 /// One turn at a person's own provider, asked by the host that keeps that
 /// person's settings and their key.
@@ -143,6 +144,20 @@ impl PersonProviders {
         turn: PersonTurn<'_>,
         events: PersonEvents<'_>,
     ) -> Result<neutral::ModelResponse, neutral::ModelError> {
+        self.complete_while_permitted(turn, events, None).await
+    }
+
+    /// Ask a provider while the host still authorizes this turn. The transport
+    /// checks immediately before every request, including retries.
+    ///
+    /// # Errors
+    /// A cancelled turn when its permission ends, or the failures of [`Self::complete`].
+    pub async fn complete_while_permitted(
+        &self,
+        turn: PersonTurn<'_>,
+        events: PersonEvents<'_>,
+        permission: Option<&ModelPermission>,
+    ) -> Result<neutral::ModelResponse, neutral::ModelError> {
         if !turn.private_addresses && !public_endpoint(&turn.profile.endpoint) {
             return Err(neutral::ModelError::new(
                 neutral::ErrorKind::PermissionDenied,
@@ -184,6 +199,7 @@ impl PersonProviders {
                 provider_call::Carry {
                     resend: true,
                     callers_deadline: true,
+                    permission,
                 },
             ),
         )

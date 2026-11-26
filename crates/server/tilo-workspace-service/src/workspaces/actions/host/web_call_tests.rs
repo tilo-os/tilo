@@ -250,7 +250,7 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
         )
         .await,
     );
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -425,7 +425,7 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     };
     let item = reference(key_for(paying.url(), "key").await);
     let value = reference(key_for(paying.url(), "value").await);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -545,7 +545,7 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
         as_ada
     );
     let hers = (&ada, &as_ada);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -701,7 +701,7 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
         as_ada
     );
     let hers = (&ada, &as_ada);
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
@@ -843,7 +843,7 @@ async fn only_a_hosted_turn_makes_a_call() {
         )
         .await,
     );
-    let scout = on_turn(&ada, &workspace, "scout");
+    let scout = on_turn(workspaces, &ada, &workspace, "scout");
 
     // A person asking for themselves is no turn this server carries out.
     let herself = HostedTurn {
@@ -874,7 +874,7 @@ async fn only_a_hosted_turn_makes_a_call() {
     // Another member's turn holds the workspace's reference too: the item is
     // the workspace's, and its use asks his person, not hers.
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let his = on_turn(&bo, &workspace, "rover");
+    let his = on_turn(workspaces, &bo, &workspace, "rover");
     let his_asker = hex::encode(bo.user_public_key);
     let theirs = HostedTurn {
         workspace: workspace_id,

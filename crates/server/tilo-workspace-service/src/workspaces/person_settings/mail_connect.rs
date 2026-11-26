@@ -55,7 +55,9 @@ use tilo_lock::MutexRecover as _;
 
 use super::{answers_in_public, argument};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS};
+use crate::workspaces::hosted_use::{
+    AskedSigner, AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS,
+};
 use crate::workspaces::person_asking::workspace_store_root;
 use crate::workspaces::workspace_stores::Store;
 
@@ -129,6 +131,9 @@ pub struct MailAsk {
     /// The agent that asked, by its id: the one named for the account once
     /// it is signed in.
     pub agent: String,
+    /// The roster signing session that asked for this sign-in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) signer: Option<AskedSigner>,
     /// The name its person knows that agent under.
     pub name: String,
     /// The account's mail address, which is also the id it is kept under.
@@ -630,6 +635,7 @@ impl Workspaces {
             asks.iter().any(|waits| {
                 waits.person == person
                     && waits.workspace == using.workspace
+                    && waits.signer.as_ref() == Some(&using.signer)
                     && waits.address == address
             })
         };
@@ -665,6 +671,7 @@ impl Workspaces {
             workspace: using.workspace,
             person,
             agent: using.agent,
+            signer: Some(using.signer),
             name: using.name,
             username: username
                 .or(servers.username)
@@ -689,6 +696,7 @@ impl Workspaces {
         if open.iter().any(|waits| {
             waits.person == kept.person
                 && waits.workspace == kept.workspace
+                && waits.signer == kept.signer
                 && waits.address == kept.address
         }) {
             return Ok(TurnMailConnect::Waits);
@@ -855,6 +863,7 @@ impl Workspaces {
         if hex::encode(using.person) != kept.person
             || using.agent != kept.agent
             || using.workspace != kept.workspace
+            || !AskedSigner::permits_turn(kept.signer.as_ref(), self, turn, Store::MAIL.app).await
         {
             return Err(NOT_THEIRS.to_owned());
         }
@@ -905,6 +914,7 @@ mod tests {
             workspace: "w".to_owned(),
             person: "p".to_owned(),
             agent: "scout".to_owned(),
+            signer: None,
             name: "Scout".to_owned(),
             address: "ada@example.test".to_owned(),
             username: "ada@example.test".to_owned(),

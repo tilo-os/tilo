@@ -776,6 +776,42 @@ impl super::Workspaces {
         self.inner.jobs.agents.read_recover().clone()
     }
 
+    /// Resolve the live signing scope of the agent which signs a turn for this keeper.
+    pub async fn agent_access(
+        &self,
+        workspace: &str,
+        signer: &str,
+        keeper: &[u8; 32],
+    ) -> Result<crate::work::AgentAccess, crate::work::Ineligible> {
+        let access = self
+            .agent_keys()
+            .ok_or(crate::work::Ineligible::RunsNoAgents)?
+            .access(workspace, signer, keeper)
+            .await?;
+        if matches!(access, crate::work::AgentAccess::Device) {
+            crate::work::device_of(self, keeper).await?;
+        }
+        Ok(access)
+    }
+
+    /// Whether the caller still holds the same scope that authorizes this app now.
+    pub async fn agent_may_act(
+        &self,
+        workspace: &str,
+        caller: &tilo_actions::remote::Caller,
+        app: &str,
+    ) -> bool {
+        let (Some(agent), Some(keeper)) = (caller.approved_agent(), caller.user_public_key())
+        else {
+            return false;
+        };
+        caller.workspace() == Some(workspace)
+            && self
+                .agent_access(workspace, agent, keeper)
+                .await
+                .is_ok_and(|access| access.matches_caller(caller) && access.permits_app(app))
+    }
+
     /// This device runs `engine` from now on.
     #[cfg(any(test, all(feature = "agents", not(target_arch = "wasm32"))))]
     pub(crate) fn run_agents(&self, engine: Arc<dyn crate::work::AgentEngine>) {

@@ -207,6 +207,9 @@ pub struct OpenAsk {
     pub person: String,
     /// The agent that asked, by its id.
     pub agent: String,
+    /// The roster signing session that requested the use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signer: Option<AskedSigner>,
     /// The name its person knows it under.
     pub name: String,
     /// Why it says it needs the item, in its own words; empty when it gave
@@ -277,9 +280,8 @@ pub(super) struct Uses {
 /// A person's "allow" for one fill: `agent` may fill what `item` keeps into
 /// a page at `site` once, until `until_ns`.
 struct OnceLeave {
-    person: String,
-    workspace: String,
-    agent: String,
+    person: [u8; 32],
+    signer: AskedSigner,
     item: String,
     site: String,
     until_ns: u64,
@@ -401,6 +403,124 @@ pub struct AskedTurn {
     pub agent: String,
     /// The agent's name, as its person reads it.
     pub name: String,
+    /// The signing session that asked, retained by work that waits for a person's answer.
+    pub(crate) signer: AskedSigner,
+}
+
+/// Public identities only. A delayed action stays with the same actor, workspace and signing
+/// session even when another agent or a replacement session is approved before it runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AskedSigner {
+    workspace: WorkspaceId,
+    actor: String,
+    signer: String,
+    keeper: [u8; 32],
+    device: [u8; 32],
+    created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    child_created_at: Option<i64>,
+}
+
+impl AskedSigner {
+    async fn of(workspaces: &Workspaces, turn: &HostedTurn<'_>) -> Result<Self, ActionCallError> {
+        let caller = turn.caller;
+        let mut origin = Self {
+            workspace: turn.workspace,
+            actor: caller.acting().agent_id().ok_or(UnknownAction)?.to_owned(),
+            signer: caller.approved_agent().ok_or(UnknownAction)?.to_owned(),
+            keeper: *caller.user_public_key().ok_or(UnknownAction)?,
+            device: *caller.device_public_key().ok_or(UnknownAction)?,
+            created_at: caller.roster_created_at().ok_or(UnknownAction)?,
+            child_created_at: None,
+        };
+        if origin.actor != origin.signer {
+            origin.child_created_at = Some(
+                origin
+                    .current_child(workspaces)
+                    .await
+                    .ok_or(UnknownAction)?,
+            );
+        }
+        Ok(origin)
+    }
+
+    async fn current_child(&self, workspaces: &Workspaces) -> Option<i64> {
+        let (created_at, lead) = workspaces
+            .child_lead(
+                &self.workspace.to_string(),
+                &self.actor,
+                &hex::encode(self.keeper),
+            )
+            .await?;
+        (lead.id.0 == self.signer && lead.created_at == self.created_at).then_some(created_at)
+    }
+
+    /// Recheck a pending question against the session carrying out its answer.
+    pub(crate) async fn permits_turn(
+        saved: Option<&Self>,
+        workspaces: &Workspaces,
+        turn: &HostedTurn<'_>,
+        app: &str,
+    ) -> bool {
+        let (Ok(current), Some(person)) =
+            (Self::of(workspaces, turn).await, turn.caller.turn_person())
+        else {
+            return false;
+        };
+        if saved.is_some_and(|saved| saved != &current) {
+            return false;
+        }
+        Self::permits(
+            saved,
+            workspaces,
+            &current.workspace.to_string(),
+            &current.actor,
+            person,
+            app,
+        )
+        .await
+    }
+
+    pub(crate) async fn permits(
+        saved: Option<&Self>,
+        workspaces: &Workspaces,
+        workspace: &str,
+        actor: &str,
+        person: &[u8; 32],
+        app: &str,
+    ) -> bool {
+        use crate::work::AgentAccess;
+        let (signer, keeper) = match saved {
+            Some(origin)
+                if WorkspaceId::parse(workspace) == Some(origin.workspace)
+                    && actor == origin.actor =>
+            {
+                (origin.signer.as_str(), &origin.keeper)
+            }
+            Some(_) => return false,
+            None => (actor, person),
+        };
+        let Ok(access) = workspaces.agent_access(workspace, signer, keeper).await else {
+            return false;
+        };
+        let AgentAccess::Hosted {
+            device, created_at, ..
+        } = &access
+        else {
+            return true;
+        };
+        let Some(origin) = saved else {
+            // Older requests identify no hosted signing session.
+            return false;
+        };
+        origin.device == *device
+            && origin.created_at == *created_at
+            && access.permits_app(app)
+            && (origin.actor == origin.signer
+                || origin.child_created_at.is_some()
+                    && origin.current_child(workspaces).await == origin.child_created_at)
+    }
 }
 
 /// One use by reference this server carries out.
@@ -784,6 +904,7 @@ impl Workspaces {
             workspace: workspace.to_owned(),
             agent: agent.to_owned(),
             name: caller.agent_name().unwrap_or(agent).to_owned(),
+            signer: AskedSigner::of(self, turn).await?,
         })
     }
 
@@ -823,15 +944,26 @@ impl Workspaces {
         {
             return Err(NotPermitted);
         }
-        if target.provider == person_models::PROVIDER
-            && target.address.action == person_models::SET_KEY_FROM_ITEM
+        let destination = match (target.provider.as_str(), target.address.action.as_str()) {
+            (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM) => Some(Store::MODELS),
+            (person_accounts::PROVIDER, person_accounts::ADD_MAIL_WITH_ITEM) => Some(Store::MAIL),
+            _ => None,
+        };
+        if let Some(destination) = destination
             && !self
                 .turn_reaches(
                     turn,
-                    Store::MODELS,
+                    destination,
                     &target.address.action,
                     ActionKind::Undoable,
                 )
+                .await
+        {
+            return Err(NotPermitted);
+        }
+        if target == &person_vault::page_target()
+            && !self
+                .agent_may_act(&using.workspace, turn.caller, tilo_app_id::apps::BROWSER)
                 .await
         {
             return Err(NotPermitted);
@@ -1004,6 +1136,7 @@ impl Workspaces {
             kept.person == person
                 && kept.agent == using.agent
                 && kept.workspace == using.workspace
+                && kept.signer.as_ref() == Some(&using.signer)
                 && kept.target() == request.target
                 && kept.arguments == arguments
         }) {
@@ -1046,6 +1179,7 @@ impl Workspaces {
             workspace: using.workspace,
             person,
             agent: using.agent,
+            signer: Some(using.signer),
             name: using.name,
             reason,
             asked_in,
@@ -1191,7 +1325,10 @@ impl Workspaces {
         }
         let target = kept.target();
         let using = self.turn_uses_for(turn, &target).await?;
-        if using.person != person || using.agent != kept.agent || using.workspace != kept.workspace
+        if using.person != person
+            || using.agent != kept.agent
+            || using.workspace != kept.workspace
+            || !AskedSigner::permits_turn(kept.signer.as_ref(), self, turn, Store::VAULT.app).await
         {
             return Err(UnknownAction);
         }
@@ -1540,9 +1677,8 @@ impl Workspaces {
             once.remove(0);
         }
         once.push(OnceLeave {
-            person: hex::encode(using.person),
-            workspace: using.workspace.clone(),
-            agent: using.agent.clone(),
+            person: using.person,
+            signer: using.signer.clone(),
             item: item.as_str().to_owned(),
             site: site.as_str().to_owned(),
             until_ns: now.saturating_add(ONCE_LEAVE_NS),
@@ -1553,13 +1689,11 @@ impl Workspaces {
     /// `site`: it is spent by being found.
     fn once_allowed(&self, using: &AskedTurn, item: &ItemId, site: &Place) -> bool {
         let now = tilo_clock::unix_now_ns();
-        let person = hex::encode(using.person);
         let mut once = self.inner.vault_uses.once.lock_recover();
         once.retain(|leave| leave.until_ns > now);
         let found = once.iter().position(|leave| {
-            leave.person == person
-                && leave.workspace == using.workspace
-                && leave.agent == using.agent
+            leave.person == using.person
+                && leave.signer == using.signer
                 && leave.item == item.as_str()
                 && leave.site == site.as_str()
         });

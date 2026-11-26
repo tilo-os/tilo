@@ -162,6 +162,25 @@ pub(super) async fn file_issue(
     root: &SigningKey,
     (governor, browser): (&crate::support::Device, &crate::support::Device),
 ) -> String {
+    file_issue_for(
+        actions,
+        workspaces,
+        workspace,
+        root,
+        (governor, browser),
+        SCOUT,
+    )
+    .await
+}
+
+async fn file_issue_for(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    root: &SigningKey,
+    (governor, browser): (&crate::support::Device, &crate::support::Device),
+    assignee: &str,
+) -> String {
     let catalogue = crate::common::catalogue();
     let tracker = tilo_workspace_service::agents::workspace_resource(&catalogue, TASKS);
     workspaces
@@ -181,7 +200,7 @@ pub(super) async fn file_issue(
         document: tracker,
     };
     let arguments =
-        serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
+        serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{assignee}")});
     tilo_workspace_service::agents::invoke_named(
         &service,
         &person,
@@ -1623,18 +1642,108 @@ mod views;
 #[path = "hosted_initiative.rs"]
 mod hosted_initiative;
 
+/// Invoke the member's native assistant grant action from their certified page.
+async fn member_grant_action(
+    page: &mut Browser,
+    action: tilo_server_protocol::agents::AgentGrantAction,
+) {
+    let target = action.target(SCOUT);
+    let receipt = page
+        .invoke(request(
+            &target.provider,
+            target.address,
+            InvokeArgument::None,
+        ))
+        .await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the keeper's grant action {action:?} failed: {receipt:?}"
+    );
+}
+
+/// The keeper approves exactly the proposal shown on their root-bearing device,
+/// then waits for the workspace host to admit that signing session.
+async fn approve_member_grant(
+    server: &crate::harness::hosted::Hosted,
+    member: &SigningKey,
+    workspace_id: WorkspaceId,
+    apps: &[&str],
+) {
+    use tilo_server_client::MemberApprover;
+    use tilo_server_client::pairing::{answer_agent_grant, pending_agent_grants};
+    let keeper = member.verifying_key().to_bytes();
+    let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
+    let proposals = pending_agent_grants(&approver, member, workspace_id)
+        .await
+        .unwrap();
+    let [shown] = proposals.as_slice() else {
+        panic!("one pending agent")
+    };
+    assert_eq!(shown.proposal.scope.apps, apps);
+    let device = tilo_server_client::pending_pairings(&approver, member)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.request_digest == shown.request_digest)
+        .unwrap()
+        .request
+        .device_public_key;
+    let elsewhere = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    assert!(
+        pending_agent_grants(&approver, member, elsewhere)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        answer_agent_grant(&approver, member, elsewhere, shown, true)
+            .await
+            .is_err()
+    );
+    let mut changed = shown.clone();
+    changed.proposal.scope.apps.clear();
+    assert!(
+        answer_agent_grant(&approver, member, workspace_id, &changed, true)
+            .await
+            .is_err()
+    );
+    answer_agent_grant(&approver, member, workspace_id, shown, true)
+        .await
+        .unwrap();
+    let link = server.server.agent_link();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if link
+            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
+            .await
+            == Some(device)
+        {
+            break;
+        }
+        let grant = server
+            .agents
+            .supervisor()
+            .snapshot()
+            .grants
+            .into_iter()
+            .find(|grant| grant.proposal.delegate.agent_id() == Some(SCOUT))
+            .map(|grant| (grant.state, grant.reason));
+        assert!(
+            Instant::now() < deadline,
+            "the member's agent did not join under their approval: {grant:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// A member of the host's workspace, not the host's own person, keeps an
 /// agent on it: they make it from their page, approve its grant with their
 /// own root from another device, and the turn that answers works for them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_members_own_agent_on_the_host_works_for_them() {
     use tilo_peer_state::join::Role;
-    use tilo_server_client::MemberApprover;
-    use tilo_server_client::pairing::{answer_agent_grant, pending_agent_grants};
-    use tilo_server_protocol::agents::{
-        AGENTS_PROVIDER, REQUEST_GRANT_ACTION, SUPERVISOR_RESOURCE,
-    };
-    use tilo_workspace_service::agents::ServerAgents;
+    use tilo_server_protocol::agents::AgentGrantAction;
+    use tilo_workspace_service::agents::{Ask, ServerAgents};
 
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (member, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
@@ -1660,87 +1769,15 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
     // The member makes an agent of their own, kept by them.
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
-    // Their page asks the host to run it, and the host queues the grant for
-    // the member's root.
-    let asked = page
-        .invoke(request(
-            AGENTS_PROVIDER,
-            ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
-            InvokeArgument::Json(
-                serde_json::json!({
-                    "agentId": SCOUT,
-                    "workspaces": [workspace],
-                    "apps": [TASKS, CHAT, ui::tilo_workspace_agent::OWNER],
-                    "expiresInSecs": 3600,
-                })
-                .as_object()
-                .unwrap()
-                .clone(),
-            ),
-        ))
-        .await;
-    assert!(
-        matches!(asked.status, ReceiptStatus::Completed { .. }),
-        "the member asks for their own agent's grant: {asked:?}"
-    );
-    let approver = MemberApprover::new(ServerAddress::at(server.server.node_addr()));
     let workspace_id = WorkspaceId::parse(&workspace).unwrap();
-    let proposals = pending_agent_grants(&approver, &member, workspace_id)
-        .await
-        .unwrap();
-    let [shown] = proposals.as_slice() else {
-        panic!("one pending agent")
-    };
-    assert_eq!(
-        shown.proposal.scope.apps,
-        [TASKS, CHAT, ui::tilo_workspace_agent::OWNER]
-    );
-    let elsewhere = WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
-    assert!(
-        pending_agent_grants(&approver, &member, elsewhere)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        answer_agent_grant(&approver, &member, elsewhere, shown, true)
-            .await
-            .is_err()
-    );
-    let mut changed = shown.clone();
-    changed.proposal.scope.apps.clear();
-    assert!(
-        answer_agent_grant(&approver, &member, workspace_id, &changed, true)
-            .await
-            .is_err()
-    );
-    answer_agent_grant(&approver, &member, workspace_id, shown, true)
-        .await
-        .unwrap();
-    let link = server.server.agent_link();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if link
-            .roster_session_device(&server.roster.sessions, workspace_id, SCOUT, &keeper)
-            .await
-            .is_some()
-        {
-            break;
-        }
-        let grant = server
-            .agents
-            .supervisor()
-            .snapshot()
-            .grants
-            .into_iter()
-            .find(|grant| grant.proposal.delegate.agent_id() == Some(SCOUT))
-            .map(|grant| (grant.state, grant.reason));
-        assert!(
-            Instant::now() < deadline,
-            "the member's agent did not join under their approval: {grant:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    let work_apps = [
+        CHAT,
+        TASKS,
+        ui::tilo_workspace_agent::OWNER,
+        "so.tilo.shortcuts",
+    ];
+    member_grant_action(&mut page, AgentGrantAction::RequestWork).await;
+    approve_member_grant(&server, &member, workspace_id, &work_apps).await;
 
     // The member gives it an issue, and the turn works for them, not for the
     // host's own person.
@@ -1753,13 +1790,16 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::with_sessions(
-        workspaces.clone(),
-        actions.clone(),
-        Arc::new(server.server.agent_link()),
-        server.roster.sessions.clone(),
-    )
-    .scripted(looks_then_answers(1_000, Arc::clone(&asked)));
+    let runner = || {
+        ServerAgents::with_sessions(
+            workspaces.clone(),
+            actions.clone(),
+            Arc::new(server.server.agent_link()),
+            server.roster.sessions.clone(),
+        )
+        .scripted(looks_then_answers(1_000, Arc::clone(&asked)))
+    };
+    let agents = runner();
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(
         turns.len(),
@@ -1808,7 +1848,7 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
         tilo_actions::remote::Caller::authenticated(keeper, member_page.cert.device_public_key)
             .in_workspace(&workspace);
     asks::sub_agents::child_writes_as_itself(
-        agents,
+        agents.clone(),
         &workspaces,
         &workspace,
         &actions,
@@ -1816,5 +1856,105 @@ async fn a_members_own_agent_on_the_host_works_for_them() {
         &person,
     )
     .await;
-    drop(approver);
+    // The child Chat can wake a final turn of its lead. Stop its worker before filing
+    // the next two tasks, which the test will hand to the host one at a time.
+    assert!(agents.draining().finish(Duration::from_secs(30)).await);
+    let agents = runner();
+    let agents_document_id = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    let roster = workspaces
+        .read_resource::<WorkspaceAgents>(
+            &workspace,
+            (ui::tilo_workspace_agent::OWNER, &agents_document_id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let children: Vec<_> = roster.sub_agents_of(&person).collect();
+    let [child] = children.as_slice() else {
+        panic!("the member's agent started one child")
+    };
+    for assignee in [SCOUT, child.id.0.as_str()] {
+        file_issue_for(
+            &actions,
+            &workspaces,
+            &workspace,
+            &member,
+            (&host, &member_page),
+            assignee,
+        )
+        .await;
+    }
+    let mut tasks: Vec<_> = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|turn| matches!(turn.ask, Ask::Issue { .. }))
+        .collect();
+    tasks.sort_by(|a, b| a.agent.id.0.cmp(&b.agent.id.0));
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|turn| turn.agent.id.0.as_str())
+            .collect::<Vec<_>>(),
+        [SCOUT, child.id.0.as_str()]
+    );
+
+    // Both assigned tasks were already owed when their keeper narrowed the grant.
+    // A turn read under the earlier approval cannot spend or claim the workspace's work.
+    member_grant_action(&mut page, AgentGrantAction::Revoke).await;
+    member_grant_action(&mut page, AgentGrantAction::RequestChat).await;
+    approve_member_grant(&server, &member, workspace_id, &[CHAT]).await;
+    let calls = asked.lock().unwrap().len();
+    let before = tracker(&workspaces, &workspace, &tracker_id).await;
+    for task in &tasks {
+        agents.answer(&workspace, task).await.unwrap();
+        let Ask::Issue {
+            record,
+            issue,
+            cause,
+        } = &task.ask
+        else {
+            unreachable!()
+        };
+        let lease = format!("turn/{}/{record}/{issue}/{cause}", task.agent.id.0);
+        assert!(
+            workspaces
+                .lease_holder(&workspace, &lease)
+                .await
+                .unwrap()
+                .is_none(),
+            "the Chat-only session took a task lease for {}",
+            task.agent.id.0
+        );
+    }
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        calls,
+        "neither task consumed a model call"
+    );
+    assert_eq!(
+        tracker(&workspaces, &workspace, &tracker_id).await,
+        before,
+        "neither task acquired work or an answer"
+    );
+
+    member_grant_action(&mut page, AgentGrantAction::Revoke).await;
+    member_grant_action(&mut page, AgentGrantAction::RequestWork).await;
+    approve_member_grant(&server, &member, workspace_id, &work_apps).await;
+    for task in &tasks {
+        agents.answer(&workspace, task).await.unwrap();
+        let Ask::Issue { issue, .. } = &task.ask else {
+            unreachable!()
+        };
+        let tracker = tracker(&workspaces, &workspace, &tracker_id).await;
+        let written = &tracker.issues[&Id::from_raw(issue.clone())].comments;
+        assert!(
+            written.values().any(|comment| comment.author
+                == Some(MemberId::agent(&task.agent.id.0))
+                && comment.text.contains("the plan is ready")),
+            "{} answered its assigned task after approval",
+            task.agent.id.0
+        );
+    }
 }

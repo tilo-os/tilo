@@ -438,13 +438,11 @@ async fn eligibility(
             {
                 return Err(Ineligible::CannotOpen);
             }
-            let Some(keys) = workspaces.agent_keys() else {
-                return Err(Ineligible::RunsNoAgents);
-            };
-            if keys.holds(workspace, signer, acts_for).await {
-                return Ok(());
+            let access = workspaces.agent_access(workspace, signer, acts_for).await?;
+            if !access.permits_app(app) {
+                return Err(Ineligible::NotPermitted);
             }
-            device_of(workspaces, acts_for).await
+            Ok(())
         }
     }
 }
@@ -467,7 +465,10 @@ pub trait HostLinux: Send + Sync {
 /// Whether this device runs agents for the person whose root is `person`: it
 /// is a device of theirs, and where their servers name it, its entry offers
 /// compute and is not retired.
-async fn device_of(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), Ineligible> {
+pub(crate) async fn device_of(
+    workspaces: &Workspaces,
+    person: &[u8; 32],
+) -> Result<(), Ineligible> {
     match server_entry(workspaces, person).await {
         Some(entry) if entry.compute && !entry.retired => Ok(()),
         Some(_) => Err(Ineligible::OffersNoCompute),
@@ -476,16 +477,54 @@ async fn device_of(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), Ine
     }
 }
 
+/// The authority from which this engine could take an agent's next step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentAccess {
+    /// A personal device still applies the keeper's local policy.
+    Device,
+    /// A live hosted signing session for this exact incarnation of its agent.
+    Hosted {
+        device: [u8; 32],
+        created_at: i64,
+        scope: tilo_server_protocol::delegation::DelegateScope,
+    },
+}
+
+impl AgentAccess {
+    #[must_use]
+    pub fn permits_app(&self, app: &str) -> bool {
+        match self {
+            Self::Device => true,
+            Self::Hosted { scope, .. } => scope.permits_app(app),
+        }
+    }
+
+    /// A delayed step from a former signing session may never use a replacement grant.
+    #[must_use]
+    pub fn matches_caller(&self, caller: &tilo_actions::remote::Caller) -> bool {
+        match self {
+            Self::Device => true,
+            Self::Hosted {
+                device, created_at, ..
+            } => {
+                caller.device_public_key() == Some(device)
+                    && caller.roster_created_at() == Some(*created_at)
+            }
+        }
+    }
+}
+
 /// The agent engine a device runs, as [`takes_turn`] asks it about an agent.
 pub trait AgentEngine: Send + Sync {
-    /// Whether this device holds an approved key of `agent` of `workspace`,
-    /// acting for the person whose root is `acts_for`.
-    fn holds<'a>(
+    /// The keeper's current authority for this agent on this device.
+    fn access<'a>(
         &'a self,
         workspace: &'a str,
         agent: &'a str,
         acts_for: &'a [u8; 32],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<AgentAccess, Ineligible>> + Send + 'a>,
+    >;
 }
 
 /// The jobs a device runs for the devices of its workspaces: an offloadable

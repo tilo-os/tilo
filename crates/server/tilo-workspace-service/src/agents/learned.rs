@@ -38,6 +38,7 @@ use tilo_workspace_agent::learned::{Fact, Learned, MAX_SOURCE, learned};
 
 use super::{Ask, ToolDefinition, Turn};
 use crate::workspaces::Workspaces;
+use crate::workspaces::person_model::ModelPermission;
 
 /// The tool that keeps a fact.
 const LEARN: &str = "learn";
@@ -436,6 +437,7 @@ pub(super) async fn call(
     keeping: Option<&Keeping>,
     name: &str,
     input: &Value,
+    permitted: &ModelPermission,
 ) -> Option<(String, bool)> {
     if !TOOLS.contains(&name) {
         return None;
@@ -444,7 +446,15 @@ pub(super) async fn call(
         return Some((NOT_THEIRS.to_owned(), true));
     };
     let (keeping, tool, input) = (keeping.clone(), name.to_owned(), input.clone());
-    let ended = tokio::task::spawn_blocking(move || keeping.carry_out(&tool, &input)).await;
+    let runtime = tokio::runtime::Handle::current();
+    let permitted = permitted.clone();
+    let ended = tokio::task::spawn_blocking(move || {
+        if !runtime.block_on(permitted()) {
+            return Err("This turn no longer has permission to use Chat.".to_owned());
+        }
+        keeping.carry_out(&tool, &input)
+    })
+    .await;
     Some(match ended {
         Ok(Ok(said)) => (said, false),
         Ok(Err(refused)) => (refused, true),

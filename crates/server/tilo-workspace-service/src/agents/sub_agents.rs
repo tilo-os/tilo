@@ -363,6 +363,7 @@ impl Team {
                     conversation: chat::summons::conversation_address(said_in),
                     cause: id.to_string(),
                     program: None,
+                    look_grant: None,
                     request: told.request,
                     history: told.history,
                     asked: chat::summons::asked_words(message),

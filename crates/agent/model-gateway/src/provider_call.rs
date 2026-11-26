@@ -4,6 +4,8 @@
 //! proxies, redirects or automatic retries), a bounded read of every answer,
 //! one deadline, asking again only what the provider provably did not take,
 //! and no provider text in any error or log line.
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use agent_provider_config::ProviderProfile;
@@ -125,6 +127,9 @@ fn unsendable() -> ProviderFailure {
     failure
 }
 
+/// Whether the host still authorizes sending this turn to its provider.
+pub type ModelPermission = dyn Fn() -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync;
+
 /// Where one request goes and how.
 pub(super) struct Post<'a> {
     pub(super) client: &'a reqwest::Client,
@@ -140,6 +145,8 @@ pub(super) struct Post<'a> {
     /// are noted, and how long it may show nothing before the call is let
     /// go. None where nobody reads them.
     pub(super) signs: Option<&'a Signs>,
+    /// Checked afresh at each HTTP POST, including a resend after a wait.
+    pub(super) permission: Option<&'a ModelPermission>,
 }
 
 impl Post<'_> {
@@ -204,7 +211,9 @@ impl Post<'_> {
             sent = self.send(plain).await;
             // A request refused either way was not refused for what was
             // added.
-            if !sent.as_ref().is_err_and(road::refuses) {
+            if !sent.as_ref().is_err_and(|failure| {
+                failure.model_error.kind == neutral::ErrorKind::Cancelled || road::refuses(failure)
+            }) {
                 road::remember(self.profile, self.model);
             }
         }
@@ -249,10 +258,21 @@ impl Post<'_> {
             .post(&self.url)
             .timeout(budget)
             .headers(headers.clone())
-            .json(body)
-            .send();
+            .json(body);
+        if let Some(permitted) = self.permission
+            && !permitted().await
+        {
+            return Err(ProviderFailure {
+                model_error: ModelError::new(neutral::ErrorKind::Cancelled),
+                why: "the turn no longer has permission to ask the provider".to_owned(),
+                again: Again::Never,
+                unprocessed: false,
+                outcome_unknown: false,
+                status: None,
+            });
+        }
         let response = self
-            .or_silence(outgoing, "no response headers")
+            .or_silence(outgoing.send(), "no response headers")
             .await?
             .map_err(|error| {
                 // Content-free: what failed, never the URL or the error's text.
@@ -627,13 +647,15 @@ const EVENT_REASONING_DELTA: &str = "reasoning_delta";
 
 /// How a turn is carried besides what its call names.
 #[derive(Clone, Copy, Default)]
-pub(super) struct Carry {
+pub(super) struct Carry<'a> {
     /// Ask again a request the provider provably did not take (it was busy,
     /// or no connection to it could be made), waiting what it asks.
     pub(super) resend: bool,
     /// Hold the turn to its caller's own deadline alone, not also to what a
     /// person's device waits for a plan.
     pub(super) callers_deadline: bool,
+    /// The host's current authority to send a delegated turn.
+    pub(super) permission: Option<&'a ModelPermission>,
 }
 
 /// `request` asked of `profile` with `secret`, as `call` says: the one path
@@ -647,7 +669,7 @@ pub(super) async fn complete_with(
     (profile, mut secret): (&ProviderProfile, Option<Zeroizing<String>>),
     request: &neutral::ModelRequest,
     emit: Emit<'_>,
-    (mut timing, carry): (PlanTiming, Carry),
+    (mut timing, carry): (PlanTiming, Carry<'_>),
 ) -> Result<neutral::ModelResponse, ModelError> {
     timing.stream = call.stream;
     let budget = if carry.callers_deadline {
@@ -671,6 +693,7 @@ pub(super) async fn complete_with(
             model: call.model_id,
             budget,
             resend: carry.resend,
+            permission: carry.permission,
             signs: Some(&signs),
         },
         request,
@@ -722,6 +745,7 @@ pub(super) async fn host_complete(
             model,
             budget,
             resend: false,
+            permission: None,
             signs: None,
         },
         &request,
@@ -753,6 +777,7 @@ pub(super) async fn streamed(
             model: "checked-model",
             budget: tilo_test_env::hang_bound(),
             resend: false,
+            permission: None,
             signs: Some(&signs),
         },
         request,

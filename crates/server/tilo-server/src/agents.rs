@@ -1994,8 +1994,7 @@ impl WorkspaceActionsServer {
         use tilo_workspace_service::agents::events::Authority;
 
         self.roster.as_ref()?;
-        let authority =
-            certificate.map_or_else(|| Authority::hosted(caller, &self.actions), Authority::of);
+        let authority = certificate.map_or(Authority::Turn, Authority::of);
         if tilo_workspace_service::agents::events::addresses(&message) {
             return match self.events.get() {
                 Some(events) => events.serve(workspace, caller, authority, message),

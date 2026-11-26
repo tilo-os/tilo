@@ -196,7 +196,7 @@ async fn a_members_turn_reads_searches_and_drafts() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let scout = on_turn(&mail.workspaces, &mail.ada, &mail.workspace, SCOUT);
     let turn = mail.turn(&scout, None);
     let nobody = Err(ActionCallError::UnknownAction);
 
@@ -278,7 +278,7 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     let bo = admit(&mail.workspaces, &mail.workspace, &owner, 2).await;
     let (elsewhere, elsewhere_id, _) = governed(&mail.workspaces).await;
     let cy = admit(&mail.workspaces, &elsewhere, &owner, 3).await;
-    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let scout = on_turn(&mail.workspaces, &mail.ada, &mail.workspace, SCOUT);
     let hers = mail.turn(&scout, None);
     let nobody = Err(ActionCallError::UnknownAction);
 
@@ -301,7 +301,7 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     }
     // A turn carried out in the other workspace reaches that one's mail,
     // which keeps none.
-    let cys = on_turn(&cy, &elsewhere, SCOUT);
+    let cys = on_turn(&mail.workspaces, &cy, &elsewhere, SCOUT);
     let there = HostedTurn {
         workspace: elsewhere_id,
         caller: &cys,
@@ -314,7 +314,7 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     assert!(mail.servers.asked().is_empty(), "no mail server was asked");
 
     // Another member's turn in the same workspace reads the one store.
-    let bos = on_turn(&bo, &mail.workspace, SCOUT);
+    let bos = on_turn(&mail.workspaces, &bo, &mail.workspace, SCOUT);
     let his = mail.turn(&bos, None);
     let message: FetchedMessage = done(mail.asks(&his, person_accounts::READ, reading()).await);
     assert_eq!(message.uid, 4, "a member's turn reads the workspace's mail");
@@ -334,7 +334,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let sub = on_turn(&mail.ada, &mail.workspace, "sub-agent");
+    let sub = on_turn(&mail.workspaces, &mail.ada, &mail.workspace, "sub-agent");
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
         tilo_automation::action_rule(
@@ -419,7 +419,10 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let (scout, asker) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.ada_id());
+    let (scout, asker) = (
+        on_turn(&mail.workspaces, &mail.ada, &mail.workspace, SCOUT),
+        mail.ada_id(),
+    );
     let turn = mail.turn(&scout, None);
 
     let many: Vec<String> = (0..21).map(|n| format!("p{n}@example.test")).collect();
@@ -519,7 +522,7 @@ async fn only_what_its_person_was_shown_leaves_and_once() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let scout = on_turn(&mail.workspaces, &mail.ada, &mail.workspace, SCOUT);
     let turn = mail.turn(&scout, None);
     let workspaces = &mail.workspaces;
 
@@ -564,6 +567,31 @@ async fn only_what_its_person_was_shown_leaves_and_once() {
     let after = workspaces.send_asked(&claimed, true).await;
     assert!(after.is_err(), "{after:?}");
 
+    // The keeper removed Mail from the signing grant while a send waited.
+    let shown = mail.sends(&turn, lunch()).await;
+    let claimed = mail.claimed(&shown);
+    let _chat_only = super::turn_use_tests::on_turn_for_apps(
+        workspaces,
+        &mail.ada,
+        &mail.workspace,
+        SCOUT,
+        &["so.tilo.chat"],
+    );
+    assert!(workspaces.send_asked(&claimed, true).await.is_err());
+    assert_eq!(
+        mail.left(),
+        [LUNCH_LEFT],
+        "the approved message stayed unsent"
+    );
+    let scout = super::turn_use_tests::on_turn_for_apps(
+        workspaces,
+        &mail.ada,
+        &mail.workspace,
+        SCOUT,
+        &["so.tilo.mail"],
+    );
+    let turn = mail.turn(&scout, None);
+
     // The workspace stopped letting her send while the question waited.
     let shown = mail.sends(&turn, lunch()).await;
     mail.remove_ada().await;
@@ -590,7 +618,7 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
         crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys.clone())
             .await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let scout = on_turn(&mail.workspaces, &mail.ada, &mail.workspace, SCOUT);
     let turn = mail.turn(&scout, None);
     let shown = mail.sends(&turn, lunch()).await;
     let new = NewAsk {
@@ -606,6 +634,7 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let person = mail.ada.user_public_key;
     let kept = mail.workspaces.keep_ask(&person, new).unwrap().unwrap();
     let workspace = mail.workspace.clone();
+    let ada = mail.ada.clone();
     assert!(mail.left().is_empty());
     drop(mail);
 
@@ -613,6 +642,7 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let server =
         crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys).await;
     let workspaces = server.workspaces();
+    on_turn(workspaces, &ada, &workspace, SCOUT);
     let servers = Arc::new(Watched::answering());
     workspaces.carry_mail_through(servers.clone());
     let open = workspaces.open_asks(&workspace);

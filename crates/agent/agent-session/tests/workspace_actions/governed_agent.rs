@@ -278,6 +278,60 @@ async fn a_hosted_roster_turn() {
             .iter()
             .any(|action| action.address.action == "request-assistant-work-grant")
     );
+    let selected = offered
+        .iter()
+        .find(|action| action.address.action == "request-app-grant")
+        .unwrap();
+    let schema = selected
+        .params
+        .iter()
+        .find(|param| param.name == "apps")
+        .unwrap()
+        .schema
+        .as_deref()
+        .unwrap();
+    tilo_actions::validate_json_schema(
+        &serde_json::json!(["so.tilo.chat", "so.tilo.mail"]),
+        schema,
+    )
+    .unwrap();
+    let choices = tilo_server_protocol::agents::AgentGrantApp::choices(selected);
+    assert!(
+        choices
+            .iter()
+            .any(|app| app.id == "so.tilo.chat" && !app.title.is_empty())
+    );
+    assert!(
+        choices
+            .iter()
+            .any(|app| app.id == "tilo.models" && !app.title.is_empty())
+    );
+    assert!(choices.iter().any(|app| app.id == SHEETS));
+    let choose = |apps: serde_json::Value| {
+        request(
+            AGENTS_PROVIDER,
+            ActionAddress::new(&resource, "request-app-grant"),
+            json(&apps),
+        )
+    };
+    for apps in [
+        serde_json::json!({"apps":[]}),
+        serde_json::json!({"apps":["so.tilo.mail"]}),
+        serde_json::json!({"apps":["so.tilo.chat", "*"]}),
+        serde_json::json!({"apps":["so.tilo.chat", "so.tilo.unknown-to-this-host"]}),
+        serde_json::json!({"apps":["so.tilo.chat", "so.tilo.chat"]}),
+        serde_json::json!({"apps":["so.tilo.chat"], "workspaces":[elsewhere.workspace]}),
+    ] {
+        assert!(matches!(
+            page.invoke(choose(apps)).await.status,
+            ReceiptStatus::Rejected { .. }
+        ));
+    }
+    let chosen = serde_json::json!({"apps":["so.tilo.mail", "so.tilo.chat"]});
+    assert!(matches!(
+        guest.invoke(choose(chosen.clone())).await.status,
+        ReceiptStatus::Rejected { .. }
+    ));
     for other in [&mut guest, &mut wrong] {
         assert!(
             other
@@ -634,6 +688,19 @@ async fn a_hosted_roster_turn() {
         caller: &as_agent,
         device,
     };
+    let turn = tilo_workspace_service::workspaces::hosted_use::HostedTurn {
+        workspace: workspace.workspace_id,
+        caller: &as_agent,
+        bound: None,
+    };
+    assert!(matches!(
+        workspaces.secret_ask_for_turn(&turn).await,
+        Err(tilo_actions::remote::ActionCallError::NotPermitted)
+    ));
+    assert!(workspaces.uses_offered(&turn).await.is_empty());
+    assert!(workspaces.connection_rows_for_turn(&turn).await.is_empty());
+    assert!(workspaces.mail_connect_offered(&turn).await.is_empty());
+    assert!(workspaces.calendar_connect_offered(&turn).await.is_empty());
     // Services beside the records must honor the signed app list on a turn too.
     {
         use tilo_actions::remote::{
@@ -906,6 +973,40 @@ async fn a_hosted_roster_turn() {
     assert_eq!(output(second.invoke(status()).await)["state"], "pending");
     supervise(&mut page, &resource, REVOKE_ACTION, InvokeArgument::None).await;
     assert!(approver.list_agent_proposals().await.unwrap().is_empty());
+    let selected = output(page.invoke(choose(chosen)).await);
+    assert_eq!(
+        selected,
+        output(
+            second
+                .invoke(choose(
+                    serde_json::json!({"apps":["so.tilo.chat","so.tilo.mail"]})
+                ))
+                .await
+        )
+    );
+    let selected = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].proposal.scope.workspaces,
+        [workspace.workspace_id]
+    );
+    assert_eq!(
+        selected[0].proposal.scope.apps,
+        ["so.tilo.chat", "so.tilo.mail"]
+    );
+    assert_eq!(
+        output(second.invoke(status()).await)["apps"],
+        serde_json::json!(["so.tilo.chat", "so.tilo.mail"])
+    );
+    assert!(matches!(
+        page.invoke(choose(
+            serde_json::json!({"apps":["so.tilo.chat", "tilo.models"]})
+        ))
+        .await
+        .status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    supervise(&mut page, &resource, REVOKE_ACTION, InvokeArgument::None).await;
     supervise(
         &mut page,
         &resource,

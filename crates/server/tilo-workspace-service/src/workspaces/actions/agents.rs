@@ -238,6 +238,27 @@ impl Workspaces {
         })
     }
 
+    /// An active child's incarnation and active signing lead, both belonging to its keeper.
+    pub(crate) async fn child_lead(
+        &self,
+        workspace: &str,
+        actor: &str,
+        keeper: &str,
+    ) -> Option<(i64, tilo_workspace_agent::Agent)> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let roster = self
+            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
+            .await
+            .ok()??;
+        let child = roster.get(&tilo_resource::Id::from_raw(actor.to_owned()))?;
+        if !child.is_active() || !child.is_sub() || !child.keeper.eq_ignore_ascii_case(keeper) {
+            return None;
+        }
+        let lead = roster.root_of(child);
+        (lead.is_active() && !lead.is_sub() && lead.keeper.eq_ignore_ascii_case(keeper))
+            .then(|| (child.created_at, lead.clone()))
+    }
+
     /// What `workspace`'s list of its agents calls the agent `agent`, when it names it: the name
     /// its person reads, which a question it asks is put under. `None` while the list does not
     /// name it, or cannot be read.

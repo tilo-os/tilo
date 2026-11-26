@@ -110,7 +110,7 @@ pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf
 /// A server with one person, their assistant on it, and the workspace's own model.
 pub(super) struct Hosted {
     /// The server itself, kept running until the test ends.
-    server: crate::harness::hosted::Hosted,
+    pub(super) server: crate::harness::hosted::Hosted,
     pub(super) actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,

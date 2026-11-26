@@ -596,6 +596,7 @@ mod tests {
         ts: i64,
     ) -> (Id, Message) {
         let cause = crate::cause::Cause {
+            look_grant: None,
             kind: ui::tilo_resource::Atom(kind.to_owned()),
             label: "Call mum".to_owned(),
             key: ui::tilo_resource::Atom(key.to_owned()),

@@ -1655,6 +1655,7 @@ async fn unary_with_retries(
                     model,
                     budget,
                     resend: false,
+                    permission: None,
                     signs: None,
                 },
                 body,

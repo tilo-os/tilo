@@ -24,13 +24,28 @@ const CHAT: &str = "so.tilo.chat";
 struct Keys(bool);
 
 impl AgentEngine for Keys {
-    fn holds<'a>(
+    fn access<'a>(
         &'a self,
         _: &'a str,
         _: &'a str,
         _: &'a [u8; 32],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        Box::pin(std::future::ready(self.0))
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<crate::work::AgentAccess, Ineligible>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let access = if self.0 {
+            crate::work::AgentAccess::Hosted {
+                device: [0; 32],
+                created_at: 0,
+                scope: tilo_server_protocol::delegation::DelegateScope::default(),
+            }
+        } else {
+            crate::work::AgentAccess::Device
+        };
+        Box::pin(std::future::ready(Ok(access)))
     }
 }
 

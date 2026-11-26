@@ -172,7 +172,7 @@ impl Hers {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_nothing() {
     let hers = Hers::new().await;
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
 
     assert!(hers.offered(&turn).await.is_empty(), "no account yet");
@@ -244,7 +244,7 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
     // Another member's agent's turn reads the same account, as the
     // workspace's calendars are every member's.
     let bo = admit(&hers.workspaces, &hers.workspace, &hers.owner, 2).await;
-    let bos_caller = on_turn(&bo, &hers.workspace, SCOUT);
+    let bos_caller = on_turn(&hers.workspaces, &bo, &hers.workspace, SCOUT);
     let bos_turn = hers.turn(&bos_caller, None);
     assert_eq!(
         hers.offered(&bos_turn).await,
@@ -271,7 +271,7 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
     // A member of another workspace's turn reaches nothing here.
     let (elsewhere, _, _) = governed(&hers.workspaces).await;
     let cy = admit(&hers.workspaces, &elsewhere, &hers.owner, 3).await;
-    let cys_caller = on_turn(&cy, &elsewhere, SCOUT);
+    let cys_caller = on_turn(&hers.workspaces, &cy, &elsewhere, SCOUT);
     let elsewhere_turn = hers.turn(&cys_caller, None);
     nobody(
         "a member of another workspace",
@@ -290,7 +290,7 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
 async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
     let hers = Hers::new().await;
     hers.adds().await;
-    let sub = on_turn(&hers.ada, &hers.workspace, "sub-agent");
+    let sub = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, "sub-agent");
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
         tilo_automation::action_rule(
@@ -394,7 +394,7 @@ async fn a_turn_reads_an_entrys_notes_whole_when_short_and_by_their_beginning_wh
             pasted.trim_end(),
         ),
     );
-    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let scout = on_turn(&hers.workspaces, &hers.ada, &hers.workspace, SCOUT);
     let turn = hers.turn(&scout, None);
     hers.adds().await;
 

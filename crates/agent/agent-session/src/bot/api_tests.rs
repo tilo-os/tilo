@@ -533,6 +533,7 @@ fn a_program_that_runs_for_a_person_hands_its_instruction_to_their_assistant() {
     assert_eq!(
         *assistant.taken.lock().unwrap(),
         [Instruction {
+            look_grant: None,
             person: "ada".into(),
             workspace: WORKSPACE.into(),
             instruction: "Say that it is time to call home.".into(),
