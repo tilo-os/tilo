@@ -55,7 +55,7 @@ action run_approved_check(p: Project, check_id: Text) uses check (label: "Run ch
 "#;
 
 fn checked() -> Bundle {
-    let compiled = tilolang::compile_package(CHECKED_SOURCE, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(CHECKED_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the checked package compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
 }
@@ -208,7 +208,19 @@ tilo_test_env::scenario! {
             tilo_actions::ExecutionMode::Background { cancellable: true }
         );
         assert_eq!(check.contract.kind, tilo_actions::ActionKind::Undoable);
-        assert_eq!(check.contract.result, tilo_actions::ResultSpec::Job);
+        // A check answers the host's receipt of what the commands did: a document with the
+        // outcome, the exit code and the output they printed.
+        let tilo_actions::ResultSpec::Json { schema } = &check.contract.result else {
+            panic!(
+                "a check answers the receipt of what it observed, not {:?}",
+                check.contract.result
+            );
+        };
+        assert_eq!(
+            schema,
+            &serde_json::json!({ "type": "object" }),
+            "the receipt's shape"
+        );
         assert!(
             check
                 .contract
