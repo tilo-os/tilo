@@ -758,6 +758,21 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
                 })
                 .map(|action| verb(meta, action, &mut types, true)),
         );
+        // An `opened action` is no offer, but opening one of the type's resources runs it, and
+        // what it writes is the app's own: the workspace's store judges a change by the verb it
+        // names, so the type declares the verbs the platform runs on the app's behalf beside the
+        // ones a caller may invoke.
+        verbs.extend(
+            meta.actions
+                .iter()
+                .filter(|action| action.is_opened())
+                .filter(|action| {
+                    meta.targets_of(&action.params)
+                        .iter()
+                        .any(|target| target.id == ty.id)
+                })
+                .map(|action| verb(meta, action, &mut types, true)),
+        );
         let mut fields = Vec::new();
         field_surfaces(meta, ty, "", &mut Vec::new(), &mut types, &mut fields);
         let live = live_surface(meta, ty);
