@@ -825,3 +825,42 @@ async fn two_writes_of_a_fresh_devices_record_both_land() {
         );
     }
 }
+
+/// Many writes of the person's devices at once, the first of them founding the record, all land:
+/// each is numbered after the one kept before it, so the store refuses none as a change it
+/// already holds under that number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn writes_of_one_record_at_once_all_land() {
+    let dir = tempfile::tempdir().unwrap();
+    let (desk_key, desk_cert) = hosting_device();
+    let desk = test_host_holding(dir.path(), &desk_key, &desk_cert, group_keys()).await;
+    let own = person_workspace::found(desk.workspaces())
+        .await
+        .expect("the desktop founds the person's own workspace");
+    let names: BTreeSet<String> = (0..50).map(|n| format!("fact{n}")).collect();
+    let written = futures::future::join_all(names.iter().map(|name| {
+        let (workspaces, cert) = (desk.workspaces().clone(), desk_cert.clone());
+        let name = name.clone();
+        tokio::spawn(async move {
+            person_workspace::devices::keep_own_fact(&workspaces, &cert, &name, "00").await
+        })
+    }))
+    .await;
+    for kept in written {
+        kept.unwrap().expect("each write of the record lands");
+    }
+    let devices = read_on::<Devices>(desk.workspaces(), &own, DEVICES)
+        .await
+        .unwrap();
+    let desktop = Id::from_raw(hex::encode(desk_cert.device_public_key));
+    let facts: BTreeSet<String> = devices
+        .devices
+        .get(&desktop)
+        .unwrap()
+        .facts
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(facts, names, "the record holds every write");
+    drop(desk);
+}

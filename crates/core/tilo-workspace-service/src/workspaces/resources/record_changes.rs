@@ -707,11 +707,18 @@ impl Workspaces {
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         let (mut doc, heads) = {
             let mut store = self.store_of(&mut hosted);
+            // A record the store lists is changed from the document that holds it: founding it
+            // again would number this device's change as one the store already holds.
             let held = match store.index().get(kind, record) {
-                Some(_) => store
-                    .content_document(kind, record)
-                    .map_err(|error| error.to_string())?
-                    .map(automerge::Automerge::save),
+                Some(_) => Some(
+                    store
+                        .content_document(kind, record)
+                        .map_err(|error| error.to_string())?
+                        .map(automerge::Automerge::save)
+                        .ok_or_else(|| {
+                            format!("the store lists {kind} {record} but holds no document of it")
+                        })?,
+                ),
                 None => None,
             };
             let begun = if let Some(bytes) = held {
