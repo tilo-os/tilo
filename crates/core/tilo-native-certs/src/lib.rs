@@ -1,7 +1,9 @@
 //! Native root loader for Tilo's Rustls stack.
 //!
-//! It reads only the Tilo trust bundle, or on Android the system store at its
-//! fixed read-only path, so process environment cannot redirect trust.
+//! It reads only the system trust bundle at a fixed path (Tilo's, which is Fedora's, or the
+//! one other Linux families keep, for Tilo programs such as `tilolang` running there), or on
+//! Android the system store at its fixed read-only path, so process environment cannot
+//! redirect trust.
 
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject;
@@ -13,6 +15,14 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "android"))]
 const TILO_CA_BUNDLE: &str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem";
 
+/// The system bundles other Linux families keep, each at its fixed path, read where Tilo's
+/// is absent: Debian, Ubuntu, Arch and Alpine's, then openSUSE's.
+#[cfg(not(target_os = "android"))]
+const OTHER_CA_BUNDLES: [&str; 2] = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/ca-bundle.pem",
+];
+
 /// Android's system stores, one PEM root per file: the Conscrypt module's, then
 /// the system image's.
 #[cfg(target_os = "android")]
@@ -23,7 +33,12 @@ const ANDROID_CA_STORES: [&str; 2] = [
 
 #[cfg(not(target_os = "android"))]
 pub fn load_native_certs() -> CertificateResult {
-    load_certs_from_paths(Some(Path::new(TILO_CA_BUNDLE)), None)
+    let bundle = std::iter::once(TILO_CA_BUNDLE)
+        .chain(OTHER_CA_BUNDLES)
+        .map(Path::new)
+        .find(|bundle| bundle.is_file())
+        .unwrap_or(Path::new(TILO_CA_BUNDLE));
+    load_certs_from_paths(Some(bundle), None)
 }
 
 /// The roots Android itself trusts: the first store that holds any. Roots a user
