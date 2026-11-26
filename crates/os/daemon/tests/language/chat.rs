@@ -128,14 +128,17 @@ pub(crate) async fn chat_stands_with(
     Ok(read.then_some(false))
 }
 
-/// [`chat_holds`] asked again until the record stops holding `needle`: an undo the API
-/// answered for reaches the daemon's record as the app's changes do.
+/// [`chat_stands_with`] asked again until what the app's records stand at stops holding
+/// `needle`: an undo the API answered for reaches the daemon's record as the app's changes
+/// do. It asks what the record stands at, never its history's bytes, which a take-back
+/// leaves as they were.
 pub(crate) async fn chat_stops_holding(host: &host::Host, needle: &str) -> bool {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        match chat_holds(host, needle).await {
-            Ok(false) => return true,
-            Ok(true) => {}
+        match chat_stands_with(host, needle).await {
+            Ok(Some(true)) => {}
+            Ok(Some(false)) => return true,
+            Ok(None) => {}
             Err(error) => panic!("{error}"),
         }
         if std::time::Instant::now() >= deadline {
@@ -406,7 +409,6 @@ fn the_chats_api_posts_are_held_in_the_workspaces_records() {
                 .await,
             );
             assert!(!failed, "post {index} lands: {answer}");
-            eprintln!("KEY POST {index} = {answer}");
             posted.push(text);
         }
         for text in &posted {
