@@ -31,6 +31,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::window::WindowLink;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::language::host;
 use crate::language::host::Host;
@@ -137,7 +138,7 @@ fn directories(base: &Path, name: &str) -> Value {
             .args(["--bind"])
             .arg(Path::new("/").join(subtree))
             .arg(&at)
-            .status()
+            .status_locked()
             .expect("mount the image's subtree");
         assert!(mounted.success(), "the image's {} mounts", at.display());
     }
@@ -358,7 +359,7 @@ impl Drop for UserManager {
             .args(["--user", "exit"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .status_locked();
         let _ = self.bus.kill();
         let _ = self.bus.wait();
     }
@@ -406,7 +407,10 @@ fn start_user_manager() -> UserManager {
     // it too, and starts each check's service under it.
     let bus_socket = Path::new(&runtime).join("bus");
     let log = Path::new(&runtime).join("session-bus.log");
-    eprintln!("approved checks: starting the account's bus at {}", bus_socket.display());
+    eprintln!(
+        "approved checks: starting the account's bus at {}",
+        bus_socket.display()
+    );
     let bus = std::process::Command::new("/usr/bin/dbus-daemon")
         .args([
             "--session",
@@ -417,7 +421,7 @@ fn start_user_manager() -> UserManager {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log).expect("the bus's log"))
-        .spawn()
+        .spawn_locked()
         .expect("the account's session bus starts");
     let manager = UserManager { bus };
     let deadline = Instant::now() + Duration::from_secs(240);
@@ -426,15 +430,26 @@ fn start_user_manager() -> UserManager {
         // Each ask is bounded: a manager that takes a message and never answers one would
         // otherwise leave this waiting with no deadline of its own.
         let state = std::process::Command::new("/usr/bin/timeout")
-            .args(["--signal=KILL", "5", "/usr/bin/systemctl", "--user", "is-system-running"])
-            .output();
+            .args([
+                "--signal=KILL",
+                "5",
+                "/usr/bin/systemctl",
+                "--user",
+                "is-system-running",
+            ])
+            .output_locked();
         said = state.as_ref().map_or_else(
             |error| error.to_string(),
-            |state| format!("{:?} {}", state.status, String::from_utf8_lossy(&state.stdout)),
+            |state| {
+                format!(
+                    "{:?} {}",
+                    state.status,
+                    String::from_utf8_lossy(&state.stdout)
+                )
+            },
         );
         if let Ok(state) = &state {
-            if state.status.success()
-                || String::from_utf8_lossy(&state.stdout).trim() == "degraded"
+            if state.status.success() || String::from_utf8_lossy(&state.stdout).trim() == "degraded"
             {
                 eprintln!("approved checks: the account's user manager answers: {said}");
                 return manager;
@@ -457,7 +472,7 @@ fn start_user_manager() -> UserManager {
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .status_locked();
         assert!(
             Instant::now() < deadline,
             "the account's user manager did not start (last answer {said}):\n{}",

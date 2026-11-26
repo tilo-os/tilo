@@ -1868,7 +1868,7 @@ fn opened(link: tokio::net::UnixStream) -> (ShellShared, ConnectionEnd) {
 fn request_link(socket: &std::path::Path) -> Result<std::os::unix::net::UnixStream, String> {
     use std::io::Write as _;
     let complain = |what: &str| format!("{what} at {}: ", socket.display());
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+    let mut stream = tilo_socket::connect(socket)
         .map_err(|error| format!("{}{error}", complain("this device's daemon")))?;
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));

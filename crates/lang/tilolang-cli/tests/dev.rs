@@ -2,6 +2,7 @@
 //! the device marks it, packs it, signs it with its own key and runs it under the id its marking
 //! derives.
 
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilolang_cli::package::{self, BuildOptions};
 
 use crate::support::{copy_package, packages, with_used};
@@ -159,7 +160,8 @@ fn a_development_build_resolves_imports_under_their_development_ids() {
         compile_as.iter().any(|(app, _)| app == "so.tilo.playback"),
         "tube imports playback: {compile_as:?}"
     );
-    let staged = package::stage_dev(&options, &compile_as).unwrap_or_else(|error| panic!("{error}"));
+    let staged =
+        package::stage_dev(&options, &compile_as).unwrap_or_else(|error| panic!("{error}"));
     let tube = staged
         .iter()
         .find(|app| app.app == "so.tilo.tube")
@@ -245,7 +247,7 @@ fn a_second_dev_attaches_to_the_running_session() {
         .env("XDG_RUNTIME_DIR", &runtime)
         .env("XDG_STATE_HOME", scratch.path().join("xdg-state"))
         .env("TILO_REPO", &repo)
-        .output()
+        .output_locked()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

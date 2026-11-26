@@ -60,10 +60,19 @@ pub(crate) fn install(
         return requests;
     };
     let unlocking = Arc::new(unlock::Unlock::new(link, record, local, questions));
-    let _ = services::install(Services {
+    let installed = services::install(Services {
         peer_version: peer_versions(updates),
         device_unlock: device_unlock(unlocking),
     });
+    if !installed {
+        // The actor keeps the first session's services for the life of this process, so a second
+        // session started in it is answered by that one's: this session's peer version notices
+        // and device unlock never reach the transport.
+        tracing::warn!(
+            "the network actor already serves an earlier session's services: this session's device \
+             unlock and peer version notices are not served"
+        );
+    }
     requests
 }
 

@@ -165,6 +165,10 @@ uuid.workspace = true
 tilo-runtime = { path = "../tilo-runtime" }
 tilo-api = { path = "../tilo-api", features = ["test-support"] }
 
+[target.'cfg(unix)'.dependencies]
+# The device daemon's socket, reached at its path whatever its length.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true
 # The shell's connection to the device's daemon, which keeps the person's workspaces.

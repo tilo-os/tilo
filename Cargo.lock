@@ -20575,6 +20575,7 @@ dependencies = [
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-session-actions",
+ "tilo-socket",
  "tilo-surface-compile",
  "tilo-test-env",
  "tilo-test-http",

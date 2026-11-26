@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 use std::io::BufReader;
-use std::os::unix::net::UnixListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -236,7 +235,7 @@ impl Device {
         };
         let sockets = tempfile::tempdir().unwrap();
         let native = sockets.path().join("native");
-        let listener = UnixListener::bind(&native).unwrap();
+        let listener = tilo_files::native::socket::bind(&native).unwrap();
         std::thread::spawn(move || {
             let uploads = Arc::new(HostedContentPuts::default());
             for stream in listener.incoming() {

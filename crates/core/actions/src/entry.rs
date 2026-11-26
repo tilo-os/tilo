@@ -334,17 +334,9 @@ pub enum HistoryOp {
     /// follows the step and is decided as any write of the record's.
     Migrate {
         to: u32,
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default)]
         rewrite: bool,
     },
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde's skip_serializing_if passes the field by reference"
-)]
-const fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// The item an action addressed, with its label at the time: one line that

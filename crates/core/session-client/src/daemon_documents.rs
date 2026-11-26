@@ -59,7 +59,7 @@ pub fn link_from_token(
     token: &str,
 ) -> Result<std::os::fd::OwnedFd, String> {
     use std::io::Write as _;
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+    let mut stream = tilo_socket::connect(socket)
         .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     let request = serde_json::json!({"native": "shells#link", "token": token}).to_string() + "\n";

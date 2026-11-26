@@ -22,6 +22,7 @@ use std::path::Path;
 use std::process::Command;
 
 use tilo_app_builder::android::{BUILD_STD_ARGS, Toolchain, native_tls_target};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TRIPLE: &str = "x86_64-linux-android";
 /// Well past bionic's `PTHREAD_KEYS_MAX` of 128, half of them with a destructor.
@@ -76,7 +77,7 @@ fn build_and_run(
     // by CPU), which rustc's `-nodefaultlibs` leaves out.
     let builtins = Command::new(&linker)
         .arg("-print-libgcc-file-name")
-        .output()
+        .output_locked()
         .unwrap();
     assert!(builtins.status.success());
     let builtins = String::from_utf8(builtins.stdout).unwrap();
@@ -97,11 +98,11 @@ fn build_and_run(
             ),
         )
         .env("RUSTC_BOOTSTRAP", "1")
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "building the probe failed with {status}");
     let program = target_dir.join(TRIPLE).join("release").join("tls-probe");
-    Command::new(&program).output().unwrap()
+    Command::new(&program).output_locked().unwrap()
 }
 
 #[test]

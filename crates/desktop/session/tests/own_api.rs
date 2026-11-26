@@ -22,6 +22,7 @@
 
 use serde_json::json;
 use tilo_session::Options;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use crate::common::{api_account, api_request, app_store, device_in, headless, seeded_apps, until};
 
@@ -355,7 +356,7 @@ fn a_sandboxed_program_of_this_login_is_refused_at_the_api_socket() {
         });
     }
     let ran = command
-        .output()
+        .output_locked()
         .expect("a program in a user namespace of its own starts");
     let said = String::from_utf8_lossy(&ran.stdout);
     let said = said

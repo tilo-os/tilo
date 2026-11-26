@@ -83,9 +83,10 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(unix)'.dependencies]
 # Marks the inherited connection close-on-exec.
 rustix = { workspace = true }
+# The daemon's sockets, reached at their paths whatever their length: the processes socket
+# and the shell's link.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
-# The daemon's processes socket, reached at its path whatever its length.
-tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 rustix = { workspace = true, features = ["process"] }
