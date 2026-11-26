@@ -252,6 +252,22 @@ impl Peer {
             argument => spec.confirmation_for_argument(argument.to_slot().as_deref()),
         });
         let confirmation = request.confirmation.clone();
+        // Where the action asks for a phrase, the approve's first typed value is
+        // that phrase: the workspace checks it before it admits the call again.
+        if let (
+            Some(tilo_actions::ConfirmationPolicy::Phrase { phrase }),
+            Some(tilo_actions::remote::Confirmation::Asked(approval)),
+        ) = (policy.as_ref(), confirmation.as_ref())
+            && approval.typed.first().map(|typed| typed.as_str()) != Some(phrase.as_str())
+        {
+            let refusal = ActionCallError::NotPermitted;
+            self.refused.push((request.invocation, refusal.clone()));
+            self.answer(tilo_actions::remote::refuse(
+                &RemoteActionMessage::Invoke(request),
+                refusal,
+            ));
+            return;
+        }
         // What the caller's grants say of the call, as the workspace decides it: one they leave to
         // the person waits for them, one they refuse goes no further.
         let granted = match (request.approval(), &continued, grants) {
@@ -544,6 +560,16 @@ impl Driver {
     /// Answers the action it ran; `None` when nothing waits.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         let approval = self.approval();
+        self.resolve_asked(approval)
+    }
+
+    /// [`Self::confirm_asked`] with what the person typed into the ask's one field: the phrase a
+    /// destructive action has them type, carried with their approve.
+    pub fn confirm_asked_typing(
+        &mut self,
+        typed: Option<&str>,
+    ) -> Option<tilo_actions::ActionAddress> {
+        let approval = self.approval_typing(typed);
         self.resolve_asked(approval)
     }
 
