@@ -917,7 +917,8 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
             &laptop_cert.device_public_key,
             tilo_workspace_service::workspaces::server_controls::CONTROL,
         ),
-        tilo_action_policy::KindSet::READ_UNDOABLE,
+        // A restart changes the machine outside any history, as its catalogue declares it.
+        tilo_action_policy::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(root_hex.clone()),
     );

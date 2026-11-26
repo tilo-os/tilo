@@ -91,33 +91,6 @@ pub struct Registered {
     pub placed_for: Option<[u8; 32]>,
 }
 
-impl Registered {
-    /// The kind this provider declares the action `target` names as: the action it publishes at
-    /// that address, or else the one its catalogue lists there for `caller`. `None` when it
-    /// declares no such action.
-    async fn declared_kind(
-        &self,
-        caller: &Caller,
-        target: &RemoteActionTarget,
-    ) -> Option<tilo_actions::ActionKind> {
-        if let Some((_, action)) = locate(&self.published, &target.address) {
-            return Some(action.contract.kind);
-        }
-        let query = CatalogueQuery {
-            provider: Some(target.provider.clone()),
-            target: Some(target.address.clone()),
-            max_results: 1,
-            ..CatalogueQuery::default()
-        };
-        let page = self.answers.query(caller, query).await?.ok()?;
-        page.rows
-            .into_iter()
-            .filter_map(|row| row.action)
-            .find(|action| action.address == target.address)
-            .map(|action| action.contract.kind)
-    }
-}
-
 /// How many invocations from other devices a registered provider took are remembered for routing
 /// their observations; the oldest are let go beyond it, and their provider is asked no more.
 const TAKEN_KEPT: usize = 4096;
@@ -733,7 +706,9 @@ impl Providers {
         runtime.spawn(async move {
             let address = &request.target.address;
             if placed.is_none() && !placing_host {
-                let declared = registered.declared_kind(&caller, &request.target).await;
+                let declared = providers
+                    .declared_kind(&caller, &registered, &request.target)
+                    .await;
                 if let Err(refused) = permits(
                     (&workspaces, &surfaces),
                     declared,
@@ -756,6 +731,44 @@ impl Providers {
             completer.complete(receipt.unwrap_or(Err(ActionCallError::Unanswered)));
         });
         Some(answer)
+    }
+
+    /// The kind the action `target` names is declared as in this registry, `registered` answering
+    /// it: what `registered`, or else another provider registered for its app (the app's own
+    /// process, serving it), publishes at that address, or else what the catalogue of
+    /// `registered` lists there for `caller`. `None` when none of them declares it.
+    async fn declared_kind(
+        &self,
+        caller: &Caller,
+        registered: &Registered,
+        target: &RemoteActionTarget,
+    ) -> Option<tilo_actions::ActionKind> {
+        let kind_in = |published: &[ResourceSpec]| {
+            locate(published, &target.address).map(|(_, action)| action.contract.kind)
+        };
+        let published = kind_in(&registered.published).or_else(|| {
+            self.0
+                .provided
+                .read_recover()
+                .values()
+                .filter(|other| other.app == registered.app)
+                .find_map(|other| kind_in(&other.published))
+        });
+        if published.is_some() {
+            return published;
+        }
+        let query = CatalogueQuery {
+            provider: Some(target.provider.clone()),
+            target: Some(target.address.clone()),
+            max_results: 1,
+            ..CatalogueQuery::default()
+        };
+        let page = registered.answers.query(caller, query).await?.ok()?;
+        page.rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| action.address == target.address)
+            .map(|action| action.contract.kind)
     }
 
     /// Where invocation `id`, taken from another device by a registered provider or sent to a
