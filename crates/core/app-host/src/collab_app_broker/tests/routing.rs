@@ -233,9 +233,7 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
     state.refresh_workspace_context_services().unwrap();
     assert_eq!(
         stream.try_recv().unwrap(),
-        ContextUpdate::RecordsMoved(vec![
-            tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()
-        ]),
+        ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]),
         "the window is told where the members are, not who they are"
     );
     {
@@ -321,6 +319,19 @@ fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
     let mut other_document_rx = state.subscribe_context(&other_document.channel_key(), 3, None);
     let mut other_app_rx = state.subscribe_context(&other_app.channel_key(), 4, None);
     let mut other_workspace_rx = state.subscribe_context(&other_workspace.channel_key(), 5, None);
+    // Every subscriber opens with the context it shows: the permissions it has and the apps this
+    // device installed.
+    for (label, stream) in [
+        ("the addressed record", &mut target_rx),
+        ("another record", &mut other_document_rx),
+        ("another app", &mut other_app_rx),
+        ("another workspace", &mut other_workspace_rx),
+    ] {
+        assert!(
+            matches!(stream.try_recv(), Ok(ContextUpdate::Snapshot { .. })),
+            "{label} opens with its context"
+        );
+    }
 
     fanout.record_changed(&target);
 
@@ -801,6 +812,18 @@ tilo_test_env::scenario! {
         let mut other_app =
             state.subscribe_context(&window("dev.tilo.sheets", "continuation:5").channel_key(), 9, None);
         let shown = window("dev.tilo.notes", "continuation:5");
+        // Every window opens with the context it shows: the permissions it has and the apps this
+        // device installed.
+        for (label, stream) in [
+            ("the addressed window", &mut addressed),
+            ("another window of the app", &mut sibling),
+            ("another app", &mut other_app),
+        ] {
+            assert!(
+                matches!(stream.try_recv(), Ok(ContextUpdate::Snapshot { .. })),
+                "{label} opens with its context"
+            );
+        }
         let asked = |token| {
             let (answer, saved) = pending();
             state.ask_save(&shown, token, answer);
@@ -849,4 +872,3 @@ tilo_test_env::scenario! {
     }
 
 }
-
