@@ -50,12 +50,22 @@ fn control_availability_follows_permissions_and_reads_without_committing() {
             app.root_widget.children()[0].is_enabled(),
             "baseline declared projection survives validation rejection"
         );
+        // The repeat of a resource id is refused alone: the id it repeats is withdrawn, and the
+        // rest of the app's surface — the control's own semantic action — still stands.
+        let offered = app.collect_resources();
         assert!(
-            app.collect_resources().is_empty(),
-            "duplicate resource IDs reject complete surface"
+            !offered.iter().any(|resource| resource.id == "test.obj:1"),
+            "a resource id published twice is refused whole"
         );
-        assert!(app.collect_resources().is_empty());
-        assert!(app.collect_local_resources().is_empty());
+        assert!(
+            !offered.is_empty(),
+            "the app's other controls are still offered"
+        );
+        assert!(
+            !app.collect_local_resources()
+                .iter()
+                .any(|resource| resource.id == "test.obj:1")
+        );
         app.refresh_control_action_availability();
         assert!(app.root_widget.children()[0].is_enabled());
         let actor = tilo_actions::Actor::Member(app.local_author.clone());
