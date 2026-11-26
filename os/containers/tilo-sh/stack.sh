@@ -2161,18 +2161,22 @@ start_native_server() {
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
     printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
-    # The store the apps were installed into, the runtimes they execute, and
-    # the key they and the packages are trusted by. The image keeps all three
-    # where a Tilo program looks by itself (the store a device's own, the
-    # bundles in /usr/lib/tilo-runtime, the list in /etc/tilo); outside it they
-    # are this context's, and the launcher — a `lounge-check` build, which
+    # The store the apps were installed into, and the key they and the
+    # packages are trusted by. The image keeps both where a Tilo program looks
+    # by itself (the store a device's own, the list in /etc/tilo); outside it
+    # they are this context's, and the launcher — a `lounge-check` build, which
     # honours where the trust list is — is told.
     printf '%s\n' "TILO_APPS_DATA_DIR=$state/server/apps" \
-      "TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes" \
       "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt" \
       "TILO_LAUNCHER_PATH=$lounge/bin/tilo-launcher"
     server_env
   } > "$runs/server.env"
+  # The runtimes the apps execute, where a device keeps the ones it fetched:
+  # this server's own data directory, under the names a Tilo program resolves
+  # without being told. (`TILO_RUNTIME_BUNDLE_DIR` names another root, and a
+  # released program honours it in a developer build alone.)
+  mkdir -p "$runs/server/data"
+  ln -sfn "$lounge/runtimes" "$runs/server/data/tilo-runtime"
   run_native server "$state/server" sh "$lounge/entrypoint.sh"
 }
 

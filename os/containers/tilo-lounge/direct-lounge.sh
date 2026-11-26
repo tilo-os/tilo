@@ -58,7 +58,6 @@ run_lounge() {
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
     ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
     ${lounge_apps:+TILO_APPS_DATA_DIR="$lounge_volume/apps"} \
-    ${lounge_apps:+TILO_RUNTIME_BUNDLE_DIR="$lounge_apps/runtimes"} \
     ${lounge_apps:+TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$lounge_apps/runtime-publishers.txt"} \
     ${lounge_apps:+TILO_LAUNCHER_PATH="$lounge_bin/tilo-launcher"} \
     TILO_SOURCE_REVISION=direct-lounge \
@@ -215,6 +214,11 @@ start_lounge() {
     TILO_INSTALL="$lounge_apps/bin/tilo-install" TILO_RUNTIME_BUNDLE_DIR="$lounge_apps/runtimes" \
       sh "$lounge_here/install-apps.sh" "$lounge_apps/packages" "$volume/apps" >&2 \
       || lounge_fail 'could not install the apps the workspace runs'
+    # The runtimes the apps execute, where a device keeps the ones it fetched:
+    # this person's own data directory, under the names a Tilo program resolves
+    # without being told.
+    mkdir -p "$work/.local/share"
+    ln -sfn "$lounge_apps/runtimes" "$work/.local/share/tilo-runtime"
   fi
 
   # This Lounge's server configuration: its web UI and packet relay on this
