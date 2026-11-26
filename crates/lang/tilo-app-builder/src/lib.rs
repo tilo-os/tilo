@@ -2106,8 +2106,8 @@ fn format_pending_rust(writes: &mut [PendingWrite]) -> Result<()> {
 }
 
 /// `source` as rustfmt lays it out. Formatting only tidies generated code, so a computer
-/// without rustfmt (a fresh install that has no Rust toolchain yet) gets it as generated,
-/// unless `RUSTFMT` names a formatter, which then has to run.
+/// without rustfmt (no Rust toolchain yet, or one without its rustfmt component) gets it as
+/// generated, unless `RUSTFMT` names a formatter, which then has to run.
 fn rustfmt_source(source: &str, path: &Path) -> Result<String> {
     let named = std::env::var_os("RUSTFMT");
     let rustfmt = named.clone().unwrap_or_else(|| OsString::from("rustfmt"));
@@ -2139,6 +2139,10 @@ fn rustfmt_source(source: &str, path: &Path) -> Result<String> {
         .with_context(|| format!("waiting for rustfmt on {}", path.display()))?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
+        // rustup answers for a toolchain that lacks the rustfmt component as if rustfmt ran.
+        if named.is_none() && detail.contains("'rustfmt' is not installed") {
+            return Ok(source.to_owned());
+        }
         bail!(
             "rustfmt rejected generated Rust {}: {}",
             path.display(),
