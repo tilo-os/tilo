@@ -691,6 +691,16 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         entry: "undo_status",
         why: "reads the focused document's undo status; changes nothing.",
     },
+    QuietEntry {
+        file: "app/driver.rs",
+        entry: "semantic_tree",
+        why: "builds the window's semantics as they are read, for a reader that is not a frame.",
+    },
+    QuietEntry {
+        file: "app/driver/palette.rs",
+        entry: "semantic_locus",
+        why: "reads where the app shows an interaction now; draws and changes nothing a frame reads.",
+    },
 ];
 
 /// Every public `&mut self` entry point of [`Driver`], and every `pub(crate)` one, either runs the

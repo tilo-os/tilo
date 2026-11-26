@@ -53,12 +53,17 @@ fn layout_in(app: &mut App, width: u32, height: u32) {
     .unwrap();
 }
 
+/// The focusable controls by their test id: the grid itself is focusable — one control the
+/// keyboard moves between its cards' own — and stands first in the order, named by its widget
+/// rather than by a test id.
 fn controls(app: &App) -> Vec<(String, KurboRect)> {
     app.focusable_order
         .iter()
-        .map(|&node| {
+        .filter_map(|&node| {
             app.inspect_node(node, |widget| {
-                (widget.test_id().unwrap().to_string(), widget.get_rect())
+                widget
+                    .test_id()
+                    .map(|id| (id.to_string(), widget.get_rect()))
             })
             .unwrap()
         })
@@ -70,6 +75,12 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
     {
         let mut app = fixture();
         layout(&mut app, 1000);
+        assert_eq!(
+            app.inspect_node(app.focusable_order[0], |widget| widget.name().to_owned())
+                .unwrap(),
+            "CardGrid",
+            "the grid is the control the keyboard enters first"
+        );
         let initial = controls(&app);
         assert_eq!(
             initial
@@ -87,7 +98,9 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         );
         let target = initial[3].1.center();
         assert!(app.dispatch_semantic_click(target.x, target.y));
-        assert_eq!(app.focused_node, Some(app.focusable_order[3]));
+        // The grid stands first in the focusable order, so the card control clicked at
+        // `initial[3]` is the fourth after it.
+        assert_eq!(app.focused_node, Some(app.focusable_order[4]));
         assert_eq!(crate::testing::clicks("clicked"), 1);
         let mut scene = Scene::new();
         app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(

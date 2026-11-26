@@ -776,7 +776,9 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         assert_eq!(body(&host.records, &checkout), "typed");
         app.open_action_palette();
         activate_palette_action(&mut app, "confirm");
-        palette_frame(&mut app);
+        // Confirming queues the action and closes the palette, so this frame draws what the
+        // close left and drains the queued dispatch; there is no palette left to lay out.
+        frame(&mut app);
         assert_eq!(
             body(&host.records, &checkout),
             "typed",
@@ -812,6 +814,11 @@ fn palette_key(app: &mut App, key: Key, text: Option<&str>) {
         event.text = text.map(Into::into);
     }
     assert!(app.action_palette_handle_key(&event));
+}
+
+fn frame(app: &mut App) {
+    let mut scene = Scene::new();
+    draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
 }
 
 fn palette_frame(app: &mut App) {

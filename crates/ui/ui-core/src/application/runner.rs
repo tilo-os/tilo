@@ -2038,7 +2038,9 @@ mod native_process_tests {
             window.is_pending(),
             "the workspace's answer wakes the window"
         );
-        assert!(opening.take_in(true).unwrap());
+        // The window's first frame takes the record in from the answer that arrived; it asks the
+        // workspace no second time.
+        assert!(opening.take_in(false).unwrap());
         assert_eq!(
             prepared.context.read_resource(note).unwrap().as_deref(),
             Some("kept")

@@ -324,6 +324,11 @@ tilo_test_env::scenario! {
             &automerge::ROOT,
         );
         app.rebuild_structure();
+        // The keyboard is seated on the tree a frame lays out: the rebuild alone leaves it to
+        // that pass, which finds the answer by the name the field keeps.
+        let root = app.layout.root_node.expect("the rebuilt tree stands");
+        run_layout_pass(&mut app, root, 400, 400, 1.0, false, None)
+            .expect("the rebuilt tree lays out");
 
         let focused = app
             .focused_node

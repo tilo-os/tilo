@@ -6,7 +6,8 @@ struct SemanticCountingPublisher {
 
 fn counted_control_app(duplicate: bool) -> (App, std::rc::Rc<Cell<bool>>) {
     let visible = std::rc::Rc::new(Cell::new(true));
-    let resource = tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource =
+        tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let root = SemanticCountingPublisher {
         visible: visible.clone(),
         duplicate,
@@ -157,7 +158,8 @@ struct InventoryOnlyPublisher {
 }
 
 fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
-    let resource = tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource =
+        tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let enabled = std::rc::Rc::new(Cell::new(false));
     (
         Box::new(InventoryOnlyPublisher {
@@ -234,7 +236,8 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
     {
         for wrapper in 0..4 {
             let resource =
-                tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+                tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new())
+                    .remove(0);
             let root = FastInventoryPublisher {
                 visible: std::rc::Rc::new(Cell::new(true)),
                 duplicate: false,
@@ -256,8 +259,14 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             app.refresh_control_action_availability();
-            let expected = if wrapper == 3 { 2 } else { 1 };
-            assert_eq!(app.control_action_coverage().len(), expected);
+            // One action-bound control, in every wrapper: the shell's own sidebar toggle is a
+            // host request run from a closure, not an action a view binds, so it is no action
+            // control of the surface.
+            assert_eq!(
+                app.control_action_coverage().len(),
+                1,
+                "wrapper {wrapper} keeps the one action-bound control"
+            );
         }
     }
 }
