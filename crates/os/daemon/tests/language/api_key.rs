@@ -44,8 +44,8 @@ fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
 }
 
 /// A program holding a key of the person's own reaches the host directly: the API served in
-/// process, the same routes and answers, with no API server between them. A key makes no
-/// workspace on a device: the device answers its own, and making one is the computer's change.
+/// process, the same routes and answers, with no API server between them. The key's account is
+/// the device's own too: a workspace the key makes there is one the same key then lists.
 #[test]
 fn a_key_its_program_holds_reaches_the_host_directly() {
     host::run(|host| async move {
@@ -78,18 +78,31 @@ fn a_key_its_program_holds_reaches_the_host_directly() {
             "{listed}"
         );
 
-        // The account's own actions are the computer's: a script's key is told to make a
-        // workspace in Tilo itself, where the computer acts.
-        let (status, refused) = key
+        // The account's own actions are the device's as well: the key makes a workspace through
+        // the computer that keeps its person's workspaces, and the same key then lists it.
+        let (status, made) = key
             .post(
                 "/v1/resources/account/workspaces/actions/create",
                 &json!({"name": "Made from a script"}),
             )
             .await;
-        assert_eq!(status, 403, "{refused}");
+        assert_eq!(status, 200, "the key makes a workspace: {made}");
+        let made = made["result"]["workspace"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a create answers the workspace it made: {made}"))
+            .to_owned();
+
+        let (status, listed) = key
+            .post("/v1/resources/account/workspaces/actions/list", &json!({}))
+            .await;
+        assert_eq!(status, 200, "{listed}");
         assert!(
-            refused.to_string().contains("Tilo"),
-            "the key is told where a workspace is made: {refused}"
+            listed["result"]["workspaces"]
+                .as_array()
+                .is_some_and(|rows| rows
+                    .iter()
+                    .any(|row| row["id"].as_str() == Some(made.as_str()))),
+            "the key lists the workspace it made: {listed}"
         );
     });
 }
