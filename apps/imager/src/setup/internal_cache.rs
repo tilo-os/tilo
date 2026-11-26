@@ -6,14 +6,28 @@ pub(super) use checkpoint::*;
 #[cfg(test)]
 pub(super) mod tests;
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "tests run the coordinator on the fixture platform, not the native one"
+    )
+)]
+#[cfg(target_os = "linux")]
 pub(super) mod linux;
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(super) mod windows;
 
 pub(super) mod coordinator;
 
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "tests run the coordinator on the fixture platform, not the native one"
+    )
+)]
 pub(in crate::setup) fn final_component_path(
     selected: &super::internal_download::SelectedManifest,
     index: usize,
