@@ -25,6 +25,7 @@ import {readEntry} from './entry.mjs';
 import {loadRuntime} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
+import {memberText} from './json-text.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {setupOrigin} from './identity-actions.mjs';
 import {showRecoveryWords} from './recovery-words.mjs';
@@ -1540,8 +1541,11 @@ const TICKET_LIFE_MS = 10 * 60_000;
  */
 function ticketCodes({origin, identity}) {
   const post = httpsPost(origin);
-  const call = async (path, body) => {
-    const reply = await post(path, JSON.stringify(body)).catch(error => { throw hostNamed(error, origin); });
+  // What the host said, as it said it: the question a ticket's computer asks carries nanosecond
+  // dates, which a JS number cannot hold, so the raw text is kept for what is signed over it.
+  const callText = async (path, body) => {
+    const reply = await post(path, typeof body === 'string' ? body : JSON.stringify(body))
+      .catch(error => { throw hostNamed(error, origin); });
     const text = new TextDecoder().decode(reply.body);
     if (reply.status >= 400) {
       let said = null;
@@ -1549,6 +1553,10 @@ function ticketCodes({origin, identity}) {
       throw hostNamed(Object.assign(new Error(said ?? 'the host refused this ticket'),
         {name: 'TicketError', code: 'refused', status: reply.status}), origin);
     }
+    return text;
+  };
+  const call = async (path, body) => {
+    const text = await callText(path, body);
     return text ? JSON.parse(text) : null;
   };
   const kept = (ticket, id, direction) => ({code: ticket, expiresAt: Date.now() + TICKET_LIFE_MS, follow: id, id, direction});
@@ -1556,7 +1564,8 @@ function ticketCodes({origin, identity}) {
     let answering = false;
     return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
       follow: async () => {
-        const status = await call(TICKET_ASKED, {id: saved.follow}) ?? {};
+        const statusText = await callText(TICKET_ASKED, {id: saved.follow});
+        const status = statusText ? JSON.parse(statusText) : {};
         const agent = status.agent ?? null;
         const claimed = status.claimed ?? null;
         if (saved.direction === 'sign-in') {
@@ -1577,8 +1586,9 @@ function ticketCodes({origin, identity}) {
             const peer = await setupPeer();
             const person = currentIdentity();
             if (!peer?.approveAsked || !person) throw new Error('this tab cannot approve your agent');
-            const approved = JSON.parse(await peer.approveAsked(person, JSON.stringify(status.asked)));
-            await call(TICKET_ANSWER, {id: saved.follow, approved});
+            // Signed over the question as the host asked it, and handed back as signed.
+            const approved = await peer.approveAsked(person, memberText(statusText, 'asked'));
+            await call(TICKET_ANSWER, `{"id":${JSON.stringify(saved.follow)},"approved":${approved}}`);
           } catch (error) {
             console.warn('first screen: approving your agent', error);
             await call(TICKET_ANSWER, {id: saved.follow, declined: String(error?.message ?? error)})

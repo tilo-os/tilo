@@ -462,6 +462,20 @@ test('a copied code that expires says so, and the retry copies the fresh one at 
   assert.deepEqual(last('waiting')[2], {text: setupPrompt(NEXT), copied: true});
 });
 
+test('a code that ran out with no fresh one yet: one press makes the prompt and copies it', async () => {
+  const stored = new Map();
+  const code = fakeCode({expiresAt: 600_000});
+  stored.set(SETUP, JSON.stringify({step: 'expired', code: {code: CODE, expiresAt: 600_000, follow: 'follow', kind: 'setup'}}));
+  const {screen, last, copied} = fixture({stored});
+  const fresh = maker(fakeCode({code: NEXT}));
+  screen.offerSetup(fresh.make, resumer(code), {ahead: false});
+  await settle();
+  assert.equal(fresh.made.length, 0, 'nothing is made ahead of the person asking');
+  assert.equal(await screen.retry('setup'), true);
+  assert.deepEqual(copied, [setupPrompt(NEXT)], 'the press copies the prompt it made');
+  assert.equal(last('waiting')[2].text, setupPrompt(NEXT));
+});
+
 test('the host saying the code expired shows it expired too', async () => {
   const {screen, names, state, tick} = fixture();
   const code = fakeCode();

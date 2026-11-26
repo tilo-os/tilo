@@ -1008,12 +1008,15 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
       use('setup', 'setup', at.made, prompts.setup(at.made.code, {site}), {copied: true});
     },
     /** Make the code that could not be made, or copy a fresh one after one
-     * expired or failed (a click of its own). */
+     * expired or failed (a click of its own). A press with nothing to copy yet
+     * makes the prompt and copies it, as the button promises. */
     retry(mode = 'setup') {
       const kind = kindOf(mode);
       if (closed) return Promise.resolve(false);
       if (!codes[kind].make && codes[kind].error) { reload(); return Promise.resolve(false); }
-      if (!codes[kind].made && codes[kind].error) return prepare(kind).then(() => false);
+      if (!codes[kind].made) {
+        return prepare(kind).then(() => (codes[kind].made ? copy(kind, mode) : false));
+      }
       return copy(kind, mode);
     },
     /** Show (or hide) the manual setup, with the setup code, followed. */
