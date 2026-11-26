@@ -35,7 +35,7 @@ model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:c
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::process::ProcessServices`.
-native = ["local-daemons", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
+native = ["local-daemons", "collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
