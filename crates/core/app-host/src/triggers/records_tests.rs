@@ -1194,7 +1194,10 @@ async fn a_message_that_carries_a_file_still_fires_its_mention() {
     while let Ok(write) = writes.try_recv() {
         since.push(write);
     }
-    let events = runner.read(since).await;
+    // One action's notices carry every document it wrote: the first read alone finds the
+    // message with the file it was sent with, however the store placed them.
+    let first = since.into_iter().next().expect("the write's first notice");
+    let events = runner.read(vec![first]).await;
     let message = events
         .iter()
         .find(|event| event.record == "m-1")

@@ -1606,7 +1606,7 @@ impl Workspaces {
             write,
             &envelope,
         )?;
-        self.keep_resource_write(hosted, device, app, (write, true), &messages, true)
+        self.keep_resource_write(hosted, device, app, (write, true), &messages, true, true)
             .await
     }
 
@@ -1744,6 +1744,7 @@ impl Workspaces {
         (write, whole): (&tilo_resource_store::Written, bool),
         messages: &[neighbour_wire::NeighbourMsg],
         compact: bool,
+        notice: bool,
     ) -> Result<(), String> {
         let author = device.device();
         let document = &write.doc;
@@ -1780,11 +1781,12 @@ impl Workspaces {
                     message.clone(),
                     (app.to_owned(), document.clone()),
                     compact && last,
+                    notice,
                 )
                 .await;
             }
         }
-        if hosted.member.is_some() {
+        if notice && hosted.member.is_some() {
             self.wrote(hosted.workspace(), app, document);
         }
         // Kept by the store and the workspace's copy, the write goes out: what a device is
@@ -2654,12 +2656,25 @@ impl Workspaces {
                             messages,
                             // Compaction can consume a sequence the batch already drafted.
                             index.saturating_add(1) == requests.len(),
+                            // One notice per action, once its every document is kept.
+                            false,
                         )
                         .await?;
                 }
                 Ok(Reply::Written)
             }
             .await;
+            // Every document the action wrote is kept now, so whoever it wakes reads the whole
+            // action: a message's files are read with the message they were sent with.
+            let documents: Vec<String> = writes.iter().map(|write| write.doc.clone()).collect();
+            for write in &writes {
+                let together = documents
+                    .iter()
+                    .filter(|document| **document != write.doc)
+                    .cloned()
+                    .collect();
+                workspaces.wrote_together(hosted.workspace(), &app, &write.doc, together);
+            }
             hosted.resources.batch_kept();
             let _ = complete.send(result);
         });

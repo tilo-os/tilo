@@ -627,6 +627,33 @@ pub(super) fn fields_of(held: &collab_types::store::Indexed) -> Map<String, Valu
         .collect()
 }
 
+/// The records `written` names, each with the documents the same write wrote beside it: one
+/// action writes a message and the files it carries to documents of their own, and the events
+/// of one are read with the others wherever their notices fall.
+fn records_written(
+    written: &[tilo_workspace_service::workspaces::ResourceWrite],
+) -> BTreeSet<(String, String, String)> {
+    let mut beside: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+    for write in written.iter().filter(|write| !write.record.is_empty()) {
+        beside
+            .entry((
+                write.workspace.clone(),
+                write.app.clone(),
+                write.record.clone(),
+            ))
+            .or_default()
+            .extend(write.together.iter().cloned());
+    }
+    let mut keys = BTreeSet::new();
+    for ((workspace, app, record), together) in &beside {
+        keys.insert((workspace.clone(), app.clone(), record.clone()));
+        for doc in together {
+            keys.insert((workspace.clone(), app.clone(), doc.clone()));
+        }
+    }
+    keys
+}
+
 /// The daemon's trigger runner over the workspaces this device keeps.
 pub struct Runner {
     workspaces: Workspaces,
@@ -923,12 +950,7 @@ impl Runner {
         // action's resources may stand in several documents, and what it nested in a resource
         // is in the document its children are placed in.
         let mut wrote: Vec<((String, u64), tilo_resource_store::Wrote)> = Vec::new();
-        let written: BTreeSet<(String, String, String)> = written
-            .into_iter()
-            .filter(|write| !write.record.is_empty())
-            .map(|write| (write.workspace, write.app, write.record))
-            .collect();
-        for key in written {
+        for key in records_written(&written) {
             let (workspace, app, record) = &key;
             let Some(&from_s) = self.watching.get(workspace) else {
                 continue;

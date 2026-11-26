@@ -2894,7 +2894,15 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         if workspace.peer().holds_document(&app_id, &document_id) {
             let refused = self
-                .follow_write(&mut workspace, author, message, (app_id, document_id), true)
+                .follow_write(
+                    &mut workspace,
+                    author,
+                    message,
+                    (app_id, document_id),
+                    // Compact the record's sealed histories, and raise its notice.
+                    true,
+                    true,
+                )
                 .await;
             // This host's own write is answered to whoever made it: a change the workspace
             // refuses here is an error of the write, not a verdict to file for another device.
@@ -3053,8 +3061,10 @@ impl Workspaces {
     /// host keeps, into its copy, compact the workspace's sealed histories
     /// before one is full (past its bound the copy would stop following
     /// the record), tell whoever follows the workspace's documents, and file its
-    /// verdict on a write admission refused. Answers the refusal, for the writer this host
-    /// itself is.
+    /// verdict on a write admission refused. `notice` raises the record's notice to whoever
+    /// follows the workspace's writes here; a write kept with the rest of its action raises it
+    /// once the action's every document is kept ([`Self::wrote_together`]). Answers the
+    /// refusal, for the writer this host itself is.
     async fn follow_write(
         &self,
         workspace: &mut HostedWorkspace,
@@ -3062,6 +3072,7 @@ impl Workspaces {
         message: neighbour_wire::NeighbourMsg,
         (app, record): (String, String),
         compact: bool,
+        notice: bool,
     ) -> Option<tilo_peer_state::AdmissionError> {
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`HostedWorkspace::follow_kept`]).
@@ -3112,7 +3123,9 @@ impl Workspaces {
         let _ = compact;
         self.tell_followers(workspace, author, &message, false)
             .await;
-        self.wrote_frame(workspace.workspace(), &message);
+        if notice {
+            self.wrote_frame(workspace.workspace(), &message);
+        }
         followed.refused
     }
 

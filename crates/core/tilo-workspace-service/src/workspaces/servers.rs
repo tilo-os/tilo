@@ -1279,13 +1279,29 @@ impl super::Workspaces {
     /// current hears its own changes too.
     ///
     /// This is the one notice an admitted frame and a local write both raise,
-    /// from the single point each reaches, so a watcher hears a write once.
+    /// from the single point each reaches, so a watcher hears a write once. A
+    /// write of several documents raises it for each of them together once the
+    /// whole action is kept, through [`Self::wrote_together`].
     pub(crate) fn wrote(&self, workspace: &str, app: &str, record: &str) {
+        self.wrote_together(workspace, app, record, Vec::new());
+    }
+
+    /// [`Self::wrote`] for a record one write wrote with `together`, the write's other records:
+    /// a reader of the change reads them with it, so a message's files are read with the
+    /// message wherever the store placed them.
+    pub(crate) fn wrote_together(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        together: Vec<String>,
+    ) {
         self.begins_write(workspace, app, record);
         let _ = self.inner.document_writes.send(super::ResourceWrite {
             workspace: workspace.to_owned(),
             app: app.to_owned(),
             record: record.to_owned(),
+            together,
         });
     }
 }

@@ -2,7 +2,7 @@
 //! puts nothing on the wire, under the numbers its store's next draft takes again.
 
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use collab_types::store::Resource;
 use collab_types::store::wire::Command;
@@ -158,4 +158,66 @@ async fn a_write_refused_at_its_keep_puts_no_frame_out() {
     }
     let after = served(&server, created.workspace_id, APP).await;
     assert_eq!(after, kept, "a write refused at its keep puts no frame out");
+}
+
+/// One action's write of two documents raises a notice for each, after both are kept, and each
+/// names the other: whoever reads one document of the action reads what it wrote beside it, so a
+/// message's files are read with the message.
+#[tokio::test]
+async fn a_write_of_two_documents_notices_them_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    crate::workspaces::fixtures::declare_app(&server, APP, &surface());
+    let created = workspaces.create("Notes").await.unwrap();
+    let workspace = created.workspace.clone();
+    let device = workspaces.signing_device();
+    let mut notices = workspaces.document_writes();
+
+    let documents = {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let mut hosted = state.lock().await;
+        let writes = {
+            let mut store = workspaces.store_of(&mut hosted);
+            let command =
+                Command::Batch(vec![write_record(NOTE, "one"), write_record(PAGE, "two")]);
+            tilo_resource_store::wire::draft(&mut store, command)
+                .map_err(|refused| refused.error.to_string())
+                .unwrap()
+        };
+        drop(hosted);
+        let documents: BTreeSet<String> = writes.iter().map(|write| write.doc.clone()).collect();
+        let hosted = std::sync::Arc::clone(&state).lock_owned().await;
+        workspaces
+            .keep_writes(hosted, device, APP, writes, None)
+            .await
+            .map(|_| ())
+            .unwrap();
+        documents
+    };
+    let mut told = Vec::new();
+    while let Ok(notice) = notices.try_recv() {
+        told.push(notice);
+    }
+    assert_eq!(
+        told.len(),
+        documents.len(),
+        "one notice for each document the action wrote: {told:?}"
+    );
+    for notice in &told {
+        assert!(
+            documents.contains(&notice.record),
+            "a document it wrote: {notice:?}"
+        );
+        let beside: BTreeSet<&String> = notice.together.iter().collect();
+        let others: BTreeSet<&String> = documents
+            .iter()
+            .filter(|doc| **doc != notice.record)
+            .collect();
+        assert_eq!(
+            beside, others,
+            "the notice names the documents it was written with: {notice:?}"
+        );
+    }
 }
