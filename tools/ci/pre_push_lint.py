@@ -66,11 +66,13 @@ the runtime it builds on, with the file nowhere in the push. That red is main's 
 holds it at the base under the dependency's own check or the family's run, compared finding by
 finding; where that log is gone, the board's red at the base stands for a finding whose file
 the push does not change. A check that generates committed files (the fleet, the SDK's types)
-fails naming the files not current, so it is judged by those files: one main is stale in too is
-inherited, one this push newly made stale is refused, naming it and `t fix <check>`. A
-dependants' compile that fails in a package whose build reads nothing the push changes is
-main's too. A push that passes on reds says which, and whose they are; a board that cannot be
-read refuses.
+fails naming the files not current, so it is judged by what its generator writes: the generator
+runs on the base tree and on this one, and a file whose generated content differs between the
+two is the push's to commit, while one it writes the same at both ends is main's. Where that
+cannot be done - the check declares no fix, or t cannot run it - the files main's log names
+judge the push, and the person pushing is told which check fell back and why. A dependants'
+compile that fails in a package whose build reads nothing the push changes is main's too. A
+push that passes on reds says which, and whose they are; a board that cannot be read refuses.
 
 A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
 remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
@@ -154,14 +156,21 @@ CARGO_REMARKS = (
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
 # t's checks that judge generated, committed output: the fleet catalogue, the SDK's types and
-# the published crates' policy. Their failure names the files that are not current, so it is
-# compared file by file: a file main is stale in too is inherited, a file this push newly makes
-# stale is the push's, whatever t says of the check whole.
+# the published crates' policy. Their failure names the files that are not current, and a check
+# that declares a `fix` is run on the base tree and on this one: a file whose generated content
+# differs between the two is the push's to commit, and one it writes the same at both ends is
+# main's. A check with no fix, or a generator t cannot run, falls back to the files main's log
+# names, and says so.
 GENERATED_CHECKS = ("app-surfaces", "sdk-policy", "sdk-types")
 # How a generated-output check says a file is not current (`tilo sdk gen --check`,
 # `tilolang -- surfaces`, `generate_catalogue_fleet.py --check`).
 STALE_LINES = (re.compile(r"^\s*not current: (.+?)\s*$"),
                re.compile(r"^\s*(.+?) is stale(?::|$)"))
+# Where a base commit's generated output is kept, under this worktree's own git directory: the
+# base side of a comparison is paid for once per base, so a worktree pushing twice off one base
+# runs its generator once for the base and once for each head, never twice for the base. Another
+# worktree has its own directory, so no two share an entry.
+GENERATED_CACHE = "tilo-pre-push-generated"
 
 ZERO_OID = {"0"}
 # Where the passes a later push may stand on are kept, in the repository's common git directory
@@ -1026,17 +1035,31 @@ def say_t_results(output: str) -> None:
             say(f"pre-push: {result['check']} passed in {result.get('duration_ms', 0) / 1000:.0f}s")
 
 
+def declared_fixes(root: Path) -> dict[str, str]:
+    """The fix `t.toml` declares for each check, by its name: what writes its generated files.
+
+    A check that declares none has no generator this lint can run, so a generated-output
+    comparison of it falls back to the names its failure prints.
+    """
+    try:
+        project = tomllib.loads((root / T_TOML).read_text())
+    except (OSError, ValueError):
+        return {}
+    fixes = {}
+    for check in project.get("check", ()):
+        name, fix = check.get("name"), check.get("fix")
+        if isinstance(name, str) and isinstance(fix, str) and fix:
+            fixes[name] = fix
+    return fixes
+
+
 def t_fixes(root: Path) -> set[str]:
     """The t checks that declare a `fix` in t.toml, by name.
 
     `t fix <check>` runs it. A check that compares a generated file is worth naming its fix
     for: the person pushing writes the file back rather than working out which generator does.
     """
-    try:
-        project = tomllib.loads((root / T_TOML).read_text())
-    except (OSError, ValueError):
-        return set()
-    return {check["name"] for check in project.get("check", ()) if check.get("fix")}
+    return set(declared_fixes(root))
 
 
 def say_t_refused(refused: list[tuple[dict, str]], errors: list[dict], fixes: set[str]) -> None:
@@ -1153,6 +1176,105 @@ def stale_files(text: str) -> set[str]:
                 found.add(match.group(1).strip())
                 break
     return found
+
+
+# The file a fix's patch changes, as a git diff names it beside its original.
+PATCH_FILE = re.compile(r"^diff --git a/.+? b/(.+)$", re.MULTILINE)
+
+
+def generated_cache_dir(root: Path) -> Path:
+    """This worktree's cache of the base side of a generated comparison.
+
+    It is the worktree's own git directory, so a linked worktree keeps its own entries and no
+    two write over each other. A rebase onto a new base is a new key, not a rewritten one.
+    """
+    own = git(root, "rev-parse", "--path-format=absolute", "--git-dir").stdout.strip()
+    return Path(own) / GENERATED_CACHE
+
+
+def fix_patch(root: Path, revision: str, check: str, fix: str,
+              *, cached: bool) -> tuple[str | None, str]:
+    """What a check's generator writes at `revision`, as the patch `t fix --rev` answers.
+
+    The generator is the one t builds from that revision's own tree, so the patch says what
+    that commit's code writes for the files it compares. The base side (`cached`) is kept in
+    this worktree's cache, keyed by the check, its fix command and the commit: a second push
+    off the same base does not run it again. Answers the patch, or why it cannot be had.
+    """
+    entry = generated_cache_dir(root) / (
+        hashlib.sha256(f"{check}\n{fix}\n{revision}".encode()).hexdigest() + ".patch")
+    if cached:
+        try:
+            return entry.read_text(), ""
+        except FileNotFoundError:
+            pass
+        except (OSError, UnicodeDecodeError):
+            # A cache written by a build that can no longer be read is only a miss.
+            pass
+    with tempfile.TemporaryDirectory() as scratch:
+        patch = Path(scratch) / "generated.patch"
+        try:
+            run = subprocess.run(["t", "fix", "--rev", revision, f"--patch={patch}", check],
+                                 cwd=root, capture_output=True, text=True, check=False)
+        except OSError as error:
+            return None, f"t is not at hand ({error})"
+        if run.returncode != 0:
+            said = [line for line in (run.stderr or run.stdout).splitlines() if line.strip()]
+            return None, "t could not run its generator" + (f" ({said[-1]})" if said else "")
+        try:
+            text = patch.read_text()
+        except OSError:
+            return None, "its generator wrote no patch"
+    if cached:
+        try:
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            writing = entry.with_name(f"{entry.name}.{os.getpid()}")
+            writing.write_text(text)
+            writing.replace(entry)
+        except OSError:
+            # A cache that cannot be written only makes the next push off this base slower.
+            pass
+    return text, ""
+
+
+def generated_content(root: Path, revision: str, patch: str,
+                      paths: Iterable[str]) -> dict[str, str | None] | None:
+    """What a check's generator writes for `paths` at `revision`: each file, with its fix's
+    patch applied, or `None` when the generator deletes it.
+
+    The comparison is of content, so the files are materialized in a scratch tree from the
+    revision and the patch applied there. `None` when the patch does not apply, which is no
+    comparison at all rather than a false difference.
+    """
+    wanted = sorted(set(paths))
+    with tempfile.TemporaryDirectory() as scratch:
+        tree = Path(scratch)
+        # Every file the patch names is written first: git applies a patch to a tree, and one
+        # the patch creates or deletes is as much part of it as the files compared.
+        for path in sorted(set(PATCH_FILE.findall(patch)) | set(wanted)):
+            committed = subprocess.run(["git", "show", f"{revision}:{path}"], cwd=root,
+                                       capture_output=True, check=False)
+            if committed.returncode != 0:
+                continue
+            target = tree / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(committed.stdout)
+        if patch.strip():
+            # git applies a patch inside a repository only, so the scratch tree is one.
+            subprocess.run(["git", "init", "-q", "."], cwd=tree, capture_output=True, check=False)
+            applied = subprocess.run(["git", "apply", "-p1", "--binary"], cwd=tree, input=patch,
+                                     capture_output=True, text=True, check=False)
+            if applied.returncode != 0:
+                return None
+        generated: dict[str, str | None] = {}
+        for path in wanted:
+            target = tree / path
+            try:
+                generated[path] = target.read_text() if target.is_file() else None
+            except (OSError, UnicodeDecodeError):
+                # A file no comparison can read is no comparison: the names judge it instead.
+                return None
+        return generated
 
 
 def dependency_closure(packages: dict[str, dict], names: set[str]) -> set[str]:
@@ -1360,10 +1482,13 @@ class Board:
         return at_base, ""
 
     def inherit_generated(self, result: dict) -> tuple[dict | None, str]:
-        """Main's item a generated-output failure is, by the files it names, or why not.
+        """Main's item a generated-output failure is, by what its generator writes, or why not.
 
-        The check on our tree fails with the files main is stale in, and with any this push
-        newly made stale; only the second is the push's to write back.
+        The check fails with the files that are not current on this tree. A file whose generated
+        content this push changes since its base is the push's to commit; one its generator
+        writes the same at both ends is main's, whether or not main's log names it. So the
+        generator runs at the base and at this tree when the check fails, and the two write-outs
+        are compared: the names in main's log judge nothing while that comparison can be made.
         """
         check = result.get("check")
         ours = stale_files(str(result.get("excerpt") or ""))
@@ -1372,10 +1497,53 @@ class Board:
             # Main has no red for the check at the base, or none this checkout can place: the
             # files it names here are the push's to write back.
             return None, ("new: " + ", ".join(sorted(ours))) if ours else why
+        if not ours:
+            return self.inherit_generated_by_names(check, ours, at_base,
+                                                   "its failure names no output file")
+        comparisons = self.push.comparisons
+        if not comparisons:
+            return self.inherit_generated_by_names(check, ours, at_base,
+                                                   "this push has no base to compare")
+        fix = declared_fixes(self.root).get(check)
+        if fix is None:
+            return self.inherit_generated_by_names(check, ours, at_base,
+                                                   "t.toml declares no `fix` for it")
+        base, head = comparisons[0]
+        base_patch, reason = fix_patch(self.root, base, check, fix, cached=True)
+        if base_patch is None:
+            return self.inherit_generated_by_names(check, ours, at_base,
+                                                   f"the base's generator is not at hand: {reason}")
+        head_patch, reason = fix_patch(self.root, head, check, fix, cached=False)
+        if head_patch is None:
+            return self.inherit_generated_by_names(
+                check, ours, at_base, f"this tree's generator is not at hand: {reason}")
+        at_base_content = generated_content(self.root, base, base_patch, ours)
+        if at_base_content is None:
+            return self.inherit_generated_by_names(check, ours, at_base,
+                                                   "the base's generator's patch does not apply")
+        here = generated_content(self.root, head, head_patch, ours)
+        if here is None:
+            return self.inherit_generated_by_names(
+                check, ours, at_base, "this tree's generator's patch does not apply")
+        changed = [path for path in sorted(ours) if at_base_content.get(path) != here.get(path)]
+        if changed:
+            return None, "new: " + ", ".join(changed)
+        return at_base[0], ""
+
+    def inherit_generated_by_names(self, check: str, ours: set[str], at_base: list[dict],
+                                   reason: str) -> tuple[dict | None, str]:
+        """Main's item a generated-output failure is by the files main's log names, or why not.
+
+        This is the comparison that needs no generator, and it says when it is the one making
+        the judgement: a push judged by names alone is never mistaken for one judged by what it
+        writes, and the reason its own output could not be compared is the person's to read.
+        """
+        say(f"pre-push: {check}: judging by the files main's log names alone ({reason})")
         theirs: set[str] = set()
         for item in at_base:
             text = self.log_text(str(item.get("log") or ""))
             if text is None:
+                say(f"pre-push: {check}: main's own log cannot be read either")
                 return None, f"main's log for {check} cannot be read"
             theirs |= stale_files(text)
         extra = sorted(ours - theirs)
@@ -1491,8 +1659,9 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
                 continue
             check = result.get("check")
             if check in GENERATED_CHECKS:
-                # A generated output is judged by the files it names, whatever t says of the
-                # check whole: a file main is stale in too is not this push's.
+                # A generated output is judged by what its generator writes at the base and at
+                # this tree, whatever t says of the check whole: a file whose generated content
+                # this push leaves alone is not this push's to write back.
                 item, why = board.inherit_generated(result)
             elif inherited(result):
                 # t compared this failure with the base's verdict and holds it main's.

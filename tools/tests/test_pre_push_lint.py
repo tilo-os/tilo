@@ -112,6 +112,9 @@ assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
 # cached answer came from) say what it answers; with STUB_T_ERROR it cannot run them at all.
 # STUB_T_INHERITED, STUB_T_UNKNOWN and STUB_T_NEW name checks whose result carries that blame;
 # STUB_T_EXIT3 makes a failing run exit 3, as t does when every failure is not the change's.
+# `t fix --rev <rev> --patch` answers the generator's output at that commit as a patch, which
+# the test writes to STUB_FIX_DIR/<rev>.patch; STUB_FIX_STATUS refuses it, as t does for a check
+# with no fix or a generator that cannot build.
 T_STUB = """#!/bin/sh
 case "$1 $2" in
   "cargo metadata") printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
@@ -127,6 +130,32 @@ case "$1" in
   log)
     [ "${STUB_LOG_STATUS:-0}" = 0 ] || exit "$STUB_LOG_STATUS"
     printf '%s\\n' "${STUB_LOG:-}"
+    exit 0 ;;
+  fix)
+    # t fix --rev <rev> --patch=<file> <check>: what the check's generator writes at that
+    # commit. The test says it in $STUB_FIX_DIR/<rev>.patch; a rev it does not name writes
+    # nothing, as a current one does.
+    shift
+    rev=""; patch=""; check=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --rev) rev="$2"; shift 2 ;;
+        --patch=*) patch="${1#--patch=}"; shift ;;
+        --patch) patch="$2"; shift 2 ;;
+        --*) shift ;;
+        *) check="$1"; shift ;;
+      esac
+    done
+    printf 'start %s t fix --rev %s %s\\n' "$(date +%s%N)" "$rev" "$check" >> "$HOOK_LOG"
+    if [ "${STUB_FIX_STATUS:-0}" != 0 ]; then
+      printf 't: starting the fix failed: %s\\n' "${STUB_FIX_ERROR:-no reason}" >&2
+      exit "$STUB_FIX_STATUS"
+    fi
+    if [ -n "${STUB_FIX_DIR:-}" ] && [ -f "$STUB_FIX_DIR/$rev.patch" ]; then
+      cp "$STUB_FIX_DIR/$rev.patch" "$patch"
+    else
+      : > "$patch"
+    fi
     exit 0 ;;
   cargo)
     shift
@@ -233,6 +262,12 @@ NATIVE_CLIPPY = "clippy --locked -p fixture-native --all-targets --keep-going --
 USER_CHECK = "check --locked -p user --all-targets --keep-going"
 
 
+def generated_patch(path, before, after):
+    """A generator's output for one committed file, as `t fix --rev --patch` writes it."""
+    return (f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+            f"@@ -1 +1 @@\n-{before}\n+{after}\n")
+
+
 class PrePushLintTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -278,6 +313,9 @@ class PrePushLintTests(unittest.TestCase):
         (toolchain / "rustfmt").symlink_to(self.bin / "rustfmt")
         self.stub("drop-in", DROP_IN_STUB)
         self.log = self.temporary / "hook.log"
+        # What `t fix --rev <rev> --patch` answers for each commit: a patch the test writes.
+        self.fixes = self.temporary / "fixes"
+        self.fixes.mkdir()
         # Whether the fixture has a page entry that compiles the host crate, and
         # which crates build on the host one.
         self.page_entry = False
@@ -312,6 +350,10 @@ class PrePushLintTests(unittest.TestCase):
         path = self.bin / name
         path.write_text(text)
         path.chmod(0o755)
+
+    def fix_patch(self, revision, text):
+        """What the check's generator writes at `revision`, as `t fix --rev` answers it."""
+        (self.fixes / f"{revision}.patch").write_text(text)
 
     def metadata(self) -> str:
         """The Cargo metadata of the fixture (of the checkout the hook runs in): what it selects with."""
@@ -355,7 +397,8 @@ class PrePushLintTests(unittest.TestCase):
                     agent=False, t_outcome="pass", t_cached=None, t_excerpt="", t_error="",
                     t_scope=None, t_scope_status=2, t_inherited="", t_unknown="", t_new="",
                     t_exit3=False, t_findings=None, t_board=None, t_board_status=0,
-                    t_log="", t_log_status=0, t_cargo_exit=None) -> dict:
+                    t_log="", t_log_status=0, t_cargo_exit=None, t_fix_status=0,
+                    t_fix_error="") -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain.
 
         `agent` pushes as a coding agent does, whose shell says so in its environment.
@@ -364,6 +407,7 @@ class PrePushLintTests(unittest.TestCase):
         and `t_new` are checks whose t result carries that blame, `t_findings` its `findings`,
         and `t_exit3` makes a failing t run exit 3, as t does when every failure is main's.
         `t_board` is what `t main --json` answers and `t_log` what `t log --verbose` does.
+        `t_fix_status` makes `t fix --rev` fail, and `t_fix_error` says why.
         """
         env = dict(os.environ)
         env.pop("CARGO", None)
@@ -388,7 +432,9 @@ class PrePushLintTests(unittest.TestCase):
                    STUB_T_FINDINGS=json.dumps(t_findings or []),
                    STUB_BOARD=t_board or "", STUB_BOARD_STATUS=str(t_board_status),
                    STUB_LOG=t_log, STUB_LOG_STATUS=str(t_log_status),
-                   STUB_T_CARGO_EXIT="" if t_cargo_exit is None else str(t_cargo_exit))
+                   STUB_T_CARGO_EXIT="" if t_cargo_exit is None else str(t_cargo_exit),
+                   STUB_FIX_DIR=str(self.fixes), STUB_FIX_STATUS=str(t_fix_status),
+                   STUB_FIX_ERROR=t_fix_error)
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None,
@@ -771,31 +817,131 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("write the generated files back with: t fix app-surfaces", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
-    def test_a_push_passes_over_generated_files_main_is_stale_in_too(self):
+    def generated_base(self, files=None):
+        """t's families committed, and `files` as main already has them."""
         self.with_t()
+        for path, text in (files or {}).items():
+            self.write(path, text)
+        self.base = self.commit("feat: the generated files as main has them")
+
+    def test_a_push_that_does_not_touch_a_stale_files_inputs_is_let_through(self):
+        # Main is stale in a.py; this push changes an app's entry, which the SDK's types follow,
+        # but its generator writes a.py exactly as the base's does: the staleness is main's.
+        self.generated_base({"sdk/a.py": "a0\n"})
+        self.fix_patch(self.base, generated_patch("sdk/a.py", "a0", "A"))
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
-        self.commit("feat: an app's surface file")
-        stale = "not current: sdk/python/src/tilo/types/a.py"
+        head = self.commit("feat: an app's surface file")
+        self.fix_patch(head, generated_patch("sdk/a.py", "a0", "A"))
+        stale = "not current: sdk/a.py"
         result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
-                           t_excerpt=stale, t_board=self.board(self.base, check="sdk-types",
-                                                               owner="someone"),
+                           t_excerpt=stale,
+                           t_board=self.board(self.base, check="sdk-types", owner="someone"),
                            t_log=stale)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pushing past 1 red main already has:", result.stderr)
         self.assertIn(f"sdk-types: main has failed it since {self.base[:12]}, claimed by someone",
                       result.stderr)
+        # The base's generator ran once, and this tree's once: the comparison is of content.
+        self.assertEqual([call for call in self.calls() if call.startswith("t fix")],
+                         [f"t fix --rev {self.base} sdk-types",
+                          f"t fix --rev {head} sdk-types"])
+
+    def test_a_push_that_makes_an_already_stale_file_staler_is_refused(self):
+        # Main is stale in a.py for a reason of its own, and this push changes what a.py is
+        # written from too: the file is red on main, but the push is the one that makes its
+        # content stale now. Names alone would pass it.
+        self.generated_base({"sdk/a.py": "a0\n"})
+        self.fix_patch(self.base, generated_patch("sdk/a.py", "a0", "from the base"))
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        head = self.commit("feat: an app's surface file")
+        self.fix_patch(head, generated_patch("sdk/a.py", "a0", "from the push"))
+        stale = "not current: sdk/a.py"
+        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+                           t_excerpt=stale,
+                           t_board=self.board(self.base, check="sdk-types", owner="someone"),
+                           t_log=stale)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("new: sdk/a.py", result.stderr)
+        self.assertIn("write the generated files back with: t fix sdk-types", result.stderr)
 
     def test_a_push_that_makes_a_generated_file_stale_is_refused(self):
-        self.with_t()
+        self.generated_base({"sdk/a.py": "a0\n", "sdk/c.py": "c0\n"})
+        self.fix_patch(self.base, generated_patch("sdk/a.py", "a0", "A"))
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
-        self.commit("feat: an app's surface file")
+        head = self.commit("feat: an app's surface file")
+        self.fix_patch(head, generated_patch("sdk/a.py", "a0", "A")
+                       + generated_patch("sdk/c.py", "c0", "C"))
         result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
                            t_excerpt="not current: sdk/a.py\\nnot current: sdk/c.py",
                            t_board=self.board(self.base, check="sdk-types"),
                            t_log="not current: sdk/a.py")
         self.assertEqual(result.returncode, 1)
         self.assertIn("new: sdk/c.py", result.stderr)
+        self.assertNotIn("new: sdk/a.py", result.stderr)
         self.assertIn("write the generated files back with: t fix sdk-types", result.stderr)
+
+    def test_a_generated_check_that_passes_runs_no_generator(self):
+        self.generated_base({"sdk/a.py": "a0\n"})
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        result = self.push(t_scope="sdk-types", t_scope_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse([call for call in self.calls() if call.startswith("t fix")])
+
+    def test_the_fallback_to_file_names_says_which_check_and_why(self):
+        # sdk-policy judges generated output but declares no fix: there is no generator to
+        # compare with, so the files main's log names judge it, and the push says so.
+        self.generated_base({"sdk/a.py": "a0\n"})
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        stale = "not current: sdk/a.py"
+        result = self.push(t_scope="sdk-policy", t_scope_status=0, t_outcome="fail",
+                           t_excerpt=stale,
+                           t_board=self.board(self.base, check="sdk-policy", owner="someone"),
+                           t_log=stale)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sdk-policy: judging by the files main's log names alone "
+                      "(t.toml declares no `fix` for it)", result.stderr)
+        self.assertFalse([call for call in self.calls() if call.startswith("t fix")])
+
+    def test_the_fallback_says_why_the_generator_could_not_be_run(self):
+        self.generated_base({"sdk/a.py": "a0\n"})
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        self.commit("feat: an app's surface file")
+        stale = "not current: sdk/a.py"
+        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+                           t_excerpt=stale,
+                           t_board=self.board(self.base, check="sdk-types", owner="someone"),
+                           t_log=stale, t_fix_status=2,
+                           t_fix_error="the server failed: no such check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sdk-types: judging by the files main's log names alone", result.stderr)
+        self.assertIn("no such check", result.stderr)
+
+    def test_a_bases_generated_output_is_kept_for_the_next_push_off_it(self):
+        # The base side is paid for once: a second push off the same base runs this tree's
+        # generator and reads the base's answer from the worktree's cache.
+        self.generated_base({"sdk/a.py": "a0\n"})
+        self.fix_patch(self.base, generated_patch("sdk/a.py", "a0", "A"))
+        stale = "not current: sdk/a.py"
+        board = self.board(self.base, check="sdk-types", owner="someone")
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
+        first = self.commit("feat: an app's surface file")
+        self.fix_patch(first, generated_patch("sdk/a.py", "a0", "A"))
+        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+                           t_excerpt=stale, t_board=board, t_log=stale)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call for call in self.calls() if call.startswith("t fix")],
+                         [f"t fix --rev {self.base} sdk-types",
+                          f"t fix --rev {first} sdk-types"])
+        self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\nsecond\n')
+        second = self.commit("feat: the app's entry says more")
+        self.fix_patch(second, generated_patch("sdk/a.py", "a0", "A"))
+        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+                           t_excerpt=stale, t_board=board, t_log=stale)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call for call in self.calls() if call.startswith("t fix")],
+                         [f"t fix --rev {second} sdk-types"])
 
     def test_a_compile_failure_in_a_package_the_push_does_not_change_passes(self):
         self.with_t()
