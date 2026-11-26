@@ -929,3 +929,175 @@ async fn a_mention_written_through_an_apps_route_fires_the_agents_trigger() {
     );
     host.shutdown().await;
 }
+
+/// Chat's messages as the tilolang Chat keeps them, with the files a message carries nested in
+/// it: what a send with attachments writes.
+const CHAT_WITH_FILES_SURFACE: &str = r#"format = 2
+
+[[resources]]
+kind = "tl.so.tilo.chat.Message"
+label = "Message"
+version = 1
+fields = [
+  { path = "body", type = "rich_text", stored = "value" },
+  { path = "attachments", type = { collection = { resource = "tl.so.tilo.chat.Attached" } }, stored = "collection" },
+]
+
+[[resources.verbs]]
+id = "send"
+kind = "undoable"
+params = []
+
+[[resources]]
+kind = "tl.so.tilo.chat.Attached"
+label = "Attached"
+version = 1
+fields = [
+  { path = "name", type = "text" },
+  { path = "blob", type = "text" },
+]
+"#;
+
+/// A message sent with a file carried along and a mention of the agent is one write of the
+/// message and its file: the trigger on the message's body fires, as it does for a message that
+/// carries none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn a_message_that_carries_a_file_still_fires_its_mention() {
+    use collab_types::store::wire::{Command, Edit, Reply};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let host = test_server(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    declare_app(
+        &host,
+        "so.tilo.chat",
+        tilo_surface_compile::compile(CHAT_WITH_FILES_SURFACE)
+            .expect("the surface compiles")
+            .as_bytes(),
+    );
+    let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    let person = hex::encode(cert.user_public_key);
+    save_signed(
+        &workspaces,
+        &workspace,
+        tilo_workspace_service::agent_shortcuts::triggers("scout", &person, "Scout"),
+        (&key, &cert),
+    )
+    .await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    // What Chat's `send` writes: the message with its rich body, then the file it carries
+    // nested in it. All of it is the one write, stamped as the person's own `send`.
+    let stamp = Stamp {
+        verb: "send".into(),
+        invoker: Stamp::by(&tilo_action_policy::Actor::Member(
+            tilo_action_policy::MemberId::person(person.clone()),
+        )),
+        invocation: "i-1".into(),
+        at: jiff::Timestamp::now().to_string(),
+        ..Stamp::default()
+    };
+    let member = tilo_action_policy::MemberId::agent("scout", person.clone()).mark_value();
+    let body = json!({"blocks": [{
+        "text": "@Scout look at this",
+        "marks": [{"start": 0, "end": 6, "name": "mention", "value": {"Str": member}}],
+    }]});
+    let wrote = workspaces
+        .own_resource_command(
+            &workspace,
+            "so.tilo.chat",
+            Command::Batch(vec![
+                Command::Put {
+                    kind: "tl.so.tilo.chat.Message".into(),
+                    id: "m-1".into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: None,
+                        order: None,
+                        fields: std::collections::BTreeMap::new(),
+                    },
+                    stamp: stamp.clone(),
+                },
+                Command::Edit {
+                    kind: "tl.so.tilo.chat.Message".into(),
+                    id: "m-1".into(),
+                    edits: vec![Edit::Set {
+                        field: "body".into(),
+                        value: body,
+                    }],
+                    stamp: stamp.clone(),
+                },
+                Command::Put {
+                    kind: "tl.so.tilo.chat.Attached".into(),
+                    id: "a-1".into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: Some("m-1".into()),
+                        order: Some("a".into()),
+                        fields: std::collections::BTreeMap::from([(
+                            "name".into(),
+                            text("plan.txt"),
+                        )]),
+                    },
+                    stamp,
+                },
+            ]),
+            Vec::new(),
+        )
+        .await
+        .expect("the app's write lands");
+    assert!(
+        matches!(wrote, Reply::Written),
+        "the write landed: {wrote:?}"
+    );
+
+    let mut since = Vec::new();
+    while let Ok(write) = writes.try_recv() {
+        since.push(write);
+    }
+    let events = runner.read(since).await;
+    let message = events
+        .iter()
+        .find(|event| event.record == "m-1")
+        .expect("the message's own event");
+    assert!(
+        message
+            .after
+            .as_ref()
+            .and_then(|after| after.pointer("/body"))
+            .is_some_and(|body| body.to_string().contains("scout")),
+        "the message's event holds the body it was sent with: {message:?}"
+    );
+    assert!(
+        message
+            .after
+            .as_ref()
+            .and_then(|after| after.pointer("/$held"))
+            .is_some_and(|held| held.to_string().contains("plan.txt")),
+        "the event carries the file the message holds: {message:?}"
+    );
+    let fired = super::dispatched(&runner.armed, super::Event::Record(message), 0);
+    assert!(
+        fired
+            .iter()
+            .any(|waiting| waiting.firing.shortcut == "agent-scout"),
+        "the mention fires the agent's trigger though the message carries a file"
+    );
+    host.shutdown().await;
+}

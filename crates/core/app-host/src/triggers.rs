@@ -907,8 +907,25 @@ impl Runner {
         &mut self,
         written: Vec<tilo_workspace_service::workspaces::ResourceWrite>,
     ) -> Vec<DocumentEvent> {
-        let mut events = Vec::new();
+        /// What one written record held: the store's events for the resources its changes
+        /// touched, each with what the change left the resources holding, or a record's events.
+        enum Read {
+            Store(
+                Vec<(
+                    (String, u64),
+                    DocumentEvent,
+                    Vec<tilo_resource_store::Wrote>,
+                )>,
+            ),
+            Record(Vec<DocumentEvent>),
+        }
+
         let mut seen = BTreeSet::new();
+        let mut read = Vec::new();
+        // What each store write left the resources it touched holding, by the write: the one
+        // action's resources may stand in several documents, and what it nested in a resource
+        // is in the document its children are placed in.
+        let mut wrote: Vec<((String, u64), tilo_resource_store::Wrote)> = Vec::new();
         let written: BTreeSet<(String, String, String)> = written
             .into_iter()
             .filter(|write| !write.record.is_empty())
@@ -933,45 +950,61 @@ impl Runner {
             let heads = doc.committed_heads();
             let since = self.cursors.insert(key.clone(), heads);
             if collab_types::is_store_document(record) {
+                let mut found = Vec::new();
                 for StoreEvent {
-                    mut event,
+                    event,
                     change,
                     write,
                 } in store_events((workspace, app, record), &doc, since.as_deref())
                 {
                     // A write that changed a resource and its content is one change of it.
-                    if !seen.insert((write, event.record.clone())) {
+                    if !seen.insert((write.clone(), event.record.clone())) {
                         continue;
                     }
-                    let wrote = self.workspaces.store_wrote(workspace, record, change).await;
-                    // What the same write nested in the item, a message's attachments among
-                    // them: the turn reads them with the item it was started on.
-                    let held: Vec<_> = wrote
-                        .iter()
-                        .filter(|wrote| {
-                            wrote
-                                .parents
-                                .first()
-                                .is_some_and(|(_, parent, _)| parent == &event.record)
-                        })
-                        .cloned()
-                        .collect();
-                    if let Some(wrote) = wrote.into_iter().find(|wrote| wrote.id == event.record) {
-                        with_what_it_holds(&mut event, wrote, held);
-                    }
-                    events.push(event);
+                    let holds = self.workspaces.store_wrote(workspace, record, change).await;
+                    wrote.extend(holds.iter().cloned().map(|one| (write.clone(), one)));
+                    found.push((write, event, holds));
                 }
+                read.push(Read::Store(found));
                 continue;
             }
             let kind = collab_types::document::identity::identity(&doc)
                 .map(|identity| identity.kind.as_str().to_owned())
                 .unwrap_or_default();
-            events.extend(record_events(
+            read.push(Read::Record(record_events(
                 (workspace, record, &kind),
                 &doc,
                 since.as_deref(),
                 from_s,
-            ));
+            )));
+        }
+        let mut events = Vec::new();
+        for entry in read {
+            match entry {
+                Read::Record(found) => events.extend(found),
+                Read::Store(found) => {
+                    for (write, mut event, holds) in found {
+                        // What the same write nested in the item, a message's files among them,
+                        // wherever the store placed them: the turn reads them with the item it
+                        // was started on.
+                        let held: Vec<_> = wrote
+                            .iter()
+                            .filter(|(at, one)| {
+                                *at == write
+                                    && one
+                                        .parents
+                                        .first()
+                                        .is_some_and(|(_, parent, _)| parent == &event.record)
+                            })
+                            .map(|(_, one)| one.clone())
+                            .collect();
+                        if let Some(item) = holds.into_iter().find(|one| one.id == event.record) {
+                            with_what_it_holds(&mut event, item, held);
+                        }
+                        events.push(event);
+                    }
+                }
+            }
         }
         events
     }
