@@ -114,7 +114,7 @@ pub enum DomainEntry {
     Producer(Rc<RefCell<Producer>>),
     Child(WeakControlDomain),
 }
-struct Producer {
+pub struct Producer {
     discipline: ControlProducerDiscipline,
     pending: VecDeque<(
         ControlRequestId,
