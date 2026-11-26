@@ -590,8 +590,6 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
 
 const WRITER_TEST: &str = "device::services::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
 const WRITER_HELPER: &str = "TILO_DAEMON_WRITER_HELPER";
-/// The person the writer's helper edits the note as: the person this device serves.
-const WRITER_PERSON: &str = "TILO_DAEMON_WRITER_PERSON";
 const WRITER_APP: &str = "dev.tilo.writer";
 const WRITER_KIND: &str = "dev.tilo.writer.note";
 const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
@@ -706,14 +704,16 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
         wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
-        // An edit of the note's content, as the app's window makes it: its surface's `type` verb,
-        // made by the person at the window.
-        let person = std::env::var(WRITER_PERSON).unwrap();
-        let invoker = tilo_actions::ActionInvoker::member(tilo_actions::MemberId::person(person));
-        let edit = tilo_actions::ActionContext::default().with_invoker(invoker);
+        // The app's own edit of the note's content, as a window's typing is: no invocation was
+        // delivered for it, so the change is the app's, under the grant installing it gave it.
+        let app = tilo_actions::Acting::by_app(WRITER_APP).in_app(WRITER_APP);
+        let stamp = tilo_resource_store::Stamp {
+            verb: tilo_resource_store::Stamp::TYPE_VERB.to_owned(),
+            invoker: tilo_resource_store::Stamp::by(&app.by),
+            ..Default::default()
+        };
         doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(edit.change_message().unwrap()),
+            automerge::transaction::CommitOptions::default().with_message(stamp.message()),
         );
         assert!(
             manager.send(tilo_ui_base::collaboration::CollabRequest::document_snapshot(doc.save()))
@@ -726,12 +726,27 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     // The writer is an app this device installed, whose package's surface declares its note.
     collab_types::app_surface::register_package(WRITER_APP, WRITER_SURFACE.as_bytes());
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    // Installing it gave it its own records: the grant its own write is decided by, the person
+    // who installed it giving it.
+    let workspace = session
+        .workspace()
+        .expect("the person's workspace is founded for their apps");
+    tilo_rt::app()
+        .handle()
+        .block_on(tilo_workspace_service::workspaces::fixtures::record_grants(
+            session.workspaces.copies(),
+            &workspace,
+            &[tilo_action_policy::roles::app_records_grant(
+                &workspace,
+                WRITER_APP,
+                &session.person_id(),
+            )],
+        ));
     let log = std::fs::File::create(root.join("writer.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", WRITER_TEST, "--nocapture"])
         .env(WRITER_HELPER, "1")
-        .env(WRITER_PERSON, session.person_id())
         .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
@@ -2090,6 +2105,30 @@ fn the_devices_agent(
     (run, caller)
 }
 
+/// The asked record the workspace keeps of the call `invocation` waits in, once the write that
+/// keeps it lands: the answer says it waits, and the record follows in the workspace's own
+/// document, which is written after the answer.
+fn kept_ask(
+    daemon: &Daemon,
+    invocation: tilo_actions::InvocationId,
+    receipt: &tilo_actions::remote::InvocationReceipt,
+) -> tilo_actions::remote::asked::KeptAsk {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let asks = tilo_rt::app()
+            .handle()
+            .block_on(daemon.workspaces.copies().asked_kept());
+        if let Some(ask) = asks.iter().find(|ask| ask.request.invocation == invocation) {
+            return ask.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the call waits for the person: receipt={receipt:?} asks={asks:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Adding a computer is the person's own act: an agent of theirs that asks for a ticket is
 /// answered none, and the call waits as their asking card, showing the agent that asks. Waiting
 /// for the ticket served last to be taken answers which computer took it, and issues nothing.
@@ -2151,13 +2190,7 @@ fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
         receipt.status
     );
     // It waits as the person's asked record, on a device that keeps their root.
-    let asks = tilo_rt::app()
-        .handle()
-        .block_on(daemon.workspaces.copies().asked_kept());
-    let ask = asks
-        .iter()
-        .find(|ask| ask.request.invocation == invocation)
-        .expect("the call waits for the person");
+    let ask = kept_ask(&daemon, invocation, &receipt);
     assert_eq!(ask.person, hex::encode(person_key));
     assert_eq!(
         ask.dispatch,
