@@ -145,7 +145,7 @@ fn local_api(
     home.env()
         .set("TILO_IDENTITY_ROOT", identity)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    let dir = tilo_identity::store::account_identity_dir_from_env().unwrap();
+    let dir = tilo_identity::store::identity_dir_from_env().unwrap();
     tilo_identity::provisioning::import_single_device_root(
         &dir,
         root,
@@ -201,20 +201,21 @@ fn a_key_holding_cli_reports_progress_and_signs_a_returning_browser_through_its_
             let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
             let (socket, issuer) = local_api(&mut home, &root);
             let setup = Ticket::new(issuer.clone());
-            let progress =
-                json!({"ticket": setup.encode(), "step": "tools-added", "agent": "Codex"});
-            let mut reporter = ask("reported", &progress);
-            assert_eq!(
-                answer(
-                    &socket,
-                    &mut reporter,
-                    "reported",
-                    "200 OK",
-                    &json!({"result": {"secret": setup.secret_hex()}})
-                ),
-                progress
-            );
-            assert_eq!(successful(reporter), "{}");
+            for step in ["logged-in", "tools-added", "check", "restart", "entered"] {
+                let progress = json!({"ticket": setup.encode(), "step": step, "agent": "Codex"});
+                let mut reporter = ask("reported", &progress);
+                assert_eq!(
+                    answer(
+                        &socket,
+                        &mut reporter,
+                        "reported",
+                        "200 OK",
+                        &json!({"result": {"secret": setup.secret_hex()}})
+                    ),
+                    progress
+                );
+                assert_eq!(successful(reporter), "{}");
+            }
 
             let sign_in = Ticket::in_direction(Direction::SignIn, issuer);
             let text = sign_in.encode();
@@ -242,6 +243,7 @@ fn a_key_holding_cli_reports_progress_and_signs_a_returning_browser_through_its_
             assert_eq!(signed.device_public_key, browser);
             assert!(successful(returning).contains("Signed the browser in"));
 
+            let progress = json!({"ticket": setup.encode(), "step": "failed", "detail": "The agent is offline."});
             let mut declined = ask("reported", &progress);
             let denied = json!({"error": {"code": "forbidden", "message": format!("Declined {} {}", setup.encode(), setup.secret_hex())}});
             assert_eq!(
@@ -272,4 +274,87 @@ fn a_key_holding_cli_reports_progress_and_signs_a_returning_browser_through_its_
             );
         },
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_admits_a_fresh_caller_and_closes_its_connection_after_it_reads_its_key() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const CLIENT_SOCKET: &str = "TILO_TEST_TICKET_ACTION_CLIENT_SOCKET";
+    const TEST: &str =
+        "the_daemon_admits_a_fresh_caller_and_closes_its_connection_after_it_reads_its_key";
+    const ADMITTED: &str = "the API reached the current-device callback";
+
+    if let Some(socket) = std::env::var_os(CLIENT_SOCKET) {
+        let socket = std::path::PathBuf::from(socket);
+        let keys =
+            tilo_device_identity::IdentityPaths::under(socket.parent().unwrap().join("keys"));
+        let request = || -> std::io::Result<Vec<u8>> {
+            // Each attempt establishes its connection before testing what the server answers.
+            let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+            stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
+            stream
+                .write_all(b"GET /v1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+            let mut reply = Vec::new();
+            stream.read_to_end(&mut reply)?;
+            Ok(reply)
+        };
+        assert!(String::from_utf8_lossy(&request().unwrap()).contains(ADMITTED));
+        let _key = tilo_device_identity::persist::load_device_key(&keys).unwrap();
+        assert_eq!(
+            rustix::process::dumpable_behavior().unwrap(),
+            rustix::process::DumpableBehavior::NotDumpable
+        );
+        match request() {
+            Ok(reply) => assert!(
+                reply.is_empty(),
+                "the daemon should close before serving HTTP"
+            ),
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                ),
+                "{error}"
+            ),
+        }
+        return;
+    }
+
+    tilo_test_env::in_own_process(module_path!(), TEST, || {
+        let directory = tilo_test_env::runtime_tempdir().unwrap();
+        let keys = tilo_device_identity::IdentityPaths::under(directory.path().join("keys"));
+        tilo_device_identity::persist::adopt_device_key(&keys, &tilo_test_env::node_key()).unwrap();
+        let socket = directory.path().join("api.sock");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&calls);
+        let server = runtime.spawn(tilo_api::direct::serve_current(listener, move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err(ADMITTED.to_owned()))
+        }));
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("ticket_action::{TEST}"), "--nocapture"])
+            .env(CLIENT_SOCKET, &socket)
+            .output_locked()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "only the first connection reached the daemon's callback"
+        );
+        server.abort();
+    });
 }
