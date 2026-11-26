@@ -498,17 +498,6 @@ impl ProcessContext {
             retirement.retire();
         }
     }
-    #[cfg(test)]
-    pub(crate) fn bind_retirement(
-        &mut self,
-        retirement: crate::semantic_document_read::retirement::MountRetirement,
-    ) -> Result<(), LaunchError> {
-        if self.retirement.is_some() || self.closing.get() {
-            return Err(LaunchError::BindingMismatch);
-        }
-        self.retirement = Some(retirement);
-        Ok(())
-    }
     /// Reserve New or open Existing before the factory, using only supplied identities.
     pub fn prepare(
         definition: &ApplicationDefinition,

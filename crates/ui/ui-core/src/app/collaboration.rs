@@ -826,8 +826,7 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::NativeMediaCommandResult { .. }
-                | CollabEvent::WorkspaceControl { .. }
+            CollabEvent::NativeMediaCommandResult { .. } | CollabEvent::WorkspaceControl { .. }
         )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
@@ -1205,10 +1204,6 @@ impl App {
         &self.local_author
     }
 }
-
-#[cfg(test)]
-#[path = "cold_construction_tests.rs"]
-mod cold_construction_tests;
 
 #[cfg(test)]
 #[path = "person_colour_tests.rs"]

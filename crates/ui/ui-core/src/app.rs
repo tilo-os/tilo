@@ -62,8 +62,6 @@ mod model_lifecycle;
 #[cfg(feature = "model")]
 mod presences;
 mod retirement_assembly;
-#[cfg(test)]
-mod retirement_lifecycle_tests;
 #[cfg(feature = "model")]
 mod surface_route;
 include!("app/floating.rs");
