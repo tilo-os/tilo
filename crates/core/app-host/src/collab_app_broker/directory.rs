@@ -100,12 +100,15 @@ pub enum ActionDirectoryBridgeResponse {
 
 /// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
 /// code must retain its last cached results rather than blocking a frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Refused` is the directory's own word for why it could not answer, carried
+/// so the caller is told it rather than a bare "unavailable".
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionDirectoryBridgeError {
     Busy,
     InvalidRequest,
     Unavailable,
     TimedOut,
+    Refused(String),
 }
 
 pub type ActionDirectoryBridgeReply =
@@ -1031,7 +1034,7 @@ impl AppBrokerState {
                                             peer = query.peer_id,
                                             "an app's action directory page was refused"
                                         );
-                                        ActionDirectoryBridgeError::Unavailable
+                                        ActionDirectoryBridgeError::Refused(reason)
                                     })
                             });
                         reply.send(response);
@@ -1061,7 +1064,7 @@ impl AppBrokerState {
                             .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Resolution)
-                                    .map_err(|_| ActionDirectoryBridgeError::Unavailable)
+                                    .map_err(ActionDirectoryBridgeError::Refused)
                             });
                         reply.send(response);
                     }

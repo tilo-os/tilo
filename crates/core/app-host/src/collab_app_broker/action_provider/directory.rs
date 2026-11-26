@@ -478,6 +478,9 @@ pub(super) fn bridge_error(app: &str, error: ActionDirectoryBridgeError) -> Acti
                 "{app}'s action directory did not answer in time: it is publishing a change, or hung"
             ),
         },
+        // The directory's own word, so a refusal is told apart from a
+        // republish and from a directory that is not there.
+        ActionDirectoryBridgeError::Refused(reason) => ActionCallError::Unavailable { reason },
         other => ActionCallError::Unavailable {
             reason: format!("{app}'s action directory is {other:?}"),
         },
