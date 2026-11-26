@@ -153,7 +153,7 @@ class BuilderCandidates(unittest.TestCase):
                                         text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
 
-    def test_cli_tags_only_trigger_cli_builds(self):
+    def test_cli_tags_trigger_only_the_cross_builds_and_read_only_policy(self):
         checks = tomllib.loads((ROOT / 't.toml').read_text())['check']
 
         def checks_on(tag):
@@ -163,17 +163,24 @@ class BuilderCandidates(unittest.TestCase):
         for tag in ('v+cli-0.3.1-assistant.1', 'v+cli-1.2.3-preview.2'):
             with self.subTest(tag=tag):
                 automatic = checks_on(tag)
-                self.assertLessEqual(automatic, {'cli-macos-cross-{arch}'})
+                self.assertEqual(automatic, {'cli-macos-cross-{arch}', 'hosted-cli-policy'})
                 for check in checks:
                     if check['name'] in automatic:
-                        for privilege in ('publish', 'secrets', 'id_token', 'pointers'):
+                        for privilege in ('publish', 'id_token', 'pointers'):
                             self.assertFalse(check.get(privilege), (check['name'], privilege))
+                        pins = (['TILO_HOSTED_APPLE_TEAM_ID', 'TILO_HOSTED_APPLE_LEAF_SHA256']
+                                if check['name'] == 'hosted-cli-policy' else [])
+                        self.assertEqual(check.get('secrets', []), pins)
+        for check in checks:
+            if check['name'] in ('sign-cli', 'publish-cli', 'cli-{arch}', 'cli-macos-cross-{arch}'):
+                self.assertIn('hosted-cli-policy', check['optional_needs'])
         # Other v-prefixed tags keep both signatures, including nonnumeric tags
         # used for a hosted guest or with a plus after the first two characters.
         for tag in ('v0.5.0', 'v0.5.1-rc.1', 'vhosted-guest-2026.11.09',
                     'v', 'vcli-0.3.1-assistant.1', 'vhost+preview'):
             with self.subTest(tag=tag):
                 self.assertTrue({'sign-ci-builder', 'sign-host-loader'} <= checks_on(tag))
+                self.assertNotIn('hosted-cli-policy', checks_on(tag))
 
     def test_the_candidates_chromium_checks_every_publication_and_its_regressions_a_release(self):
         smoke = canary_arm('browser')

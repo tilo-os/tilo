@@ -92,6 +92,11 @@ class SignatureRequirementTests(unittest.TestCase):
         self.assertIs(caught.exception, error)
         self.assertEqual(run.call_count, 1)
 
+    def test_a_timestamp_in_an_executable_path_is_not_a_secure_timestamp(self):
+        details = 'Executable=/tmp/Timestamp=anything/app\n' + DETAILS.split('Timestamp=')[0]
+        with self.assertRaisesRegex(ValueError, 'secure timestamp missing'):
+            self.verify_app(details)
+
     def test_display_failure_propagates(self):
         error = ValueError('codesign: fixture display failed')
         with patch.object(native, 'machos', return_value=MACHOS), \

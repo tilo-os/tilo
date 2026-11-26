@@ -539,6 +539,10 @@ when = { test = "image_builder_inputs" }
 git = true
 
 [[check.matrix.set]]
+when = { test = "hosted_cli_apple" }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+
+[[check.matrix.set]]
 when = { test = "macos_collection" }
 git = true
 
@@ -3464,6 +3468,8 @@ id_token = ["registry.tilo.so"]
 
 [[check]]
 name = "cli-{arch}"
+dispatch_inputs = { hosted_version = "" }
+optional_needs = ["hosted-cli-policy"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/cli-release.sh build {arch}-unknown-linux-musl /target/publish/cli/linux-{arch}"
 # The musl C compiler the program's C (ring, SQLite) needs, and for aarch64 the Zig toolchain
@@ -3491,6 +3497,8 @@ arch = ["x86_64", "aarch64"]
 # tilo-macos-{arch}.tar.gz && ./tilo --help` runs what it installs.
 [[check]]
 name = "cli-macos-cross-{arch}"
+dispatch_inputs = { hosted_version = "" }
+optional_needs = ["hosted-cli-policy"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/cli-release.sh build {arch}-apple-darwin /target/publish/cli/macos-{arch}"
 # Zig, which carries Darwin's C library headers, the Rust target, and llvm-otool to read the
@@ -3512,6 +3520,18 @@ optional_needs = ["cli-macos-cross-aarch64", "cli-macos-cross-x86_64"]
 requires = ["arch=any"]
 outputs = ["/target/publish/cli/release/*"]
 default = false
+
+# Only the protected tag supplies the version to the unprivileged producers. The two
+# public signer pins come from the ref/repository/node-scoped t release configuration.
+# This job uses neither an Apple signing key nor KMS nor a package token.
+[[check]]
+name = "hosted-cli-policy"
+run = "bash tools/ci/publish/cli-release.sh hosted-policy /target/publish/cli/hosted-trust"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/cli/hosted-trust/*"]
+secrets = ["TILO_HOSTED_APPLE_TEAM_ID", "TILO_HOSTED_APPLE_LEAF_SHA256"]
+cache = false
+on = ["tag:v+cli-*"]
 
 [[check]]
 name = "cli-rehearsal"
@@ -3540,6 +3560,7 @@ run = "bash tools/ci/publish/cli-release.sh sign /target/publish/cli/release"
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "cli-rehearsal", "signing-tools"]
+optional_needs = ["hosted-cli-policy"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/release/SHA256SUMS.sig", "/target/publish/cli/release/SHA256SUMS.bundle", "/target/publish/cli/release/dry-run.pub"]
@@ -3556,6 +3577,7 @@ run = "bash tools/ci/publish/cli-release.sh publish /target/publish/cli/release"
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 needs = ["cli-release", "sign-cli"]
+optional_needs = ["hosted-cli-policy"]
 requires = ["arch=x86_64"]
 cache = false
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
@@ -6880,6 +6902,7 @@ timeout_secs = 1800
 # and a driver that stops takes its browsers with it.
 [[check]]
 name = "onboarding"
+dispatch_inputs = { hosted_version = "" }
 # No egress: the entry, the stack and the people's browsers meet on loopback alone.
 run = "bash os/containers/tilo-lounge/test-onboarding.sh /target/publish/web-entry/bundle /target/onboarding"
 # The person installs the exact Linux release package from this run. The stack's operator uses

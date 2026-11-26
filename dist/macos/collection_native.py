@@ -175,24 +175,33 @@ def sign_bundle(app, policy, identity, offline):
     run(common + ['--entitlements', policy, app], timeout=60)
 
 
-def verify_signatures(app, identity, mode, architecture):
-    code = machos(app)
-    for item in code + [app]:
-        command = ['/usr/bin/codesign', '--verify', '--strict', '--all-architectures']
-        if identity['sha1'] != '-':
-            command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
-        run(command + [item])
-        arches = ['arm64', 'x86_64'] if architecture == 'universal' else [architecture]
-        for arch in arches:
-            details = run(['/usr/bin/codesign', '-d', '--verbose=4', '--arch', arch, item])
-            flags = re.search(r'flags=0x([0-9a-fA-F]+)', details)
-            if not flags or not int(flags[1], 16) & 0x10000:
-                raise ValueError(f'hardened runtime missing: {item}')
-            if identity['sha1'] == '-':
-                if 'Signature=adhoc' not in details:
-                    raise ValueError(f'expected ad-hoc signature: {item}')
-            elif f'TeamIdentifier={identity["team"]}' not in details or f'Authority={identity["name"]}' not in details:
+def verify_code_signature(item, identity, mode, architecture, requirement=None):
+    command = ['/usr/bin/codesign', '--verify', '--strict', '--all-architectures']
+    if identity['sha1'] != '-':
+        leaf = f'anchor apple generic and certificate leaf = H"{identity["sha1"]}"'
+        command += ['-R', f'=({leaf}) and ({requirement})' if requirement else '=' + leaf]
+    run(command + [item])
+    arches = ['arm64', 'x86_64'] if architecture == 'universal' else [architecture]
+    for arch in arches:
+        details = run(['/usr/bin/codesign', '-d', '--verbose=4', '--arch', arch, item])
+        lines = details.splitlines()
+        flags = re.search(r'^CodeDirectory [^\r\n]*\bflags=0x([0-9a-fA-F]+)\b', details, re.MULTILINE)
+        if not flags or not int(flags[1], 16) & 0x10000:
+            raise ValueError(f'hardened runtime missing: {item}')
+        if identity['sha1'] == '-':
+            if 'Signature=adhoc' not in lines:
+                raise ValueError(f'expected ad-hoc signature: {item}')
+        else:
+            leaf = next((line for line in lines if line.startswith('Authority=')), '')
+            expected = identity['name']
+            authority_ok = leaf == f'Authority={expected}' if expected else leaf.startswith('Authority=Developer ID Application: ')
+            if f'TeamIdentifier={identity["team"]}' not in lines or not authority_ok:
                 raise ValueError(f'wrong signing team/authority: {item}')
-            if mode == 'distribution' and 'Timestamp=' not in details:
-                raise ValueError(f'secure timestamp missing: {item}')
+        if mode == 'distribution' and not re.search(r'^Timestamp=\S[^\r\n]*$', details, re.MULTILINE):
+            raise ValueError(f'secure timestamp missing: {item}')
+
+
+def verify_signatures(app, identity, mode, architecture):
+    for item in machos(app) + [app]:
+        verify_code_signature(item, identity, mode, architecture)
     run(['/usr/bin/codesign', '--verify', '--deep', '--strict', '--all-architectures', app])

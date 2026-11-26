@@ -60,7 +60,7 @@ a stack handed what a check built (`TILO_SH_PROGRAMS` and the like), and
 
 `TILO_SH_BUILD=t` takes the programs and the bundle from t's checks instead:
 `tilo-sh-programs` (`lounge-check`) and `web-entry-bundle` (compiled,
-bound, split and wasm-opt'd on t), the builds the checks run. They start from
+bound and wasm-opt'd on t), the builds the checks run. They start from
 an empty build directory, so they take minutes where the default takes
 seconds; use them to rehearse exactly what the checks build. A clean checkout
 is built as its commit, one with changes as t finds it when the run starts.
@@ -395,8 +395,11 @@ This builds both Linux and Mac architectures. The rehearsal signs its checksums
 with a temporary key and runs the installer against a local HTTPS site. Production
 requires an immutable signed CLI package from the same source as the host.
 The public v0.5.0 CLI speaks a different device-action and workspace protocol.
-For promotion, the trusted `v+cli-0.3.1-assistant.1` source tag must name the
-verified commit. The operator releases its CLI with the existing publisher.
+For promotion, both Mac packages need the distribution signing identity and a
+successful fresh-account qualification. The protected, annotated
+`v+cli-0.3.1-assistant.1` tag must name the verified commit and pin the exact
+qualification. An operator signs, qualifies, stages and reviews these artifacts
+before dispatching the existing publisher. [Hosted CLI release procedure](hosted-cli-qualification.md)
 
 ```sh
 t dispatch --repo tilo --ref tag:v+cli-0.3.1-assistant.1 --publish publish-cli

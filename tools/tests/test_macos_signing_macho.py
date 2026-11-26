@@ -65,6 +65,26 @@ class SigningProjectionTests(unittest.TestCase):
         self.assertEqual(result["signature_size"], 128)
         self.assertEqual(result["preserved_code_end"], len(self.unsigned))
 
+    def test_intel_requires_the_requested_architecture_and_unchanged_code(self):
+        intel = patch(self.unsigned, 4, "<II", 0x1000007, 3)
+        signed = patch(self.signed, 4, "<II", 0x1000007, 3)
+        # Apple codesign on arm64 rounds __LINKEDIT to 16 KiB even for Intel.
+        intel = patch(intel, self.linkedit + 32, "<Q", 4096)
+        self.assertTrue(compare_signed_macho(intel, signed, "x86_64")["signature_only_change"])
+        self.rejected(before=intel, after=signed)
+        for before, after in ((self.unsigned, signed), (intel, self.signed),
+                              (intel, patch(signed, 1024, "<B", 99)),
+                              (intel, patch(signed, self.linkedit + 32, "<Q", 32768))):
+            with self.subTest(), self.assertRaises(MachOError):
+                compare_signed_macho(before, after, "x86_64")
+
+    def test_rejects_specialized_intel_cpu_and_unknown_architecture(self):
+        for candidate in (0, 8, 0x80000003):
+            with self.subTest(candidate=candidate), self.assertRaises(MachOError):
+                inspect_macho(patch(self.unsigned, 4, "<II", 0x1000007, candidate), "x86_64")
+        with self.assertRaises(MachOError):
+            inspect_macho(self.unsigned, "unknown")
+
     def test_replace_adhoc_signature_with_larger_signature(self):
         result = compare_signed_macho(fixture(128, signature_byte=b"A"), fixture(19000))
         self.assertEqual(result["signature_size"], 19000)

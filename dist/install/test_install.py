@@ -889,6 +889,60 @@ class Release(unittest.TestCase):
             self.assertIn("a CLI-only tag must name a prerelease", done.stderr)
             self.assertFalse((root / "site").exists())
 
+    def test_a_hosted_package_cannot_be_signed_or_published_under_its_numeric_alias(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            release = pathlib.Path(scratch)
+            (release / "SHA256SUMS").write_text("test manifest")
+            for operation in ("sign", "publish"):
+                with self.subTest(operation=operation):
+                    result = subprocess.run(["bash", self.RELEASE, operation, release],
+                                            capture_output=True, text=True,
+                                            env={"PATH": os.defpath, "TMPDIR": scratch,
+                                                 "T_REF": "tag:v0.3.1-assistant.1"})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("requires its protected v+cli- tag", result.stderr)
+
+    def test_preparation_and_the_protected_tag_select_the_same_binary_version(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            version = "v0.3.1-assistant.1"
+            env = {"PATH": os.defpath, "TMPDIR": scratch}
+            output = root / "macos-aarch64"
+            def selected(**extra):
+                return subprocess.run(["bash", self.RELEASE, "build-version", output],
+                                      capture_output=True, text=True, env={**env, **extra})
+            self.assertEqual(selected().stdout.strip(), "")
+            self.assertEqual(selected(T_INPUT_HOSTED_VERSION=version).stdout.strip(), version)
+            self.assertEqual(selected(T_REF="tag:v0.5.0").stdout.strip(), "v0.5.0")
+            run("bash", self.RELEASE, "hosted-policy", root / "hosted-trust", env={
+                **env, "T_REF": "tag:v+cli-0.3.1-assistant.1", "T_COMMIT": "a" * 40,
+                "TILO_HOSTED_APPLE_TEAM_ID": "TEAM123456", "TILO_HOSTED_APPLE_LEAF_SHA256": "f" * 64})
+            # Nonpublishing dependencies do not receive T_REF in this trusted run.
+            self.assertEqual(selected().stdout.strip(), version)
+            self.assertEqual(selected(T_INPUT_HOSTED_VERSION=version).stdout.strip(), version)
+            self.assertNotEqual(selected(T_INPUT_HOSTED_VERSION="v1.2.3-preview.1").returncode, 0)
+
+    def test_production_refuses_the_raw_cross_build_before_signing_or_upload(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            release = pathlib.Path(scratch) / "release"
+            release.mkdir()
+            (release / "SHA256SUMS.sig").write_text("fixture")
+            names = [f"tilo-{system}-{arch}.tar.gz" for system in ("linux", "macos")
+                     for arch in ("aarch64", "x86_64")]
+            for name in names:
+                (release / name).write_bytes(name.encode())
+            (release / "SHA256SUMS").write_text("".join(
+                f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n" for name in names))
+            for operation in ("sign", "publish"):
+                with self.subTest(operation=operation):
+                    result = subprocess.run(["bash", self.RELEASE, operation, release],
+                                            capture_output=True, text=True,
+                                            env={"PATH": os.defpath, "TMPDIR": scratch,
+                                                 "T_COMMIT": "a" * 40, "T_REF": "tag:v+cli-0.3.1-assistant.1"})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("requires the verified Mac release", result.stderr)
+                    self.assertEqual((release / "SHA256SUMS.sig").read_text(), "fixture")
+
     def test_a_hosted_release_requires_every_platform_in_its_signed_manifest(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = pathlib.Path(scratch)

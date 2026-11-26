@@ -48,7 +48,7 @@
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
-usage='usage: cli-release.sh build TARGET OUT | pack PROGRAM ARCHIVE [TASK-PROGRAM] | sums OUT DIR... | sign DIR | publish DIR | rehearse DIR'
+usage='usage: cli-release.sh build TARGET OUT | build-version OUT | hosted-policy TRUST_DIR | pack PROGRAM ARCHIVE [TASK-PROGRAM] | sums OUT DIR... | sign DIR | publish DIR | rehearse DIR'
 package=https://code.tilo.so/api/packages/tilo/generic/tilo-cli
 linux_archives=(tilo-linux-x86_64.tar.gz tilo-linux-aarch64.tar.gz)
 all_archives=("${linux_archives[@]}" tilo-macos-aarch64.tar.gz tilo-macos-x86_64.tar.gz)
@@ -71,6 +71,28 @@ version() {
 
 # A final version (no pre-release part) as three numbers, for `sort -V`; nothing for any other.
 final() { if [[ $1 =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi; }
+
+# t does not pass T_REF to unprivileged build dependencies. A protected hosted tag
+# supplies it through its trusted policy job. Working-tree rehearsals select the same
+# version through their declared input; ordinary unversioned builds use the crate version.
+build_version() {
+  local out=${1:?$usage} trust selected= requested=${T_INPUT_HOSTED_VERSION:-} tag
+  trust=$(dirname -- "$out")/hosted-trust
+  if [[ -n $requested ]]; then
+    [[ $requested == v* ]] || die "invalid hosted version: $requested"
+    T_REF=tag:v+cli-${requested#v} version >/dev/null || return 1
+  fi
+  if [[ -f $trust/tag ]]; then
+    tag=$(<"$trust/tag")
+    [[ $tag == tag:v+cli-* ]] || die 'invalid hosted release policy'
+    [[ -z ${T_REF:-} || $T_REF == "$tag" ]] || die 'build reference conflicts with its trusted hosted tag'
+    selected=$(T_REF=$tag version) || return 1
+  elif [[ ${T_REF:-} == tag:* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    selected=$(version) || return 1
+  fi
+  [[ -z $selected || -z $requested || $selected == "$requested" ]] || die 'requested CLI version differs from the trusted tag'
+  printf '%s' "${selected:-$requested}"
+}
 
 # Pack the program $1 as the archive $2, with the daemon beside $1, and the task program $3,
 # where one is given: the members `tilo`, `tilo-runtime` and `tilolang-process`, each mode
@@ -218,8 +240,8 @@ cmd_build() {
   # The release's version, so `tilo --version` names the release this program is from. A build
   # that releases nothing (a branch's, a working tree's) keeps the crate's own version.
   local released
-  if [[ ${T_REF:-} == tag:* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
-    released=$(version)
+  released=$(build_version "$out")
+  if [[ -n $released ]]; then
     export TILO_CLI_VERSION=${released#v}
   fi
   # `tilo mcp` starts a task's tilolang programs in tilolang-process, which it looks for beside
@@ -258,6 +280,9 @@ cmd_build() {
     elif command -v "qemu-$arch-static" >/dev/null; then
       "qemu-$arch-static" "$program" --help >/dev/null \
         || die "$program --help failed under qemu-$arch-static"
+      if [[ -n $released ]]; then
+        [[ $("qemu-$arch-static" "$program" --version) == "tilo ${released#v}" ]] || die "$target reports the wrong release"
+      fi
       task_program_starts "qemu-$arch-static" "$task_program"
     fi
   else
@@ -272,6 +297,7 @@ cmd_build() {
   rm -rf "$out"
   mkdir -p "$out"
   pack "$program" "$out/tilo-$os-$arch.tar.gz" ${task_program:+"$task_program"}
+  if [[ -n $released ]]; then printf '%s\n' "$released" > "$out/version"; fi
   if command -v sha256sum >/dev/null; then
     (cd "$out" && sha256sum "tilo-$os-$arch.tar.gz")
   else
@@ -280,7 +306,7 @@ cmd_build() {
 }
 
 cmd_sums() {
-  local out=${1:?$usage} dir name
+  local out=${1:?$usage} dir name selected= seen_unstamped=0
   shift
   (($#)) || die "$usage"
   rm -rf "$out"
@@ -289,9 +315,19 @@ cmd_sums() {
     for name in "${all_archives[@]}"; do
       [[ -f $dir/$name ]] || continue
       [[ ! -e $out/$name ]] || die "two builds of $name: in $dir and before it"
+      if [[ -f $dir/version ]]; then
+        [[ -s $dir/version && ($selected == "" || $selected == "$(<"$dir/version")") ]] || die "CLI build versions disagree in $dir"
+        selected=$(<"$dir/version")
+      else
+        seen_unstamped=1
+      fi
       cp "$dir/$name" "$out/"
     done
   done
+  if [[ -n $selected ]]; then
+    [[ $seen_unstamped == 0 ]] || die 'one CLI archive lacks the version of its siblings'
+    printf '%s\n' "$selected" > "$out/build-version"
+  fi
   for name in "${linux_archives[@]}"; do
     [[ -f $out/$name ]] || die "no $name among $*: a release carries both Linux archives"
   done
@@ -313,6 +349,65 @@ require_hosted_archives() {
   for name in "${all_archives[@]}"; do
     [[ -s $dir/$name ]] && awk -v name="$name" '$2 == name { count++ } END { exit count != 1 }' "$dir/SHA256SUMS" \
       || die "$T_REF requires $name in the signed release"
+  done
+}
+
+# The two pins are public facts supplied by t's release configuration for this ref.
+# The operator who uploads a package and its qualification cannot select either one.
+cmd_hosted_policy() {
+  local trust=${1:?$usage}
+  [[ ${T_REF:-} == tag:v+cli-* ]] || die 'hosted CLI release policy requires a protected hosted prerelease tag'
+  version >/dev/null
+  require_commit
+  [[ ${TILO_HOSTED_APPLE_TEAM_ID:-} =~ ^[0-9A-Z]{10}$ && ${TILO_HOSTED_APPLE_LEAF_SHA256:-} =~ ^[0-9a-fA-F]{64}$ ]] \
+    || die 'release configuration must pin the Apple team and Developer ID Application certificate'
+  mkdir -p "$trust"
+  printf '%s\n' "$T_REF" > "$trust/tag"
+  printf '%s\n' "$T_COMMIT" > "$trust/commit"
+  printf '%s\n' "$TILO_HOSTED_APPLE_TEAM_ID" > "$trust/team"
+  printf '%s\n' "$TILO_HOSTED_APPLE_LEAF_SHA256" > "$trust/leaf-sha256"
+}
+
+# Both privileged jobs consume the original four builds. Each independently checks the
+# verified stage and reconstructs the exact same distribution manifest. Only the two Mac
+# archives change; the Linux files stay byte-for-byte the raw trusted build outputs.
+run_release_action() {
+  local action=$1 raw=${2:?$usage} stage trust name
+  if [[ -z ${TILO_PUBLISH_DRY_RUN:-} && ${T_REF:-} =~ ^tag:v[0-9]+\.[0-9]+\.[0-9]+-assistant(\.|$) ]]; then
+    die "$T_REF requires its protected v+cli- tag to write this hosted package"
+  fi
+  if [[ ${T_REF:-} != tag:v+cli-* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    "cmd_$action" "$raw"
+    return
+  fi
+  version >/dev/null
+  require_commit
+  trust=$(dirname -- "$raw")/hosted-trust
+  [[ -f $trust/team && -f $trust/leaf-sha256 && -f $trust/tag && -f $trust/commit && \
+      $(<"$trust/tag") == "$T_REF" && $(<"$trust/commit") == "$T_COMMIT" ]] \
+    || die "$T_REF requires the verified Mac release policy and signer pins for $T_COMMIT"
+  [[ -f $raw/build-version && $(<"$raw/build-version") == "$(version)" ]] || die 'protected hosted tag requires all four archives built with its exact version'
+  distribution=$(mktemp -d "$scratch/hosted-cli-release.XXXXXXXX")
+  trap 'rm -rf -- "$distribution"' EXIT
+  stage=$distribution/stage
+  python3 -I tools/ci/publish/hosted_cli_stage.py fetch "$raw" "$stage"
+  TILO_HOSTED_APPLE_TEAM_ID=$(<"$trust/team") TILO_HOSTED_APPLE_LEAF_SHA256=$(<"$trust/leaf-sha256") \
+    python3 -I tools/ci/publish/hosted_cli_apple.py verify "$raw" "$stage"
+  # Keep the receipt-backed inputs intact, also when either operation is retried.
+  for name in "${linux_archives[@]}"; do cp "$raw/$name" "$distribution/$name"; done
+  for name in tilo-macos-{aarch64,x86_64}.tar.gz; do cp "$stage/$name" "$distribution/$name"; done
+  (cd "$distribution" && sha256sum "${all_archives[@]}" | LC_ALL=C sort -k2 > SHA256SUMS)
+  local signatures=(SHA256SUMS.sig SHA256SUMS.bundle dry-run.pub)
+  if [[ $action == publish ]]; then
+    for name in "${signatures[@]}"; do
+      if [[ -f $raw/$name ]]; then cp "$raw/$name" "$distribution/$name"; fi
+    done
+    cmd_publish "$distribution"
+    return
+  fi
+  cmd_sign "$distribution"
+  for name in "${signatures[@]}"; do
+    if [[ -f $distribution/$name ]]; then cp "$distribution/$name" "$raw/$name"; fi
   done
 }
 
@@ -476,9 +571,14 @@ install_from_site() {
 
 cmd_rehearse() {
   local release=${1:?$usage} installed ref machine command
-  local T_REF=${T_REF:-} hosted=${T_INPUT_HOSTED_VERSION:-}
+  local T_REF=${T_REF:-} hosted=${T_INPUT_HOSTED_VERSION:-} built=
+  if [[ -f $release/build-version ]]; then built=$(<"$release/build-version"); fi
+  # In a protected publication this unprivileged dependency receives the artifact, while
+  # the raw producers received the protected policy. Rehearse its actual hosted version.
+  if [[ -z $hosted && -z $T_REF && $built == v*-assistant.* ]]; then hosted=$built; fi
   if [[ -n $hosted ]]; then
     [[ $hosted == v[0-9]* ]] || die "a hosted version starts with v: $hosted"
+    [[ $built == "$hosted" ]] || die "the release was not built with its selected version $hosted"
     T_REF=tag:v+cli-${hosted#v}
   fi
   # Not `local`: the EXIT trap below runs after this function has returned.
@@ -547,6 +647,9 @@ cmd_rehearse() {
     cmp --silent "$installed" <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilo) \
       || die "the installer installed something other than tilo-linux-$machine.tar.gz's program"
     HOME=$home "$installed" --help >/dev/null || die "the installed tilo does not run"
+    if [[ $mode == hosted ]]; then
+      [[ $(HOME=$home "$installed" --version) == "tilo ${pinned#v}" ]] || die "the installed CLI does not report $pinned"
+    fi
     # The program `tilo mcp` starts a task's programs in: beside the command, where it looks.
     cmp --silent "${installed%/tilo}/tilolang-process" \
       <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilolang-process) \
@@ -605,8 +708,9 @@ case ${1:-} in
   build) shift; cmd_build "$@" ;;
   pack) shift; pack "${1:?$usage}" "${2:?$usage}" ${3:+"$3"} ;;
   sums) shift; cmd_sums "$@" ;;
-  sign) shift; cmd_sign "$@" ;;
-  publish) shift; cmd_publish "$@" ;;
+  hosted-policy) shift; cmd_hosted_policy "$@" ;;
+  build-version) shift; build_version "$@" ;;
+  sign|publish) run_release_action "$@" ;;
   rehearse) shift; cmd_rehearse "$@" ;;
   *) die "$usage" ;;
 esac

@@ -1,12 +1,15 @@
-"""Prove that codesign changed only the signature envelope of a thin arm64 image.
+"""Prove that codesign changed only the signature envelope of a thin Mach-O image.
 
 This is deliberately not a signature verifier. Call Apple's codesign verification
 separately. Both inputs must be bounded, regular-file snapshots taken by the caller.
-Supported images are little-endian arm64 (not arm64e) executables/dylibs/bundles.
+Supported images are little-endian arm64 or x86_64 executables/dylibs/bundles.
 """
 
 import hashlib
 import struct
+
+
+_CPU_TYPES = {"arm64": (0x100000C, 0), "x86_64": (0x1000007, 3)}
 
 
 class MachOError(ValueError):
@@ -27,7 +30,7 @@ def _round(value, alignment):
     return (value + alignment - 1) // alignment * alignment
 
 
-def inspect_macho(data):
+def inspect_macho(data, architecture="arm64"):
     """Parse a snapshot and reject unsupported or overlapping file structures.
 
     The returned dictionary contains internal byte values and is not a receipt.
@@ -37,8 +40,9 @@ def inspect_macho(data):
     _require(32 <= len(data) <= 2 ** 31, "image size outside supported bounds")
     header = struct.unpack_from("<8I", data)
     magic, cpu, subtype, filetype, count, cmdbytes, flags, reserved = header
-    _require(magic == 0xFEEDFACF and cpu == 0x100000C and subtype == 0,
-             "only thin little-endian arm64 subtype 0 is supported")
+    _require(architecture in _CPU_TYPES, f"unsupported architecture {architecture}")
+    _require(magic == 0xFEEDFACF and (cpu, subtype) == _CPU_TYPES[architecture],
+             f"expected thin little-endian {architecture} with its generic CPU subtype")
     _require(filetype in (2, 6, 8) and reserved == 0, "unsupported Mach-O header")
     _require(1 <= count <= 4096 and count * 8 <= cmdbytes <= 1024 * 1024,
              "invalid load-command count or size")
@@ -155,7 +159,7 @@ def inspect_macho(data):
             "signature": signature, "linkedit": linkedit}
 
 
-def compare_signed_macho(before, after):
+def compare_signed_macho(before, after, architecture="arm64"):
     """Require an added/replaced signature and byte-identical executable content.
 
     Return public sizes/hashes suitable for a receipt, or raise MachOError.
@@ -164,7 +168,7 @@ def compare_signed_macho(before, after):
     rpath, section, identifier, architecture or entitlement mutation is allowed.
     Entitlements live in the signature and require separate codesign validation.
     """
-    old, new = inspect_macho(before), inspect_macho(after)
+    old, new = inspect_macho(before, architecture), inspect_macho(after, architecture)
     _require(new["signature"] is not None, "signed image has no signature command")
     _require(old["header"] == new["header"], "Mach-O header changed")
     old_commands = [raw for cmd, raw in old["commands"] if cmd != 0x1D]
