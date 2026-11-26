@@ -524,8 +524,8 @@ on = ["dispatch", "idle", "stable"]
 name = "policy/{step}"
 run = "{step.run}"
 # A step reads the tree, never the machine it runs on, so its result stands on every
-# architecture and it runs wherever there is room, the Arm node included. The unit tests below
-# stay per architecture: some of them ask the host what it is.
+# architecture and it runs wherever there is room, the Arm node included. So do the unit tests
+# below, except the few that ask the machine itself; those keep x86_64 in their own `set`s.
 requires = ["arch=any"]
 [check.matrix]
 step = { from_toml = "tools/policy/steps.toml", key = "step" }
