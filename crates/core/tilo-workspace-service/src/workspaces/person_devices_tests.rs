@@ -556,7 +556,20 @@ async fn a_computer_seals_its_person_s_records_across_a_restart() {
     let sealed = computer
         .workspaces()
         .read_now(&own, |state| {
-            state.publication().is_sealed_document(DEVICES.0, DEVICES.1)
+            // The record is a store document: the placement that founds it, and the content
+            // that follows it. Both are the person's own and both are sealed.
+            let records: Vec<(String, String)> = state
+                .records()
+                .into_iter()
+                .filter(|(app, _)| *app == DEVICES.0)
+                .collect();
+            assert!(
+                !records.is_empty(),
+                "the workspace holds the record of the person's devices"
+            );
+            records
+                .into_iter()
+                .all(|(app, record)| state.publication().is_sealed_document(&app, &record))
         })
         .map(|(_, sealed)| sealed);
     assert_eq!(sealed, Some(true), "the record is sealed");

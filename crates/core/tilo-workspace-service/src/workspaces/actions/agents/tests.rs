@@ -1,6 +1,6 @@
 //! An agent's call of a workspace's governance is decided by its grants there,
 //! asking its person first by default; a key a person made for their own
-//! programs is that person, held to what they may.
+//! programs acts as them for what it writes, and changes no place.
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -215,7 +215,7 @@ async fn let_in(
 }
 
 #[tokio::test]
-async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
+async fn a_persons_own_key_removes_no_member_however_they_may() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -223,7 +223,7 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
     let (workspace, workspace_id, actions) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
 
-    // Quinten administers the workspace; his scripts' key is him.
+    // Quinten administers the workspace; his scripts' key is him for what it writes.
     let quinten = SigningKey::from_bytes(&rand::random());
     let (laptop_signer, laptop) = device_of(&quinten, "laptop", DeviceCapabilities::member());
     let_in(workspaces, &workspace, &owner, (&laptop_signer, &laptop), 2).await;
@@ -255,11 +255,23 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
         );
         settled(actions.in_workspace(workspace_id).invoke(caller, asked))
     };
-    // Its session says it acts for him, as every key's does.
-    let removed = remove(&caller(&scripts).delegated_to("scripts"), &ada).await;
+    // A key is no device of the person's own: it changes no place, so an administrator's key
+    // removes nobody, however they may. Its session says it acts for him, as every key's does.
+    let refused = remove(&caller(&scripts).delegated_to("scripts"), &ada).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(ActionCallError::Refused { reason })
+                if reason.contains("this computer is not one of the person's own Tilo devices")
+        ),
+        "{refused:?}"
+    );
+
+    // A device of theirs removes the member they may: the refusal is the key's, not the rule's.
+    let removed = remove(&caller(&laptop), &ada).await;
     assert!(removed.is_ok(), "{removed:?}");
 
-    // An Editor's own key removes nobody: neither may they.
+    // An Editor's own key removes nobody either: neither may they.
     let bo = SigningKey::from_bytes(&rand::random());
     let (bo_key_signer, bo_key) =
         device_of(&bo, "bo's scripts", DeviceCapabilities::server_key_grant());

@@ -84,7 +84,8 @@ fn changed_setting(session: &mut tilo_session::Session) {
     let kept = settings_store::config_path(std::path::Path::new(settings_store::outside::WAITING));
     let left = settings_store::outside::path();
     let held = std::thread::spawn(move || {
-        // What waits is a map of sections; what the session leaves holds them under `settings`.
+        // What waits is the steps the workspace has not taken yet, each with the sections it
+        // writes; what the session leaves holds them under `settings`.
         let shows = |path: &Option<std::path::PathBuf>, bare: bool| {
             (0..200).any(|_| {
                 let shows = path
@@ -92,11 +93,24 @@ fn changed_setting(session: &mut tilo_session::Session) {
                     .and_then(|path| std::fs::read(path).ok())
                     .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
                     .is_some_and(|held| {
-                        let held = if bare { &held } else { &held["settings"] };
-                        held.get("control_hints")
-                            .and_then(|hints| hints.get("learned"))
-                            .and_then(|learned| learned.get("enabled"))
-                            == Some(&serde_json::Value::Bool(false))
+                        let shows = |section: &serde_json::Value| {
+                            section
+                                .get("control_hints")
+                                .and_then(|hints| hints.get("learned"))
+                                .and_then(|learned| learned.get("enabled"))
+                                == Some(&serde_json::Value::Bool(false))
+                        };
+                        if bare {
+                            held.get("steps")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|steps| {
+                                    steps
+                                        .iter()
+                                        .any(|step| step.get("sections").is_some_and(shows))
+                                })
+                        } else {
+                            shows(&held["settings"])
+                        }
                     });
                 if !shows {
                     std::thread::sleep(Duration::from_millis(10));

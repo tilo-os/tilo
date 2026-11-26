@@ -402,12 +402,12 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// An owner invitation a person's key asks for names that person on the
+    /// An owner invitation a person's own device asks for names that person on the
     /// card that opens it, as the workspace shows them, even when it was
     /// signed before the workspace knew a name for them: the card reads a
     /// person, never "someone".
     #[tokio::test]
-    async fn an_owner_invitation_a_persons_key_asks_for_names_them() {
+    async fn an_owner_invitation_a_persons_device_asks_for_names_them() {
         let dir = tempfile::tempdir().unwrap();
         let holder = hosting_device();
         let server = site(dir.path(), &holder).await;
@@ -423,19 +423,15 @@ mod tests {
             .await
             .unwrap();
 
-        // A key of theirs enters the workspace, then asks for an owner link,
-        // as the command line does.
-        let (signer, key) = device_cert(
-            &root,
-            "Quinten's key",
-            DeviceCapabilities::server_key_grant(),
-        );
-        let admitted = enters(workspaces, &workspace, (&signer, &key), [2; 32]).await;
+        // A device of theirs joins, going by no name yet, then asks for an owner
+        // link, as their own computer does.
+        let (signer, computer) = device_cert(&root, "", DeviceCapabilities::member());
+        let admitted = enters(workspaces, &workspace, (&signer, &computer), [2; 32]).await;
         assert!(
             matches!(admitted, JoinReply::Admitted { .. }),
             "{admitted:?}"
         );
-        let issued = owner_link_asked_for_by(workspaces, &workspace, &key, [3; 32]).await;
+        let issued = owner_link_asked_for_by(workspaces, &workspace, &computer, [3; 32]).await;
         let join = opens(&issued.signed_invitation);
         assert!(join.administrator(), "an owner link makes an owner");
         let from = join.inviter().expect("the invitation says who asked");
