@@ -171,21 +171,32 @@ fn a_members_device_takes_what_its_role_lets_it() {
         );
         // A comment on a task is the system's discussion, not Tasks' own: Discussion's `comment`,
         // made from the task it is about, which puts it in that task's thread.
-        let discussion = format!("{}:{DISCUSSION}:", tilo_actions::remote::RESOURCE_PROVIDER);
-        let says = commenter
-            .listed(&discussion)
+        host::start_app(host.as_ref(), DISCUSSION)
             .await
-            .into_iter()
+            .unwrap_or_else(|refused| panic!("Discussion starts with no window: {refused:?}"));
+        let page = host::listed(host.as_ref(), DISCUSSION)
+            .await
+            .expect("Discussion lists what it publishes");
+        let says = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
             .find(|action| action.address.action == "comment")
-            .expect("Discussion offers the commenter its comment");
+            .unwrap_or_else(|| panic!("Discussion publishes comment: {page:?}"));
+        let discussion = host::app_action(
+            host.as_ref(),
+            DISCUSSION,
+            &says.address.resource,
+            &says.address.action,
+        );
         let about = tilo_actions::params::MadeFrom {
             resource: issue.clone(),
             kind: "tl.so.tilo.tasks.Task".to_owned(),
         };
         let comment = commenter
             .call(
-                &discussion,
-                says.address,
+                &discussion.provider,
+                discussion.address.clone(),
                 &json!({
                     "text": "Seen by Cyd",
                     (tilo_actions::params::FROM_ARGUMENT): about.to_json(),
