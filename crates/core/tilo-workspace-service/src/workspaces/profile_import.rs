@@ -85,14 +85,14 @@ pub fn device_resource(device: &[u8; 32]) -> String {
     format!("identity.device:{}", hex::encode(device))
 }
 
-/// The import of `device`'s files, as its provider declares it: an undoable change of the
-/// workspace, which keeps each record it moves in as a change of its own.
-fn import_descriptor(device: &[u8; 32]) -> tilo_actions::ActionDescriptor {
+/// The import on the device resource `resource`, as its provider declares it: an undoable change
+/// of the workspace, which keeps each record it moves in as a change of its own.
+fn import_descriptor(resource: &str) -> tilo_actions::ActionDescriptor {
     tilo_actions::ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
-        address: tilo_actions::ActionAddress::new(device_resource(device), IMPORT),
+        address: tilo_actions::ActionAddress::new(resource, IMPORT),
         resource_kind: "identity.device".into(),
         resource_label: "This device".into(),
         action_label: "Move this device's app files in".into(),
@@ -585,38 +585,29 @@ impl tilo_actions::remote::ActionProvider for Import {
         provider == PROVIDER
     }
 
-    /// The import on this device's resource in the workspace `caller` asks in: what the
-    /// provider declares, and the kind its grants are read for.
     fn query(
         &self,
-        caller: &tilo_actions::remote::Caller,
+        _: &tilo_actions::remote::Caller,
         query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
         Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
-        use tilo_actions::remote::{CataloguePage, CatalogueRow, Pending};
-        let (Some(workspaces), Some(workspace), Ok(runtime)) = (
-            self.0.upgrade(),
-            caller.workspace().map(str::to_owned),
-            tokio::runtime::Handle::try_current(),
-        ) else {
-            return Pending::ready(Ok(CataloguePage::from_rows(
-                "0".to_owned(),
-                Vec::new(),
-                &query,
-            )));
-        };
-        let (done, answer) = tilo_actions::remote::pending();
-        runtime.spawn(async move {
-            let device = workspaces.lease_device(&workspace).await;
-            let row = CatalogueRow::for_action(PROVIDER, PROVIDER, import_descriptor(&device));
-            done.complete(Ok(CataloguePage::from_rows(
-                "0".to_owned(),
-                vec![row],
-                &query,
-            )));
-        });
-        answer
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage::from_rows(
+            "0".to_owned(),
+            Vec::new(),
+            &query,
+        )))
+    }
+
+    /// The import, on whichever device's resource it names: each device answers its own alone
+    /// ([`Workspaces::import_asked`]).
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        _: Option<&str>,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        (address.action == IMPORT && address.resource.starts_with("identity.device:"))
+            .then(|| import_descriptor(&address.resource))
     }
 
     fn invoke(

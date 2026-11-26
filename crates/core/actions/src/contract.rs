@@ -551,6 +551,21 @@ pub enum ConfirmationPolicy {
 
 read_through_json_value!(ConfirmationPolicy);
 
+impl ConfirmationPolicy {
+    /// Whether `confirmation`, as a call carries it from wherever it was asked, answers this
+    /// policy: the person's approve of the asked record the call was kept as, which only the
+    /// dispatch sets, or the exact phrase where the policy asks one.
+    #[must_use]
+    pub fn met_by(&self, confirmation: Option<&crate::remote::Confirmation>) -> bool {
+        use crate::remote::Confirmation;
+        match (self, confirmation) {
+            (Self::None, _) | (_, Some(Confirmation::Asked(_))) => true,
+            (Self::Phrase { phrase }, Some(Confirmation::Phrase(given))) => given == phrase,
+            _ => false,
+        }
+    }
+}
+
 /// Words that confirm without naming anything: typing one proves only that
 /// the person can read the prompt.
 const GENERIC_CONFIRMATION_WORDS: &[&str] = &[

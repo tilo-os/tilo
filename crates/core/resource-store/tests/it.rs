@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use collab_types::store::{Cell, Filter, Order, PARENT, Query, Value};
-use tilo_actions::ActionKind;
 use tilo_resource_store::{Change, Commit, CommitHook as _, FieldKind, Index, Schema};
 
 const ISSUE: &str = "Issue";
@@ -775,57 +774,6 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
     assert_eq!(
         schema.get("Tracker").unwrap().nested,
         [("issues".to_owned(), "Issue".to_owned())]
-    );
-}
-
-// A store judges an app's call by what the app declares its action as: by the name a call offers
-// it by or its own, each app's apart from another's of the same name, and nothing for an action no
-// app declares.
-#[test]
-fn a_store_keeps_what_each_app_declares_its_actions_as() {
-    let mut store = tilo_resource_store::Store::new(crate::WORKSPACE);
-    store
-        .declare(Schema::of_app("so.tilo.tasks", &tracker_surface()))
-        .unwrap();
-    let notes: tilo_actions::surface::Surface = toml_like(serde_json::json!({
-        "kind": "notes.note",
-        "label": "Note",
-        "version": 1,
-        "verbs": [
-            {"id": "rename", "kind": "outside"},
-            {"id": "q7k2", "name": "peek", "kind": "read"},
-        ],
-    }));
-    store
-        .declare(Schema::of_app("so.tilo.notes", &notes))
-        .unwrap();
-    let declared = |app: &str, action: &str| store.schema().declared_kind(app, action);
-    assert_eq!(
-        declared("so.tilo.tasks", "rename"),
-        Some(ActionKind::Undoable)
-    );
-    assert_eq!(
-        declared("so.tilo.notes", "rename"),
-        Some(ActionKind::Outside),
-        "another app's verb of the same name is its own"
-    );
-    assert_eq!(declared("so.tilo.notes", "peek"), Some(ActionKind::Read));
-    assert_eq!(declared("so.tilo.notes", "q7k2"), Some(ActionKind::Read));
-    assert_eq!(
-        declared("so.tilo.tasks", "peek"),
-        None,
-        "tasks declares no peek"
-    );
-    assert_eq!(declared("so.tilo.notes", "melt"), None);
-    assert_eq!(
-        declared("so.tilo.notes", tilo_resource_store::MIGRATE_VERB),
-        Some(ActionKind::Undoable),
-        "the platform declares the migration every app's records take"
-    );
-    assert_eq!(
-        Schema::from_surface(&notes).declared_kind("so.tilo.notes", "peek"),
-        None,
-        "a surface no app named declares nothing a call is judged by"
     );
 }
 

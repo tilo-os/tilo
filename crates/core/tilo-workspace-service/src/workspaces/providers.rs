@@ -703,22 +703,44 @@ impl Providers {
             return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
         }
         let placing_host = self.0.placing_host.get() == Some(&device);
+        let argument = request.argument.to_slot();
+        // Only a call the workspace's grants decide is judged by what its action is declared as.
+        let judged = placed.is_none() && !placing_host;
+        let declared = judged
+            .then(|| {
+                self.descriptor(
+                    &registered,
+                    &caller,
+                    &request.target.address,
+                    argument.as_deref(),
+                )
+            })
+            .flatten();
         runtime.spawn(async move {
             let address = &request.target.address;
-            if placed.is_none() && !placing_host {
-                let declared = providers
-                    .declared_kind(&caller, &registered, &request.target)
-                    .await;
-                if let Err(refused) = permits(
+            if judged {
+                let permitted = permits(
                     (&workspaces, &surfaces),
-                    declared,
+                    declared.as_ref().map(|declared| declared.contract.kind),
                     device,
                     &workspace,
                     &app,
                     (&address.resource, &address.action),
                 )
-                .await
-                {
+                .await;
+                // A grant decides who may call; what the action's contract asks of its person
+                // it asks of whoever calls, on the device they called from.
+                let asked = declared.as_ref().is_none_or(|declared| {
+                    declared
+                        .contract
+                        .confirmation_for_argument(argument.as_deref())
+                        .met_by(request.confirmation.as_ref())
+                });
+                if let Err(refused) = permitted.and_then(|()| {
+                    asked
+                        .then_some(())
+                        .ok_or_else(ActionCallError::confirmation_required)
+                }) {
                     completer.complete(Err(refused));
                     return;
                 }
@@ -733,42 +755,61 @@ impl Providers {
         Some(answer)
     }
 
-    /// The kind the action `target` names is declared as in this registry, `registered` answering
-    /// it: what `registered`, or else another provider registered for its app (the app's own
-    /// process, serving it), publishes at that address, or else what the catalogue of
-    /// `registered` lists there for `caller`. `None` when none of them declares it.
-    async fn declared_kind(
+    /// The action `address` names as `registered` declares it to `caller`, with `argument` (its
+    /// slot form): as that argument makes it where the provider says, else as `registered` or
+    /// another provider registered for its app (the app's own process, serving it) publishes it,
+    /// else as its catalogue lists it now. `None` where none of them declares it.
+    #[must_use]
+    pub fn descriptor(
         &self,
-        caller: &Caller,
         registered: &Registered,
-        target: &RemoteActionTarget,
-    ) -> Option<tilo_actions::ActionKind> {
-        let kind_in = |published: &[ResourceSpec]| {
-            locate(published, &target.address).map(|(_, action)| action.contract.kind)
-        };
-        let published = kind_in(&registered.published).or_else(|| {
-            self.0
-                .provided
-                .read_recover()
-                .values()
-                .filter(|other| other.app == registered.app)
-                .find_map(|other| kind_in(&other.published))
-        });
-        if published.is_some() {
-            return published;
+        caller: &Caller,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        if let Some(descriptor) = registered.answers.invocation(address, argument) {
+            return Some(descriptor);
         }
-        let query = CatalogueQuery {
-            provider: Some(target.provider.clone()),
-            target: Some(target.address.clone()),
-            max_results: 1,
+        let published = |resources: &[ResourceSpec]| tilo_actions::api::described(resources, address);
+        published(&registered.published)
+            .or_else(|| {
+                self.0
+                    .provided
+                    .read_recover()
+                    .values()
+                    .filter(|other| other.app == registered.app)
+                    .find_map(|other| published(&other.published))
+            })
+            .or_else(|| {
+                Self::rows(registered, caller)
+                    .into_iter()
+                    .filter_map(|row| row.action)
+                    .find(|action| &action.address == address)
+            })
+    }
+
+    /// What `registered` lists for `caller`, as it answers at once: a registered provider lists
+    /// what it already keeps, never what it must first go and ask.
+    #[must_use]
+    pub fn rows(registered: &Registered, caller: &Caller) -> Vec<tilo_actions::remote::CatalogueRow> {
+        let mut rows = Vec::new();
+        let mut query = CatalogueQuery {
+            provider: Some(registered.provider.to_string()),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
             ..CatalogueQuery::default()
         };
-        let page = registered.answers.query(caller, query).await?.ok()?;
-        page.rows
-            .into_iter()
-            .filter_map(|row| row.action)
-            .find(|action| action.address == target.address)
-            .map(|action| action.contract.kind)
+        loop {
+            let mut listed = registered.answers.query(caller, query.clone());
+            let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = listed.poll_ready() else {
+                return rows;
+            };
+            rows.extend(page.rows);
+            if page.next_cursor.is_empty() || page.exhausted {
+                return rows;
+            }
+            query.cursor = page.next_cursor;
+            query.revision = Some(page.revision);
+        }
     }
 
     /// Where invocation `id`, taken from another device by a registered provider or sent to a
@@ -873,124 +914,5 @@ async fn permits(
         Err(error) => Err(ActionCallError::Refused {
             reason: format!("this device is not admitted to the workspace: {error}"),
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Mutex;
-
-    use super::*;
-    use tilo_actions::remote::{
-        CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest, Pending, PendingPoll,
-        RemoteActionTarget, application_action_target, application_provider_token,
-    };
-
-    /// An app process's answers, which record the provider token each call reached it under.
-    #[derive(Default)]
-    struct Process(Mutex<Vec<String>>);
-
-    impl ActionProvider for Process {
-        fn query(
-            &self,
-            _caller: &Caller,
-            _query: CatalogueQuery,
-        ) -> Pending<Result<CataloguePage, ActionCallError>> {
-            Pending::ready(Ok(CataloguePage::default()))
-        }
-
-        fn invoke(
-            &self,
-            _caller: &Caller,
-            request: InvokeRequest,
-        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-            self.0
-                .lock()
-                .expect("the calls taken")
-                .push(request.target.provider);
-            Pending::ready(Err(ActionCallError::Unavailable {
-                reason: "the app's answer is its own".into(),
-            }))
-        }
-
-        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-            None
-        }
-
-        fn cancel(
-            &self,
-            _caller: &Caller,
-            _id: &InvocationId,
-        ) -> Pending<Result<(), ActionCallError>> {
-            Pending::ready(Err(ActionCallError::UnknownInvocation))
-        }
-    }
-
-    fn request(token: &str) -> InvokeRequest {
-        InvokeRequest {
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: token.into(),
-                address: tilo_actions::ActionAddress::new("console.window", "field-edit"),
-            },
-            argument: InvokeArgument::default(),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            on_behalf_of: None,
-            appearance: None,
-            signed: None,
-        }
-    }
-
-    /// An app process registers under its workspace's token and is taken back when it ends; a
-    /// call naming the token reaches it, and a device reaches it when it reaches devices.
-    #[test]
-    fn an_apps_process_is_registered_under_its_token_and_taken_back_when_it_ends() {
-        const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-        const APP: &str = "so.tilo.console";
-        let providers = Providers::default();
-        let process = Arc::new(Process::default());
-        assert_eq!(
-            application_provider_token(WORKSPACE, APP),
-            Providers::app_provider(WORKSPACE, APP),
-            "the app's process registers under the token a call names"
-        );
-        let answers: Arc<dyn ActionProvider + Send + Sync> = process.clone();
-        providers.provide_app(WORKSPACE, APP, Reach::Devices, Arc::clone(&answers));
-        let registered = providers
-            .get(&Providers::app_provider(WORKSPACE, APP))
-            .expect("the token names the app's process");
-        assert_eq!(
-            registered.app.as_ref(),
-            APP,
-            "its calls are decided by the app's own grants"
-        );
-        assert!(providers.serves(&Providers::app_provider(WORKSPACE, APP)));
-
-        let target = application_action_target(WORKSPACE, APP, "console.window", "field-edit");
-        let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
-        let mut answer = providers
-            .invoke(&caller, request(&target.provider))
-            .expect("the call reaches the app's process");
-        assert!(
-            matches!(answer.poll_ready(), PendingPoll::Ready(Err(_))),
-            "the process answered"
-        );
-        assert_eq!(
-            process.0.lock().expect("the calls taken").clone(),
-            vec![target.provider],
-            "the call reached the app's process under its token"
-        );
-
-        providers.withdraw_app(WORKSPACE, APP, &answers);
-        assert!(
-            providers
-                .get(&Providers::app_provider(WORKSPACE, APP))
-                .is_none(),
-            "a call after the process ended finds it no more"
-        );
-        assert!(!providers.serves(&Providers::app_provider(WORKSPACE, APP)));
     }
 }

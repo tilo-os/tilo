@@ -219,24 +219,6 @@ pub(super) fn is_local_host_caller(
             })
 }
 
-/// The descriptor of the action `request` calls, as `registered` offers it to `caller`: as its
-/// argument makes it, where the provider says, else as its catalogue describes it.
-fn descriptor_of(
-    registered: &Registered,
-    caller: &Caller,
-    request: &InvokeRequest,
-    argument: Option<&str>,
-) -> Option<tilo_actions::ActionDescriptor> {
-    let address = &request.target.address;
-    if let Some(descriptor) = registered.answers.invocation(address, argument) {
-        return Some(descriptor);
-    }
-    rows_of(registered, caller)
-        .into_iter()
-        .filter_map(|row| row.action)
-        .find(|action| &action.address == address)
-}
-
 impl AppBrokerState {
     /// What the workspace decides of `request`, when it names an action of the caller's own
     /// device that the registered provider `registered` answers: the same verdict the workspace's
@@ -252,7 +234,12 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Option<Result<(), ActionCallError>> {
         let argument = request.argument.to_slot();
-        let descriptor = descriptor_of(registered, caller, request, argument.as_deref())?;
+        let descriptor = self.services.providers.as_ref()?.descriptor(
+            registered,
+            caller,
+            &request.target.address,
+            argument.as_deref(),
+        )?;
         if !descriptor.contract.is_own_device() {
             return None;
         }
@@ -273,37 +260,6 @@ impl AppBrokerState {
                 (argument.as_deref(), None),
             )
         })())
-    }
-}
-
-/// The query that lists everything `registered` offers, from its first page.
-fn listing(registered: &Registered) -> tilo_actions::remote::CatalogueQuery {
-    tilo_actions::remote::CatalogueQuery {
-        provider: Some(registered.provider.to_string()),
-        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
-        ..tilo_actions::remote::CatalogueQuery::default()
-    }
-}
-
-/// What `registered` lists for `caller`, as it answers at once: a registered provider lists what
-/// it holds, never what it must first go and ask.
-pub(super) fn rows_of(
-    registered: &Registered,
-    caller: &Caller,
-) -> Vec<tilo_actions::remote::CatalogueRow> {
-    let mut rows = Vec::new();
-    let mut query = listing(registered);
-    loop {
-        let mut listed = registered.answers.query(caller, query.clone());
-        let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = listed.poll_ready() else {
-            return rows;
-        };
-        rows.extend(page.rows);
-        if page.next_cursor.is_empty() || page.exhausted {
-            return rows;
-        }
-        query.cursor = page.next_cursor;
-        query.revision = Some(page.revision);
     }
 }
 
@@ -511,8 +467,10 @@ impl AppBrokerState {
         let rows = registered.answers.query(
             caller,
             tilo_actions::remote::CatalogueQuery {
+                provider: Some(registered.provider.to_string()),
                 target: Some(request.target.address.clone()),
-                ..listing(registered)
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..tilo_actions::remote::CatalogueQuery::default()
             },
         );
         let (done, answer) = tilo_actions::remote::pending();
@@ -596,7 +554,14 @@ impl AppBrokerState {
         };
         let argument = request.argument.to_slot();
         let Some(descriptor) =
-            described.or_else(|| descriptor_of(registered, caller, request, argument.as_deref()))
+            described.or_else(|| {
+                self.services.providers.as_ref()?.descriptor(
+                    registered,
+                    caller,
+                    &request.target.address,
+                    argument.as_deref(),
+                )
+            })
         else {
             // Its listing has not answered yet: asked again once it does, nothing reserved.
             if let Ok(mut log) = self.remote_invocations.lock() {

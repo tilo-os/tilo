@@ -755,6 +755,25 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         Some(refused.clone()),
         "an undeclared control is refused, grant or not"
     );
+    // Booting the previous system asks first whoever asks it, whatever they are granted: unasked,
+    // the machine refuses it to Carol and to the person's own phone alike, and runs nothing.
+    let before = asked.lock().unwrap().len();
+    let carols = ask_for(&carol_cert, &studio, "rollback")
+        .await
+        .expect("the machine answers");
+    assert!(
+        matches!(carols, Err(ActionCallError::ConfirmationRequired { .. })),
+        "a granted administrator is asked first: {carols:?}"
+    );
+    let persons = super::ticket_tests::ask_on(
+        &phone.tickets,
+        (super::ticket::SERVER, "rollback"),
+        json!({"device": machine_key}),
+    )
+    .await
+    .expect_err("the person is asked first too");
+    assert!(persons.contains("ConfirmationRequired"), "{persons}");
+    assert_eq!(asked.lock().unwrap().len(), before, "nothing ran unasked");
     // The machine's own settings service decides each setting at its node, in the person's own
     // workspace as this device holds it.
     let settings = Arc::clone(&laptop_records);
@@ -940,8 +959,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
             &laptop_cert.device_public_key,
             tilo_workspace_service::workspaces::server_controls::CONTROL,
         ),
-        // A restart changes the machine outside any history, as its catalogue declares it.
-        tilo_action_policy::KindSet::ALL,
+        tilo_action_policy::KindSet::READ_UNDOABLE.with(tilo_action_policy::ActionKind::Outside),
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(root_hex.clone()),
     );

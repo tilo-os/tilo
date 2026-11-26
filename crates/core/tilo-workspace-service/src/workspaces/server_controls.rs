@@ -50,17 +50,17 @@ pub fn grant_named(id: &GrantId) -> Option<(&str, &str)> {
 }
 
 /// The grant letting `person` (hex root key) control the server `device`, written in the server's
-/// person's own `workspace` by that person (`by`, hex root key). It covers every kind, since the
-/// machine's controls are declared as reading it, and as changing it outside any history
-/// (restarting a unit, rebooting it): the grant is to control that one machine whatever a
-/// control does.
+/// person's own `workspace` by that person (`by`, hex root key). It covers what controlling a
+/// machine is: reading it, and changing it within its history or outside it (restarting a unit,
+/// rebooting it). It answers who may call a control, never whether its person is asked first: a
+/// control whose contract asks still asks, on the device it is called from.
 #[must_use]
 pub fn grant(workspace: &str, device: &[u8; 32], person: &str, by: &str) -> Grant {
     Grant {
         id: grant_id(device, person),
         grantee: Grantee::person(person.to_owned()),
         node: settings_node(workspace, device, CONTROL),
-        kinds: KindSet::ALL,
+        kinds: KindSet::READ_UNDOABLE.with(ActionKind::Outside),
         answer: Answer::Allow,
         lifetime: tilo_action_policy::Lifetime::UntilRevoked,
         granted_by: Grantee::person(by.to_owned()),

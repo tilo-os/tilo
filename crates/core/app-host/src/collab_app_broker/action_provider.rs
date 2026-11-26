@@ -1531,7 +1531,7 @@ impl AppBrokerState {
         caller: &Caller,
         rows: &mut Vec<CatalogueRow>,
     ) {
-        for row in super::provided::rows_of(registered, caller) {
+        for row in tilo_workspace_service::workspaces::providers::Providers::rows(registered, caller) {
             let Some(action) = row.action.as_ref() else {
                 continue;
             };

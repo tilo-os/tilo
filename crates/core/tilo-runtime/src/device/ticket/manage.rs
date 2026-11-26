@@ -114,7 +114,7 @@ impl Tickets {
     async fn update(&self, args: &Value) -> Result<Value> {
         match device_in(args)? {
             Some(device) if device != self.this() => {
-                self.ask_device(device, (RESOURCE, UPDATE), args).await
+                self.ask_device(device, (RESOURCE, UPDATE), args, None).await
             }
             _ => self.update_here(),
         }
@@ -130,7 +130,8 @@ impl Tickets {
         Ok(json!({ "device": hex::encode(self.this()), "updating": true }))
     }
 
-    /// Ask the person's device `device` `action` of `resource` with `args`, in this daemon's
+    /// Ask the person's device `device` `action` of `resource` with `args`, and `confirmation`
+    /// where its person confirmed it, in this daemon's
     /// workspace, as this device: its answer, or why it gave none. `args` may name where it is
     /// reached (`at`, its endpoint as JSON), as a server's entry does.
     pub(super) async fn ask_device(
@@ -138,6 +139,7 @@ impl Tickets {
         device: [u8; 32],
         (resource, action): (&str, &str),
         args: &Value,
+        confirmation: Option<tilo_actions::remote::Confirmation>,
     ) -> Result<Value> {
         let workspace = self
             .workspace()
@@ -166,7 +168,7 @@ impl Tickets {
             },
             argument: InvokeArgument::Json(argument),
             context: None,
-            confirmation: None,
+            confirmation,
             revision: None,
             wait_ms: None,
             appearance: None,
@@ -191,7 +193,7 @@ impl Tickets {
     pub(crate) async fn reach(&self, device: [u8; 32]) -> Result<(), String> {
         match tokio::time::timeout(
             REACH_WITHIN,
-            self.ask_device(device, (RESOURCE, super::INFO), &json!({})),
+            self.ask_device(device, (RESOURCE, super::INFO), &json!({}), None),
         )
         .await
         {

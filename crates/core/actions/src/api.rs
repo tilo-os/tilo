@@ -684,6 +684,12 @@ fn placed_each(
 }
 
 /// `action` of `resource`, as inert data: what a survey hands back.
+/// The action at `address` in the forest `resources`, as a survey describes it.
+#[must_use]
+pub fn described(resources: &[ResourceSpec], address: &ActionAddress) -> Option<ActionDescriptor> {
+    locate(resources, address).map(|(resource, action)| describe(resource, action))
+}
+
 fn describe(resource: &ResourceSpec, action: &ActionSpec) -> ActionDescriptor {
     let view = ResourceViewDescriptor::declared_for(resource, &action.id);
     ActionDescriptor {
@@ -889,18 +895,9 @@ pub fn admit(
     arguments: &serde_json::Map<String, serde_json::Value>,
     confirmation: Option<&crate::remote::Confirmation>,
 ) -> Result<EncodedAction, ApiError> {
-    use crate::remote::Confirmation;
     let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
     ensure_available(spec)?;
-    let confirmed = matches!(confirmation, Some(Confirmation::Asked(_)))
-        || match spec.confirmation_for_json(arguments) {
-            crate::ConfirmationPolicy::None => true,
-            crate::ConfirmationPolicy::Phrase { phrase } => {
-                matches!(confirmation, Some(Confirmation::Phrase(given)) if *given == phrase)
-            }
-            crate::ConfirmationPolicy::Confirm => false,
-        };
-    if !confirmed {
+    if !spec.confirmation_for_json(arguments).met_by(confirmation) {
         return Err(ApiError::ConfirmationRequired);
     }
     encode_json(resources, address, arguments)

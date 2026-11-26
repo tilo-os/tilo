@@ -589,6 +589,12 @@ fn server_rows() -> Vec<CatalogueRow> {
         if matches!(action, "status" | "journal") {
             described.contract.kind = ActionKind::Read;
         }
+        // Booting the previous system replaces the one the machine runs: whoever asks it is asked
+        // first, on the device they ask from.
+        if action == "rollback" {
+            described.contract.risk = tilo_actions::RiskLevel::Destructive;
+            described.contract.settle_confirmation();
+        }
         rows.push(row(Some(described)));
     }
     rows
@@ -603,31 +609,41 @@ async fn allows_control(
     controls: Option<&tilo_server::operations::Controls>,
     own: &DeviceCert,
     caller: &tilo_actions::remote::Caller,
-    action: &str,
-) -> bool {
-    let Some(controls) = controls else {
-        return false;
-    };
+    (action, confirmation): (&str, Option<&tilo_actions::remote::Confirmation>),
+) -> Result<(), ActionCallError> {
+    let not_yours = || refused(NOT_YOURS);
+    let controls = controls.ok_or_else(not_yours)?;
     let workspace = tilo_server_protocol::servers::person_workspace_id(&own.user_public_key);
-    let Some(policy) = controls.workspaces().policy_of(&workspace).await else {
-        return false;
-    };
+    let policy = controls
+        .workspaces()
+        .policy_of(&workspace)
+        .await
+        .ok_or_else(not_yours)?;
     let node = tilo_workspace_service::workspaces::server_controls::settings_node(
         &workspace,
         &own.device_public_key,
         tilo_workspace_service::workspaces::server_controls::CONTROL,
     );
-    // The kind the machine's catalogue declares the control as: a control it does not declare
-    // says nothing of what it is able to do, so no grant admits it.
-    let Some(kind) = server_rows()
+    // The control as the machine's catalogue declares it: one it does not declare says nothing of
+    // what it is able to do, so no grant admits it, and a grant never answers what its contract
+    // asks its caller first.
+    let declared = server_rows()
         .into_iter()
         .filter_map(|row| row.action)
         .find(|declared| declared.address.action == action)
-        .map(|declared| declared.contract.kind)
-    else {
-        return false;
-    };
-    tilo_workspace_service::workspaces::server_controls::caller_may(&policy, caller, &node, kind)
+        .ok_or_else(not_yours)?;
+    if !tilo_workspace_service::workspaces::server_controls::caller_may(
+        &policy,
+        caller,
+        &node,
+        declared.contract.kind,
+    ) {
+        return Err(not_yours());
+    }
+    if !declared.contract.confirmation.met_by(confirmation) {
+        return Err(ActionCallError::confirmation_required());
+    }
+    Ok(())
 }
 
 /// Ask the person's devices, from this machine, for its rollback floor to move,
@@ -1445,18 +1461,27 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
+        // The approve this device's dispatch took goes with the call to the server it names,
+        // which asks for it where its contract does.
+        let confirmation = request.confirmation.clone();
         let (completer, pending) = tilo_actions::remote::pending();
         let served = self.clone();
         self.0.runtime.spawn(async move {
             let controls = served.0.controls.lock_recover().clone();
             if let Some(caller) = &asker
-                && !allows_control(controls.as_ref(), &served.0.cert, caller, &action).await
+                && let Err(refused) = allows_control(
+                    controls.as_ref(),
+                    &served.0.cert,
+                    caller,
+                    (&action, confirmation.as_ref()),
+                )
+                .await
             {
-                completer.complete(Err(refused(NOT_YOURS)));
+                completer.complete(Err(refused));
                 return;
             }
             let answer = served
-                .carry_control(controls, asker.is_some(), &action, &args)
+                .carry_control(controls, asker.is_some(), (&action, &args), confirmation)
                 .await;
             let update = match answer {
                 Ok(value) => succeeded(invocation, value),
@@ -1480,8 +1505,8 @@ impl Tickets {
         &self,
         controls: Option<tilo_server::operations::Controls>,
         handed: bool,
-        action: &str,
-        args: &Value,
+        (action, args): (&str, &Value),
+        confirmation: Option<tilo_actions::remote::Confirmation>,
     ) -> Result<Value, String> {
         match manage::device_in(args) {
             Ok(Some(device)) if device != self.this() => {
@@ -1489,7 +1514,7 @@ impl Tickets {
                     return Err("This server carries out only what is asked of itself.".to_owned());
                 }
                 return self
-                    .ask_device(device, (SERVER, action), args)
+                    .ask_device(device, (SERVER, action), args, confirmation)
                     .await
                     .map_err(|error| format!("{error:#}"));
             }
