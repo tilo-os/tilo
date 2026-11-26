@@ -675,7 +675,11 @@ impl Session {
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
             .in_language("en-US")
             .access(MemberAccess::person(policy, person));
-        Self::brokered_as(&route, spec, Window::in_harness)
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        // The workspace has its person as a member, as a workspace the person signed in to
+        // does: who an app's announcement reaches is the members' resource the bus answers.
+        bus.member(ui::tilo_actions::MemberId::person(person), person);
+        Self::on_bus_window(&bus, &route, spec, Window::in_harness)
     }
 
     /// The action the window's Ask bar asks the person about, when it is up.
