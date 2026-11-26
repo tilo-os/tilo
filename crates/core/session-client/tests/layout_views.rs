@@ -9,20 +9,15 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::support::{arrive_under, new_key, person_of};
 use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
-use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
+use tilo_session_client::{Cmd, Event, Link, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use crate::support::{commit_change, enrol, enter_page, start_workspace_host_relaying, wait_for};
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
+use crate::support::{commit_change, enrol, start_workspace_host_relaying, wait_for};
 
 /// A page of a fresh person entering `workspace` through its entry, and the person's user root key.
 async fn arrive(
@@ -43,30 +38,8 @@ async fn arrive_as(
     name: &str,
     root: &SigningKey,
 ) -> (Link, [u8; 32]) {
-    let key = new_key();
-    let (cert, entry) = entry_request(
-        server_cert,
-        workspace,
-        &key,
-        Entering {
-            held: None,
-            root: Some(root),
-            label: "Browser",
-            name,
-            token: None,
-        },
-    )
-    .await
-    .unwrap();
-    let person = cert.user_public_key;
-    let page = enter_page(
-        host,
-        cert,
-        server_cert.clone(),
-        key,
-        std::sync::Arc::new(MemoryPeerStore::default()),
-        entry,
-    );
+    let page = arrive_under(host, root, server_cert, workspace, name).await;
+    let person = person_of(&page);
     (page, person)
 }
 

@@ -18,17 +18,10 @@
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_session_client::{Link, Outbox};
+use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{enrol, person_of, ready, route, set_field, start_host, start_peer, wait_for};
-
-async fn durable(peer: &Link) {
-    let receipt = peer.barrier().unwrap();
-    wait_for("durable", || async { receipt.try_recv().ok() })
-        .await
-        .unwrap();
-}
+use crate::support::{durable, enrol, person_of, ready, route, set_field, start_host, start_peer};
 
 fn read(doc: &AutoCommit, key: &str) -> Option<String> {
     doc.get(ROOT, key)

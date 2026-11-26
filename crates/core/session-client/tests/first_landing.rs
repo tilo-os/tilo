@@ -21,58 +21,22 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::support::arrive;
+use crate::support::changes_since;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
-use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
+
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::WorkspaceId;
-use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    enrol, enter_page, person_of, set_field, start_workspace_host_relaying, wait_keyed, written,
+    enrol, person_of, set_field, start_workspace_host_relaying, wait_keyed, written,
 };
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
-
-/// A page of a fresh person entering `workspace` through its entry.
-async fn arrive(
-    host: ServerAddress,
-    server_cert: &tilo_user_identity::DeviceCert,
-    workspace: &str,
-    name: &str,
-) -> Link {
-    let (root, key) = (new_key(), new_key());
-    let (cert, entry) = entry_request(
-        server_cert,
-        workspace,
-        &key,
-        Entering {
-            held: None,
-            root: Some(&root),
-            label: "Browser",
-            name,
-            token: None,
-        },
-    )
-    .await
-    .unwrap();
-    enter_page(
-        host,
-        cert,
-        server_cert.clone(),
-        key,
-        std::sync::Arc::new(MemoryPeerStore::default()),
-        entry,
-    )
-}
 
 /// A record of the workspace's notes, named by `record`.
 fn notes(lounge: &str, record: &str) -> DocumentRoute {
@@ -88,11 +52,7 @@ fn notes(lounge: &str, record: &str) -> DocumentRoute {
 fn say(doc: &mut automerge::AutoCommit, writer: &Link, key: &str, text: &str) -> DocumentMutation {
     let before = doc.get_heads();
     set_field(doc, person_of(writer), "note", key, text);
-    if before.is_empty() {
-        DocumentMutation::Snapshot(doc.save())
-    } else {
-        DocumentMutation::Incremental(doc.save_after(&before))
-    }
+    changes_since(doc, &before)
 }
 
 /// A page's reads at the landings it is told of: every one of `watched`'s landings is read, as

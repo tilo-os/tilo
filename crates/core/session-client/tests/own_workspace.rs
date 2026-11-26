@@ -18,11 +18,10 @@
     reason = "in a test these are the assertion, not a hazard; the test is one entry, in order; the host lives until it ends; the person's own workspace, their computer and their list are what it is about"
 )]
 
+use crate::support::new_key;
 use std::cell::Cell;
 use std::sync::Arc;
 
-use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Map, json};
 use tilo_server::workspaces::OwnWorkspaceOffer;
 use tilo_server_client::invite::guest_certificate;
@@ -34,10 +33,6 @@ use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 use crate::support::{
     enrol, enter as enter_as, enter_page, entry_grant, in_workspace, start_workspace_host,
 };
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
 
 /// The names the person's list of workspaces gives them, as read on the computer that holds
 /// their own workspace: what a person sees their workspaces in.

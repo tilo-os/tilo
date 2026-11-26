@@ -17,6 +17,7 @@
     reason = "in a test these are the assertion, not a hazard; a scenario is one story, in order; the server lives until it ends"
 )]
 
+use crate::support::changes_since;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -140,11 +141,7 @@ impl World {
         let mut copy = resource_of(peer, route).unwrap_or_default();
         let before = copy.get_heads();
         set_field(&mut copy, person_of(peer), "chat", text, true);
-        let mutation = if before.is_empty() {
-            DocumentMutation::Snapshot(copy.save())
-        } else {
-            DocumentMutation::Incremental(copy.save_after(&before))
-        };
+        let mutation = changes_since(&mut copy, &before);
         peer.send(Cmd::OpenRoute(route.clone())).unwrap();
         wait_keyed(peer, route).await;
         peer.write(route.clone(), &mutation).unwrap();

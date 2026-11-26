@@ -22,7 +22,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    enrol, hears, person_of, ready, route, say, start_host, start_peer, wait_for, workspace,
+    durable, enrol, hears, person_of, ready, route, say, start_host, start_peer, wait_for,
+    workspace,
 };
 
 fn record(record: String) -> DocumentRoute {
@@ -110,13 +111,6 @@ async fn until(what: &str, received: &mut Received, done: impl Fn(&Received) -> 
         async move { finished.then_some(()) }
     })
     .await;
-}
-
-async fn durable(peer: &Link) {
-    let receipt = peer.barrier().unwrap();
-    wait_for("durable", || async { receipt.try_recv().ok() })
-        .await
-        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -27,27 +27,20 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::support::changes_since;
+use crate::support::{arrive, new_key};
 use std::time::{Duration, Instant};
 
-use collab_types::DocumentMutation;
-use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
-use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
+use tilo_session_client::{Cmd, Event, Link, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    admitted_to, durable, enrol, enter_page, person_of, set_field, start_workspace_host_relaying,
-    wait_keyed,
+    admitted_to, durable, enrol, person_of, set_field, start_workspace_host_relaying, wait_keyed,
 };
 use collab_types::WorkspaceId;
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -70,38 +63,6 @@ const MESSAGES: usize = 200;
 /// waiting for the next landing, or a write let go and asked for again, costs a timer or a
 /// round trip each, and many of those over the chat's writes exceed it.
 const OPENED_TO_READ: Duration = Duration::from_secs(3);
-
-/// A page of `name` entering `workspace` through its entry.
-async fn arrive(
-    host: ServerAddress,
-    server_cert: &tilo_user_identity::DeviceCert,
-    workspace: &str,
-    name: &str,
-) -> Link {
-    let (root, key) = (new_key(), new_key());
-    let (cert, entry) = entry_request(
-        server_cert,
-        workspace,
-        &key,
-        Entering {
-            held: None,
-            root: Some(&root),
-            label: "Browser",
-            name,
-            token: None,
-        },
-    )
-    .await
-    .unwrap();
-    enter_page(
-        host,
-        cert,
-        server_cert.clone(),
-        key,
-        std::sync::Arc::new(MemoryPeerStore::default()),
-        entry,
-    )
-}
 
 /// A person coming through `workspace`'s entry with a device of their own,
 /// leaving no session behind: the member the workspace made of them.
@@ -300,11 +261,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
             &format!("message-{message}"),
             "hello",
         );
-        let post = if before.is_empty() {
-            DocumentMutation::Snapshot(history.save())
-        } else {
-            DocumentMutation::Incremental(history.save_after(&before))
-        };
+        let post = changes_since(&mut history, &before);
         author.write(chat.clone(), &post).unwrap();
     }
     durable(&author).await;

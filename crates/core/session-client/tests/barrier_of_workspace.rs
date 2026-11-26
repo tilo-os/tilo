@@ -23,6 +23,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::support::changes_since;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -43,11 +44,7 @@ const ELSEWHERE: &str = "3c9e5b7a-41d2-4f6b-8a10-7e2f9d0c6b35";
 fn write(doc: &mut AutoCommit, writer: &Link, text: &str) -> DocumentMutation {
     let before = doc.get_heads();
     set_field(doc, person_of(writer), "note", text, true);
-    if before.is_empty() {
-        DocumentMutation::Snapshot(doc.save())
-    } else {
-        DocumentMutation::Incremental(doc.save_after(&before))
-    }
+    changes_since(doc, &before)
 }
 
 /// What `page`'s session says it keeps of what it wrote to `workspaces`.

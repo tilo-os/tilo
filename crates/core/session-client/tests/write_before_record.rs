@@ -17,71 +17,31 @@
 
 tilo_automerge_isolate::test_worker!();
 
+use crate::support::arrive;
+use crate::support::changes_since;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ReadDoc as _};
 use collab_types::DocumentMutation;
-use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
+
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
-use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
+use tilo_session_client::{Cmd, Link, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use super::support::{
-    durable, enrol, enter_page, holder, person_of, set_field, start_workspace_host_relaying,
-    wait_keyed, written,
+    durable, enrol, holder, person_of, set_field, start_workspace_host_relaying, wait_keyed,
+    written,
 };
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
-
-/// A page of `name` entering `workspace` through its entry.
-async fn arrive(
-    host: ServerAddress,
-    server_cert: &tilo_user_identity::DeviceCert,
-    workspace: &str,
-    name: &str,
-) -> Link {
-    let (root, key) = (new_key(), new_key());
-    let (cert, entry) = entry_request(
-        server_cert,
-        workspace,
-        &key,
-        Entering {
-            held: None,
-            root: Some(&root),
-            label: "Browser",
-            name,
-            token: None,
-        },
-    )
-    .await
-    .unwrap();
-    enter_page(
-        host,
-        cert,
-        server_cert.clone(),
-        key,
-        std::sync::Arc::new(MemoryPeerStore::default()),
-        entry,
-    )
-}
 
 /// The change setting `field` of `doc` to `value` makes, as the write that carries it: the record
 /// whole the first time, what it changed after.
 fn write(doc: &mut AutoCommit, writer: &Link, field: &str, value: &str) -> DocumentMutation {
     let before = doc.get_heads();
     set_field(doc, person_of(writer), "chat", field, value);
-    if before.is_empty() {
-        DocumentMutation::Snapshot(doc.save())
-    } else {
-        DocumentMutation::Incremental(doc.save_after(&before))
-    }
+    changes_since(doc, &before)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

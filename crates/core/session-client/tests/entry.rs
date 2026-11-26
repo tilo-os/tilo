@@ -14,20 +14,16 @@
     reason = "in a test these are the assertion, not a hazard; the test is one entry, in order; the host lives until it ends"
 )]
 
+use crate::support::new_key;
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox, TransportPhase};
 
 use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{DeviceRefusal, Entering, Held, entered, entry_request};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
 
 fn entering<'a>(held: Option<&'a Held>, root: &'a SigningKey) -> Entering<'a> {
     Entering {

@@ -20,6 +20,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::support::{arrive_under, new_key};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -27,16 +28,14 @@ use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use fs_protocol::{TreeChunk, TreeChunks};
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
-use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
+use tilo_session_client::{Cmd, Link, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use super::support::{durable, enrol, enter_page, start_workspace_host_relaying, wait_for};
+use super::support::{durable, enrol, start_workspace_host_relaying, wait_for};
 
 /// Files written in all.
 const FILES: usize = 5_000;
@@ -46,10 +45,6 @@ const WINDOW: usize = 250;
 const PER_FOLDER: usize = 100;
 /// Files one write carries: what a computer's folder writes in a burst's batch.
 const BATCH: usize = 50;
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
 
 /// This process's resident memory, in KiB.
 fn rss_kib() -> u64 {
@@ -77,38 +72,6 @@ fn disk_bytes(path: &std::path::Path) -> u64 {
             Err(_) => 0,
         })
         .sum()
-}
-
-async fn arrive(
-    host: ServerAddress,
-    root: &SigningKey,
-    server_cert: &tilo_user_identity::DeviceCert,
-    workspace: &str,
-    name: &str,
-) -> Link {
-    let key = new_key();
-    let (cert, entry) = entry_request(
-        server_cert,
-        workspace,
-        &key,
-        Entering {
-            held: None,
-            root: Some(root),
-            label: "Browser",
-            name,
-            token: None,
-        },
-    )
-    .await
-    .unwrap();
-    enter_page(
-        host,
-        cert,
-        server_cert.clone(),
-        key,
-        std::sync::Arc::new(MemoryPeerStore::default()),
-        entry,
-    )
 }
 
 fn route(workspace: &str, chunk: TreeChunk) -> DocumentRoute {
@@ -428,7 +391,7 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         &writer_root,
     )
     .await;
-    let writer_link = arrive(
+    let writer_link = arrive_under(
         reach(),
         &writer_root,
         &owner_device.cert,
@@ -436,7 +399,7 @@ async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
         "Laptop",
     )
     .await;
-    let reader_link = arrive(
+    let reader_link = arrive_under(
         reach(),
         &new_key(),
         &owner_device.cert,
@@ -665,7 +628,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
         &checkout_root,
     )
     .await;
-    let checkout = arrive(
+    let checkout = arrive_under(
         reach(),
         &checkout_root,
         &owner_device.cert,
@@ -673,7 +636,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
         "Laptop",
     )
     .await;
-    let other = arrive(
+    let other = arrive_under(
         reach(),
         &new_key(),
         &owner_device.cert,
@@ -748,7 +711,7 @@ async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
     let (other, mut took) = changing.await.unwrap();
 
     // A page that opens the folder afterwards finds every file of the checkout.
-    let reader_link = arrive(
+    let reader_link = arrive_under(
         reach(),
         &new_key(),
         &owner_device.cert,

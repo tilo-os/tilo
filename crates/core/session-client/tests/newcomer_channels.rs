@@ -14,12 +14,12 @@
     reason = "in a test these are the assertion, not a hazard; the test is one visit, in order; the host lives until it ends"
 )]
 
+use crate::support::new_key;
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
-use ed25519_dalek::SigningKey;
-use getrandom::{SysRng, rand_core::UnwrapErr};
+
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, entry_request};
@@ -30,10 +30,6 @@ use crate::support::{
     wait_for, wait_keyed,
 };
 use collab_types::WorkspaceId;
-
-fn new_key() -> SigningKey {
-    SigningKey::generate(&mut UnwrapErr(SysRng))
-}
 
 /// A change to the desktop of `base`, in an entry `key` of its own, by a
 /// writer of its own.

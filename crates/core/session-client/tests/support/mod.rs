@@ -539,6 +539,62 @@ pub fn enter_page(
     )
 }
 
+/// A fresh signing key: a device's or a person's root.
+pub fn new_key() -> SigningKey {
+    SigningKey::generate(&mut UnwrapErr(SysRng))
+}
+
+/// A page of a fresh person named `name` entering `workspace` through its entry.
+pub async fn arrive(
+    host: ServerAddress,
+    server_cert: &DeviceCert,
+    workspace: &str,
+    name: &str,
+) -> Link {
+    arrive_under(host, &new_key(), server_cert, workspace, name).await
+}
+
+/// A page of `name`, a person whose root key is `root`, entering `workspace` through its entry.
+pub async fn arrive_under(
+    host: ServerAddress,
+    root: &SigningKey,
+    server_cert: &DeviceCert,
+    workspace: &str,
+    name: &str,
+) -> Link {
+    let store = Arc::new(MemoryPeerStore::default());
+    arrive_on(host, root, server_cert, workspace, "Browser", name, store).await
+}
+
+/// A device labelled `label` of `name`, whose root key is `root`, entering `workspace` through
+/// its entry, its session over `store`.
+pub async fn arrive_on(
+    host: ServerAddress,
+    root: &SigningKey,
+    server_cert: &DeviceCert,
+    workspace: &str,
+    label: &str,
+    name: &str,
+    store: Arc<MemoryPeerStore>,
+) -> Link {
+    let key = new_key();
+    let (cert, entry) = tilo_session_client::device::entry_request(
+        server_cert,
+        workspace,
+        &key,
+        tilo_session_client::device::Entering {
+            held: None,
+            root: Some(root),
+            label,
+            name,
+            token: None,
+        },
+    )
+    .await
+    .unwrap();
+    enter_page(host, cert, server_cert.clone(), key, store, entry)
+}
+
 pub async fn ready(peers: &[&Link]) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -620,6 +676,16 @@ pub fn commit_change(doc: &mut AutoCommit) {
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
     );
+}
+
+/// The write that publishes what `doc` changed since `before`: the whole document for a record's
+/// first write, every one after it the change since.
+pub fn changes_since(doc: &mut AutoCommit, before: &[automerge::ChangeHash]) -> DocumentMutation {
+    if before.is_empty() {
+        DocumentMutation::Snapshot(doc.save())
+    } else {
+        DocumentMutation::Incremental(doc.save_after(before))
+    }
 }
 
 /// The person `peer`'s device acts for: the root its certificate names.
