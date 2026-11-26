@@ -1716,6 +1716,74 @@ fn signed_request(request: &InvokeRequest, cert: &DeviceCert, key: &SigningKey) 
     request
 }
 
+/// A device signs a call as its person only when the person makes it on their own connection to
+/// it: what an app, an agent, a shortcut's run or a caller the device merely admitted asks goes
+/// unsigned, whatever person it names, and a device with no certificate to sign under says so
+/// rather than sending the person's call unsigned.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_signs_only_its_persons_own_calls_as_theirs() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let (b_endpoint, b_service) = asking(&b.0).await;
+    b_service.answer_under(b.1.clone());
+    let remote = b_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let own = Caller::own_person(person.clone()).in_workspace(WORKSPACE);
+
+    // The person's own call goes signed by their device, for the workspace it is sent to.
+    match invoke_as(&remote, &own, invoke(InvocationId::new())).await {
+        Ok(ReceiptStatus::Completed { .. }) => {}
+        other => panic!("the person's own call runs, got {other:?}"),
+    }
+    let ran = dispatcher.asked().pop().unwrap();
+    let signed = ran.signed.expect("the person's own call is signed");
+    assert_eq!(signed.statement().signer, b.1.device_public_key);
+    assert_eq!(signed.statement().workspace, WORKSPACE);
+
+    // Nobody else's call does, whoever it names.
+    let others = [
+        ("a caller the device admitted", Caller::local_person(person.clone())),
+        ("an app", Caller::local_app("so.tilo.chat")),
+        ("the person's call through an app", own.clone().through_app("so.tilo.chat")),
+        ("a shortcut's run", own.clone().running_shortcut("weekly")),
+        ("an agent of the person's", Caller::local_agent("scribe", person.clone())),
+        ("an agent the person handed their session", own.clone().delegated_to("scribe")),
+    ];
+    for (who, caller) in others {
+        let caller = caller.in_workspace(WORKSPACE);
+        match invoke_as(&remote, &caller, invoke(InvocationId::new())).await {
+            Ok(ReceiptStatus::Completed { .. }) => {}
+            other => panic!("{who}'s call runs as the device, got {other:?}"),
+        }
+        let ran = dispatcher.asked().pop().unwrap();
+        assert!(ran.signed.is_none(), "{who}'s call is not signed as the person");
+    }
+
+    // A device answering under no certificate cannot sign as its person: it says so, and sends
+    // nothing.
+    let (c_endpoint, c_service) = asking(&b.0).await;
+    let uncertified = c_service.remote(&c_endpoint, &engine.addr(), WORKSPACE);
+    let asked_before = dispatcher.asked().len();
+    let refused = invoke_as(&uncertified, &own, invoke(InvocationId::new()))
+        .await
+        .expect_err("an uncertified device does not send its person's call unsigned");
+    assert!(
+        refusal(&refused).contains("cannot sign as its person"),
+        "{refused:?}"
+    );
+    assert_eq!(dispatcher.asked().len(), asked_before, "nothing ran");
+}
+
 /// An invocation runs as the key that signed it: one whose invocation was changed after signing
 /// is refused, the same id for another request is a conflict, and an invocation
 /// signed under a revoked or expired certificate runs nothing.

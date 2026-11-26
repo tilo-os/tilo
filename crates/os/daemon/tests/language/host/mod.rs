@@ -824,7 +824,6 @@ impl Host {
             .await
             .unwrap();
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
-        service.answer_under(cert);
         let held = tilo_peer_state::direct::Replica::new(held);
         service.hold(held);
         service.add_provider(provider);

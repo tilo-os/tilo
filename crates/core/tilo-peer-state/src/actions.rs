@@ -2067,6 +2067,27 @@ impl RemoteDevice {
         )
     }
 
+    /// [`Self::invoke_until_settled`] as `caller` asks it: the person's own call, unsigned, goes
+    /// signed by this device as theirs ([`persons_own_call`]), and every other as it is.
+    pub fn invoke_as_until_settled(
+        self: Arc<Self>,
+        caller: &Caller,
+        request: tilo_actions::remote::InvokeRequest,
+        follow_for: Duration,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError>,
+    > {
+        let request = if request.signed.is_none() && persons_own_call(caller) {
+            match self.0.signed_as_person(request) {
+                Ok(signed) => signed,
+                Err(error) => return tilo_actions::remote::Pending::ready(Err(error)),
+            }
+        } else {
+            request
+        };
+        self.invoke_until_settled(request, follow_for)
+    }
+
     /// Invoke `request` on the device and follow it until it settles there:
     /// its terminal update, or why it was refused or lost. No thread waits:
     /// the receipt is held by the device until the invocation moves, and each
@@ -2151,36 +2172,32 @@ impl Device {
         Ok(connection)
     }
 
-    /// `message` with the invocation it carries signed by this device for its workspace, when it
-    /// carries none. The link's own signature proves only which device sent the request; a
-    /// change the host makes for the person whose device this is must carry an invocation that
-    /// device signed, or the workspace's store refuses it. An invocation signed already (an
-    /// agent's under its own key, or one forwarded for its person) goes as it is, as does one
-    /// sent before this device answers under a certificate, or by a key that signs only later.
-    fn invocation_signed(&self, mut message: RemoteActionMessage) -> RemoteActionMessage {
-        let RemoteActionMessage::Invoke(request) = &mut message else {
-            return message;
-        };
-        if request.signed.is_some() {
-            return message;
-        }
-        let Some(certificate) = self
+    /// `request` signed by this device for its workspace, as the call of the person on their own
+    /// connection to it ([`persons_own_call`]). The link's own signature proves only which device
+    /// sent a request; a change the host makes for that person must carry an invocation their
+    /// device signed, or every copy of the record refuses it. `None` for a device that answers
+    /// under no certificate yet, which cannot sign as its person.
+    fn signed_as_person(
+        &self,
+        mut request: tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvokeRequest, tilo_actions::remote::ActionCallError> {
+        let certificate = self
             .answers
             .upgrade()
             .and_then(|answers| answers.certificate.lock_recover().clone())
-        else {
-            return message;
-        };
-        if let Ok(signed) = tilo_server_protocol::invocation::sign_invocation_now(
+            .ok_or_else(|| {
+                unavailable("this device answers under no certificate, so it cannot sign as its person")
+            })?;
+        let signed = tilo_server_protocol::invocation::sign_invocation_now(
             &self.workspace,
-            request,
+            &request,
             &certificate,
             self.key.as_ref(),
             now_ns(),
-        ) {
-            request.signed = Some(Box::new(signed));
-        }
-        message
+        )
+        .map_err(|error| unavailable(&format!("the call could not be signed for its person: {error}")))?;
+        request.signed = Some(Box::new(signed));
+        Ok(request)
     }
 
     /// One signed request and its one answer.
@@ -2188,7 +2205,6 @@ impl Device {
         &self,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, tilo_actions::remote::ActionCallError> {
-        let message = self.invocation_signed(message);
         let signed = SignedDeviceAction::sign(
             &DeviceAction {
                 workspace: self.workspace.clone(),
@@ -2567,13 +2583,24 @@ impl ActionProvider for RemoteDevice {
         )
     }
 
+    /// `request` asked of the device. The person's own call, unsigned, goes signed by this device
+    /// as theirs ([`persons_own_call`]); every other goes as it is, so an app's or an agent's
+    /// call never comes out signed as the person.
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
         Result<InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
+        let request = if request.signed.is_none() && persons_own_call(caller) {
+            match self.0.signed_as_person(request) {
+                Ok(signed) => signed,
+                Err(error) => return tilo_actions::remote::Pending::ready(Err(error)),
+            }
+        } else {
+            request
+        };
         self.ask(
             RemoteActionMessage::Invoke(request),
             |answer| match answer {
@@ -2681,6 +2708,22 @@ impl ActionProvider for RemoteDevice {
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.clone()))
     }
+}
+
+/// Whether `caller` is the person themselves on their own connection to this device's daemon,
+/// which the kernel says is their account ([`Caller::own_person`]): the one caller whose
+/// unsigned call this device signs as theirs. An app, an agent, a shortcut's run or anyone acting
+/// for someone else is not, whatever person it names.
+#[must_use]
+pub fn persons_own_call(caller: &Caller) -> bool {
+    let acting = caller.acting();
+    caller.is_own_connection()
+        && acting.is_person()
+        && acting.app().is_none()
+        && acting.acted_for_person().is_none()
+        && caller.turn().is_none()
+        && caller.approved_agent().is_none()
+        && caller.agent_session().is_none()
 }
 
 pub(crate) fn now_ns() -> u64 {

@@ -21,6 +21,9 @@ fn owner_workspace(host: &host::Host) -> &str {
 pub struct Guest {
     remote: Arc<RemoteDevice>,
     caller: tilo_actions::remote::Caller,
+    /// The person at their own computer, on their own connection to its daemon: whose calls the
+    /// device signs as theirs.
+    own: tilo_actions::remote::Caller,
     _service: ActionService,
     _endpoint: iroh::Endpoint,
 }
@@ -42,7 +45,8 @@ impl Guest {
     ) -> Result<InvocationUpdate, ActionCallError> {
         tilo_test_env::within(
             "the daemon to answer over the device link",
-            Arc::clone(&self.remote).invoke_until_settled(
+            Arc::clone(&self.remote).invoke_as_until_settled(
+                &self.own,
                 host::call(provider, address, arguments),
                 std::time::Duration::from_secs(30),
             ),
@@ -139,16 +143,19 @@ pub async fn guest(host: &host::Host, owner: &host::Member, role: &str, name: &s
         .await
         .unwrap_or_else(|error| panic!("{name} joins: {error}"));
     // Their device answers under its certificate, as a daemon does once it holds one, and signs
-    // the invocations it sends with it.
+    // the calls they make on their own connection to it with it.
     let service = ActionService::new(key.clone(), Arc::new(NoActions));
     service.answer_under(cert.clone());
     let remote = Arc::new(service.remote(&endpoint, &host.daemon().endpoint_addr(), workspace));
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(workspace);
+    let own = tilo_actions::remote::Caller::own_person(hex::encode(cert.user_public_key))
+        .in_workspace(workspace);
     Guest {
         remote,
         caller,
+        own,
         _service: service,
         _endpoint: endpoint,
     }
