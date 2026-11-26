@@ -870,8 +870,7 @@ readers = ["crates/desktop/app-fleet/build.rs"]
 
 [[cargo]]
 package = "tilo-runtime"
-# The app listing test builds Notes from its sources, and the environment directory test reads
-# Terminal's surface.
+# The app listing test builds Notes from its sources.
 inputs = ["apps/"]
 readers = ["crates/core/tilo-runtime/src/device/app_listing_tests.rs"]
 
