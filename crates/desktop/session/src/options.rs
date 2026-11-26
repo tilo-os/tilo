@@ -304,9 +304,9 @@ pub(crate) fn start_collaboration(
         .as_ref()
         .is_some_and(|identity| identity.signer.endpoint_secret().is_none())
     {
-        let identity = identity.expect("an identity checked above");
-        let publisher = iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
-            .expect("a device key is an endpoint id");
+        let identity = identity.as_ref().expect("an identity checked above");
+        let publisher =
+            iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key).ok()?;
         let saying = live.borrow().as_ref().map(|live| {
             tilo_session_client::Saying::Word(
                 Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>

@@ -1120,6 +1120,10 @@ impl Client {
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
     /// serves on that endpoint (its protocols are fixed once it binds).
     ///
+    /// This is the client of a process that holds the device's key — its own endpoint. A session
+    /// the device's daemon started cannot ([`Self::over`] instead): the daemon owns the key, and
+    /// two endpoints under one key push each other off the network.
+    ///
     /// # Errors
     /// The endpoint could not be bound.
     #[cfg(target_os = "linux")]
@@ -1247,9 +1251,11 @@ impl Client {
         client
     }
 
-    /// A client on a transport another host brings, with this desktop's host beside it: what a test
-    /// hands it is what the session shows. The transport's own commands stay the client's, so a
-    /// host that reads them off its end reads what this session said.
+    /// A client on a transport another host brings, with this desktop's host beside it: a session
+    /// whose device daemon holds the endpoint takes part this way, its daemon's live sessions
+    /// (`live`) carrying who is here, and a test hands it what it wants the session to show. The
+    /// transport's own commands stay the client's, so a host that reads them off its end reads
+    /// what this session said.
     #[must_use]
     pub fn over(
         transport: Transport,
