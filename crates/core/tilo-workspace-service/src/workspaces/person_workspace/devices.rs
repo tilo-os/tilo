@@ -44,6 +44,12 @@
 //! says so ([`Devices::answer_notice`]), and the device it was sent on carries that out and takes
 //! it away ([`Devices::retire_notice`]), which takes it off every other device.
 //!
+//! What app each of their devices has in front is offered to the others in the record too
+//! ([`ContinuityOffer`]): the device that had it in front writes it ([`Devices::offer_continuity`]),
+//! and a device the person takes the offer on, or puts it away on, says so
+//! ([`Devices::answer_continuity`]), so the bar there draws the chip once and a newer offer is a
+//! new one to answer.
+//!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
 //! takes back ([`Devices::revoke_device`]), each a signature a reader checks
@@ -110,6 +116,8 @@ pub struct Devices {
     pub inputs: Collection<InputHand>,
     /// The notifications shown on each of the person's devices, by [`SharedNotice`] id.
     pub notices: Collection<SharedNotice>,
+    /// What app each device last had in front, by the key of the device that had it there.
+    pub continuity: Collection<ContinuityOffer>,
     /// What each device offers, leads and agreed to of speaker groups, by its key.
     pub speaker_devices: Collection<SpeakerDevice>,
     /// Each playback of a group to one member, by its route.
@@ -171,6 +179,71 @@ impl SharedNotice {
     pub fn shown_at(&self, now_ms: i64) -> bool {
         self.answered_on.is_empty() && now_ms < self.until_ms
     }
+}
+
+/// The longest an offer to continue an app is worth showing, ms.
+pub const MAX_CONTINUITY_SHOWN_MS: i64 = 60 * 60 * 1_000;
+
+/// What one of the person's devices last had in front: the app, the resource it showed and the
+/// view it showed it through, so another of their devices opens the same thing where it was. Each
+/// device keeps one, under its own key, replaced as its own focus moves; the person's other devices
+/// read it ([`Devices::offer_continuity`]) and say whether they took it or put it away
+/// ([`Devices::answer_continuity`]). Times are ms since the epoch.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct ContinuityOffer {
+    /// The device it was in front on, by key (lowercase hex).
+    pub from: String,
+    /// The app that had it in front, by id.
+    pub app_id: String,
+    /// The app's name, as the person at that device reads it.
+    pub app_name: String,
+    /// The resource the app showed, by its address.
+    pub resource: String,
+    /// The view it showed it through; empty for the app's primary one.
+    pub view: String,
+    /// When it was in front there, ms since the epoch.
+    pub shown_ms: i64,
+    /// When the offer stops being worth showing, ms since the epoch.
+    pub until_ms: i64,
+    /// The devices the person took the offer on or put it away on, each once.
+    pub answers: Vec<ContinuityAnswer>,
+}
+
+impl ContinuityOffer {
+    /// Whether it is still worth showing at `now_ms`: its time has not run out.
+    #[must_use]
+    pub fn shown_at(&self, now_ms: i64) -> bool {
+        now_ms < self.until_ms
+    }
+
+    /// What the person did with it on `device`: whether they took it, `None` where they have
+    /// neither taken nor put it away there.
+    #[must_use]
+    pub fn answer_of(&self, device: &str) -> Option<bool> {
+        self.answers
+            .iter()
+            .find(|answer| answer.device == device)
+            .map(|answer| answer.taken)
+    }
+}
+
+/// What the person did with an offer on one of their devices.
+#[derive(
+    Model,
+    Default,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct ContinuityAnswer {
+    /// The device they answered on, by key (lowercase hex).
+    pub device: String,
+    /// They opened what it offered here, rather than putting it away.
+    pub taken: bool,
 }
 
 /// One move of a Bluetooth accessory from one of the person's devices to another, and how far it
@@ -550,6 +623,32 @@ impl Devices {
         Self::RETIRE_NOTICE.with(id.to_owned())
     }
 
+    /// The action that offers what `offer` says this device has in front to the person's others.
+    #[must_use]
+    pub fn offering_continuity(offer: &ContinuityOffer) -> tilo_resource::Invoke<Self> {
+        Self::OFFER_CONTINUITY.with(OfferShown {
+            from: offer.from.clone(),
+            app_id: offer.app_id.clone(),
+            app_name: offer.app_name.clone(),
+            resource: offer.resource.clone(),
+            view: offer.view.clone(),
+            shown_ms: offer.shown_ms,
+            until_ms: offer.until_ms,
+        })
+    }
+
+    /// The action that says the person took the offer `from` made at `at_ms` on `device`, or put
+    /// it away there.
+    #[must_use]
+    pub fn answering_continuity(
+        from: &str,
+        at_ms: i64,
+        device: &[u8; 32],
+        taken: bool,
+    ) -> tilo_resource::Invoke<Self> {
+        Self::ANSWER_CONTINUITY.with((from.to_owned(), at_ms, hex::encode(device), taken))
+    }
+
     /// The action that keeps `answer` as what the person answered a boot.
     #[must_use]
     pub fn answering(answer: &UnlockAnswer) -> tilo_resource::Invoke<Self> {
@@ -770,6 +869,27 @@ pub struct NoticeShown {
     /// When it started showing, ms since the epoch.
     pub shown_ms: i64,
     /// When it stops showing, ms since the epoch.
+    pub until_ms: i64,
+}
+
+/// What one device offers to the person's others: the app it had in front and where in it.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct OfferShown {
+    /// The device it was in front on, by key (lowercase hex).
+    pub from: String,
+    /// The app that had it in front, by id.
+    pub app_id: String,
+    /// The app's name, as the person at that device reads it.
+    pub app_name: String,
+    /// The resource the app showed, by its address.
+    pub resource: String,
+    /// The view it showed it through; empty for the app's primary one.
+    pub view: String,
+    /// When it was in front there, ms since the epoch.
+    pub shown_ms: i64,
+    /// When the offer stops being worth showing, ms since the epoch.
     pub until_ms: i64,
 }
 
@@ -1576,6 +1696,105 @@ impl Devices {
     pub fn retire_notice(&mut self, id: String) -> Result<(), Refusal> {
         let id = Id::from_raw(id);
         self.notices.retain(|kept, _| *kept != id);
+        Ok(())
+    }
+
+    /// Offer the app this device has in front to your other devices.
+    ///
+    /// It replaces what this device offered before, and offers that ran out by the time it was
+    /// made leave the record.
+    #[action(housekeeping)]
+    pub fn offer_continuity(&mut self, #[param(flatten)] offer: OfferShown) -> Result<(), Refusal> {
+        let OfferShown {
+            from,
+            app_id,
+            app_name,
+            resource,
+            view,
+            shown_ms,
+            until_ms,
+        } = offer;
+        validate_key(&from)?;
+        if !self.devices.contains(&Id::from_raw(from.clone())) {
+            return Err(Refusal::new("that key is not one of your devices"));
+        }
+        if app_id.is_empty()
+            || app_id.len() > 160
+            || !app_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            || app_name.is_empty()
+            || app_name.len() > 160
+            || app_name.chars().any(char::is_control)
+        {
+            return Err(Refusal::new(
+                "an app is named by up to 160 letters, digits, dots, dashes and underscores, and its name",
+            ));
+        }
+        if resource.is_empty()
+            || resource.len() > 512
+            || view.len() > 160
+            || [&resource, &view]
+                .into_iter()
+                .any(|value| value.chars().any(char::is_control))
+        {
+            return Err(Refusal::new(
+                "an offer names the resource the app showed, in up to 512 bytes, and its view",
+            ));
+        }
+        if shown_ms <= 0
+            || until_ms <= shown_ms
+            || until_ms.saturating_sub(shown_ms) > MAX_CONTINUITY_SHOWN_MS
+        {
+            return Err(Refusal::new("an offer is worth showing for up to an hour"));
+        }
+        self.continuity.retain(|_, kept| kept.until_ms > shown_ms);
+        let id = Id::from_raw(from.clone());
+        let offer = ContinuityOffer {
+            from,
+            app_id,
+            app_name,
+            resource,
+            view,
+            shown_ms,
+            until_ms,
+            answers: Vec::new(),
+        };
+        match self.continuity.get_mut(&id) {
+            Some(kept) => *kept = offer,
+            None => {
+                self.continuity.push(id, offer);
+            }
+        }
+        Ok(())
+    }
+
+    /// Take an app offered from another device, or put it away.
+    ///
+    /// The offer is the one `from` made at `at_ms`, answered on `device`: the first answer each
+    /// device gives stands, and a later offer from `from` is a new one to answer.
+    #[action]
+    pub fn answer_continuity(
+        &mut self,
+        from: String,
+        at_ms: i64,
+        device: String,
+        taken: bool,
+    ) -> Result<(), Refusal> {
+        validate_key(&from)?;
+        validate_key(&device)?;
+        if !self.devices.contains(&Id::from_raw(device.clone())) {
+            return Err(Refusal::new("that key is not one of your devices"));
+        }
+        let Some(kept) = self.continuity.get_mut(&Id::from_raw(from)) else {
+            return Err(Refusal::new("that device offers nothing now"));
+        };
+        if kept.shown_ms != at_ms {
+            return Err(Refusal::new("that device offers something newer"));
+        }
+        if kept.answer_of(&device).is_none() {
+            kept.answers.push(ContinuityAnswer { device, taken });
+        }
         Ok(())
     }
 
@@ -2445,6 +2664,161 @@ mod tests {
             .apply(Devices::STOP_SPEAKER_PLAYBACK.with((route.clone(), String::new())))
             .expect("the office ends it");
         assert!(offered(&devices).is_none(), "an ended playback is let go");
+    }
+
+    /// What one device has in front is offered to the person's others there, taken or put away
+    /// once on each of them, and a newer offer is a new one to answer.
+    #[test]
+    fn an_app_in_front_is_offered_to_the_other_devices_once() {
+        let (laptop, phone, other) = ([1; 32], [2; 32], [9; 32]);
+        let (laptop_key, phone_key) = (hex::encode(laptop), hex::encode(phone));
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
+        let offer = |shown_ms: i64| ContinuityOffer {
+            from: laptop_key.clone(),
+            app_id: "so.tilo.notes".into(),
+            app_name: "Notes".into(),
+            resource: "notes:groceries".into(),
+            view: String::new(),
+            shown_ms,
+            until_ms: shown_ms + 60_000,
+            answers: Vec::new(),
+        };
+        assert!(
+            devices
+                .apply(Devices::offering_continuity(&offer(1_000)))
+                .is_err(),
+            "a device the record does not keep offers nothing"
+        );
+        for key in [&laptop_key, &phone_key] {
+            devices
+                .apply(Devices::KEEP_DEVICE.with((key.clone(), "00".to_owned())))
+                .expect("the device is kept");
+        }
+        for refused in [
+            ContinuityOffer {
+                app_id: String::new(),
+                ..offer(1_000)
+            },
+            ContinuityOffer {
+                resource: String::new(),
+                ..offer(1_000)
+            },
+            ContinuityOffer {
+                until_ms: 1_000 + MAX_CONTINUITY_SHOWN_MS + 1,
+                ..offer(1_000)
+            },
+        ] {
+            assert!(
+                devices
+                    .apply(Devices::offering_continuity(&refused))
+                    .is_err(),
+                "{refused:?} is no offer a device makes"
+            );
+        }
+        devices
+            .apply(Devices::offering_continuity(&offer(1_000)))
+            .expect("the laptop offers the note");
+        let kept = devices
+            .state()
+            .unwrap()
+            .continuity
+            .get(&Id::from_raw(laptop_key.clone()))
+            .cloned()
+            .expect("the offer is kept");
+        assert_eq!(
+            kept.answer_of(&phone_key),
+            None,
+            "the phone has not answered"
+        );
+
+        // The phone puts it away, and the first answer it gave stands.
+        devices
+            .apply(Devices::answering_continuity(
+                &laptop_key,
+                1_000,
+                &phone,
+                false,
+            ))
+            .expect("the phone puts it away");
+        devices
+            .apply(Devices::answering_continuity(
+                &laptop_key,
+                1_000,
+                &phone,
+                true,
+            ))
+            .expect("a second answer changes nothing");
+        let kept = devices
+            .state()
+            .unwrap()
+            .continuity
+            .get(&Id::from_raw(laptop_key.clone()))
+            .cloned()
+            .expect("the offer is kept");
+        assert_eq!(kept.answer_of(&phone_key), Some(false));
+        assert!(
+            devices
+                .apply(Devices::answering_continuity(
+                    &laptop_key,
+                    2_000,
+                    &phone,
+                    true
+                ))
+                .is_err(),
+            "an answer names the offer it was made for"
+        );
+        assert!(
+            devices
+                .apply(Devices::answering_continuity(
+                    &laptop_key,
+                    1_000,
+                    &other,
+                    true
+                ))
+                .is_err(),
+            "a device the record does not keep answers nothing"
+        );
+
+        // A newer offer from the laptop carries no answers, so the phone is offered it again; the
+        // one it put away ran out of the record.
+        devices
+            .apply(Devices::offering_continuity(&offer(2_000)))
+            .expect("the laptop offers the note again");
+        let state = devices.state().unwrap();
+        let kept = state
+            .continuity
+            .get(&Id::from_raw(laptop_key.clone()))
+            .cloned()
+            .expect("the offer is kept");
+        assert_eq!(kept.shown_ms, 2_000);
+        assert_eq!(kept.answer_of(&phone_key), None, "it is offered afresh");
+        assert_eq!(state.continuity.len(), 1, "one offer per device");
+
+        // An offer nobody looks at runs out of the record as the next one lands.
+        devices
+            .apply(Devices::offering_continuity(&offer(100_000)))
+            .expect("the laptop offers it later");
+        assert!(
+            devices
+                .state()
+                .unwrap()
+                .continuity
+                .get(&Id::from_raw(laptop_key.clone()))
+                .is_some_and(|kept| kept.shown_at(120_000)),
+            "an offer its hour has not run out shows"
+        );
+        devices
+            .apply(Devices::offering_continuity(&offer(400_000)))
+            .expect("the laptop offers it much later");
+        let state = devices.state().unwrap();
+        assert_eq!(state.continuity.len(), 1, "an offer that ran out leaves it");
+        assert!(
+            state
+                .continuity
+                .get(&Id::from_raw(laptop_key))
+                .is_some_and(|kept| kept.shown_ms == 400_000),
+            "the newer offer is the one the record keeps"
+        );
     }
 
     #[test]
