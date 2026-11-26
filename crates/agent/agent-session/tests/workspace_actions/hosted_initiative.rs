@@ -1055,7 +1055,7 @@ impl Steps for HandsOver {
             },
         });
         if let Some(grant) = instruction.look_grant {
-            arguments["cause"]["lookGrant"] = serde_json::Value::String(grant);
+            arguments["look_grant"] = serde_json::Value::String(grant);
         }
         tokio::runtime::Handle::current()
             .block_on(invoke_named(

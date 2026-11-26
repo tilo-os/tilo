@@ -232,7 +232,7 @@ impl Asking {
             },
         });
         if let Some(grant) = &instruction.look_grant {
-            arguments["cause"]["lookGrant"] = Value::String(grant.clone());
+            arguments["look_grant"] = Value::String(grant.clone());
         }
         Self {
             asked_as: instruction.cause.installation.clone(),

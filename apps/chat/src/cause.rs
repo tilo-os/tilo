@@ -84,9 +84,6 @@ pub struct Starting {
     /// Your own id for this cause: one key starts one turn however often it
     /// is asked
     pub key: String,
-    /// Restrict this look to the same assistant and signing authority at pickup.
-    #[serde(default, rename = "lookGrant", skip_serializing_if = "Option::is_none")]
-    pub look_grant: Option<String>,
 }
 
 /// Who starts a turn with the action applying now.
@@ -179,7 +176,11 @@ impl Cause {
     /// A kind that is no word, or [`PERSON`] from anyone but the person
     /// themselves; a label that is missing, too long or more than a line; a
     /// key that is empty or too long.
-    pub fn started(starting: Starting, starter: &Starter) -> Result<Self, Refusal> {
+    pub fn started(
+        starting: Starting,
+        starter: &Starter,
+        look_grant: Option<String>,
+    ) -> Result<Self, Refusal> {
         let kind = starting.kind.trim().to_owned();
         if !is_word(&kind) {
             return Err(Refusal::new("a cause's kind is one short word"));
@@ -200,7 +201,7 @@ impl Cause {
         if key.trim().is_empty() || key.len() > MAX_KEY_BYTES || key.chars().any(char::is_control) {
             return Err(Refusal::new("a cause carries its starter's own key for it"));
         }
-        if starting.look_grant.as_ref().is_some_and(|grant| {
+        if look_grant.as_ref().is_some_and(|grant| {
             grant.len() != 64 || !grant.bytes().all(|byte| byte.is_ascii_hexdigit())
         }) {
             return Err(Refusal::new(
@@ -208,7 +209,7 @@ impl Cause {
             ));
         }
         Ok(Self {
-            look_grant: starting.look_grant.map(Atom),
+            look_grant: look_grant.map(Atom),
             kind: Atom(kind),
             label,
             key: Atom(key),

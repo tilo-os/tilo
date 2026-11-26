@@ -1080,12 +1080,13 @@ impl ChatMessages {
         >,
         #[param("The message it is carried by: filled in where it is asked; leave it out")]
         message: Option<Id>,
+        #[param("The signing grant that authorized this look")] look_grant: Option<String>,
     ) -> Result<(), Refusal> {
         // What is kept where this message would be, so an ask under a key
         // asked before finds it; the verb derives the message itself.
         let _ = message;
         let starter = crate::cause::starter(cx)?;
-        let cause = Cause::started(cause, &starter)?;
+        let cause = Cause::started(cause, &starter, look_grant)?;
         let asker = author(cx)?;
         crate::cause::takes(
             &channel,
