@@ -939,6 +939,33 @@ fn a_change_naming_nothing_is_refused_and_a_native_edit_names_its_maker() {
     assert_eq!(value(&receiver), "\"named\"");
 }
 
+/// A record's step to its storage version is one every holder derives alike: it names no one,
+/// and is taken in as the step its kind and id derive. A change that names nothing else is
+/// still refused.
+#[test]
+fn a_records_derived_version_step_names_no_one_and_is_taken_in() {
+    let (mut receiver, _a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+    let step = ActionContext::for_resource(RECORD, KIND, "Seed").with_described(
+        tilo_actions::Described::new(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Migrate {
+                to: 1,
+                rewrite: false,
+            },
+            0,
+            None,
+        )),
+    );
+    let message = committed_unclaimed(
+        &receiver,
+        &b,
+        &step.change_message().unwrap(),
+        "stepped",
+        now,
+    );
+    take(&mut receiver, message, now).expect("a derived version step is every holder's");
+    assert_eq!(value(&receiver), "\"stepped\"");
+}
+
 /// A change named the record's genesis that is not the founding every holder derives names no
 /// one, so it is decided as its signer's person: a record's first content taken from an editor,
 /// refused from a member the workspace lets only read.

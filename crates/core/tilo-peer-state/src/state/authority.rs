@@ -1764,6 +1764,13 @@ impl StatePeer {
         authorization_time: SystemTime,
     ) -> Result<NamedCall, AuthorizeRefusal> {
         let app_id = route.app.as_str();
+        // A record's step to its storage version is one every holder derives alike
+        // ([`collab_types::document::founding::chain`]): it names no one, as a derived founding
+        // does, and the store admits it only as the step its kind and id derive. Every change
+        // someone makes still names who made it.
+        if derived_step(change) {
+            return Ok(NamedCall::Passed { bare: false });
+        }
         let entry = change
             .message()
             .and_then(tilo_actions::ActionContext::from_change_message);
@@ -1926,6 +1933,15 @@ fn refused_no_invoker(route: &Route, source: &[u8; 32], envelope: &SignedOp) -> 
     let refusal = collab_types::ReceiptRefusal::NoInvoker;
     let said = refused_change(&refusal, route, source, envelope);
     AuthorizeRefusal::Rules(refusal, said)
+}
+
+/// Whether `change` is a record's step of its version chain, which every holder derives alike
+/// from the record alone: a migration that rewrites nothing. Its kind's type declares it, and
+/// [`collab_types::document::founding::chain`] makes the one the store admits.
+fn derived_step(change: &automerge::Change) -> bool {
+    tilo_actions::stamp::Stamp::of(change)
+        .and_then(|stamp| stamp.migration())
+        .is_some_and(|(_, rewrite)| !rewrite)
 }
 
 /// What a change the workspace's rules refuse by `refusal` is told, logged
