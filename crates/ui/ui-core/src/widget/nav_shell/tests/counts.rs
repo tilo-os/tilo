@@ -90,6 +90,46 @@ tilo_test_env::scenario! {
 
 
 
+    // The header says the count wherever no place beside it does: a narrow window whose list is
+    // the screen, a sidebar narrowed to its rail, and a number the place does not show.
+    phase the_header_says_the_count_no_place_beside_it_shows;
+    {
+        let mut h = harness(places_shell(6).content_kind(ContentKind::List), 400, 800, Theme::dark());
+        settle(&mut h, 400, 800);
+        assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+        assert_eq!(header_count(&h).as_deref(), Some("6"), "a narrow window");
+
+        let rail = NavList::new(vec![NavSection::untitled(
+            "places",
+            vec![NavItem::new("inbox", "Inbox").count(6)],
+        )])
+        .with_id("places")
+        .selected("inbox")
+        .rail();
+        let shell = NavShell::new()
+            .sidebar(Box::new(rail))
+            .overview(TestLeaf::fill("overview").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0)
+            .overview_header("Inbox", Vec::new())
+            .overview_count(6);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        h.root_mut::<NavShell>().stage_sidebar_width(64.0);
+        settle(&mut h, 1280, 800);
+        assert!(
+            h.root::<NavShell>()
+                .sidebar_ref::<NavList>()
+                .is_some_and(NavList::is_rail)
+        );
+        assert_eq!(header_count(&h).as_deref(), Some("6"), "beside a rail");
+
+        let mut h = harness(places_shell(6), 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        h.root_mut::<NavShell>().set_overview_count(Some(7));
+        settle(&mut h, 1280, 800);
+        assert_eq!(place_count(&h, "Inbox").as_deref(), Some("6"));
+        assert_eq!(header_count(&h).as_deref(), Some("7"), "a number the place does not show");
+    }
+
     // Zero is never drawn: the header shows no badge and keeps the width one would
     // have taken, and the place's row says nothing.
     phase zero_draws_no_count_and_keeps_no_area_for_one;

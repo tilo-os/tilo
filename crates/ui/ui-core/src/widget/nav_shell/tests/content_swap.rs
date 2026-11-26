@@ -46,3 +46,30 @@ fn a_new_content_key_brings_the_content_it_shows_in() {
         "the fade asks the window for its frames"
     );
 }
+
+/// A person who asked for less motion is shown the new content at once, and so is a pane an
+/// action opened (a search row, an agent): only a press eases it in.
+#[test]
+fn a_still_theme_or_an_action_lands_the_content_at_once() {
+    let mut still = Theme::dark();
+    still.reduce_motion = true;
+    let mut h = harness(
+        NavShell::from_props("window", props(Some("appearance"))),
+        1280,
+        800,
+        still,
+    );
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>().set_props(props(Some("sound")));
+    let now = crate::motion::frame_now();
+    let shell = h.root::<NavShell>();
+    assert!(!shell.content_fade.is_moving(now), "a still theme lands it");
+    assert_eq!(shell.content_fade.progress(now), 1.0);
+
+    let mut shell = NavShell::from_props("window", props(Some("appearance")));
+    crate::motion::note_source(crate::tokens::MotionSource::Action);
+    assert!(shell.set_props(props(Some("sound"))));
+    let now = crate::motion::frame_now();
+    assert!(!shell.content_fade.is_moving(now), "an action lands it");
+    assert_eq!(shell.content_fade.progress(now), 1.0);
+}

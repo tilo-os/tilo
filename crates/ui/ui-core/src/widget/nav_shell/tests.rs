@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::rc::Rc as SharedRc;
 
 mod adaptive;
+mod band;
 mod capabilities;
 mod chosen;
 mod content_swap;
@@ -13,6 +14,7 @@ mod counts;
 mod hosted;
 mod inspector_sheet;
 mod listed_actions;
+mod motion;
 mod nothing_listed;
 mod page_title;
 mod places;
@@ -1036,6 +1038,20 @@ tilo_test_env::scenario! {
         let offline = crate::widget::WindowStatus::says("Working offline");
         assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
         settle(&mut h, 1280, 800);
+        let told = |h: &Driver| {
+            h.root::<NavShell>()
+                .children()
+                .into_iter()
+                .find(|child| child.name() == "HeaderStatus")
+                .and_then(|child| child.accessibility())
+        };
+        let node = told(&h).expect("a screen reader is told the status");
+        assert_eq!(node.name.as_deref(), Some("Working offline"));
+        assert_eq!(
+            node.live,
+            Some(crate::a11y::Politeness::Polite),
+            "politely, without interrupting"
+        );
         assert!(
             h.root::<NavShell>()
                 .children()
@@ -1043,6 +1059,9 @@ tilo_test_env::scenario! {
                 .all(|child| child.test_id() != Some(crate::widget::STATUS_ACTION_ID)),
             "no button without something to do"
         );
+        assert!(h.root_mut::<NavShell>().set_sync_status(None));
+        settle(&mut h, 1280, 800);
+        assert!(told(&h).is_none(), "nothing to announce once it clears");
     }
 
 
@@ -1622,4 +1641,195 @@ impl crate::widget::Continuable for ResumableContent {
     ) -> bool {
         true
     }
+}
+
+/// Narrowing keeps the pane the person last chose or pressed in front, not the layout's default.
+#[test]
+fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
+    for clicked in [false, true] {
+        let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
+        settle(&mut h, 1600, 800);
+        if clicked {
+            let point = geometry(&h).overview_column.center();
+            h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
+            h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+        } else {
+            h.root_mut::<NavShell>().show(NavPane::Overview);
+        }
+        settle(&mut h, 560, 800);
+        assert_eq!(
+            h.root::<NavShell>().front_pane(),
+            NavPane::Overview,
+            "clicked: {clicked}"
+        );
+        assert!(geometry(&h).overview_column.width() > 0.0);
+    }
+}
+
+/// A window resized to rest near the docking threshold does not flutter between layouts: once
+/// folded it docks again only some way past the threshold, and once docked it holds down to it.
+#[test]
+fn a_window_resting_on_the_docking_threshold_does_not_flutter() {
+    let m = Metrics::resolve(&Theme::dark());
+    let threshold = m.sidebar_min + m.beside_sidebar_min(ContentKind::List);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small positive widths"
+    )]
+    let px = |w: f64| w.round() as u32;
+    let mut h = harness(files_shell(), 1280, 700, Theme::dark());
+    settle(&mut h, 1280, 700);
+    let mut at = |w: f64| {
+        settle(&mut h, px(w), 700);
+        geometry(&h).sidebar
+    };
+    assert_eq!(at(threshold), SidebarPlacement::Docked);
+    assert_eq!(at(threshold - 1.0), SidebarPlacement::Screen);
+    assert_eq!(
+        at(threshold + 1.0),
+        SidebarPlacement::Screen,
+        "not back on the edge"
+    );
+    assert_eq!(at(threshold + 200.0), SidebarPlacement::Docked);
+    assert_eq!(
+        at(threshold),
+        SidebarPlacement::Docked,
+        "docked holds to the threshold"
+    );
+}
+
+/// The sidebar's rows reach its trailing edge: the grip that resizes it stands past the edge, so
+/// a press or a hover at a row's far end is the row's.
+#[test]
+fn the_sidebar_edge_takes_nothing_from_the_rows_beside_it() {
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let g = geometry(&h);
+    let on_row = Point::new(g.sidebar_column.x1 - 1.0, g.resize_handle.center().y);
+    assert!(
+        g.resize_handle.width() > 0.0,
+        "a docked sidebar has an edge to drag"
+    );
+    assert!(
+        !g.resize_handle.contains(on_row),
+        "the grip reaches into the sidebar"
+    );
+    assert_ne!(
+        crate::widget::cursor::in_tree(h.root_widget(), on_row),
+        Some(winit::window::CursorIcon::ColResize),
+        "a row's far end shows no resize pointer"
+    );
+    assert_eq!(
+        crate::widget::cursor::in_tree(h.root_widget(), g.resize_handle.center()),
+        Some(winit::window::CursorIcon::ColResize),
+        "the grip does"
+    );
+}
+
+/// A phone-wide bar keeps the window's own controls at its trailing end and gives the rest to
+/// the app: the app's control stands in the row before them rather than folding into a menu.
+#[test]
+fn a_phone_wide_bar_gives_the_app_its_row_before_the_windows_controls() {
+    let phone = 390.0_f64;
+    let kept = crate::widget::merged_row_width_in(phone);
+    assert!(kept > 0.0 && kept < crate::widget::merged_row_width());
+    let actions: Vec<Element> = vec![
+        Box::new(Button::new("new-note", "New note")),
+        Box::new(Button::icon_only(
+            "note-menu",
+            crate::icons::Icon::MoreHorizontal,
+            "Note actions",
+        )),
+    ];
+    let shell = NavShell::new()
+        .content(TestLeaf::fill("content").boxed().0)
+        .content_header("Groceries", actions);
+    let mut h = harness(shell, 390, 800, Theme::dark());
+    assert!(
+        h.root_mut::<NavShell>()
+            .set_window_bar(Some(crate::widget::WindowBar {
+                controls_width: kept,
+                lists_actions: false,
+            }))
+    );
+    settle(&mut h, 390, 800);
+    let shown = child_rect(&h, "new-note").expect("the app's own control stands in the row");
+    assert!(
+        shown.width() > 0.0 && shown.x1 <= phone - kept,
+        "the app's control stands before the window's controls: {shown:?}"
+    );
+}
+
+/// A drawer at a large text size, in either theme, still leaves a pointer target beside it, and
+/// a press there puts it away.
+#[test]
+fn an_enlarged_drawer_leaves_a_target_that_puts_it_away() {
+    for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
+        let target = f64::from(theme.tokens.metrics.min_pointer_target);
+        let shell = NavShell::new()
+            .content_kind(ContentKind::Document)
+            .sidebar(TestLeaf::fill("sidebar").boxed().0)
+            .content(TestLeaf::fill("content").boxed().0);
+        let mut h = harness(shell, 480, 800, theme.clone());
+        h.root_mut::<NavShell>().open_sidebar();
+        settle(&mut h, 480, 800);
+        let g = geometry(&h);
+        assert_eq!(g.open_drawer(), Some(Column::Sidebar));
+        assert!(
+            480.0 - g.sidebar_column.x1 >= target,
+            "{}: room beside it",
+            theme.name
+        );
+        h.click_at(
+            (480.0 + g.sidebar_column.x1) / 2.0,
+            g.content_column.center().y,
+        );
+        settle(&mut h, 480, 800);
+        assert_eq!(
+            geometry(&h).open_drawer(),
+            None,
+            "{}: the press puts it away",
+            theme.name
+        );
+    }
+}
+
+/// Between a list beside the content and a stack of screens, an overview that has a rail
+/// narrows to the rail: the content stays beside it until even the rail does not fit.
+#[test]
+fn the_overview_narrows_into_its_rail_before_it_pushes() {
+    let rail = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        "places",
+        vec![
+            crate::widget::NavItem::new("oslo", "Oslo").icon(crate::icons::Icon::Pin),
+            crate::widget::NavItem::new("lima", "Lima").icon(crate::icons::Icon::Pin),
+        ],
+    )])
+    .rail();
+    let shell = NavShell::new()
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .overview_rail(Box::new(rail))
+        .content(TestLeaf::fill("content").boxed().0);
+    let m = Metrics::resolve(&Theme::dark());
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert_eq!(geometry(&h).overview, OverviewPlacement::List);
+    let between = ((m.rail + m.overview) / 2.0 + m.page_min).round();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a width"
+    )]
+    let between = between as u32;
+    settle(&mut h, between, 800);
+    let g = geometry(&h);
+    assert_eq!(g.overview, OverviewPlacement::Rail, "{g:?}");
+    assert!(g.stack.is_empty(), "no push while the rail fits");
+    assert!(
+        g.content_column.x0 >= g.rail.x1 - 0.5,
+        "the content beside the rail"
+    );
+    settle(&mut h, 300, 800);
+    assert_eq!(geometry(&h).stack, [NavPane::Overview, NavPane::Content]);
 }

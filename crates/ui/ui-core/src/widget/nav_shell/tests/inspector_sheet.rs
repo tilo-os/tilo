@@ -289,3 +289,59 @@ fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
         }
     }
 }
+
+/// The sheet's face is a level of its own, and its top edge parts it from the content above it,
+/// in the light theme and the dark.
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[test]
+fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
+    let _settled = crate::motion::testing::settled();
+    for theme in [Theme::light(), Theme::dark()] {
+        let shell = NavShell::new()
+            .content(TestLeaf::fill("content").boxed().0)
+            .inspector(TestLeaf::fill("inspector").boxed().0);
+        let mut h = harness(shell, W, H, theme.clone());
+        settle(&mut h, W, H);
+        h.root_mut::<NavShell>().open_inspector();
+        settle(&mut h, W, H);
+        let mut canvas = crate::cpu_raster::CpuCanvas::new();
+        canvas
+            .rasterize(&crate::retained_raster::FrameContent {
+                scene: h.scene(),
+                width: W,
+                height: H,
+                base_color: theme.tokens.colors.surfaces.content,
+                damage_regions: &[],
+                scroll_copies: &[],
+                full_redraw: true,
+                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+            })
+            .expect("the frame rasterizes");
+        let px = canvas.pixels();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "in the frame"
+        )]
+        let at = |x: f64, y: f64| -> i32 {
+            let i = ((y as usize) * W as usize + x as usize) * 4;
+            (0..3).map(|c| i32::from(px[i + c])).sum()
+        };
+        let top = geometry(&h).inspector_column.y0.round();
+        let x = f64::from(W) / 4.0;
+        let (window, face) = (at(x, top - 120.0), at(x, top + 12.0));
+        assert_ne!(
+            face, window,
+            "{}: the sheet's face is its own level",
+            theme.name
+        );
+        assert!(
+            (-3..4).any(|d| {
+                let p = at(x, top + f64::from(d));
+                (p - face).abs() > 3 && (p - window).abs() > 3
+            }),
+            "{}: the sheet's top edge parts it from the content",
+            theme.name
+        );
+    }
+}

@@ -431,3 +431,119 @@ fn a_window_that_shows_one_thing_alone_places_no_sidebar_at_any_width() {
         "the sidebar stands as the person left it"
     );
 }
+
+/// Hosted in a window frame, every column's header row stands at the window's top at one
+/// height, each column's button stands in its own row before the window's controls, the bar
+/// takes none of them over, and a press in a row runs its button.
+#[test]
+fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let compose =
+        Button::new("mail.compose", "Compose").on_click(move || count.set(count.get() + 1));
+    let shell = NavShell::new()
+        .content_kind(ContentKind::Page)
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
+        .sidebar_header(
+            "Mailboxes",
+            vec![Box::new(Button::icon_only(
+                "mail.new-mailbox",
+                Icon::Plus,
+                "New mailbox",
+            ))],
+        )
+        .overview_header("Inbox", vec![Box::new(compose)])
+        .content_header(
+            "Design review",
+            vec![Box::new(Button::icon_only(
+                "mail.reply",
+                Icon::Reply,
+                "Reply",
+            ))],
+        );
+    let mut h = Driver::in_window_frame(State::new(), Box::new(shell), (1280, 800), Theme::dark());
+    for _ in 0..2 {
+        if let Some(shell) = h.widget_mut::<NavShell>() {
+            shell.snap();
+        }
+        h.relayout();
+    }
+    assert_eq!(
+        crate::window_toolbar::declared(),
+        None,
+        "the bar declares none of them"
+    );
+    assert!(h.row_holds_bar(), "the header row is the window's bar");
+    let g = h
+        .widget_mut::<NavShell>()
+        .expect("the frame hosts the shell")
+        .geometry()
+        .clone();
+    let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.header(c));
+    for row in rows {
+        assert!(
+            row.width() > 0.0 && row.y0.abs() < 1e-9,
+            "at the top: {rows:?}"
+        );
+        assert!(
+            (row.height() - rows[0].height()).abs() < 1e-9,
+            "one height: {rows:?}"
+        );
+    }
+    let targets = h.targets();
+    let shown = |id: &str| targets.get(id).copied().filter(|rect| rect.area() > 0.0);
+    for (id, row) in ["mail.new-mailbox", "mail.compose", "mail.reply"]
+        .into_iter()
+        .zip(rows)
+    {
+        let button = shown(id).expect("the button shows in its row");
+        assert!(
+            button.x0 >= row.x0 - 1e-9 && button.x1 <= row.x1 + 1e-9 && button.y1 <= row.y1,
+            "{id} stands in its own column's row: {button:?} in {row:?}"
+        );
+    }
+    assert!(shown("mail.reply").is_some_and(|reply| reply.x1 <= g.window_controls.x0));
+    let compose = shown("mail.compose").expect("Compose shows");
+    h.click_at(compose.center().x, compose.center().y);
+    assert_eq!(pressed.get(), 1, "the press in the row runs the button");
+}
+
+/// A conversation floated as a card shows only itself: no list over it and no toggle for one,
+/// whatever the app remembered of its sidebar. Back in the strip, its list is a press away.
+#[test]
+fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Reading);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0);
+    let mut h = harness(shell, 360, 520, Theme::dark());
+    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
+    link.stage_sidebar(true);
+    link.put_drawer_away();
+    settle(&mut h, 360, 520);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::None);
+    assert_eq!(
+        link.parts().sidebar,
+        None,
+        "no toggle for a sidebar it does not show"
+    );
+    assert!(child_rect(&h, "content").is_some_and(|r| r.width() >= 359.0));
+    assert!(
+        child_rect(&h, "sidebar").is_none_or(|r| r.area() <= 0.0),
+        "no list over the card"
+    );
+
+    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
+    settle(&mut h, 376, 520);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert!(
+        link.parts().sidebar.is_some(),
+        "in the strip its list is a press away"
+    );
+}

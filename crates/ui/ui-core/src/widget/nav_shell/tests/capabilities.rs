@@ -796,3 +796,74 @@ impl Widget for Filtered {
         self.inner.rect
     }
 }
+
+/// Where a header's parts land against each other: a leading fill (a path) stands in the
+/// content's row before its actions; a list's action stands at its own column's trailing edge
+/// and keeps its place while an item is selected beside it; and a short column title is never
+/// cut by the action after it.
+#[test]
+fn a_headers_parts_keep_their_places_beside_each_other() {
+    let shell = NavShell::new()
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
+        .content_header("", vec![icon("new", Icon::Plus, "New folder")])
+        .content_header_leading(Box::new(Button::new("path", "Home › Documents › Taxes")));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    let leading = part_rect(&h, Part::Leading(Column::Content));
+    let action = part_rect(&h, Part::Action(Column::Content, 0));
+    assert!(leading.width() > 0.0 && leading.x0 >= g.content_column.x0);
+    assert!(leading.x1 <= action.x0, "{leading:?} before {action:?}");
+    assert!(leading.y1 <= g.header_height);
+
+    let theme = Theme::dark();
+    let gutter = crate::chrome::column_gutter(&theme);
+    let shell = NavShell::new()
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
+        .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
+    let mut h = harness(shell, 1024, 700, theme.clone());
+    settle(&mut h, 1024, 700);
+    let edge = geometry(&h).overview_column.x1;
+    let ends_at =
+        |rect: Rect, edge: f64| rect.width() > 0.0 && (rect.x1 - (edge - gutter)).abs() < 0.5;
+    let quiet = part_rect(&h, Part::Action(Column::Overview, 0));
+    assert!(
+        ends_at(quiet, edge),
+        "the list's action ends at its edge {edge}: {quiet:?}"
+    );
+    h.root_mut::<NavShell>()
+        .set_content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
+    settle(&mut h, 1024, 700);
+    let selected = part_rect(&h, Part::Action(Column::Overview, 0));
+    assert!(
+        (selected.x0 - quiet.x0).abs() < 0.5 && (selected.x1 - quiet.x1).abs() < 0.5,
+        "it keeps its place when an item is selected beside it: {quiet:?} then {selected:?}"
+    );
+    let own = part_rect(&h, Part::Action(Column::Content, 0));
+    assert!(
+        ends_at(own, geometry(&h).content_column.x1),
+        "the detail's at the detail's edge"
+    );
+
+    let shell = NavShell::new()
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
+        .sidebar_header("Notes", vec![icon("new", Icon::Plus, "New note")]);
+    let mut h = harness(shell, 280, 700, theme.clone());
+    settle(&mut h, 280, 700);
+    let title = part_rect(&h, Part::Title(Column::Sidebar));
+    let action = part_rect(&h, Part::Action(Column::Sidebar, 0));
+    assert!(title.x1 <= action.x0, "{title:?} before {action:?}");
+    let style = crate::widget::window_header::header_row::title_style(&theme);
+    assert_eq!(
+        TextRenderer::new().elide_to_width_style(
+            "Notes",
+            crate::num::f32_of_f64(title.width()),
+            &style
+        ),
+        "Notes",
+        "the whole name fits the title's box: {title:?}"
+    );
+}
