@@ -1672,7 +1672,18 @@ struct Child {
     asked: Option<String>,
     /// The action the waiting run is a run of, when the served invocation ends with it.
     action: Option<ServedAction>,
+    /// The call the served invocation's caller signed, which what the run writes once it goes
+    /// on keeps, as what it wrote before it waited did.
+    signed: Option<Box<tilo_actions::remote::SignedCall>>,
 }
+
+/// What a run waiting on a call goes on as once it is answered: the person the served invocation
+/// acts for, the action the run is a run of, and the call its caller signed.
+type Waits = (
+    Option<String>,
+    Option<ServedAction>,
+    Option<Box<tilo_actions::remote::SignedCall>>,
+);
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
 /// action too large to record whole keeps its large parts there, sealed, and every read of a
@@ -2756,7 +2767,7 @@ impl Hosted {
             // another app or on a person, which answers nobody here.
             Ok(InvokeOutcome::Done(_) | InvokeOutcome::Asked(_)) => None,
             Ok(InvokeOutcome::Waits { run, call }) => {
-                self.waiting(call, Some(run), None, None, None);
+                self.waiting(call, Some(run), None, (None, None, None));
                 None
             }
             Ok(other) => {
@@ -3213,6 +3224,10 @@ impl Hosted {
         // What the action writes is stamped with the invocation the broker admitted, so the
         // workspace's history tells the step by the call that made it.
         self.store.serve(Some(invocation.0.to_string()));
+        // Each change keeps the call its caller signed, as a change made for a caller must: every
+        // device reading the record checks that caller asked for it, and with which key.
+        let signed = context.as_deref().and_then(|context| context.signed.clone());
+        self.store.serve_signed(signed.clone());
         let serving = Serving {
             invocation,
             person: person.map(str::to_owned),
@@ -3233,6 +3248,7 @@ impl Hosted {
         });
         SERVING.with(|slot| *slot.borrow_mut() = None);
         self.store.serve(None);
+        self.store.serve_signed(None);
         let answer = match outcome {
             // A check the project's host approved that the run started is the invocation's
             // work: it stays open until the check ends, and is answered then.
@@ -3240,7 +3256,8 @@ impl Hosted {
             Ok(Ran::Done(output)) => Some(InvocationUpdate::Succeeded { invocation, output }),
             // What it calls answers later: the invocation ends with the run, not now.
             Ok(Ran::Waits { call, run, action }) => {
-                self.waiting(call, run, Some(served), person.map(str::to_owned), action);
+                let waits = (person.map(str::to_owned), action, signed);
+                self.waiting(call, run, Some(served), waits);
                 None
             }
             Err(error) => {
@@ -3303,8 +3320,7 @@ impl Hosted {
         call: String,
         run: Option<tilolang_tilo::runtime::ids::RunId>,
         served: Option<Served>,
-        person: Option<String>,
-        action: Option<ServedAction>,
+        (person, action, signed): Waits,
     ) {
         // The invocation this run serves outlives this host: it is recorded with the run, so a
         // host starting over the store answers it if the run cannot go on. A press ends with
@@ -3323,6 +3339,7 @@ impl Hosted {
                 person,
                 asked: None,
                 action,
+                signed,
             },
         );
     }
@@ -3537,7 +3554,8 @@ impl Hosted {
         };
         match (child.run, child.served) {
             (Some(run), served) => {
-                self.resume(&run, served, (child.person, child.action), answer);
+                let waits = (child.person, child.action, child.signed);
+                self.resume(&run, served, waits, answer);
             }
             // The call itself is the served invocation's work: its answer ends it.
             (None, Some(served)) => {
@@ -3573,7 +3591,7 @@ impl Hosted {
         &mut self,
         run: &tilolang_tilo::runtime::ids::RunId,
         served: Option<Served>,
-        (person, action): (Option<String>, Option<ServedAction>),
+        (person, action, signed): Waits,
         answer: Invoked,
     ) {
         let Some(host) = self.instance.host() else {
@@ -3583,6 +3601,7 @@ impl Hosted {
         // invocation's step, and a call it makes continues it.
         if let Some(invocation) = served.map(Served::invocation) {
             self.store.serve(Some(invocation.0.to_string()));
+            self.store.serve_signed(signed.clone());
             SERVING.with(|slot| {
                 *slot.borrow_mut() = Some(Serving {
                     invocation,
@@ -3594,6 +3613,7 @@ impl Hosted {
         let outcome = host.runtime().answer_call(run, answer);
         SERVING.with(|slot| *slot.borrow_mut() = None);
         self.store.serve(None);
+        self.store.serve_signed(None);
         match outcome {
             Ok(RunOutcome::Done(value)) => {
                 self.instance.commit_planned();
@@ -3626,7 +3646,7 @@ impl Hosted {
                 }
             }
             Ok(RunOutcome::Waits { run, call }) => {
-                self.waiting(call, Some(run), served, person, action);
+                self.waiting(call, Some(run), served, (person, action, signed));
             }
             Err(error) => {
                 self.instance.commit_planned();
@@ -3755,7 +3775,7 @@ impl Hosted {
             }
             PressRan::Waits { call, run, action } => {
                 let person = Some(self.spec.person.clone());
-                self.waiting(call, run, Some(served), person, action);
+                self.waiting(call, run, Some(served), (person, action, None));
             }
             PressRan::Failed(refused) => self.answer_served(served, failed(invocation, refused)),
         }
@@ -4338,7 +4358,7 @@ impl Hosted {
             }
             // It calls another app and waits on the answer: the run goes on when it comes. A
             // press answers nobody, so nothing is answered for it.
-            Ok(Ran::Waits { call, run, .. }) => self.waiting(call, run, None, None, None),
+            Ok(Ran::Waits { call, run, .. }) => self.waiting(call, run, None, (None, None, None)),
             Err(refused) => self.instance.failed(refused.message),
         }
         // What the press queued outside the workspace waits as a declared effect, and the

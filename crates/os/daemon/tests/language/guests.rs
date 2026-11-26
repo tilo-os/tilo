@@ -138,7 +138,10 @@ pub async fn guest(host: &host::Host, owner: &host::Member, role: &str, name: &s
         )
         .await
         .unwrap_or_else(|error| panic!("{name} joins: {error}"));
+    // Their device answers under its certificate, as a daemon does once it holds one, and signs
+    // the invocations it sends with it.
     let service = ActionService::new(key.clone(), Arc::new(NoActions));
+    service.answer_under(cert.clone());
     let remote = Arc::new(service.remote(&endpoint, &host.daemon().endpoint_addr(), workspace));
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)

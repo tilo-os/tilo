@@ -2151,11 +2151,44 @@ impl Device {
         Ok(connection)
     }
 
+    /// `message` with the invocation it carries signed by this device for its workspace, when it
+    /// carries none. The link's own signature proves only which device sent the request; a
+    /// change the host makes for the person whose device this is must carry an invocation that
+    /// device signed, or the workspace's store refuses it. An invocation signed already (an
+    /// agent's under its own key, or one forwarded for its person) goes as it is, as does one
+    /// sent before this device answers under a certificate, or by a key that signs only later.
+    fn invocation_signed(&self, mut message: RemoteActionMessage) -> RemoteActionMessage {
+        let RemoteActionMessage::Invoke(request) = &mut message else {
+            return message;
+        };
+        if request.signed.is_some() {
+            return message;
+        }
+        let Some(certificate) = self
+            .answers
+            .upgrade()
+            .and_then(|answers| answers.certificate.lock_recover().clone())
+        else {
+            return message;
+        };
+        if let Ok(signed) = tilo_server_protocol::invocation::sign_invocation_now(
+            &self.workspace,
+            request,
+            &certificate,
+            self.key.as_ref(),
+            now_ns(),
+        ) {
+            request.signed = Some(Box::new(signed));
+        }
+        message
+    }
+
     /// One signed request and its one answer.
     async fn request(
         &self,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, tilo_actions::remote::ActionCallError> {
+        let message = self.invocation_signed(message);
         let signed = SignedDeviceAction::sign(
             &DeviceAction {
                 workspace: self.workspace.clone(),
