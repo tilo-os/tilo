@@ -15218,6 +15218,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-broker-core",
  "tilo-clock",
  "tilo-collab-types",

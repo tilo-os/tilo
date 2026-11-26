@@ -154,6 +154,7 @@ jiff = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
+tilo-automerge-isolate.workspace = true
 # The service's fixtures, which the app host's tests stand their hosts on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "test-support"] }
 # Compiles the surface this crate publishes for the test that holds its file to it.

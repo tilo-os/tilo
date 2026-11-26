@@ -78,6 +78,10 @@ mod connection_turn_tests;
 mod joined_workspace_tests;
 #[cfg(all(test, feature = "agents"))]
 mod record_reads_tests;
+// A test that opens a workspace edits its documents in the automerge worker this test binary
+// serves.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 #[cfg(test)]
 mod test_owner;
 #[cfg(any(test, feature = "test-support"))]
