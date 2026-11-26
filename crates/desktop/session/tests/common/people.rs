@@ -1686,6 +1686,7 @@ impl Device {
                     .filter(|line| {
                         [
                             "refused", "seal", "channel", "identity", "join", "WARN", "ERROR",
+                            "panicked", "exited",
                         ]
                         .iter()
                         .any(|word| line.contains(word))

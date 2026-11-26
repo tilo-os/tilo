@@ -114,7 +114,13 @@ fn title_rect(device: &Device) -> [f64; 4] {
                 .as_str()
                 .is_some_and(|identity| identity.starts_with("title:"))
         })
-        .unwrap_or_else(|| panic!("{} shows no item's title: {targets:?}", device.label));
+        .unwrap_or_else(|| {
+            panic!(
+                "{} shows no item's title: {targets:?}\n{}",
+                device.label,
+                device.diagnostic()
+            )
+        });
     let rect = title["rect"]
         .as_array()
         .filter(|rect| rect.len() == 4)
