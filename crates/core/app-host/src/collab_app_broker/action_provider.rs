@@ -21,8 +21,8 @@ use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
-    AppBrokerState, BrokerActor, DIRECTORY_MAX_PARAMS_BYTES, InvocationInputs, LaunchScope,
-    PublishedAction, PublishedSurface, app_node, confirmation_satisfied,
+    ActionDirectoryRoot, AppBrokerState, BrokerActor, DIRECTORY_MAX_PARAMS_BYTES, InvocationInputs,
+    LaunchScope, PublishedAction, PublishedSurface, app_node, confirmation_satisfied,
 };
 use crate::automation;
 
@@ -2098,7 +2098,46 @@ impl AppBrokerState {
             request.target.provider = registered.provider.to_string();
             return self.invoke_registered(caller, origin, None, &registered, &request);
         }
+        // The app runs and publishes no live action at the address — one on a record no window
+        // shows, as the report a call just filed: its running instance resolves it in its
+        // directory and answers it, as a call by that directory's route is. Launching would
+        // start the app a second time, and that instance would publish no more of it.
+        if let Some(root) = self.running_directory_for(caller, request) {
+            return self.invoke_directory(caller, root, origin, request);
+        }
         self.invoke_launchable(caller, origin, request)
+    }
+
+    /// The directory of the running instance of the app an application target of `request`
+    /// names, on its record when the target names one, where that instance publishes no live
+    /// action at the target's address and the address shows nothing (an `open`, a view): the
+    /// instance that resolves an action on any of the app's resources. `None` while no instance
+    /// of it keeps a directory `caller` may reach, or when a live action is there to deliver to.
+    fn running_directory_for(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<ActionDirectoryRoot> {
+        let (workspace, app_id) = application_provider(&request.target.provider)?;
+        let record = application_provider_resource(&request.target.provider);
+        let address = &request.target.address;
+        if self.action_shows(app_id, workspace, address)
+            || self
+                .ready_delivery(app_id, workspace, record, address)
+                .is_some()
+        {
+            return None;
+        }
+        let workspaces = self.workspace_ids_for(caller);
+        self.action_directory_roots()
+            .into_iter()
+            .filter(|root| {
+                root.app_id == app_id
+                    && root.cluster_id == workspace
+                    && workspaces.contains(&root.cluster_id)
+                    && record.is_none_or(|record| root.document_id == record)
+            })
+            .min_by_key(|root| root.peer_id)
     }
 
     /// Invoke an action retained from a closed application: launch the app,

@@ -24,8 +24,11 @@ use tilo_lock::MutexRecover as _;
 const LAUNCHABLE_PROVIDER: &str = "launch";
 
 /// How long an invocation waits for the application it launched to publish
-/// the action and its invocation stream.
-const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// the action and its invocation stream: well inside the time a device that
+/// asked over its link waits for the answer, so a call the app never takes is
+/// answered with why rather than given up on as unanswered.
+const DELIVERY_TIMEOUT: Duration =
+    Duration::from_secs(tilo_peer_state::actions::REPLY_DEADLINE.as_secs() * 2 / 3);
 
 /// Threads the delivery runtime may use to call the host's launcher, which
 /// blocks while it starts the app. Further launches queue behind them.
@@ -2160,6 +2163,35 @@ mod tests {
             let again = start(&state, &owner, &workspace).expect("running");
             assert_eq!(started_peer(&again), Some(9));
             assert_eq!(asked.lock().expect("asked").len(), 1, "asked for once");
+
+            // An action the running instance does not publish starts no second instance, which
+            // would publish no more than it: the call is answered with what was published once
+            // the delivery deadline passes.
+            *state.launchable.delivery_timeout.lock_recover() = Duration::from_millis(300);
+            let unpublished = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.report:1",
+                "decide",
+            );
+            match invoke_with(
+                &state,
+                &owner,
+                &unpublished.provider,
+                &unpublished.address,
+                InvokeArgument::None,
+                None,
+            ) {
+                Err(ActionCallError::Unavailable { reason }) => {
+                    assert!(reason.contains("did not offer \"decide\""), "{reason}");
+                }
+                other => panic!("expected why the action was not taken, got {other:?}"),
+            }
+            assert_eq!(
+                asked.lock().expect("asked").len(),
+                1,
+                "the running instance is not started again"
+            );
         }
 
         phase a_start_where_nothing_runs_without_a_window_launches_as_before;

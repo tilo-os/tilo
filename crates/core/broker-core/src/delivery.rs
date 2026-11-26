@@ -240,6 +240,22 @@ impl<E> Publishers<E> {
         })
     }
 
+    /// Whether an instance of `app_id` the host runs with no window takes invocations in
+    /// `workspace`, on `record` when one is named.
+    fn runs_windowless(&self, app_id: &str, workspace: &str, record: Option<&str>) -> bool {
+        let (Ok(streams), Ok(surfaces)) = (self.streams.lock(), self.surfaces.lock()) else {
+            return false;
+        };
+        surfaces.values().any(|surface| {
+            surface.live
+                && surface.app_id == app_id
+                && surface.route.cluster_id == workspace
+                && record.is_none_or(|record| surface.route.document_id == record)
+                && self.is_windowless(surface.peer_id)
+                && open_stream(&streams, surface.peer_id).is_some()
+        })
+    }
+
     /// Hold the one launch of `app_id` in `workspace` while it runs: `None` while another ask's
     /// launch of it runs, which brings up the app this ask waits for. Ending it wakes the
     /// asks waiting.
@@ -400,6 +416,13 @@ pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
         // Another ask's launch of the app runs: wait for the app it brings up, and once that runs
         // without what this ask needs, ask the running app the way any launch does.
         let launch = !ran && (ours.is_some() || publishers.runs(app_id, ask.workspace));
+        // An instance of the app with no window runs already: another would publish what it
+        // does, so the ask waits for what that one publishes next instead of running the app
+        // twice.
+        if launch && !shows && publishers.runs_windowless(app_id, ask.workspace, ask.opened_on) {
+            ran = true;
+            continue;
+        }
         if launch && !shows {
             let started = launcher.map_or(Ok(None), |launcher| {
                 launcher.windowless(app_id, ask.workspace, ask.opened_on)
