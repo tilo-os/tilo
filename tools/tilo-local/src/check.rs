@@ -419,7 +419,7 @@ fn verdict(
 /// The session's build, of the apps asked for.
 fn build(repo: &Path, options: &Options) -> Result<(), String> {
     eprintln!("==> building the session (dist/dev/nested-session-build.sh)");
-    let mut build = Command::new("bash");
+    let mut build = crate::bash();
     build.arg(repo.join("dist/dev/nested-session-build.sh"));
     session::apps_to_build(&mut build, options);
     let status = build.status().map_err(|error| error.to_string())?;
@@ -445,7 +445,7 @@ fn launch(
         .is_ok_and(|out| out.status.success());
     let mut command = if traps.mounts.is_empty() || !bwrap {
         eprintln!("==> no bwrap or no fixed bus paths here: the traps are the variables only");
-        Command::new("bash")
+        crate::bash()
     } else {
         let mut command = Command::new("bwrap");
         command

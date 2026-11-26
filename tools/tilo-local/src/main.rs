@@ -95,6 +95,16 @@ fn undoubled(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
+/// A shell for one of the checkout's scripts. `cargo run` hands what it runs the path of the
+/// real cargo as `CARGO`, and the scripts build with `${CARGO:-cargo}`: inherited, it would
+/// skip the `cargo` on PATH a person chose (a front end that compiles on a builder) and build
+/// on this machine instead. The scripts get the `cargo` the person's own shell would run.
+pub(crate) fn bash() -> std::process::Command {
+    let mut command = std::process::Command::new("bash");
+    command.env_remove("CARGO");
+    command
+}
+
 /// The checkout this runs in: the nearest directory above the working directory holding the
 /// development session's script, else the one this launcher was built from.
 fn repo_root() -> Result<PathBuf, String> {

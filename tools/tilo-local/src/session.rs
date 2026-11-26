@@ -210,7 +210,7 @@ pub fn build_dir(repo: &Path) -> PathBuf {
 
 /// nested-session.sh with `options`, writing its readiness to `ready`.
 pub fn script(repo: &Path, options: &Options, ready: &Path, build: bool) -> Command {
-    let mut command = Command::new("bash");
+    let mut command = crate::bash();
     command
         .arg(repo.join("dist/dev/nested-session.sh"))
         .arg("--state")

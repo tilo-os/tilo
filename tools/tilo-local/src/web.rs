@@ -119,7 +119,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     stack_env.push(("TILO_SH_BUNDLE", bundle.display().to_string()));
 
     let stack_command = |args: &[&str]| {
-        let mut command = Command::new("bash");
+        let mut command = crate::bash();
         command.arg(&stack).args(args);
         for (key, value) in &stack_env {
             command.env(key, value);
@@ -153,7 +153,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
 
 /// `stack.sh ARGS`, for the stack's own commands.
 fn pass_to_stack(stack: &Path, args: &[String]) -> Result<ExitCode, String> {
-    let status = Command::new("bash")
+    let status = crate::bash()
         .arg(stack)
         .args(args)
         .status()
@@ -192,7 +192,7 @@ fn build_bundle(repo: &Path, release: bool) -> Result<PathBuf, String> {
         if updating { ", in place" } else { "" }
     );
     let began = Instant::now();
-    let status = Command::new("bash")
+    let status = crate::bash()
         .arg(repo.join("crates/core/tilo-browser-runtime/scripts/build.sh"))
         .arg(&out)
         .args(&args)
