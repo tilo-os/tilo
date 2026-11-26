@@ -21,7 +21,7 @@ usage: tilo-linux-vm hosted <command>
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--memory-reserve-mib MIB]
         [--memory-headroom-mib MIB]
-        [--server-endpoint ADDR:PORT]
+        [--move-listen SOCKET] [--server-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -46,6 +46,9 @@ usage: tilo-linux-vm hosted <command>
                          that waits; when the node's free memory falls under
                          the reserve, the VMs' balloons are asked for memory
                          back before any wake is refused.
+                         --move-listen accepts what another machine sends over
+                         SOCKET: a VM that moves to this machine, or a replica copy
+                         of one it is kept for. Same user only.
                          --server-endpoint serves the workspaces' Browser in
                          their VMs: ADDR:PORT is where the browser session in a
                          VM reaches the server, the one address besides the
@@ -78,6 +81,13 @@ usage: tilo-linux-vm hosted <command>
   drain                  take no more VMs and suspend every awake one onto the
                          state directory, for a rolling update; the cloud's
                          eviction notice does the same
+  move-vm WORKSPACE ENVIRONMENT --to SOCKET
+                         move the workspace's VM to the machine serving SOCKET: it is
+                         suspended, its disk and snapshot streamed there, and that
+                         machine forgets it once this one has all of it
+  replicate WORKSPACE ENVIRONMENT --to SOCKET
+                         copy the workspace's VM to the replica machine serving SOCKET,
+                         only the blocks that changed since its last copy
   browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
                [--material JSON]
                          start the daemon in a workspace's VM with the placement
@@ -194,6 +204,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         "branch" | "delete" => branch_or_delete(command, &Flags::parse(rest, &[])?),
         "drain" => ask(&Flags::parse(rest, &[])?, &Request::Drain),
+        "move-vm" | "replicate" => move_or_replicate(command, &Flags::parse(rest, &[])?),
         "suspend" | "stop" => {
             let flags = Flags::parse(rest, &[])?;
             let [workspace, environment] = flags.rest.as_slice() else {
@@ -240,6 +251,29 @@ fn branch_or_delete(command: &str, flags: &Flags) -> Result<ExitCode, String> {
         Request::Delete {
             workspace: workspace.clone(),
             environment: environment.clone(),
+        }
+    };
+    ask(flags, &request)
+}
+
+/// Move a workspace's VM to another machine, or copy it to a replica machine.
+fn move_or_replicate(command: &str, flags: &Flags) -> Result<ExitCode, String> {
+    let [workspace, environment] = flags.rest.as_slice() else {
+        return Err(format!("{command}: WORKSPACE ENVIRONMENT\n{USAGE}"));
+    };
+    let to = flags.path("--to")?;
+    let (workspace, environment) = (workspace.clone(), environment.clone());
+    let request = if command == "move-vm" {
+        Request::MoveVm {
+            workspace,
+            environment,
+            to,
+        }
+    } else {
+        Request::ReplicateVm {
+            workspace,
+            environment,
+            to,
         }
     };
     ask(flags, &request)
@@ -331,6 +365,11 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
         budget.expected_mib(),
     );
     let service = Arc::new(service);
+    if let Some(socket) = flags.get("--move-listen") {
+        service
+            .serve_moves(std::path::Path::new(socket))
+            .map_err(|e| format!("--move-listen {socket}: {e}"))?;
+    }
     eprintln!(
         "tilo-linux-vm hosted: serving {}",
         service.config().socket().display()
@@ -544,6 +583,10 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
                 opened_ms.map_or_else(|| "running".to_string(), |ms| format!("started in {ms} ms")),
                 device,
             );
+            Ok(ExitCode::SUCCESS)
+        }
+        Reply::Moved { vm, bytes } => {
+            println!("{vm}: {bytes} bytes moved");
             Ok(ExitCode::SUCCESS)
         }
         Reply::Refused(refusal) => Err(refusal.message),

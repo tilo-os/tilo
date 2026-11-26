@@ -22,6 +22,7 @@ use super::files::Served;
 use super::firecracker::VmFiles;
 use super::memory::{self, Budget};
 use super::meter::{Log, Meter, VmIdentity, summarize};
+use super::move_vm::{self, MoveError, Part};
 use super::plan::{AwakeVm, Plans, Refusal, admit};
 use super::valid_name;
 use super::vm::{Clock, HostedVm, Settings, VmError};
@@ -51,6 +52,14 @@ const TEMPLATE_RETRY_MS: u64 = 60 * 1000;
 
 /// What a request for a VM that was deleted while it waited is told.
 const DELETED: &str = "the workspace's VM was deleted; ask again for a new one";
+
+/// What a wake placed on a machine the VM has left is told.
+pub const MOVED: &str =
+    "the workspace's Linux VM moved to another machine, saved as it was; ask again in a minute";
+
+/// How long one read or write of a move may take: a block is 4 MiB, so a link
+/// that is there carries it in seconds.
+const LINK_PATIENCE: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
@@ -176,7 +185,9 @@ impl From<EnsureError> for BrowserError {
             EnsureError::Vm(error) => Self::Vm(error),
             EnsureError::Invalid(message) => Self::Invalid(message),
             EnsureError::Refused(refusal) => Self::Refused(refusal),
-            EnsureError::Moving => Self::Session(EnsureError::Moving.to_string()),
+            EnsureError::Moving | EnsureError::Moved => {
+                Self::Session(EnsureError::Moving.to_string())
+            }
             EnsureError::NoVm(workspace) => Self::Invalid(no_vm_yet(&workspace)),
         }
     }
@@ -207,6 +218,9 @@ pub enum EnsureError {
     /// Waking it would take the host's VMs past its memory budget: it
     /// waits for room ([`BUSY`]).
     HostFull,
+    /// The VM moved to another machine: this machine holds no disk of it, so a wake here would make an
+    /// empty machine in its place.
+    Moved,
     /// The workspace named has no VM, so there is nothing to branch from.
     NoVm(String),
 }
@@ -222,6 +236,7 @@ impl std::fmt::Display for EnsureError {
                  run the command again in a minute",
             ),
             Self::HostFull => f.write_str(BUSY),
+            Self::Moved => f.write_str(MOVED),
             Self::NoVm(workspace) => f.write_str(&no_vm_yet(workspace)),
         }
     }
@@ -368,6 +383,17 @@ impl Service {
         // suspends began.
         if self.evicting.load(Ordering::SeqCst) {
             return Err(EnsureError::Moving);
+        }
+        // The VM moved to another machine, and this one holds no disk of it: a wake here would make
+        // an empty machine in its place.
+        if self
+            .config
+            .files(&request.workspace, &request.environment)
+            .state
+            .join("moved")
+            .is_file()
+        {
+            return Err(EnsureError::Moved);
         }
         let plans = Plans::load(&self.config.plans).map_err(EnsureError::Invalid)?;
         let id = format!("{}/{}", request.workspace, request.environment);
@@ -1111,6 +1137,205 @@ impl Service {
         self.evicting.load(Ordering::SeqCst)
     }
 
+    /// Move `workspace`'s VM to the machine at the other end of `link`, which the lease now names:
+    /// suspend it, stream its disk and snapshot there, and forget it here once that machine has all
+    /// of it. This is the one hand-off a lease calls; the link is the connection the machines keep.
+    pub fn move_vm<L: move_vm::Link + ?Sized>(
+        &self,
+        workspace: &str,
+        environment: &str,
+        link: &mut L,
+    ) -> Result<u64, MoveError> {
+        for (what, name) in [("workspace", workspace), ("environment", environment)] {
+            if !valid_name(name) {
+                return Err(MoveError::Invalid(format!("{name:?} is not a {what} id")));
+            }
+        }
+        let Some(entry) = self.entry(workspace, environment) else {
+            return Err(MoveError::Invalid(format!(
+                "this machine holds no VM of workspace {workspace}"
+            )));
+        };
+        if entry.gone.load(Ordering::SeqCst) {
+            return Err(MoveError::Invalid(DELETED.to_owned()));
+        }
+        let id = entry.id();
+        let files = self.config.files(workspace, environment);
+        end_daemon(&entry, DAEMON_GRACE);
+        // Held for the transfer: a wake that waited for it finds it gone, never the disk half sent.
+        let mut vm = lock(&entry.vm);
+        if vm.awake()
+            && let Err(error) = vm.suspend()
+        {
+            // A VM that could not be saved is stopped, so what moves is a disk that is whole and
+            // boots afresh at the other end.
+            eprintln!("tilo-linux-vm hosted: {id}: suspend for the move: {error}");
+            let _ = vm.stop();
+        }
+        entry.awake.store(vm.awake(), Ordering::SeqCst);
+        let sleeping = vm.phase() == Phase::Suspended;
+        let parts: Vec<Part> = if sleeping {
+            Part::ALL.to_vec()
+        } else {
+            vec![Part::Disk, Part::Config, Part::Meter]
+        };
+        let sent = move_vm::send(&files, &id, &parts, move_vm::Kind::Take, link)?;
+        entry.gone.store(true, Ordering::SeqCst);
+        self.forget(&id, &entry);
+        drop(vm);
+        forget_files(&files, &id);
+        Ok(sent)
+    }
+
+    /// Take a VM over `link` from the machine that had it: it arrives asleep, and its next command
+    /// restores it here. A replica copy stays the other machine's and is kept there.
+    pub fn receive_vm<L: move_vm::Link + ?Sized>(&self, link: &mut L) -> Result<String, MoveError> {
+        let offer = move_vm::hello(link)?;
+        let (workspace, environment) = offer.parts()?;
+        let id = offer.vm.clone();
+        if lock(&self.vms).contains_key(&id) {
+            return Err(move_vm::decline(
+                link,
+                format!("this machine already has the VM of workspace {workspace}"),
+            ));
+        }
+        let files = self.config.files(&workspace, &environment);
+        if offer.kind == move_vm::Kind::Take && files.disk().is_file() {
+            return Err(move_vm::decline(
+                link,
+                format!("this machine already has a VM of workspace {workspace}"),
+            ));
+        }
+        move_vm::receive(&offer, &files, link)?;
+        if offer.kind == move_vm::Kind::Replica {
+            // Kept for the day the machine holding it is lost; it lives there, not here.
+            eprintln!("tilo-linux-vm hosted: copied the VM of workspace {workspace} as a replica");
+            return Ok(id);
+        }
+        let Some(meter) = Meter::load(&files.meter()) else {
+            let _ = remove_vm_dir(&files.state);
+            return Err(MoveError::Invalid(format!(
+                "the VM of workspace {workspace} arrived without its meter"
+            )));
+        };
+        if meter.identity.vm != id
+            || meter.identity.workspace != workspace
+            || meter.identity.environment != environment
+        {
+            let _ = remove_vm_dir(&files.state);
+            return Err(MoveError::Invalid(format!(
+                "what arrived as the VM of workspace {workspace} is another's: {}",
+                meter.identity.vm
+            )));
+        }
+        let _admission = lock(&self.admission);
+        self.insert(meter.identity, files).map_err(|error| {
+            MoveError::Invalid(format!(
+                "the VM of workspace {workspace} did not take here: {error}"
+            ))
+        })?;
+        Ok(id)
+    }
+
+    /// Copy `workspace`'s VM to the replica machine at the other end of `link`, incrementally: only
+    /// the blocks that changed since its last copy. A VM that is awake is paused for a consistent
+    /// disk and goes on; only a suspended VM's snapshot goes with it. `Ok(bytes)`: the block bytes
+    /// written.
+    pub fn replicate_vm<L: move_vm::Link + ?Sized>(
+        &self,
+        workspace: &str,
+        environment: &str,
+        link: &mut L,
+    ) -> Result<u64, MoveError> {
+        for (what, name) in [("workspace", workspace), ("environment", environment)] {
+            if !valid_name(name) {
+                return Err(MoveError::Invalid(format!("{name:?} is not a {what} id")));
+            }
+        }
+        let Some(entry) = self.entry(workspace, environment) else {
+            return Err(MoveError::Invalid(format!(
+                "this machine holds no VM of workspace {workspace}"
+            )));
+        };
+        if entry.gone.load(Ordering::SeqCst) {
+            return Err(MoveError::Invalid(DELETED.to_owned()));
+        }
+        let id = entry.id();
+        let files = self.config.files(workspace, environment);
+        let mut vm = lock(&entry.vm);
+        if vm.awake() {
+            // A running VM's disk moves under the copy: the guest flushes and the VM is paused
+            // for it, and no snapshot goes (what it holds is in its memory, not on its disk).
+            let parts = [Part::Disk, Part::Config, Part::Meter];
+            Ok(vm.holding_disk(|| {
+                move_vm::send(&files, &id, &parts, move_vm::Kind::Replica, link)
+            })??)
+        } else {
+            let parts: Vec<Part> = if files.snapshot().valid() {
+                Part::ALL.to_vec()
+            } else {
+                vec![Part::Disk, Part::Config, Part::Meter]
+            };
+            Ok(move_vm::send(
+                &files,
+                &id,
+                &parts,
+                move_vm::Kind::Replica,
+                link,
+            )?)
+        }
+    }
+
+    /// Dial the machine at `to` and move `workspace`'s VM there.
+    pub fn move_to(&self, workspace: &str, environment: &str, to: &Path) -> Result<u64, MoveError> {
+        let mut link = ask_link(to)?;
+        self.move_vm(workspace, environment, &mut link)
+    }
+
+    /// Dial the replica machine at `to` and copy `workspace`'s VM there.
+    pub fn replicate_to(
+        &self,
+        workspace: &str,
+        environment: &str,
+        to: &Path,
+    ) -> Result<u64, MoveError> {
+        let mut link = ask_link(to)?;
+        self.replicate_vm(workspace, environment, &mut link)
+    }
+
+    /// Serve the socket between machines at `socket` until the process ends: each connection carries
+    /// what the other machine sends, a VM that moves or a replica copy. Same user only, as the
+    /// service's own socket is.
+    pub fn serve_moves(self: &Arc<Self>, socket: &Path) -> std::io::Result<()> {
+        let _ = std::fs::remove_file(socket);
+        let listener = tilo_files::native::socket::bind(socket)?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let service = Arc::clone(self);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    continue;
+                };
+                if !crate::peer::same_user(&stream) {
+                    continue;
+                }
+                let service = Arc::clone(&service);
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(LINK_PATIENCE));
+                    let _ = stream.set_write_timeout(Some(LINK_PATIENCE));
+                    match service.receive_vm(&mut stream) {
+                        Ok(vm) => eprintln!("tilo-linux-vm hosted: took the VM of {vm} over"),
+                        Err(error) => eprintln!("tilo-linux-vm hosted: taking a VM: {error}"),
+                    }
+                });
+            }
+        });
+        Ok(())
+    }
+
     #[must_use]
     pub fn load(&self) -> HostLoad {
         let used_mib = self.used_mib("").saturating_add(self.building_mib());
@@ -1198,6 +1423,28 @@ impl Service {
                 workspace,
                 environment,
             } => self.answer_delete(&workspace, &environment),
+            Request::MoveVm {
+                workspace,
+                environment,
+                to,
+            } => match self.move_to(&workspace, &environment, &to) {
+                Ok(bytes) => Reply::Moved {
+                    vm: format!("{workspace}/{environment}"),
+                    bytes,
+                },
+                Err(error) => Reply::Error(error.to_string()),
+            },
+            Request::ReplicateVm {
+                workspace,
+                environment,
+                to,
+            } => match self.replicate_to(&workspace, &environment, &to) {
+                Ok(bytes) => Reply::Moved {
+                    vm: format!("{workspace}/{environment}"),
+                    bytes,
+                },
+                Err(error) => Reply::Error(error.to_string()),
+            },
             Request::Drain => {
                 self.evict();
                 Reply::Done
@@ -1354,6 +1601,35 @@ fn no_vm_yet(workspace: &str) -> String {
         "workspace {workspace} has no Linux VM yet, so there is nothing to branch: a new \
          workspace's VM starts as every workspace's does, at its first Linux command"
     )
+}
+
+/// What is left of a VM that moved: the marker a wake here reads, never a VM. The other machine has
+/// its disk, its snapshot and its meter.
+fn forget_files(files: &VmFiles, id: &str) {
+    if let Err(error) = std::fs::write(
+        files.state.join("moved"),
+        format!("{id} left this machine; its disk is on another\n"),
+    ) {
+        eprintln!("tilo-linux-vm hosted: {id}: marking where it moved: {error}");
+    }
+    let removed = remove_dir_if_present(&files.vmm()).and_then(|()| {
+        match std::fs::remove_file(files.meter()) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    });
+    if let Err(error) = removed {
+        eprintln!("tilo-linux-vm hosted: {id}: what the move left: {error}");
+    }
+    let _ = remove_dir_if_present(&files.run);
+}
+
+/// The connection to the machine at `to`: the socket the other machine serves what it is sent on.
+fn ask_link(to: &Path) -> Result<UnixStream, MoveError> {
+    let stream = tilo_files::native::socket::connect(to)?;
+    stream.set_read_timeout(Some(LINK_PATIENCE))?;
+    stream.set_write_timeout(Some(LINK_PATIENCE))?;
+    Ok(stream)
 }
 
 /// Remove a VM's state directory, and its workspace's directory once it holds no other VM.

@@ -107,6 +107,20 @@ pub enum Request {
         workspace: String,
         environment: String,
     },
+    /// Move the workspace's VM to the machine listening at `to`: it is suspended, its disk and
+    /// snapshot streamed there, and this machine forgets it once that one has all of it.
+    MoveVm {
+        workspace: String,
+        environment: String,
+        to: PathBuf,
+    },
+    /// Copy the workspace's VM to the replica machine listening at `to`, incrementally: the blocks
+    /// that changed since its last copy.
+    ReplicateVm {
+        workspace: String,
+        environment: String,
+        to: PathBuf,
+    },
     /// Drain this machine for a rolling update: take no more wakes and suspend every awake VM onto
     /// the state directory, as the cloud's eviction notice does.
     Drain,
@@ -180,6 +194,11 @@ pub enum Reply {
     /// starts as any new one does, at its first Linux command.
     NoVm {
         workspace: String,
+    },
+    /// The VM moved, or was copied to the replica, as `bytes` of its state went.
+    Moved {
+        vm: String,
+        bytes: u64,
     },
 }
 
@@ -408,7 +427,30 @@ mod tests {
                 },
                 bytes(&[b"\x0a", named]),
             ),
-            (Request::Drain, b"\x0b".to_vec()),
+        ]
+    }
+
+    /// Moving a VM away, and draining a machine for a rolling update: the requests a lease or an
+    /// operator sends.
+    fn moving(named: &[u8]) -> Vec<(Request, Vec<u8>)> {
+        vec![
+            (
+                Request::MoveVm {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                    to: "/m".into(),
+                },
+                bytes(&[b"\x0b", named, b"\x02/m"]),
+            ),
+            (
+                Request::ReplicateVm {
+                    workspace: "ws".into(),
+                    environment: "default".into(),
+                    to: "/m".into(),
+                },
+                bytes(&[b"\x0c", named, b"\x02/m"]),
+            ),
+            (Request::Drain, b"\x0d".to_vec()),
         ]
     }
 
@@ -416,7 +458,8 @@ mod tests {
     /// host and its clients (ush, the member, the CLI), all shipped in one image, speak.
     #[test]
     fn every_request_keeps_its_encoding() {
-        let all = encoded();
+        let named: &[u8] = b"\x02ws\x07default";
+        let all = encoded().into_iter().chain(moving(named));
         for (request, expected) in all {
             assert_eq!(payload(&request), expected, "{request:?}");
             let frame = FRAMING.encode_value(&request).unwrap();

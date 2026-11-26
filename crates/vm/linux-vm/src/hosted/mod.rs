@@ -16,6 +16,7 @@ pub mod guest;
 pub mod jail;
 pub mod memory;
 pub mod meter;
+pub mod move_vm;
 pub mod network;
 pub mod plan;
 pub mod service;
