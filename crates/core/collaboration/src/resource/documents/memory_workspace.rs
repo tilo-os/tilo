@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{DocumentAsk, DocumentRead};
 use automerge::AutoCommit;
+use tilo_actions::surface::ReaderRule;
 use tilo_automerge::ApplyIncoming as _;
 
 use super::{DocumentPort, ReadyWake, Written};
@@ -26,6 +27,9 @@ pub struct MemoryWorkspace {
     pub writes: Cell<usize>,
     /// How many reads by id came.
     pub reads: Cell<usize>,
+    /// The reader rule of each kind kept here ([`Self::declaring`]): the kinds whose records
+    /// only some people read.
+    rules: RefCell<BTreeMap<String, tilo_actions::surface::ReaderRule>>,
     /// The documents it has not answered for yet ([`Self::withhold`]).
     withheld: RefCell<BTreeSet<String>>,
     /// The apps whose documents come from the workspace's hosts ([`Self::await_hosts`]).
@@ -61,6 +65,49 @@ impl MemoryWorkspace {
             documents.insert(key, held);
         }
         loaded.map(drop).map_err(|error| error.to_string())
+    }
+
+    /// Keep `surface`'s kind here by the readers its type names, as a device's store declares
+    /// the records the system keeps: a write then records who the change says made it as the
+    /// record's readers, so a reader of it is the person whose record it is.
+    #[must_use]
+    pub fn declaring(self, surface: tilo_actions::surface::Surface) -> Self {
+        if let Some(rule) = surface.readers {
+            self.rules.borrow_mut().insert(surface.kind, rule);
+        }
+        self
+    }
+
+    /// Who a write of `kind` names as its readers, from the kind's rule and `changes`: the person
+    /// whose record it is, as [`tilo_actions::surface::ReaderRule::Author`] says. `None`
+    /// for a kind every member reads.
+    fn readers_by_rule(&self, kind: &str, changes: &[u8]) -> Option<String> {
+        let rule = self.rules.borrow().get(kind).cloned()?;
+        // Only the author's own record is derived here: a rule that opens with a field (until)
+        // or names a role keeps its readers with the workspace's governance, which this store
+        // does not hold.
+        let ReaderRule::Author { until: None } = rule else {
+            return None;
+        };
+        let made = automerge::Automerge::parse_changes(changes).ok()?;
+        let newest = made
+            .iter()
+            .filter_map(|change| change.message().map(str::to_owned))
+            .filter_map(|message| tilo_actions::ActionContext::from_change_message(&message))
+            .next_back()?;
+        let acting = newest.invoker?.acting;
+        let person = match acting.by.member_id() {
+            Some(tilo_actions::MemberId::Person(person)) => person.as_str().to_owned(),
+            _ => acting
+                .acted_for
+                .first()
+                .and_then(|acting| acting.by.member_id())
+                .and_then(|member| match member {
+                    tilo_actions::MemberId::Person(person) => Some(person.as_str().to_owned()),
+                    _ => None,
+                })?,
+        };
+        Some(person.to_ascii_lowercase())
     }
 
     /// Leave reads of document `id` unanswered ([`DocumentRead::Pending`]) until [`Self::answer`]:
@@ -183,21 +230,19 @@ impl DocumentPort for MemoryWorkspace {
         withholds
     }
 
-    fn write(
-        &self,
-        app: &str,
-        workspace: &str,
-        id: &str,
-        _kind: &str,
-        changes: Vec<u8>,
-    ) -> Written {
+    fn write(&self, app: &str, workspace: &str, id: &str, kind: &str, changes: Vec<u8>) -> Written {
         self.writes.set(self.writes.get() + 1);
         let answer = if self.refuse.get() {
             Err("the workspace refused it".to_owned())
         } else {
             let key = (app.to_owned(), workspace.to_owned(), id.to_owned());
-            if !self.documents.borrow().contains_key(&key) {
-                self.readers.borrow_mut().remove(&key);
+            match self.readers_by_rule(kind, &changes) {
+                Some(readers) => {
+                    self.readers.borrow_mut().insert(key.clone(), readers);
+                }
+                None => {
+                    self.readers.borrow_mut().remove(&key);
+                }
             }
             // A founding write is the whole document, any other the changes after what is held:
             // both load the same way.

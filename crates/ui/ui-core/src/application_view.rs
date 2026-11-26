@@ -455,18 +455,31 @@ impl InstanceViewStore {
         roots.next().is_none().then_some(root)
     }
 
+    /// The person whose windows these views are: their root key when their reader set names one,
+    /// else the one person the set names as they are (a person this device knows no root for).
+    fn view_person(&self) -> Option<tilo_action_policy::PersonId> {
+        if let Some(root) = self.person_root() {
+            return Some(tilo_action_policy::PersonId::from_root(root));
+        }
+        let readers = self.readers.as_deref()?;
+        let one_person = !readers.is_empty()
+            && readers != collab_types::EVERY_MEMBER
+            && !readers.starts_with(collab_types::ROLE_READERS)
+            && !readers.contains(',');
+        one_person.then(|| tilo_action_policy::PersonId::from(readers))
+    }
+
     /// Commit what `doc` holds as the view of the person whose window it is: a change the
     /// workspace takes names someone, and a view of no person the workspace refuses anyway.
     fn commit_view(&self, doc: &mut AutoCommit) {
         if doc.pending_ops() == 0 {
             return;
         }
-        let Some(root) = self.person_root() else {
+        let Some(person) = self.view_person() else {
             doc.commit();
             return;
         };
-        let acting =
-            tilo_action_policy::Acting::person(tilo_action_policy::PersonId::from_root(root));
+        let acting = tilo_action_policy::Acting::person(person);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::ActionContext::whole_edit_by(&acting)),
@@ -590,7 +603,12 @@ mod tests {
     /// written where every member would read it.
     #[test]
     fn a_view_is_written_for_its_person_alone() {
-        let memory = Rc::new(crate::resource::MemoryWorkspace::default());
+        // The workspace keeps a window's view by its declared type: read by the person whose
+        // window it is, as a device's store declares the records the system keeps.
+        let memory = Rc::new(
+            crate::resource::MemoryWorkspace::default()
+                .declaring(tilo_desktop_model::record::window_view()),
+        );
         let workspace: Rc<dyn DocumentPort> = memory.clone();
         let ws = "44444444-4444-4444-8444-444444444444";
         let root = [0xa0; 32];
