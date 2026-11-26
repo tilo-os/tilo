@@ -229,6 +229,29 @@ tilo_test_env::scenario! {
         assert_eq!(restored.complete_bytes(), intent.complete_bytes());
         assert_eq!(restored.durable_bytes().unwrap(), saved);
     }
+
+    phase a_device_address_signed_with_the_retired_moderation_field_still_reads;
+    {
+        // A workspace's device said whether it ran the workspace's moderation bot until the bot
+        // was retired; the addresses devices signed then are kept in its membership.
+        let (_, _, _, _, hint, _) = actual_redemption();
+        let mut fields: serde_json::Value = serde_json::from_str(&hint.opaque_json).unwrap();
+        fields["moderates"] = serde_json::Value::Bool(false);
+        let host_key = SigningKey::from_bytes(&[71; 32]);
+        let signed = tilo_workspace_join::sign_transport_hint(
+            hint.kind.clone(),
+            fields.to_string(),
+            hint.host.clone(),
+            hint.service_public_key,
+            &host_key,
+        )
+        .unwrap();
+        let read = WorkspaceDeviceHintV1::from_transport_hint(&signed).unwrap();
+        assert_eq!(
+            read,
+            WorkspaceDeviceHintV1::from_transport_hint(&hint).unwrap()
+        );
+    }
 }
 
 fn pending_owner() -> (tempfile::TempDir, crate::owner::DeviceWorkspaces) {

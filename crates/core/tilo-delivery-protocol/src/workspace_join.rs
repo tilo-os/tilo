@@ -262,7 +262,15 @@ impl WorkspaceDeviceHintV1 {
                 "transport hint is not an Iroh address of a workspace's device".into(),
             ));
         }
-        let value: Self = serde_json::from_str(&hint.opaque_json)
+        let mut json: serde_json::Value = serde_json::from_str(&hint.opaque_json)
+            .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))?;
+        // A device that ran the workspace's moderation bot said so here until the bot was
+        // retired; the field grants nothing now, and the signature is checked over the text as
+        // signed, whatever is read of it.
+        if let Some(fields) = json.as_object_mut() {
+            fields.remove("moderates");
+        }
+        let value: Self = serde_json::from_value(json)
             .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))?;
         if hint.host != value.device_certificate {
             return Err(WorkspaceJoinError::Protocol(
