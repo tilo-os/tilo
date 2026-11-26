@@ -798,9 +798,9 @@ fn a_change_filter_reads_back_from_its_text() {
             ("incoming_message", Test::Is(json!(true))),
         ]),
     };
-    let text = crate::text::trigger_line(&trigger);
+    let text = crate::trigger_line::trigger_line(&trigger);
     assert_eq!(
-        crate::text::trigger_of_line(&text),
+        crate::trigger_line::trigger_of_line(&text),
         Ok(trigger),
         "the filter reads back from `{text}`"
     );

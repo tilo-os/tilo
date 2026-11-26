@@ -111,7 +111,7 @@ pub struct Definition {
     /// What its person reads it by.
     pub name: String,
     /// What starts it, as the line a Shortcut opens with
-    /// ([`tilo_automation::text::trigger_line`]).
+    /// ([`tilo_automation::trigger_line::trigger_line`]).
     pub when: String,
     /// A question its person's model answers with yes or no about what happened; it goes on
     /// only on a yes.
@@ -179,7 +179,7 @@ impl Definition {
         if self.told_as == Some(Kind::Question) {
             return Err(TOLD_AS.to_owned());
         }
-        self.when = tilo_automation::text::trigger_line(&self.trigger()?);
+        self.when = tilo_automation::trigger_line::trigger_line(&self.trigger()?);
         Ok(self)
     }
 
@@ -213,7 +213,7 @@ impl Definition {
     /// The line does not read as a trigger, or names one no host can run with every device
     /// off.
     pub fn trigger(&self) -> Result<TriggerSpec, String> {
-        let trigger = tilo_automation::text::trigger_of_line(&self.when)?;
+        let trigger = tilo_automation::trigger_line::trigger_of_line(&self.when)?;
         match &trigger {
             TriggerSpec::Schedule {
                 schedule: Schedule::Interval { seconds },

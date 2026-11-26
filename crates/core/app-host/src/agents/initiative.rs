@@ -816,7 +816,7 @@ impl Initiative {
             )
             .await
         {
-            tracing::debug!(workspace = %asked.workspace, %error, "the look-round's note did not take an example");
+            tracing::warn!(workspace = %asked.workspace, %error, "the look-round's note did not take an example");
         }
     }
 }
@@ -927,7 +927,8 @@ fn told(findings: &Value) -> String {
 
 /// `when` as a look-round's rhythm, written the one way it is kept.
 fn rhythm(when: &str) -> Result<String, ActionCallError> {
-    let trigger = tilo_automation::text::trigger_of_line(when).map_err(ActionCallError::refused)?;
+    let trigger =
+        tilo_automation::trigger_line::trigger_of_line(when).map_err(ActionCallError::refused)?;
     match &trigger {
         TriggerSpec::Schedule {
             schedule: Schedule::Interval { seconds },
@@ -938,7 +939,7 @@ fn rhythm(when: &str) -> Result<String, ActionCallError> {
                 workspace_initiative::MIN_PERIOD_SECS
             )))
         }
-        TriggerSpec::Schedule { .. } => Ok(tilo_automation::text::trigger_line(&trigger)),
+        TriggerSpec::Schedule { .. } => Ok(tilo_automation::trigger_line::trigger_line(&trigger)),
         _ => Err(ActionCallError::refused(
             "a look-round has a rhythm: `every 1800 seconds`, `every day at 09:00`",
         )),

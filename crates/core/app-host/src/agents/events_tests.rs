@@ -143,7 +143,7 @@ fn a_question_comes_first_then_the_count_then_the_instruction() {
 
 #[test]
 fn what_happened_in_the_workspace_goes_with_the_instruction_as_data() {
-    let line = tilo_automation::text::trigger_line(&TriggerSpec::ResourceChanged {
+    let line = tilo_automation::trigger_line::trigger_line(&TriggerSpec::ResourceChanged {
         kind: "tasks.issue".into(),
         actions: Vec::new(),
         fields: Vec::new(),

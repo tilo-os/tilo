@@ -52,8 +52,7 @@ pub mod schedule;
 pub mod shortcut;
 pub mod source_change;
 mod template;
-pub mod text;
-mod text_read;
+pub mod trigger_line;
 mod types;
 
 #[cfg(test)]

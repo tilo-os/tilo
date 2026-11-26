@@ -1,10 +1,9 @@
-//! A shortcut's triggers as text: the `when ...`, `every ...` and `once at ...`
-//! lines a program opens with, written and read.
+//! A shortcut's trigger as the one line an event opens with: `once at
+//! 2026-11-17T11:32:00Z`, `every Monday at 09:00`, `when a ... changes`.
 //!
 //! A trigger is one line, and that line is the trigger's whole state: which
 //! event it waits for, and every filter the event carries. The writer and the
-//! reader live beside each other, so a change to one is a change to the other;
-//! they are held to each other by [`super`]'s round-trip tests.
+//! reader live beside each other, so a change to one is a change to the other.
 
 use std::fmt::Write as _;
 
@@ -12,13 +11,26 @@ use serde_json::Value;
 
 use crate::shortcut::{Schedule, TriggerSpec};
 
-use super::{literal_text, number_at, quoted, split_word, text_at};
+/// `trigger` as the one line an event opens with. The line is the trigger's
+/// whole state, every filter included, and [`trigger_of_line`] reads it back.
+#[must_use]
+pub fn trigger_line(trigger: &TriggerSpec) -> String {
+    trigger_text(trigger)
+}
+
+/// The trigger `line` says, as [`trigger_line`] writes one.
+///
+/// # Errors
+/// The line does not read as a trigger, in words for whoever wrote it.
+pub fn trigger_of_line(line: &str) -> Result<TriggerSpec, String> {
+    trigger_of(line)
+}
 
 #[allow(
     clippy::too_many_lines,
     reason = "one arm per kind of trigger, each saying it the way a person reads it"
 )]
-pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
+fn trigger_text(trigger: &TriggerSpec) -> String {
     match trigger {
         TriggerSpec::Keyboard { chord } => format!("when someone presses {}", quoted(chord)),
         TriggerSpec::Schedule {
@@ -280,28 +292,6 @@ fn weekday_name(day: crate::shortcut::Weekday) -> &'static str {
 
 // --------------------------------------------------------------- reading ---
 
-/// Whether a line declares a trigger.
-pub(super) fn is_trigger(text: &str) -> bool {
-    [
-        "when someone presses ",
-        "every ",
-        "once at ",
-        "when the app opens ",
-        "when the network changes",
-        "when a message arrives",
-        "when a device comes near",
-        "when focus ",
-        "when someone joins ",
-        "when a file changes in ",
-        "when something new is in ",
-        "when a ",
-        "when \"",
-    ]
-    .iter()
-    .any(|prefix| text.starts_with(prefix))
-        || offset_at(text).is_some()
-}
-
 /// What a trigger at a time a resource holds opens with: how far from that
 /// time its moment is, in seconds and negative for before it, and the rest
 /// of the line. `at "..."` is the time itself, `15 minutes before "..."` and
@@ -393,7 +383,7 @@ fn source_change(rest: &str) -> Result<TriggerSpec, String> {
     })
 }
 
-pub(super) fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
+fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
     let text = text.trim();
     if let Some((offset_secs, rest)) = offset_at(text) {
         return resource_time(offset_secs, rest);
@@ -784,4 +774,83 @@ fn weekday_of(name: &str) -> Result<crate::shortcut::Weekday, String> {
         "Sunday" => Ok(Sunday),
         other => Err(format!("`{other}` is not a day of the week")),
     }
+}
+
+// --------------------------------------------------- values on a line ---
+
+/// `text` as a value on the line writes it: inside quotation marks.
+fn quoted(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\""))
+}
+
+/// A JSON value as the line writes it.
+fn literal_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => quoted(text),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(true) => "yes".to_owned(),
+        Value::Bool(false) => "no".to_owned(),
+        Value::Null => "nothing".to_owned(),
+        Value::Array(items) => {
+            let written: Vec<String> = items.iter().map(literal_text).collect();
+            format!("[{}]", written.join(", "))
+        }
+        Value::Object(members) => {
+            let written: Vec<String> = members
+                .iter()
+                .map(|(name, member)| format!("{}: {}", quoted(name), literal_text(member)))
+                .collect();
+            format!("{{{}}}", written.join(", "))
+        }
+    }
+}
+
+/// A quoted text, and what follows the closing quote.
+fn text_at(text: &str) -> Result<(String, &str), String> {
+    let text = text.trim_start();
+    let Some(rest) = text.strip_prefix('"') else {
+        return Err("write the words inside quotation marks".to_owned());
+    };
+    let mut out = String::new();
+    let mut escaped = false;
+    for (index, ch) in rest.char_indices() {
+        if escaped {
+            out.push(match ch {
+                'n' => '\n',
+                't' => '\t',
+                other => other,
+            });
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => {
+                let after = rest.get(index.saturating_add(1)..).unwrap_or_default();
+                return Ok((out, after));
+            }
+            other => out.push(other),
+        }
+    }
+    Err("this text has no closing quotation mark".to_owned())
+}
+
+/// The first word of `text`, and what follows it.
+fn split_word(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    let end = text.find(' ')?;
+    let (word, rest) = text.split_at(end);
+    (!word.is_empty()).then_some((word, rest))
+}
+
+/// A number from the start of `text`, and what follows it.
+fn number_at(text: &str) -> Option<(Value, &str)> {
+    let end = text
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_digit() || matches!(ch, '-' | '+' | '.' | 'e' | 'E'))
+        .map(|(index, ch)| index.saturating_add(ch.len_utf8()))
+        .last()?;
+    let (head, rest) = text.split_at(end);
+    let number: serde_json::Number = head.parse().ok()?;
+    Some((Value::Number(number), rest))
 }
