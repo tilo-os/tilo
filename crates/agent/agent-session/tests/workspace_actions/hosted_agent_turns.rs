@@ -2200,17 +2200,22 @@ async fn a_personal_assistants_grant_keeps_its_full_name() {
     .await
     .unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    while server
-        .agents
-        .agent_grant_status(
-            assistant.workspace_id,
-            &assistant.agent,
-            &keeper,
-            roster.created_at,
+    loop {
+        let status = AgentGrantAction::Status.target(&assistant.agent);
+        let current: tilo_server_protocol::agents::AgentGrantStatus = serde_json::from_value(
+            assistant
+                .page
+                .invoke_on(&status.provider, status.address, InvokeArgument::None)
+                .await
+                .unwrap()
+                .value
+                .unwrap(),
         )
-        .state
-        != GrantState::Denied
-    {
+        .unwrap();
+        if current.state == GrantState::Denied {
+            assert!(!current.ready);
+            break;
+        }
         assert!(
             Instant::now() < deadline,
             "a rename must invalidate the pending grant"
