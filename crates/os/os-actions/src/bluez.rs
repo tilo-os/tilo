@@ -235,6 +235,19 @@ pub fn forget_address(address: &str) -> Result<(), String> {
     forget(&device.path)
 }
 
+/// Renames the device at `address` to `name`, as the person calls it on
+/// this machine. What the device calls itself stays readable as its own name.
+pub fn rename_address(address: &str, name: &str) -> Result<(), String> {
+    if !valid_address(address) {
+        return Err("invalid Bluetooth address".into());
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a Bluetooth device needs a name".into());
+    }
+    set_alias(&known_address(address)?.path, name)
+}
+
 pub fn connect_address(address: &str) -> Result<(), String> {
     connect(&known_address(address)?.path)
 }

@@ -9,6 +9,7 @@ so-tilo-connectivity-tethering = Tethering
 
 so-tilo-connectivity-bluetooth-accessory-connect = Das Zubehör verbinden
 so-tilo-connectivity-bluetooth-accessory-disconnect = Das Zubehör trennen
+so-tilo-connectivity-bluetooth-accessory-rename = Das Zubehör umbenennen: wie dieser Rechner es nennt, in BlueZ behalten
 so-tilo-connectivity-bluetooth-accessory-forget = Das Gerät vergessen
 so-tilo-connectivity-bluetooth-nearby-pair = Ein Gerät koppeln
 so-tilo-connectivity-bluetooth-scan = Nach Zubehör suchen

@@ -81,6 +81,9 @@ enum Landed {
     Changed {
         part: Part,
         action: String,
+        /// The one thing the change was about, as the reading names it: the
+        /// network a join tried, so a refusal is said on that network's row.
+        subject: Option<String>,
         result: Result<(), String>,
         readings: Box<Readings>,
     },
@@ -219,10 +222,18 @@ impl Connectivity {
             Landed::Changed {
                 part,
                 action,
+                subject,
                 result,
                 readings,
             } => {
                 self.take(*readings);
+                // What a scan or a join refused is said where the person
+                // looks for it: on the Wi-Fi section, or on that network's
+                // own row. A change that landed clears what the last one said
+                // of the same thing.
+                if part == Part::Network {
+                    self.say_why(&action, subject.as_deref(), result.as_ref().err());
+                }
                 let (pending, problem) = self.status(part);
                 if let Some(at) = pending.iter().position(|id| *id == action) {
                     pending.remove(at);
@@ -327,6 +338,21 @@ impl Connectivity {
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
         readings.network.ask_before_open_networks = self.asking;
+        // What the last scan and the last join said of a network stay across
+        // the readings the device publishes: they are the service's account
+        // of what it asked, not something the device reads.
+        readings.network.wifi.scan_problem = old.network.wifi.scan_problem.take();
+        for row in &mut readings.network.wifi.networks {
+            if let Some(held) = old
+                .network
+                .wifi
+                .networks
+                .iter_mut()
+                .find(|held| held.name == row.name)
+            {
+                row.problem = held.problem.take();
+            }
+        }
         // What the service itself asked a modem: the operators a scan found and the code the
         // network answered stay across the readings the device publishes.
         for unit in &mut readings.modem.modems {
@@ -360,6 +386,18 @@ impl Connectivity {
     /// hears whether the device made it once it is read back, as the reading
     /// shows it.
     fn start(&mut self, part: Part, action: &str, change: Change) -> Started {
+        // The one thing this change is about, as the reading names it: the
+        // network a join tries. What the previous change of it said goes as
+        // this one starts, so a retry shows the attempt and not the refusal
+        // before it.
+        let subject = match &change {
+            Change::Join { network, .. } => Some(network.clone()),
+            Change::Enterprise { config, .. } => Some(config.ssid.clone()),
+            _ => None,
+        };
+        if part == Part::Network {
+            self.clear_what_the_last_change_said(&change, subject.as_deref());
+        }
         self.status(part).0.push(action.to_owned());
         let action = action.to_owned();
         let (answer, answered) = tilo_actions::remote::pending();
@@ -375,11 +413,41 @@ impl Connectivity {
             Landed::Changed {
                 part,
                 action,
+                subject,
                 result,
                 readings,
             }
         });
         Started::Later(answered)
+    }
+
+    /// Say what a network change refused where the person looks for it: on
+    /// the Wi-Fi section for a search, on the network's own row for a join.
+    /// A change that landed clears what the last one of it said.
+    fn say_why(&mut self, action: &str, subject: Option<&str>, why: Option<&String>) {
+        let wifi = &mut self.readings.network.wifi;
+        if action == "scan-wifi" {
+            wifi.scan_problem = why.cloned();
+        }
+        if let Some(name) = subject
+            && let Some(row) = wifi.networks.iter_mut().find(|row| row.name == name)
+        {
+            row.problem = why.cloned();
+        }
+    }
+
+    /// Clear what the last scan or join said, as the next one starts: the
+    /// person sees the attempt they made, not the failure before it.
+    fn clear_what_the_last_change_said(&mut self, change: &Change, subject: Option<&str>) {
+        let wifi = &mut self.readings.network.wifi;
+        if matches!(change, Change::Scan) {
+            wifi.scan_problem = None;
+        }
+        if let Some(name) = subject
+            && let Some(row) = wifi.networks.iter_mut().find(|row| row.name == name)
+        {
+            row.problem = None;
+        }
     }
 
     #[allow(
@@ -619,6 +687,7 @@ impl Connectivity {
             BluetoothAccessoryAction::Connect => Change::Connect { address },
             BluetoothAccessoryAction::Disconnect => Change::Disconnect { address },
             BluetoothAccessoryAction::Forget => Change::ForgetBluetooth { address },
+            BluetoothAccessoryAction::Rename { name } => Change::RenameBluetooth { address, name },
         };
         self.start(Part::Bluetooth, id, change)
     }
@@ -1175,7 +1244,8 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
         };
         let bindings = tilo_resource::RowBindings::new()
             .bind(action, NO_ARGUMENTS)
-            .bind(BluetoothAccessoryAction::FORGET, NO_ARGUMENTS);
+            .bind(BluetoothAccessoryAction::FORGET, NO_ARGUMENTS)
+            .bind(BluetoothAccessoryAction::RENAME, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<BluetoothAccessoryRow>(
                 id,

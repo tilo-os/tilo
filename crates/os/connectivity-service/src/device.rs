@@ -97,6 +97,11 @@ pub enum Change {
     ForgetBluetooth {
         address: String,
     },
+    /// Rename the device at `address`, as the person calls it.
+    RenameBluetooth {
+        address: String,
+        name: String,
+    },
     Vpn {
         profile: String,
         on: bool,
@@ -391,6 +396,7 @@ impl Device for OsDevice {
                     on: radios.wifi_enabled,
                     hardware_blocked: radios.wifi_hardware_blocked,
                     networks: ordered(networks),
+                    scan_problem: None,
                 },
                 wired,
                 mobile: Mobile {
@@ -511,6 +517,9 @@ impl Device for OsDevice {
             Change::ScanBluetooth(false) => os_actions::bluez::stop_scan(),
             Change::Pair { address } => os_actions::bluez::pair_handoff(address),
             Change::ForgetBluetooth { address } => os_actions::bluez::forget_address(address),
+            Change::RenameBluetooth { address, name } => {
+                os_actions::bluez::rename_address(address, name)
+            }
             Change::Vpn { profile, on } => os_actions::set_vpn_connection_uuid(profile, *on),
             Change::ImportVpn { kind, name, text } => {
                 os_actions::network_settings::import_vpn_text(kind, name, text).map(|_| ())

@@ -22,6 +22,9 @@ struct Fake {
     refuse: Mutex<Option<String>>,
     /// The operators a scan finds.
     operators: Mutex<Vec<os_actions::Operator>>,
+    /// The password a Wi-Fi network in reach takes, when it is set: any
+    /// other password is refused as `NetworkManager` refuses one.
+    password: Mutex<Option<String>>,
     /// What the network answers the next code, and what it was asked, in order.
     answers: Mutex<Vec<os_actions::CodeAnswer>>,
     asked: Mutex<Vec<String>>,
@@ -42,6 +45,7 @@ impl Fake {
                         network("Cafe", false, false, false),
                         network("Office", false, true, false),
                     ],
+                    ..Wifi::default()
                 },
                 wired: Some(Wired::default()),
                 mobile: Mobile::default(),
@@ -101,6 +105,7 @@ impl Fake {
                     on: true,
                     hardware_blocked: false,
                     networks: vec![network("Home", true, true, false)],
+                    ..Wifi::default()
                 },
                 mobile: Mobile {
                     available: true,
@@ -238,6 +243,16 @@ impl Device for Fake {
         if let Some(refusal) = refusal {
             return Err(refusal);
         }
+        if let Change::Join { password, .. } = change {
+            let taken = self.password.lock().expect("password").clone();
+            if let Some(taken) = taken
+                && password.as_deref() != Some(taken.as_str())
+            {
+                // What `NetworkManager` says when the secret it was given is
+                // not the one the network takes.
+                return Err("Secrets were required, but not provided".into());
+            }
+        }
         {
             let mut readings = self.readings.lock().expect("readings");
             apply_network(&mut readings.network, change);
@@ -363,6 +378,13 @@ fn apply_bluetooth(bluetooth: &mut Bluetooth, change: &Change) {
             bluetooth
                 .accessories
                 .retain(|accessory| accessory.address != *address);
+        }
+        Change::RenameBluetooth { address, name } => {
+            for accessory in &mut bluetooth.accessories {
+                if accessory.address == *address {
+                    accessory.name.clone_from(name);
+                }
+            }
         }
         _ => {}
     }
@@ -959,7 +981,7 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
     assert_eq!(child_actions(&service, "bluetooth-nearby:AA:CC"), ["pair"]);
     assert_eq!(
         child_actions(&service, "bluetooth-accessory:AA:BB"),
-        ["connect", "forget"]
+        ["connect", "forget", "rename"]
     );
     assert_eq!(
         child_actions(&service, "vpn-profile:uuid-work"),
@@ -1358,6 +1380,7 @@ fn laptop_with_open_network() -> Arc<Fake> {
                 on: true,
                 hardware_blocked: false,
                 networks: vec![network("Cafe", false, false, false)],
+                ..Wifi::default()
             },
             saved: vec![SavedNetwork {
                 name: "Cafe".into(),
@@ -1610,4 +1633,159 @@ fn a_code_the_network_refuses_says_why() {
         json!("a SIM lock holds the modem")
     );
     assert_eq!(read(&service, MODEM)["modems"][0]["code"], Value::Null);
+}
+
+/// The network a row's own reading finds, by its name.
+fn wifi_row<'a>(network: &'a Value, name: &str) -> &'a Value {
+    network["wifi"]["networks"]
+        .as_array()
+        .expect("the networks in reach")
+        .iter()
+        .find(|row| row["name"] == json!(name))
+        .unwrap_or_else(|| panic!("{name} is in reach"))
+}
+
+/// A search for networks the device refuses says why on the Wi-Fi section, and a retry that works
+/// clears it: the person reads the reason where the networks stand, and looks again.
+#[test]
+fn a_scan_that_fails_says_why_and_a_retry_clears_it() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    *fake.refuse.lock().expect("refuse") = Some("NetworkManager is not running".into());
+    service
+        .invoke(NETWORK, "scan-wifi", &Map::new())
+        .expect("Wi-Fi is on, so it looks");
+    service.settle();
+    let network = read(&service, NETWORK);
+    assert_eq!(
+        network["wifi"]["scan-problem"],
+        json!("NetworkManager is not running")
+    );
+    assert_eq!(
+        network["wifi"]["networks"].as_array().map(Vec::len),
+        Some(3),
+        "what the last search found still stands"
+    );
+
+    // Looking again, with the device back: the attempt clears the refusal
+    // before it lands, and a search that works leaves nothing to explain.
+    *fake.refuse.lock().expect("refuse") = None;
+    service
+        .invoke(NETWORK, "scan-wifi", &Map::new())
+        .expect("taken");
+    assert_eq!(read(&service, NETWORK)["wifi"]["scan-problem"], Value::Null);
+    service.settle();
+    let network = read(&service, NETWORK);
+    assert_eq!(network["wifi"]["scan-problem"], Value::Null);
+    assert_eq!(network["problem"], Value::Null);
+    assert_eq!(
+        fake.changes(),
+        [Change::Scan, Change::Scan],
+        "the retry asked the device to look again"
+    );
+}
+
+/// A wrong password is said on the row of the network it was typed for, and typing the right one
+/// joins: no other network carries the refusal.
+#[test]
+fn a_wrong_password_is_said_on_that_network_and_the_retry_joins() {
+    let fake = Fake::laptop();
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings
+            .network
+            .wifi
+            .networks
+            .push(network("Studio", false, true, false));
+    }
+    *fake.password.lock().expect("password") = Some("open sesame".into());
+    let mut service = service(&fake);
+
+    service
+        .invoke(
+            NETWORK,
+            "connect-wifi",
+            &arguments(json!({"network": "Studio", "password": "sesame"})),
+        )
+        .expect("taken");
+    service.settle();
+    let network = read(&service, NETWORK);
+    assert_eq!(
+        wifi_row(&network, "Studio")["problem"],
+        json!("Secrets were required, but not provided"),
+        "the row of the network the password was typed for says why"
+    );
+    assert_eq!(wifi_row(&network, "Studio")["connected"], json!(false));
+    assert_eq!(
+        wifi_row(&network, "Home")["problem"],
+        Value::Null,
+        "and no other network does"
+    );
+
+    // The person types it again, right this time: the row clears as the
+    // attempt starts and joins.
+    service
+        .invoke(
+            NETWORK,
+            "connect-wifi",
+            &arguments(json!({"network": "Studio", "password": "open sesame"})),
+        )
+        .expect("taken");
+    assert_eq!(
+        wifi_row(&read(&service, NETWORK), "Studio")["problem"],
+        Value::Null,
+        "the retry clears the refusal as it starts"
+    );
+    service.settle();
+    let network = read(&service, NETWORK);
+    assert_eq!(wifi_row(&network, "Studio")["connected"], json!(true));
+    assert_eq!(wifi_row(&network, "Studio")["problem"], Value::Null);
+    assert_eq!(wifi_row(&network, "Home")["connected"], json!(false));
+}
+
+/// An accessory's own actions rename it, say its signal and forget it, and the accessory is a
+/// resource of its own offering each.
+#[test]
+fn an_accessory_is_renamed_and_forgotten_by_its_own_actions() {
+    let fake = Fake::laptop();
+    fake.readings
+        .lock()
+        .expect("readings")
+        .bluetooth
+        .accessories[0]
+        .signal = Some(-52);
+    let mut service = service(&fake);
+    let bluetooth = read(&service, BLUETOOTH);
+    assert_eq!(bluetooth["accessories"][0]["name"], json!("Headphones"));
+    assert_eq!(
+        bluetooth["accessories"][0]["signal"],
+        json!(-52),
+        "a paired device in reach says how strong it is"
+    );
+    assert_eq!(
+        child_actions(&service, "bluetooth-accessory:AA:BB"),
+        ["connect", "forget", "rename"],
+        "the accessory offers its own verbs"
+    );
+
+    service
+        .invoke(
+            "bluetooth-accessory:AA:BB",
+            "rename",
+            &arguments(json!({"name": "Studio headphones"})),
+        )
+        .expect("taken");
+    service.settle();
+    let bluetooth = read(&service, BLUETOOTH);
+    assert_eq!(
+        bluetooth["accessories"][0]["name"],
+        json!("Studio headphones")
+    );
+    assert_eq!(bluetooth["accessories"][0]["address"], json!("AA:BB"));
+
+    service
+        .invoke("bluetooth-accessory:AA:BB", "forget", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service, BLUETOOTH)["accessories"], json!([]));
 }

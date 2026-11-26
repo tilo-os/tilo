@@ -395,7 +395,7 @@ pub enum BluetoothAction {
 
 /// A paired Bluetooth accessory's own actions, called on its address
 /// (`bluetooth-accessory:<hardware address>`).
-#[derive(Clone, Copy, Debug, PartialEq, Effect)]
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.bluetooth-accessory")]
 pub enum BluetoothAccessoryAction {
     /// Connect the accessory.
@@ -411,6 +411,14 @@ pub enum BluetoothAccessoryAction {
     #[effect(kind = "outside")]
     #[effect(own_device, row, destructive, icon = "trash-2", on = BluetoothAccessoryRow)]
     Forget,
+    /// Rename the accessory: what this machine calls it, kept by `BlueZ`
+    /// beside the name the device reports itself under.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "pencil", on = BluetoothAccessoryRow)]
+    Rename {
+        #[param("What the accessory is called")]
+        name: String,
+    },
 }
 
 /// A Bluetooth device in reach, called on its address

@@ -47,6 +47,9 @@ pub struct Wifi {
     pub hardware_blocked: bool,
     /// The networks in reach, the connected one first, then the strongest.
     pub networks: Vec<WifiNetwork>,
+    /// Why the last search for networks failed, until the next one: what
+    /// `NetworkManager` said, or that it could not be reached.
+    pub scan_problem: Option<String>,
 }
 
 impl Wifi {
@@ -75,6 +78,9 @@ pub struct WifiNetwork {
     /// This device has joined it before and joins without asking.
     pub known: bool,
     pub connected: bool,
+    /// Why joining it failed last time, until the next attempt: a wrong
+    /// password, or the network refusing the device.
+    pub problem: Option<String>,
 }
 
 /// The connection this machine's traffic leaves on.
@@ -376,6 +382,9 @@ pub struct Accessory {
     pub address: String,
     /// Battery percentage; `None` when it reports none.
     pub battery: Option<u8>,
+    /// Signal while the device is seen, in dBm; `None` when it is paired
+    /// but not currently in reach.
+    pub signal: Option<i16>,
     pub connected: bool,
 }
 
@@ -584,6 +593,7 @@ impl From<&os_actions::bluez::DeviceInfo> for Accessory {
             name: device.name.clone(),
             address: device.address.clone(),
             battery: device.battery.filter(|percentage| *percentage > 0),
+            signal: device.rssi,
             connected: device.connected,
             ..Self::default()
         }
