@@ -196,7 +196,7 @@ LikeCommentArgs = TypedDict("LikeCommentArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -257,7 +257,7 @@ class Notice(Resource):
 
 class Channel(Resource):
     """Channel — `tl.so.tilo.tube.Channel`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     @property
     def _26ctwf34(self) -> str:
         """key (`26ctwf34` on the wire)."""
@@ -322,7 +322,7 @@ class Channel(Resource):
 
 class Video(Resource):
     """Video — `tl.so.tilo.tube.Video`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
@@ -446,7 +446,7 @@ class Video(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.tube.Playlist`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     ow7glfos: str  # key
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
@@ -489,7 +489,7 @@ class Playlist(Resource):
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.tube.Comment`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     pv4laajx: str  # key
     li4xiefh: str  # video_key
     @property
@@ -519,7 +519,7 @@ class Comment(Resource):
 
 class Segment(Resource):
     """Segment — `tl.so.tilo.tube.Segment`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     uakovynu: str  # key
     pvlf5o2c: str  # video_key
     qlgpeq35: str  # category
@@ -530,7 +530,7 @@ class Segment(Resource):
 
 class Reply(Resource):
     """Reply — `tl.so.tilo.tube.Reply`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     y4coaxks: str  # comment
     kwxg57v6: str  # video
     @property
@@ -559,20 +559,20 @@ class Reply(Resource):
 
 class Subscription(Resource):
     """Subscription — `tl.so.tilo.tube.Subscription`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     slhmwv67: str  # key
     ynf67l6e: str  # name
 
 
 class QueuedVideo(Resource):
     """QueuedVideo — `tl.so.tilo.tube.QueuedVideo`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     o3xolmld: str  # key
 
 
 class PlaybackPrefs(Resource):
     """PlaybackPrefs — `tl.so.tilo.tube.PlaybackPrefs`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     @property
     def _5twttwwn(self) -> str:
         """member (`5twttwwn` on the wire)."""
@@ -599,7 +599,7 @@ class PlaybackPrefs(Resource):
 
 class WatchEntry(Resource):
     """WatchEntry — `tl.so.tilo.tube.WatchEntry`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     noppuxpb: str  # key
     stuii7l7: str  # title
     j37y2bbw: str  # channel_name
@@ -618,7 +618,7 @@ class WatchEntry(Resource):
 
 class PairedDevice(Resource):
     """PairedDevice — `tl.so.tilo.tube.PairedDevice`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     eqjnywdb: str  # key
     xzt7hvjd: str  # name
     r6hetdhx: list[str]  # addresses
@@ -639,13 +639,13 @@ class PairedDevice(Resource):
 
 class GrayjayPairAsk(Resource):
     """GrayjayPairAsk — `tl.so.tilo.tube.GrayjayPairAsk`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     vjm7bxs2: str  # invite
 
 
 class GrayjaySyncAsk(Resource):
     """GrayjaySyncAsk — `tl.so.tilo.tube.GrayjaySyncAsk`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     ldigr4fm: list[GrayjayPeer]  # peers
     @property
     def _2ubtnp7s(self) -> list[GrayjaySubscription]:
@@ -659,7 +659,7 @@ class GrayjaySyncAsk(Resource):
 
 class GrayjayPeer(Resource):
     """GrayjayPeer — `tl.so.tilo.tube.GrayjayPeer`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     @property
     def _73ossitw(self) -> str:
         """key (`73ossitw` on the wire)."""
@@ -675,7 +675,7 @@ class GrayjayPeer(Resource):
 
 class GrayjaySubscription(Resource):
     """GrayjaySubscription — `tl.so.tilo.tube.GrayjaySubscription`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     @property
     def _5k7gvetf(self) -> str:
         """url (`5k7gvetf` on the wire)."""
@@ -689,7 +689,7 @@ class GrayjaySubscription(Resource):
 
 class GrayjayJob(Resource):
     """GrayjayJob — `tl.so.tilo.tube.GrayjayJob`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     @property
     def _4nyda52b(self) -> str:
         """state (`4nyda52b` on the wire)."""
@@ -704,7 +704,7 @@ class GrayjayJob(Resource):
 
 class GrayjayOutcome(Resource):
     """GrayjayOutcome — `tl.so.tilo.tube.GrayjayOutcome`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     xil726fb: str  # key
     zkmfyff4: bool  # ok
     mp7b4zg2: str  # error
@@ -712,7 +712,7 @@ class GrayjayOutcome(Resource):
 
 class GrayjayRead(Resource):
     """GrayjayRead — `tl.so.tilo.tube.GrayjayRead`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     oow4nbb2: list[GrayjayOutcome]  # peers
     @property
     def _2vaamao3(self) -> list[GrayjaySubscription]:
@@ -727,7 +727,7 @@ class GrayjayRead(Resource):
 
 class YouTube(Resource):
     """YouTube — `tl.so.tilo.tube.YouTube`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
     olrung72: str  # title
     ihhzrm3f: list[Entry[Channel]]  # channels
     qnfjkti5: list[Entry[Video]]  # videos
@@ -1016,5 +1016,5 @@ class YouTube(Resource):
 
 class Tube(Resource):
     """YouTube — `tl.so.tilo.tube`."""
-    __surface__ = "so.tilo.tube@b454a095710a8005"
+    __surface__ = "so.tilo.tube@1c768bcdfe30791c"
 

@@ -89888,6 +89888,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.tube.YouTube.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
       "tl.so.tilo.tube.YouTube.$scenario.Arguments": {
         "type": "object",
         "properties": {},
@@ -130968,6 +130974,12 @@
       "resource": "tl.so.tilo.tube.YouTube",
       "action": "edit-flag",
       "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$origin.Arguments"
     },
     {
       "app": "so.tilo.tube",

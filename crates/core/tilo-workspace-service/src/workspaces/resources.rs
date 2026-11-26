@@ -1074,6 +1074,7 @@ impl HostedWorkspace {
             writers,
             places: std::sync::Arc::clone(&ground.places),
             origins: std::sync::Arc::clone(&ground.origins),
+            accounts: std::sync::Arc::clone(&ground.accounts),
             carried,
         })
     }
@@ -1085,9 +1086,13 @@ impl HostedWorkspace {
     ) -> OriginGround {
         use tilo_lock::MutexRecover as _;
         let store = self.resources.store.lock_recover();
+        let origins = declared_origins(&store);
+        let places = origin_places(&store, changes);
+        drop(store);
         OriginGround {
-            places: std::sync::Arc::new(origin_places(&store, changes)),
-            origins: std::sync::Arc::new(declared_origins(&store)),
+            places: std::sync::Arc::new(places),
+            accounts: std::sync::Arc::new(account_services(&origins)),
+            origins: std::sync::Arc::new(origins),
         }
     }
 
@@ -2182,9 +2187,11 @@ impl Workspaces {
             let store = hosted.resources.store.lock_recover();
             let mut places = std::collections::HashMap::new();
             chain_places(&store, &mut places, kind, id);
+            let origins = declared_origins(&store);
             let ground = OriginGround {
                 places: std::sync::Arc::new(places),
-                origins: std::sync::Arc::new(declared_origins(&store)),
+                accounts: std::sync::Arc::new(account_services(&origins)),
+                origins: std::sync::Arc::new(origins),
             };
             drop(store);
             hosted.origin_leave(device.device(), std::slice::from_ref(stamp), true, &ground)
@@ -3264,6 +3271,10 @@ struct RecordPlace {
 struct OriginGround {
     places: std::sync::Arc<std::collections::HashMap<String, RecordPlace>>,
     origins: std::sync::Arc<std::collections::HashMap<String, Option<String>>>,
+    /// The services that keep their records in an account (`imap`, `caldav`): a service whose
+    /// kinds declare an origin ending `.account`. A service with none (`youtube`, whose client
+    /// keeps the workspace's copy with no account) keeps them as its own kinds.
+    accounts: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 /// What an origin's write in one document is judged by, read once for the write: the access of
@@ -3275,6 +3286,8 @@ struct OriginLeave {
     /// the batch and shared by each document's leave.
     places: std::sync::Arc<std::collections::HashMap<String, RecordPlace>>,
     origins: std::sync::Arc<std::collections::HashMap<String, Option<String>>>,
+    /// The services whose records stand in an account: [`OriginGround::accounts`].
+    accounts: std::sync::Arc<std::collections::HashSet<String>>,
     /// This device carried the write for the caller it certified, as a command over its own
     /// route: its stamp names the caller, and the device signed nothing of their own.
     carried: bool,
@@ -3333,9 +3346,9 @@ impl OriginLeave {
             .all(|(id, touch)| self.in_place(id, touch, proposal.touched))
     }
 
-    /// Whether the record `id` the change `touch` makes stands in an origin account's place: it
-    /// is nested, through the records it touches and every record above them, in a record of a
-    /// kind an origin keeps (`imap.account`, `caldav.account`).
+    /// Whether the record `id` the change `touch` makes stands where its service keeps it: a
+    /// service that keeps accounts (`imap`, `caldav`) holds each of its records in one of them,
+    /// and a service with none (`youtube`) keeps its own kinds, wherever its client holds them.
     fn in_place(
         &self,
         id: &str,
@@ -3351,13 +3364,26 @@ impl OriginLeave {
             .places
             .get(id)
             .map_or_else(|| touch.parent.clone(), |place| place.parent.clone());
+        // The service the record is an origin's of is its kind's: a kind an origin keeps names
+        // it in the first segment of its origin (`imap.message` is `imap`'s).
+        let Some(service) = kind
+            .as_deref()
+            .and_then(|kind| self.origins.get(kind))
+            .and_then(Option::as_deref)
+            .map(service_of)
+        else {
+            return false;
+        };
+        // A service with no account of its own is its kinds' own: what it keeps is the record
+        // itself, with no account to stand in.
+        if !self.accounts.contains(service) {
+            return true;
+        }
         for _ in 0..64 {
             if let Some(kind) = &kind
-                && self
-                    .origins
-                    .get(kind)
-                    .and_then(Option::as_deref)
-                    .is_some_and(|origin| origin.ends_with(".account"))
+                && let Some(origin) = self.origins.get(kind).and_then(Option::as_deref)
+                && origin.ends_with(".account")
+                && service_of(origin) == service
             {
                 return true;
             }
@@ -3377,6 +3403,25 @@ impl OriginLeave {
         }
         false
     }
+}
+
+/// The outside service an origin names: `imap` for `imap.message`, `youtube` for
+/// `youtube.video`.
+fn service_of(origin: &str) -> &str {
+    origin.split('.').next().unwrap_or(origin)
+}
+
+/// The services that keep their records in an account: those whose kinds declare an origin
+/// ending `.account`.
+fn account_services(
+    origins: &std::collections::HashMap<String, Option<String>>,
+) -> std::collections::HashSet<String> {
+    origins
+        .values()
+        .flatten()
+        .filter(|origin| origin.ends_with(".account"))
+        .map(|origin| service_of(origin).to_owned())
+        .collect()
 }
 
 /// The kind each type declares as the outside service it is kept in step with, by kind.
@@ -3634,7 +3679,23 @@ mod origin_tests {
                 ("tl.mail.Message".to_owned(), Some(MESSAGE.to_owned())),
                 ("tl.mail.Mail".to_owned(), None),
             ])),
+            accounts: std::sync::Arc::new(std::collections::HashSet::from(["imap".to_owned()])),
             carried: false,
+        }
+    }
+
+    /// A change touching `id` of `kind`, nested in `parent`.
+    fn record(kind: &str, id: &str, parent: Option<&str>) -> Touched {
+        Touched {
+            resources: BTreeMap::from([(
+                id.to_owned(),
+                Touch {
+                    kind: Some(kind.to_owned()),
+                    parent: parent.map(str::to_owned),
+                    ..Touch::default()
+                },
+            )]),
+            readers: Some(collab_types::EVERY_MEMBER.to_owned()),
         }
     }
 
@@ -3768,6 +3829,90 @@ mod origin_tests {
         let mut account = touched("account", Some("mail"));
         account.resources.get_mut("account").unwrap().kind = Some("tl.mail.Account".to_owned());
         assert!(admits(&here, &own, &account, "*"));
+    }
+
+    #[test]
+    fn a_service_with_no_account_keeps_its_own_kinds() {
+        // YouTube keeps no account: the client holds the workspace's copy, so the service's
+        // records stand as its own kinds, wherever the client holds them.
+        let mut youtube = leave(PERSON);
+        youtube.places = std::sync::Arc::new(std::collections::HashMap::from([
+            (
+                "root".to_owned(),
+                RecordPlace {
+                    kind: "tl.tube.Root".to_owned(),
+                    parent: None,
+                },
+            ),
+            (
+                "video".to_owned(),
+                RecordPlace {
+                    kind: "tl.tube.Video".to_owned(),
+                    parent: Some("root".to_owned()),
+                },
+            ),
+            (
+                "loose".to_owned(),
+                RecordPlace {
+                    kind: "tl.tube.Video".to_owned(),
+                    parent: None,
+                },
+            ),
+        ]));
+        youtube.origins = std::sync::Arc::new(std::collections::HashMap::from([
+            ("tl.tube.Root".to_owned(), Some("youtube.client".to_owned())),
+            ("tl.tube.Video".to_owned(), Some("youtube.video".to_owned())),
+        ]));
+        youtube.accounts = std::sync::Arc::new(std::collections::HashSet::new());
+        let own = stamp(PERSON, DEVICE);
+        assert!(admits(
+            &youtube,
+            &own,
+            &record("tl.tube.Video", "video", Some("root")),
+            "*"
+        ));
+        assert!(
+            admits(&youtube, &own, &record("tl.tube.Video", "loose", None), "*"),
+            "a service with no account keeps its kinds wherever its client holds them"
+        );
+        // What the service says of its own connection is its own record too.
+        assert!(admits(
+            &youtube,
+            &own,
+            &record("tl.tube.Root", "root", None),
+            "*"
+        ));
+        // A kind no service keeps is no record of the service's.
+        let no_origin = record("tl.tube.Reply", "reply", Some("root"));
+        assert!(
+            !admits(&youtube, &own, &no_origin, "*"),
+            "a kind no origin keeps"
+        );
+    }
+
+    #[test]
+    fn another_services_account_is_no_place_for_a_record() {
+        // A service that keeps accounts stands its records in its own: a calendar account is no
+        // place for a mail message.
+        let mut crossed = leave(PERSON);
+        crossed.origins = std::sync::Arc::new(std::collections::HashMap::from([
+            (
+                "tl.mail.Account".to_owned(),
+                Some("caldav.account".to_owned()),
+            ),
+            ("tl.mail.Message".to_owned(), Some(MESSAGE.to_owned())),
+        ]));
+        crossed.accounts = std::sync::Arc::new(std::collections::HashSet::from([
+            "imap".to_owned(),
+            "caldav".to_owned(),
+        ]));
+        let own = stamp(PERSON, DEVICE);
+        assert!(!admits(
+            &crossed,
+            &own,
+            &record("tl.mail.Message", "message", Some("account")),
+            "*"
+        ));
     }
 
     #[test]

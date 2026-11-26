@@ -917,6 +917,16 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
+        name: "youtube.client",
+        doc: "The client's own record: what the service last said of itself, and how its last \
+              request stands. YouTube keeps no account of the person's, so this is the record \
+              its answers stand in.",
+        derived: false,
+        // The client's fields are the app's own: people write their subscriptions, queue and
+        // history there, so the kind fixes none.
+        fields: &[],
+    },
+    OriginKind {
         name: "youtube.channel",
         doc: "A channel on YouTube, as the service says it is.",
         derived: false,

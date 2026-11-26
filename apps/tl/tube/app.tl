@@ -304,7 +304,10 @@ type GrayjayRead {
 /// person's subscriptions, their watch history, and how the last search stands.
 ///
 /// It keeps the workspace's watch queue, and each member's playback preferences.
-type YouTube (label: "YouTube", noun: "channel") {
+///
+/// YouTube keeps no account of the person's, so this client is the record its answers stand in:
+/// the service keeps how it stands, and how its last search or feed came out, in step here.
+type YouTube (origin: youtube.client, label: "YouTube", noun: "channel") {
     /// What the client is called. A root with no text of its own is named by the first text it
     /// holds, so without this the client would be called after the first channel it holds: the
     /// fetch actions and the scenarios write it once, and it names the client from then on.
