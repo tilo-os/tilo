@@ -116,6 +116,12 @@ fn run(host: &Host, schedule: &Schedule, now: i64) -> (usize, bool) {
     let mut ran: usize = 0;
     let mut waiting = false;
     let due = due(host, now);
+    if !due.is_empty() {
+        // A trigger runs as the app over the workspace, and tells the people who read what it
+        // acted on: who is in the workspace is read as it stands when the trigger runs, not as
+        // the reading last stood.
+        host.refresh_members();
+    }
     schedule
         .done
         .borrow_mut()

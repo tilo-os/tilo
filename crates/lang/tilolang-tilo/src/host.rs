@@ -2052,6 +2052,14 @@ impl Host {
         crate::triggers::run_due(self, &self.inner.triggers, now)
     }
 
+    /// Read the workspace's members again as this host's store answers them now, and give them to
+    /// the runtime whether or not a move was seen since the last read: what a trigger tells the
+    /// workspace's members reads them as they stand when it runs.
+    pub(crate) fn refresh_members(&self) {
+        self.inner.members_stale.set(true);
+        self.read_workspace_members();
+    }
+
     /// What this host's triggers that name a device land on `device`, the device of `person`,
     /// after `now`: the moments it arms its own wakeups for ([`crate::triggers::landing`]).
     #[must_use]
