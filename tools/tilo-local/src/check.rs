@@ -131,13 +131,26 @@ fn socket_dir() -> PathBuf {
     Path::new("/tmp").join(format!("tl{}", std::process::id()))
 }
 
-/// Stop the process group `child` leads, and wait for it.
+/// Stop the process group `child` leads and everything it started, and wait for it.
+///
+/// The checks run the session's script inside `bwrap`, which makes its own process group: a signal
+/// to the group this child leads reaches the wrapper alone, and the wrapper's death takes the
+/// script with a kill it cannot trap. A script stopped that way never stops what it set apart with
+/// `setsid` — the device's daemon, the session and its services outlive the check, holding the
+/// state's device lock and the next run's state. Every process below the child is signalled here,
+/// the script before the wrapper, so its own cleanup runs; whatever is left is killed.
 pub fn stop_group(child: &mut Child) {
     let group = format!("-{}", child.id());
-    let _ = Command::new("kill")
-        .args(["-TERM", "--", &group])
-        .stderr(Stdio::null())
-        .status();
+    let send = |signal: &str, pid: &str| {
+        let _ = Command::new("kill")
+            .args([signal, "--", pid])
+            .stderr(Stdio::null())
+            .status();
+    };
+    for pid in descendants(child.id()).into_iter().skip(1) {
+        send("-TERM", &pid.to_string());
+    }
+    send("-TERM", &group);
     let began = Instant::now();
     while began.elapsed() < Duration::from_secs(20) {
         if matches!(child.try_wait(), Ok(Some(_))) {
@@ -145,11 +158,31 @@ pub fn stop_group(child: &mut Child) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = Command::new("kill")
-        .args(["-KILL", "--", &group])
-        .stderr(Stdio::null())
-        .status();
+    for pid in descendants(child.id()) {
+        send("-KILL", &pid.to_string());
+    }
+    send("-KILL", &group);
     let _ = child.wait();
+}
+
+/// `pid` and every process below it, each before its own children.
+fn descendants(pid: u32) -> Vec<u32> {
+    let mut seen = vec![pid];
+    let mut next = 0;
+    while let Some(&pid) = seen.get(next) {
+        next = next.saturating_add(1);
+        let children =
+            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+        seen.extend(
+            children
+                .split_whitespace()
+                .filter_map(|child| child.parse::<u32>().ok()),
+        );
+        if seen.len() > 4096 {
+            break;
+        }
+    }
+    seen
 }
 
 /// Mesa's CPU Vulkan driver, for the stand-in host desktop.
@@ -557,25 +590,9 @@ fn probe(
 /// session runs in this process's namespaces.
 fn sandboxed(leader: u32) -> Option<u32> {
     let ours = std::fs::read_link("/proc/self/ns/mnt").ok()?;
-    let mut seen = vec![leader];
-    let mut next = 0;
-    while let Some(&pid) = seen.get(next) {
-        next = next.saturating_add(1);
-        if std::fs::read_link(format!("/proc/{pid}/ns/mnt")).is_ok_and(|mnt| mnt != ours) {
-            return Some(pid);
-        }
-        let children =
-            std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
-        seen.extend(
-            children
-                .split_whitespace()
-                .filter_map(|child| child.parse::<u32>().ok()),
-        );
-        if seen.len() > 4096 {
-            break;
-        }
-    }
-    None
+    descendants(leader)
+        .into_iter()
+        .find(|pid| std::fs::read_link(format!("/proc/{pid}/ns/mnt")).is_ok_and(|mnt| mnt != ours))
 }
 
 /// The stand-in host desktop, stopped however the check ends.
