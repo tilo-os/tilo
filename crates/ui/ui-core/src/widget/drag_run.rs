@@ -912,10 +912,16 @@ pub const ITEM_PAYLOAD: &str = "drag-run-item";
 impl Widget for DragRun {
     fn update(
         &mut self,
-        _state: &tilo_ui_base::widget::AppModel,
-        _path: &tilo_ui_base::widget::ModelPath,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.report();
+        // What its items hold moves on its own between inputs — a dock item under the pointer, a
+        // clock beside a taskbar's items — so the run passes the frame down to them.
+        let mut changed = self
+            .items
+            .as_mut()
+            .is_some_and(|items| Widget::update(&mut **items, state, path));
         if let Some(landed) = crate::widget::drag_bus::take(&self.id, self.extent()) {
             if let Some(landing) = self.target_at(landed.pointer, None)
                 && let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = landed.payload
@@ -928,10 +934,10 @@ impl Widget for DragRun {
                     at: landing.at,
                     before: landing.before,
                 });
-                return true;
+                changed = true;
             }
         }
-        false
+        changed
     }
 
     fn build_layout(

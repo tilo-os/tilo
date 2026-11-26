@@ -594,6 +594,9 @@ decorator_trait! {
         fn set_platform_conventions(conventions: ::tilo_ui_base::platform::PlatformConventions);
         fn set_interaction_environment(environment: ::tilo_ui_base::interaction::InteractionEnvironment);
         fn set_window_bar_control(in_bar: bool);
+        /// A decorator is the widget it shows: a scale an ancestor lays it at is its inner's
+        /// ([`Widget::set_visual_scale`](::tilo_ui_base::widget::Widget::set_visual_scale)).
+        fn set_visual_scale(scale: f64);
         fn sync(state: &AppModel, path: &ModelPath);
         fn update(state: &AppModel, path: &ModelPath) -> bool;
         fn serve_deadline(now: Instant) -> bool;

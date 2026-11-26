@@ -248,7 +248,6 @@ impl Described for Button {
                 .all(|(name, shown)| name == shown)
             && props.icon == self.icon
             && role == self.role
-            && size == self.control_size
             && props.toggled.is_some() == self.toggled.is_some()
             && shortcut == self.declared_key()
             && self.shows_count(count_content(props.count, props.dot).as_ref(), props.alert)
@@ -266,6 +265,9 @@ impl Described for Button {
         if !same_face || matches!(props.press, Event::Action(_)) {
             return false;
         }
+        // The face takes a new size in place, growing there through the shared motion: the bar
+        // and the dock it stands in make room in frames rather than in one jump.
+        self.set_control_size(size);
         if let Some(on) = props.toggled {
             self.set_toggled(on);
         }

@@ -92,6 +92,26 @@ impl BadgeMetrics {
         }
     }
 
+    /// The badge `factor` times larger: it grows with the face it stands on (a dock item under
+    /// the pointer) rather than staying a caption's size on a large tile.
+    pub(crate) fn scaled(mut self, factor: f64) -> Self {
+        let factor = if factor.is_finite() && factor > 0.0 {
+            factor
+        } else {
+            1.0
+        };
+        if (factor - 1.0).abs() < 1e-6 {
+            return self;
+        }
+        self.height *= factor;
+        self.pad_x *= factor;
+        self.dot *= factor;
+        self.caption.size = tilo_ui_base::num::f32_of_f64(f64::from(self.caption.size) * factor);
+        self.caption.line_height =
+            tilo_ui_base::num::f32_of_f64(f64::from(self.caption.line_height) * factor);
+        self
+    }
+
     fn width(&self, label: &str, text: &mut TextRenderer) -> f64 {
         if label.is_empty() {
             return self.dot;

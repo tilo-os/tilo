@@ -803,6 +803,8 @@ pub use {
     chrome_body::ChromeBody, chrome_body::ChromeEdge, chrome_body::ChromeProps,
     chrome_body::ChromeShape,
 };
+pub mod magnify;
+pub use {magnify::Magnify, magnify::MagnifyProps};
 pub mod docked;
 pub use {docked::Docked, docked::DockedProps};
 pub mod map;
@@ -940,6 +942,8 @@ pub(crate) mod control_result_probe;
 #[cfg(any(test, feature = "test-support"))]
 pub mod effect_fixture;
 pub mod keyboard_map;
+#[cfg(test)]
+mod magnify_tests;
 pub use {
     keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey,
     keyboard_map::KeyboardMapSelection,

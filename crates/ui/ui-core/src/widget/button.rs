@@ -90,6 +90,17 @@ pub struct Button {
     measured_width: Option<f32>,
     control_size: ControlSize,
     metrics: FaceMetrics,
+    /// A scale an ancestor lays it at: a dock item under the pointer
+    /// ([`Widget::set_visual_scale`]). The face measures and paints at it, so the tile grows
+    /// rather than being drawn larger inside the space it had.
+    visual_scale: f64,
+    /// The face's own way to a new control size: it starts at the ratio of the size it left to
+    /// the one it takes, and springs to 1, so a bar or a dock whose size setting changed grows
+    /// through the shared motion instead of jumping to its new size.
+    resize: tilo_ui_base::motion::MotionValue<f64>,
+    /// The control size the pending transition leaves, resolved at the next layout, where the
+    /// theme gives both sizes their heights.
+    resize_from: Option<ControlSize>,
     on_click: Option<Box<dyn FnMut()>>,
     action: Option<ActionEmitter<()>>,
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
@@ -207,6 +218,9 @@ impl Button {
             measured_width: None,
             control_size: ControlSize::Regular,
             metrics: FaceMetrics::stock(ControlSize::Regular),
+            visual_scale: 1.0,
+            resize: tilo_ui_base::motion::MotionValue::new(1.0),
+            resize_from: None,
             default_focus: false,
             main_answer: false,
             on_click: None,
@@ -427,12 +441,14 @@ impl Button {
             || (!compact && fresh.label.is_empty() != self.label.is_empty())
             || fresh.role != self.role
             || fresh.primary_on_hover != self.primary_on_hover
-            || fresh.control_size != self.control_size
             || fresh.faces != self.faces
             || fresh.avatar != self.avatar
         {
             return false;
         }
+        // A new size is taken in place: the face keeps its state and grows there, rather than
+        // being replaced at the new size.
+        self.set_control_size(fresh.control_size);
         if compact {
             if let Some(presentation) = self.compact_presentation.as_mut() {
                 presentation.0.clone_from(&fresh.label);
@@ -507,7 +523,7 @@ impl Button {
         if !self.label.is_empty() || self.icon.is_none() || self.count_size.width <= 0.0 {
             return None;
         }
-        let icon = self.metrics.icon.min(self.rect.height());
+        let icon = self.metrics_now().icon.min(self.rect.height());
         let corner = Point::new(
             self.rect.center().x + icon / 2.0,
             self.rect.center().y - icon / 2.0,
@@ -645,6 +661,32 @@ impl Button {
         self.dirty = true;
         self.layout_dirty = true;
         self
+    }
+
+    /// Take the size `size` in place: a button whose setting changed while it stands keeps its
+    /// face and its state, and grows through the shared motion from the size it leaves to the one
+    /// it takes, so the bar or dock it stands in gives the room in steps rather than at once.
+    pub(crate) fn set_control_size(&mut self, size: ControlSize) {
+        if size == self.control_size {
+            return;
+        }
+        self.resize_from = Some(self.control_size);
+        self.control_size = size;
+        self.metrics = FaceMetrics::stock(size);
+        self.dirty = true;
+        self.layout_dirty = true;
+    }
+
+    /// The face's metrics this frame: its own size, under the scale an ancestor lays it at and
+    /// the journey to a new control size it is on.
+    fn metrics_now(&self) -> FaceMetrics {
+        self.scaled_metrics(self.metrics.clone())
+    }
+
+    /// `metrics` under the scale this frame shows the face at.
+    fn scaled_metrics(&self, metrics: FaceMetrics) -> FaceMetrics {
+        let scale = self.visual_scale * self.resize.get(tilo_ui_base::motion::frame_now());
+        metrics.scaled(scale)
     }
 
     #[must_use]
@@ -1201,6 +1243,29 @@ impl FaceMetrics {
             .get(index)
             .cloned()
             .unwrap_or_else(|| Self::of(size, &Theme::dark()))
+    }
+
+    /// The same face `factor` times larger: what a dock item under the pointer is, and where a
+    /// button on its way between two control sizes stands at each frame. The label grows with
+    /// the glyph, so the face reads as one thing rather than an icon in a large box.
+    fn scaled(mut self, factor: f64) -> Self {
+        let factor = if factor.is_finite() && factor > 0.0 {
+            factor
+        } else {
+            1.0
+        };
+        if (factor - 1.0).abs() < 1e-6 {
+            return self;
+        }
+        self.height *= factor;
+        self.pad_x *= factor;
+        self.icon *= factor;
+        self.avatar *= factor;
+        self.icon_gap *= factor;
+        self.hint_gap *= factor;
+        self.label_style.size = f32_of_f64(f64::from(self.label_style.size) * factor);
+        self.label_style.line_height = f32_of_f64(f64::from(self.label_style.line_height) * factor);
+        self
     }
 }
 
@@ -2122,7 +2187,9 @@ impl Button {
     }
 
     fn face_height(&self) -> f64 {
-        let height = self.transport.map_or(self.metrics.height, |(_, side)| side);
+        let height = self
+            .transport
+            .map_or(self.metrics_now().height, |(_, side)| side);
         if self.in_window_bar || self.interaction.supports_hover() {
             height
         } else {
@@ -2135,6 +2202,7 @@ impl Button {
             return f32_of_f64(self.face_height());
         }
         let (label, hint) = self.content();
+        let metrics = self.metrics_now();
         f32_of_f64(
             FaceContent {
                 flush: self.flush_face(&label),
@@ -2151,7 +2219,7 @@ impl Button {
                 filled_icon: false,
                 menu: self.opens_menu,
             }
-            .intrinsic_width(&self.metrics, text, self.face_height()),
+            .intrinsic_width(&metrics, text, self.face_height()),
         )
     }
 
@@ -2166,7 +2234,7 @@ impl Button {
 
     fn hit_rect(&self) -> Rect {
         let rect = if self.role.flush() && !self.label.is_empty() {
-            self.rect.inflate(self.metrics.pad_x, 0.0)
+            self.rect.inflate(self.metrics_now().pad_x, 0.0)
         } else {
             self.rect
         };
@@ -2242,6 +2310,43 @@ impl Widget for Button {
         }
     }
 
+    fn set_visual_scale(&mut self, scale: f64) {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        if (scale - self.visual_scale).abs() > 1e-5 {
+            self.visual_scale = scale;
+            self.measured_width = None;
+            self.layout_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
+        let moving = self.resize.is_moving(tilo_ui_base::motion::frame_now());
+        if moving {
+            // The face's height follows the motion, so the frame that shows it lays the bar or
+            // dock it stands in out again.
+            self.layout_dirty = true;
+            tilo_ui_base::widget::note_layout_moved();
+        }
+        let children = tilo_ui_base::widget::defaults::update(self.children_mut(), state, path);
+        moving || children
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.resize.is_moving(tilo_ui_base::motion::frame_now())
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
+    }
+
     fn set_window_bar_control(&mut self, in_bar: bool) {
         if self.in_window_bar != in_bar {
             self.in_window_bar = in_bar;
@@ -2300,8 +2405,28 @@ impl Widget for Button {
             self.dirty = true;
             self.metrics = metrics;
         }
+        // A size setting changed: the face starts where the size it left stood and springs to its
+        // new one, so a bar or dock it belongs to grows in frames rather than in one jump.
+        if let Some(from) = self.resize_from.take() {
+            let from = FaceMetrics::of_role(from, self.role, theme);
+            let ratio = (from.height / self.metrics.height.max(1.0)).clamp(0.4, 2.5);
+            let now = tilo_ui_base::motion::frame_now();
+            self.resize.snap(ratio);
+            let timing = if theme.motion().still() {
+                tilo_ui_base::motion::Timing::Instant
+            } else {
+                tilo_ui_base::motion::Timing::Spring(
+                    tilo_ui_base::motion::SpringSpec::settling_within(
+                        crate::time::Duration::from_millis(190),
+                    ),
+                )
+            };
+            self.resize.set(1.0, timing, now);
+            self.dirty = true;
+        }
         if let Some(count) = &mut self.count {
-            let badge = BadgeMetrics::of(theme);
+            let scale = self.visual_scale * self.resize.get(tilo_ui_base::motion::frame_now());
+            let badge = BadgeMetrics::of(theme).scaled(scale);
             if count.metrics.as_ref() != Some(&badge) {
                 count.metrics = Some(badge);
                 self.dirty = true;
@@ -2464,9 +2589,10 @@ impl Widget for Button {
         let enabled = self.effectively_enabled();
         // The geometry is read from the theme handed in, so a host that
         // positions the button without a `build_layout` pass still gets the
-        // theme's type; `measure` uses the copy captured in `build_layout`,
-        // the same value on every taffy-driven path.
-        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        // theme's type; the scale it shows at now is its own (a dock item under
+        // the pointer, a size setting it is moving to).
+        let metrics =
+            self.scaled_metrics(FaceMetrics::of_role(self.control_size, self.role, theme));
         if let Some((control, _)) = self.transport {
             let face = crate::widget::TransportFace::new(self.rect, control)
                 .hovered(self.is_hovered)
@@ -2530,6 +2656,7 @@ impl Widget for Button {
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.motion.moving(crate::time::now())
+            || self.resize.is_moving(tilo_ui_base::motion::frame_now())
             || self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
@@ -2677,7 +2804,7 @@ impl Widget for Button {
         let Some(count) = self.count_rect() else {
             return Vec::new();
         };
-        let icon = self.metrics.icon.min(self.rect.height());
+        let icon = self.metrics_now().icon.min(self.rect.height());
         vec![
             ("count".to_owned(), count),
             (

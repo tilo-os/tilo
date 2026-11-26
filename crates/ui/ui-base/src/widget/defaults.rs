@@ -45,6 +45,13 @@ pub(super) fn set_platform_conventions(
     }
 }
 
+/// Lay everything `children` holds at `scale` (see [`super::Widget::set_visual_scale`]).
+pub fn set_visual_scale(children: ChildrenMut<'_>, scale: f64) {
+    for child in children {
+        child.set_visual_scale(scale);
+    }
+}
+
 pub fn set_interaction_environment(
     children: ChildrenMut<'_>,
     environment: crate::interaction::InteractionEnvironment,

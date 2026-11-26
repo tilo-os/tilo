@@ -4575,6 +4575,28 @@
       }
     },
     {
+      "name": "Magnify",
+      "doc": "An item of a dock that magnifies under the pointer.",
+      "props": [
+        {
+          "name": "zoom",
+          "doc": "How much larger the item under the pointer stands: `0.5` makes it half again as large at its middle, falling away to its own size a few items off, and `0` leaves it its size.",
+          "type": "float"
+        }
+      ],
+      "parts": [
+        {
+          "name": "body",
+          "doc": "What it holds: one item's face.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
       "name": "Map",
       "doc": "Places at points on a pannable, zoomable surface, each a view of its own.",
       "props": [

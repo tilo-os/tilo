@@ -177,6 +177,15 @@ impl App {
         // (the session's shell, its panels and sheets) reaches the toolkit
         // through here, and would otherwise land everything at once.
         tilo_ui_base::motion::note_input(&event);
+        // Where the pointer is now, in logical pixels: a control that grows under it (a dock's
+        // item) reads it between frames, where no event reaches it.
+        if let Some(at) = tilo_ui_base::motion::pointer_of(&event) {
+            let scale = window.scale_factor().max(f64::EPSILON);
+            tilo_ui_base::motion::note_pointer(vello::kurbo::Point::new(
+                at.x / scale,
+                at.y / scale,
+            ));
+        }
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
         #[cfg(test)]

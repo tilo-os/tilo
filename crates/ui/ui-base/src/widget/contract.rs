@@ -484,6 +484,15 @@ pub trait Widget {
         defaults::set_window_bar_control(self.children_mut(), in_bar);
     }
 
+    /// Lay this widget at `scale`, an ancestor enlarging it in place (a dock item under the
+    /// pointer, a tile whose size changes): 1 is its own size. A container passes it to what it
+    /// holds, so whatever inside can grow does; a widget that grows says so by measuring and
+    /// painting at the scale, so the space it takes grows with it and its neighbours make room
+    /// rather than being overlapped. One that cannot grow in its layout keeps its size.
+    fn set_visual_scale(&mut self, scale: f64) {
+        defaults::set_visual_scale(self.children_mut(), scale);
+    }
+
     /// Pull model state into this widget before layout.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         defaults::sync(self.children_mut(), state, path);
