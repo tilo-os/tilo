@@ -164,6 +164,15 @@ impl Session {
         };
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
+            // On a computer whose system daemon starts every login's shell, a login it did not
+            // start keeps nothing the person does: say so in front of everything, rather than open
+            // a desktop whose apps refuse to open. A development or test session beside a daemon
+            // of its own carries on without one.
+            if options.machine.is_owned()
+                && tilo_api::daemon::this_computer().is_ok_and(|place| place.system())
+            {
+                options.setup = Some(BeforeShell::NotStarted);
+            }
         }
         // The device's tilolang processes, which the daemon runs: each window's instance is
         // handed to them, and a task's host is started there, on asks made on that link.
@@ -1177,6 +1186,7 @@ impl Session {
             options.setup.take(),
             &options.person,
             options.scale,
+            &commands,
         );
 
         // What the broker admits a connection by, and what an app started
@@ -2838,6 +2848,7 @@ impl Session {
             Some(BeforeShell::Ceremony(Box::new(view))),
             &self.shared.person,
             self.scale,
+            &self.shared.commands,
         );
         Ok(())
     }

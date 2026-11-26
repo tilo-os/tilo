@@ -352,6 +352,8 @@ identity-clock-wait-title = Warten auf die Uhr
 identity-clock-wait-body = Deine Tilo-Identität ist sicher. Der Schreibtisch öffnet, sobald Datum und Uhrzeit dieses Computers stimmen.
 identity-clock-wait-not-yet-valid = Deine Tilo-Identität ist sicher. Dein Zertifikat beginnt am { $valid }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald die Uhr diesen Zeitpunkt erreicht oder du Datum und Uhrzeit einstellst.
 identity-clock-wait-expired = Deine Tilo-Identität ist sicher. Dein Zertifikat galt bis { $until }, die Uhr dieses Computers zeigt { $now }. Der Schreibtisch öffnet von selbst, sobald Datum und Uhrzeit richtig eingestellt sind.
+session-not-started-title = Tilo ist nicht gestartet
+session-not-started-body = Nichts, was du hier tust, würde gespeichert. Melde dich ab und wieder an. Startet Tilo dann immer noch nicht, starte neu und wähle im Startmenü „Tilo Repair Mode“.
 
 ## wie die Einblendung die Tastatur nennt, deren Beleuchtung sie gerade ändert.
 osd-keyboard-name = Tastatur

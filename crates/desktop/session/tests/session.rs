@@ -1820,6 +1820,57 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
     assert!(!session.setup_up(), "skipping the tour finishes setup");
 }
 
+/// A login the device's daemon did not start keeps nothing: it says so in front of the desktop,
+/// stays there, and logging out ends it so the person can sign in again.
+#[test]
+fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = crate::common::headless(Options {
+        setup: Some(tilo_session::BeforeShell::NotStarted),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        session.setup_up(),
+        "the screen stands in front of the desktop"
+    );
+    assert!(
+        publisher(&session, "overview").is_none(),
+        "and withholds the desktop's actions"
+    );
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Tilo didn't start"),
+        "it says Tilo didn't start: {labels:?}"
+    );
+    for _ in 0..3 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(session.setup_up(), "nothing takes it down but the person");
+    let names: Vec<String> = session
+        .controls()
+        .into_iter()
+        .map(|control| control.name)
+        .collect();
+    let log_out = names
+        .iter()
+        .find(|name| name.starts_with("session-not-started-log-out"))
+        .unwrap_or_else(|| panic!("it offers logging out: {names:?}"))
+        .clone();
+    assert!(
+        names
+            .iter()
+            .any(|name| name.starts_with("session-not-started-restart")),
+        "and restarting, to reach Repair Mode: {names:?}"
+    );
+    session
+        .press_action(&log_out, ui::window_targets::TargetAction::Activate)
+        .expect("a press by name");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.ended(), "logging out ends the session");
+}
+
 tilo_test_env::scenario! {
     fn a_sheet_is_driven_through_its_published_actions;
 

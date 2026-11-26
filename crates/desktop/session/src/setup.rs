@@ -1,10 +1,12 @@
 //! What stands over everything before the session is used: the first-use ceremony
 //! ([`tilo_onboarding_session::view::OnboardingView`]) on a layer covering the outputs, above the
 //! desktop and every window, taking the keyboard until the person finished it, or the wait for the
-//! clock to admit this device's certificate, which goes away by itself. Its actions are the setup
+//! clock to admit this device's certificate, which goes away by itself, or what a login on Tilo's
+//! own computer shows when its device's daemon did not start it. Its actions are the setup
 //! app's, through its API; what setup needs of the session it reads through
 //! [`tilo_onboarding_session::services::SessionServices`].
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 use std::task::Waker;
@@ -20,6 +22,9 @@ use ui::device_local_api::SharedApi;
 use ui::host_operation::ResourceOperationStart;
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
+use crate::controls::SessionCommand;
+use crate::i18n::t;
+use crate::power_menu::Effect;
 
 /// What this session lends setup. One per process, as setup reads it through a process-wide hook;
 /// each session started points it at itself.
@@ -69,6 +74,10 @@ pub enum BeforeShell {
     /// The wait for the clock to admit this device's certificate. It goes away by itself, and what
     /// a verified identity opens takes its place.
     WaitForClock(ClockWait),
+    /// A login on a computer whose system daemon starts every person's shell, which it did not
+    /// start: nothing done here would be kept, so the person logs out and in again, or restarts
+    /// into Repair Mode. It stays until they do.
+    NotStarted,
 }
 
 /// What the layer shows, while it shows anything.
@@ -85,6 +94,8 @@ enum Surface {
         widgets: WidgetSurface,
         wait: ClockWait,
     },
+    /// The login the daemon did not start, which has no actions beyond its two buttons.
+    NotStarted { widgets: WidgetSurface },
 }
 
 /// The setup view on its layer, while the person has not finished it.
@@ -97,8 +108,14 @@ pub(crate) struct Setup {
 
 impl Setup {
     /// Show `surface` over the outputs, waking `waiter` when the wait for the clock has something
-    /// new to answer.
-    pub(crate) fn new(surface: BeforeShell, scale: f64, waiter: Waker) -> Self {
+    /// new to answer. What the person chooses on a login the daemon did not start goes to
+    /// `commands`, as the same choice from the power menu does.
+    pub(crate) fn new(
+        surface: BeforeShell,
+        scale: f64,
+        waiter: Waker,
+        commands: &Rc<RefCell<Vec<SessionCommand>>>,
+    ) -> Self {
         let placement = Placement {
             origin: (0, 0),
             size: (1, 1),
@@ -114,6 +131,9 @@ impl Setup {
                     wait,
                 }
             }
+            BeforeShell::NotStarted => Surface::NotStarted {
+                widgets: covering(Box::new(not_started(commands)), placement),
+            },
         };
         Self {
             surface,
@@ -126,6 +146,7 @@ impl Setup {
         match &self.surface {
             Surface::Ceremony { finished, .. } => !(finished)(),
             Surface::WaitForClock { wait, .. } => !wait.done(),
+            Surface::NotStarted { .. } => true,
         }
     }
 
@@ -160,13 +181,17 @@ impl Setup {
     /// The widget tree on the layer now.
     fn widgets(&self) -> &WidgetSurface {
         match &self.surface {
-            Surface::Ceremony { widgets, .. } | Surface::WaitForClock { widgets, .. } => widgets,
+            Surface::Ceremony { widgets, .. }
+            | Surface::WaitForClock { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets,
         }
     }
 
     fn widgets_mut(&mut self) -> &mut WidgetSurface {
         match &mut self.surface {
-            Surface::Ceremony { widgets, .. } | Surface::WaitForClock { widgets, .. } => widgets,
+            Surface::Ceremony { widgets, .. }
+            | Surface::WaitForClock { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets,
         }
     }
 
@@ -197,6 +222,35 @@ fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
     }
 }
 
+/// What a login the daemon did not start shows: that nothing here would be kept, logging out to
+/// sign in again, and restarting to reach Repair Mode from the boot menu.
+fn not_started(commands: &Rc<RefCell<Vec<SessionCommand>>>) -> ui::widget::Container {
+    let log_out = Rc::clone(commands);
+    let restart = Rc::clone(commands);
+    ui::widget::Container::new()
+        .filling()
+        .with_background()
+        .with_centered_max_width(560.0)
+        .with_child(Box::new(
+            ui::widget::arrival_failure(
+                t("session-not-started-title"),
+                t("session-not-started-body"),
+            )
+            .with_action(
+                ui::widget::Button::new("session-not-started-log-out", &t("session-power-log-out"))
+                    .on_click(move || log_out.borrow_mut().push(SessionCommand::LogOut)),
+            )
+            .with_secondary_action(
+                ui::widget::Button::new("session-not-started-restart", &t("session-power-restart"))
+                    .on_click(move || {
+                        restart
+                            .borrow_mut()
+                            .push(SessionCommand::Power(Effect::Restart));
+                    }),
+            ),
+        ))
+}
+
 /// A tree covering every output and taking the keyboard: what stands in front of the session withholds
 /// it.
 fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetSurface {
@@ -211,7 +265,7 @@ impl Published for Setup {
         self.serve();
         match &self.surface {
             Surface::Ceremony { api, .. } => api.resources(),
-            Surface::WaitForClock { .. } => Vec::new(),
+            Surface::WaitForClock { .. } | Surface::NotStarted { .. } => Vec::new(),
         }
     }
 

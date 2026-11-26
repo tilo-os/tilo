@@ -26,11 +26,12 @@ pub(crate) fn mount_setup(
     surface: Option<BeforeShell>,
     person: &str,
     scale: f64,
+    commands: &Rc<RefCell<Vec<SessionCommand>>>,
 ) -> Option<Rc<RefCell<Setup>>> {
     let waiter = compositor.waker();
     crate::setup::lend(waiter.clone(), person);
     surface.map(|surface| {
-        let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
+        let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter, commands)));
         compositor.add_surface(setup.clone());
         surfaces.add(Rc::clone(&setup) as tilo_session_core::surfaces::Shared);
         setup
