@@ -128,10 +128,6 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
-            #[cfg(feature = "broker-transport")]
-            CollabRequest::ExternalModeration { .. } => {
-                // No host authority here: dropping response ownership refuses the request.
-            }
             CollabRequest::Document { mutation, .. } => {
                 let event = CollabEvent::Document {
                     route: tilo_ui_base::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
@@ -159,9 +155,12 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ResourceLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
             | CollabRequest::ResourceCommand { .. }
-            | CollabRequest::DecideShownActions { .. } => {
+            | CollabRequest::DecideShownActions { .. }
+            | CollabRequest::ExternalModeration { .. } => {
                 // Session-local and shell-owned control-plane commands never
-                // fan out through another application's document channel.
+                // fan out through another application's document channel. A
+                // moderation request has no host authority here: dropping its
+                // response ownership refuses it.
             }
         }
     }

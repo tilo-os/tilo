@@ -1,0 +1,65 @@
+[package]
+name = "tilo-ui-app"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+autoexamples = false
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo UI app runner's integration tests, driven through tilo-ui's headless driver."
+
+[dependencies]
+
+[dev-dependencies]
+# The headless driver and its fixtures are behind `test-support`.
+tilo-ui = { path = "../ui-core", features = ["test-support"] }
+tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
+# The menus and materials a document editor opens, drawn as the toolkit draws them.
+tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
+# The closure-built action host the driver's job tests answer calls with.
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+# The manager's fixtures the App-driven collaboration tests drive.
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["test-support"] }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
+# The settings capability the shell hands an app, served by the fake broker.
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
+tilo-content = { path = "../../core/content", default-features = false }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-doc = { path = "../../sdk/tilo-doc", default-features = false }
+tilo-lock = { path = "../../platform/tilo-lock" }
+# The synthesized engine a video player test plays.
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
+tilo-theme-sdk = { path = "../theme-sdk" }
+tilo-theme-painter-wasm = { path = "../theme-painter-wasm" }
+# The compiler that produces the artifact a device's daemon makes for a theme's changed module,
+# so the compiled painter path is measured beside the interpreter's.
+tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
+# Hand-written painter modules for the wasm host's refusal and budget tests.
+wat = "1"
+# Tests whose interface is the process environment set it through `ScopedEnv`.
+tilo-test-env = { path = "../../../tools/test-env" }
+accesskit = { version = "0.25.0", features = ["serde"] }
+automerge.workspace = true
+hex.workspace = true
+image = { workspace = true, features = ["png"] }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+taffy = { workspace = true, features = ["content_size"] }
+tempfile.workspace = true
+uuid.workspace = true
+vello.workspace = true
+winit.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

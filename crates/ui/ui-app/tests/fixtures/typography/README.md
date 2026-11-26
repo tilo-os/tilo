@@ -9,8 +9,8 @@ The geometry and pixel comparisons read these same bytes through
 Prewarm a checkout's ignored cache before an offline run:
 
 ```sh
-python3 tools/test-assets.py crates/ui/ui-core/tests/fixtures/typography/artifacts.json
-TILO_TEST_ASSETS_OFFLINE=1 cargo test --locked --offline -p tilo-ui --test it typography_golden_geometry::
+python3 tools/test-assets.py crates/ui/ui-app/tests/fixtures/typography/artifacts.json
+TILO_TEST_ASSETS_OFFLINE=1 cargo test --locked --offline -p tilo-ui-app --test it typography_golden_geometry::
 ```
 
 `TILO_TEST_ASSET_CACHE` selects an already populated asset cache. Cache entries

@@ -2108,7 +2108,7 @@ impl GroupRow {
         self.handles.get(idx)
     }
 
-    /// `debug_assertions` guarded so it's available to `crates/ui/ui-core/tests` but not
+    /// `debug_assertions` guarded so it's available to `crates/ui/ui-app/tests` but not
     /// shipped in release.
     #[cfg(any(test, debug_assertions))]
     pub fn group_at_for_test(&self, idx: usize) -> Option<&WindowGroup> {

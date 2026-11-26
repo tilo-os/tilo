@@ -132,7 +132,7 @@ extern crate self as tilo_ui;
     dead_code,
     reason = "shared support is compiled by library and integration tests whose consumers intentionally use different subsets"
 )]
-#[path = "../tests/support/application.rs"]
+#[path = "../../ui-app/tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
 pub mod app;

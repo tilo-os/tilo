@@ -31,7 +31,7 @@ TREES = ("apps", "crates", "tools", "examples")
 ALLOWED = (
     "crates/ui/ui-core/src/widget/toast.rs",
     "crates/ui/ui-core/src/widget/toast_tests.rs",
-    "crates/ui/ui-core/tests/toast_test.rs",
+    "crates/ui/ui-app/tests/toast_test.rs",
 )
 
 # What painting the card reads like.

@@ -21447,7 +21447,6 @@ dependencies = [
  "tilo-remote-actions",
  "tilo-render-protocol",
  "tilo-resource",
- "tilo-rich-edit",
  "tilo-rt",
  "tilo-runtime-collab",
  "tilo-runtime-portal",
@@ -21470,7 +21469,6 @@ dependencies = [
  "tilo-ui-paint",
  "tilo-vello",
  "tilo-vello-encoding",
- "tilo-wasm-aot",
  "tilo-webview",
  "tilo-wgpu",
  "tilo-winit",
@@ -21493,6 +21491,42 @@ dependencies = [
  "windows-sys 0.61.2",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-ui-app"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "hex",
+ "image",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-collab-types",
+ "tilo-collaboration",
+ "tilo-content",
+ "tilo-doc",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-resource",
+ "tilo-rich-edit",
+ "tilo-runtime-collab",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-theme-painter-wasm",
+ "tilo-theme-sdk",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-wasm-aot",
+ "tilo-winit",
+ "uuid",
+ "wat",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -28088,6 +28122,7 @@ dependencies = [
  "tilo-typst",
  "tilo-typst-fonts",
  "tilo-ui",
+ "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-graph",
  "tilo-ui-kms",

@@ -858,6 +858,7 @@ def policy_checks(root: Path, push: Push, named: set[str] | None) -> list[str]:
 CATALOGUE_INPUTS = (
     "crates/ui/ui-base/src/",
     "crates/ui/ui-core/src/",
+    "crates/ui/ui-app/src/",
     "crates/ui/tilo-rich-edit/src/",
     "crates/sdk/tilo-app-window/",
     "crates/ui/ui-graph/",

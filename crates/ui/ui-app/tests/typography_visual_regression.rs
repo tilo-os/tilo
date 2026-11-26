@@ -12,7 +12,7 @@
 //! that tool and set `TILO_TEST_ASSETS_OFFLINE=1`.
 //! Locally, inside that image:
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-//! WGPU_ADAPTER_NAME=llvmpipe cargo test -p tilo-ui --test it typography_visual_regression`
+//! WGPU_ADAPTER_NAME=llvmpipe cargo test -p tilo-ui-app --test it typography_visual_regression`
 //!
 //! `typography_golden_geometry` checks the same layouts against the
 //! baselines' dimensions without a GPU, so a layout change that needs new

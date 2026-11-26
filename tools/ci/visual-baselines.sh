@@ -24,7 +24,7 @@ read -r -a features <<<"$feature_flags"
 
 # Diff against the tree as given, uncommitted changes included, so the patch
 # holds only what the render changed.
-paths=(crates/ui/ui-core/tests/fixtures/typography)
+paths=(crates/ui/ui-app/tests/fixtures/typography)
 export GIT_INDEX_FILE=$TMPDIR/visual-baselines.index
 git read-tree HEAD
 for path in "${paths[@]}"; do
@@ -37,8 +37,8 @@ UPDATE_TYPOGRAPHY_BASELINES=1 TILO_REQUIRE_GPU=1 \
     bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "${packages[@]}" \
     "${features[@]}" --no-tests=pass -E "$filter" || status=$?
 
-python3 tools/test-assets.py crates/ui/ui-core/tests/fixtures/typography/artifacts.json \
-    --prune-identical-candidates crates/ui/ui-core/tests/fixtures/typography
+python3 tools/test-assets.py crates/ui/ui-app/tests/fixtures/typography/artifacts.json \
+    --prune-identical-candidates crates/ui/ui-app/tests/fixtures/typography
 
 git ls-files --others --exclude-standard -z -- "${paths[@]}" | xargs -0 -r git add -N --
 git diff --name-only --diff-filter=AM -- "${paths[@]}" > "$review/changed-files.txt"

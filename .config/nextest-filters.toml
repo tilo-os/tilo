@@ -9,7 +9,7 @@
 # the visual-baselines workflow renders candidates for exactly these tests.
 # Keep identical to the gpu-golden override in nextest.toml.
 golden = """
-(package(tilo-ui) and test(typography_visual_regression::))
+(package(tilo-ui-app) and test(typography_visual_regression::))
 """
 
 # Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images

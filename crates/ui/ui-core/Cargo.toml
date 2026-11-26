@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
-# tests/*.rs are modules of tests/it.rs, not separate binaries
+# The integration tests are tilo-ui-app's; held-memory is the one test target here
 autotests = false
 autoexamples = false
 repository.workspace = true
@@ -415,17 +415,12 @@ tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 [dev-dependencies]
 # Its own tests drive a page without Chromium.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
-# The menus and materials a document editor opens, drawn as the toolkit draws them.
-tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 # Hand-written painter modules for the wasm host's refusal and budget tests.
 wat = "1"
 # The Bauhaus theme's painter, run natively through the host to check its
 # shipped document and how the toolkit draws it.
 tilo-theme-bauhaus = { path = "../themes/bauhaus" }
-# The compiler that produces the artifact a device's daemon makes for a theme's changed module,
-# so the compiled painter path is measured beside the interpreter's.
-tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] }
 # The headless driver's fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.
@@ -457,12 +452,6 @@ tokio = { workspace = true, features = ["test-util"] }
 tilo-process-services = { path = "../../sdk/tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
-
-[[test]]
-name = "it"
-path = "tests/it.rs"
-# The shared harness stands up in-process collaboration hosts.
-required-features = ["broker-transport"]
 
 [[example]]
 name = "theme-looks"

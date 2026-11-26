@@ -353,7 +353,7 @@ fi
 # generator and stage what it wrote. The toolkit's test holds the same invariant, so a tree
 # that cannot build now leaves the file as it is rather than holding up the commit.
 # The crates of widgets a window builds by name (tilo-app-window's `components`).
-widget_dirs=(crates/ui/ui-base/src crates/ui/ui-core/src crates/ui/tilo-rich-edit/src)
+widget_dirs=(crates/ui/ui-base/src crates/ui/ui-core/src crates/ui/ui-app/src crates/ui/tilo-rich-edit/src)
 widget_pattern="^($(IFS='|'; echo "${widget_dirs[*]}"))/.*\.rs$"
 widget_sources=$(grep -vE '(_tests\.rs|/tests\.rs|/tests/)' <<< "$lock_staged_names" \
   | grep -E "$widget_pattern" || true)

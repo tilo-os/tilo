@@ -643,7 +643,7 @@ text in Arabic, Hebrew, Devanagari, Bengali, Thai, CJK, mixed BiDi and
 multi-codepoint emoji as an app written in tilolang sets them.
 
 A `Typography & Scripts` card, built in
-`crates/ui/ui-core/tests/typography_visual_regression.rs`, is the committed
+`crates/ui/ui-app/tests/typography_visual_regression.rs`, is the committed
 visual regression corpus for semantic hierarchy, Latin ligatures and
 diacritics, the OpenType features, wrapping and punctuation, and those
 scripts. The integration suite compares light and dark reference PNGs at 1×, fractional 1.25× display
@@ -664,7 +664,7 @@ equivalent command is:
 UPDATE_TYPOGRAPHY_BASELINES=1 \
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 WGPU_ADAPTER_NAME=llvmpipe WGPU_BACKEND=vulkan \
-  cargo test --locked -p tilo-ui --test it \
+  cargo test --locked -p tilo-ui-app --test it \
   typography_visual_regression::multilingual_gallery_matches_scale_matrix -- --exact
 ```
 
