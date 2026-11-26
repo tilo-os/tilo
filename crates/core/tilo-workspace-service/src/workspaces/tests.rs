@@ -28,8 +28,8 @@ mod link_windows;
 mod lookup;
 mod naming;
 mod one_copy_two_writers;
-mod stopped_writer;
 mod replacing;
+mod stopped_writer;
 mod unreadable_workspace;
 
 #[tokio::test]

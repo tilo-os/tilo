@@ -1806,7 +1806,9 @@ impl Workspaces {
     /// Whether the part that served on this service has ended ([`Workspaces::stop`]).
     #[must_use]
     pub fn stopped(&self) -> bool {
-        self.inner.stopped.load(std::sync::atomic::Ordering::Acquire)
+        self.inner
+            .stopped
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Moves when this service stops ([`Workspaces::stop`]), so a write that waits for a

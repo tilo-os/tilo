@@ -140,7 +140,9 @@ async fn a_stopped_parts_copy_numbers_no_change_beside_the_next() {
         .expect("the next part reads the record");
     let kept = &record
         .devices
-        .get(&tilo_resource::Id::from_raw(hex::encode(cert.device_public_key)))
+        .get(&tilo_resource::Id::from_raw(hex::encode(
+            cert.device_public_key,
+        )))
         .expect("the device's entry")
         .facts;
     for fact in facts {
